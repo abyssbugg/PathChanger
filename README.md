@@ -235,6 +235,8 @@ swift test
 **Local test environment note:**
 The XCTest suite requires full Xcode. Apple Command Line Tools alone do not provide `xctest` or `XCTest.framework`, so `swift test` cannot run in a CLT-only environment.
 
+GitHub Actions runs the same test suite on a macOS runner with Xcode installed, so CI is the recommended XCTest source of truth when developing locally with Command Line Tools only.
+
 **Test Suites:**
 - `ArgumentSanitizerTests` - Input validation (15 tests)
 - `GPXParserTests` - Route parsing (9 tests)
@@ -348,9 +350,9 @@ swift package generate-documentation \
 ```
 
 **Hosted Documentation:**
-The CI pipeline automatically builds and deploys DocC documentation to GitHub Pages on every push to `main`:
-- **URL:** configure after the new PathChanger repository is created.
-- **Build Status:** Check the "Build Documentation" and "Deploy Documentation to GitHub Pages" jobs in [CI workflow](.github/workflows/ci.yml)
+The CI pipeline builds DocC documentation as a preview artifact. GitHub Pages deployment is opt-in and can be enabled later by configuring repository Pages settings and setting the `DEPLOY_DOCC` repository variable to `true`.
+- **URL:** configure after the new PathChanger repository is created and Pages deployment is enabled.
+- **Build Status:** Check the "Build Documentation" job in [CI workflow](.github/workflows/ci.yml)
 
 **Topics Covered:**
 - Core Components (DevLocationBridge, DeviceManager, TunneldManager)
