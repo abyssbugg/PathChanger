@@ -12,7 +12,7 @@ import CoreLocation
 struct LocationCoordinate: Equatable, Hashable, Codable {
     let latitude: Double
     let longitude: Double
-    
+
     /// Initialize with validation
     /// - Parameters:
     ///   - latitude: Latitude (-90 to 90)
@@ -22,13 +22,13 @@ struct LocationCoordinate: Equatable, Hashable, Codable {
         self.latitude = latitude
         self.longitude = longitude
     }
-    
+
     /// Initialize from CoreLocation coordinate
     init(from clLocation: CLLocationCoordinate2D) {
         self.latitude = clLocation.latitude
         self.longitude = clLocation.longitude
     }
-    
+
     /// Initialize with validation, throwing error if invalid
     /// - Parameters:
     ///   - latitude: Latitude (-90 to 90)
@@ -39,11 +39,11 @@ struct LocationCoordinate: Equatable, Hashable, Codable {
         self.latitude = latitude
         self.longitude = longitude
     }
-    
+
     var clLocationCoordinate2D: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
-    
+
     /// Check if coordinates are within valid bounds
     /// Validates:
     /// - Latitude: -90 to 90
@@ -53,38 +53,38 @@ struct LocationCoordinate: Equatable, Hashable, Codable {
         guard latitude.isFinite && longitude.isFinite else {
             return false
         }
-        
+
         guard latitude >= -90.0 && latitude <= 90.0 else {
             return false
         }
-        
+
         guard longitude >= -180.0 && longitude <= 180.0 else {
             return false
         }
-        
+
         return true
     }
-    
+
     /// Validate using ArgumentSanitizer and throw error if invalid
     /// - Throws: ValidationError if coordinates are invalid
     func validated() throws {
         try ArgumentSanitizer.validateCoordinateBounds(latitude: latitude, longitude: longitude)
     }
-    
+
     var formattedString: String {
         String(format: "%.6f, %.6f", latitude, longitude)
     }
-    
+
     var formattedShort: String {
         String(format: "%.4f, %.4f", latitude, longitude)
     }
-    
+
     var dmsString: String {
         let latDMS = toDMS(latitude, isLatitude: true)
         let lonDMS = toDMS(longitude, isLatitude: false)
         return "\(latDMS), \(lonDMS)"
     }
-    
+
     private func toDMS(_ decimal: Double, isLatitude: Bool) -> String {
         let direction = isLatitude ? (decimal >= 0 ? "N" : "S") : (decimal >= 0 ? "E" : "W")
         let absolute = abs(decimal)
@@ -106,9 +106,9 @@ enum PresetLocation: String, CaseIterable, Identifiable {
     case timesSquare = "Times Square"
     case bigBen = "Big Ben"
     case colosseum = "Colosseum"
-    
+
     var id: String { rawValue }
-    
+
     var coordinate: LocationCoordinate {
         switch self {
         case .tokyoTower: return LocationCoordinate(latitude: 35.6586, longitude: 139.7454)

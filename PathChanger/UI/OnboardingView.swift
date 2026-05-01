@@ -15,7 +15,7 @@ enum OnboardingStep: Int, CaseIterable {
     case dependencies = 1
     case deviceSetup = 2
     case complete = 3
-    
+
     var title: String {
         switch self {
         case .welcome: return "Welcome to PathChanger"
@@ -24,7 +24,7 @@ enum OnboardingStep: Int, CaseIterable {
         case .complete: return "Ready to Go!"
         }
     }
-    
+
     var icon: String {
         switch self {
         case .welcome: return "hand.wave.fill"
@@ -44,7 +44,7 @@ struct DependencyCheckResult {
     let pymobiledevice3Version: String?
     let pythonVersionValid: Bool
     let pymobiledevice3VersionValid: Bool
-    
+
     var allDependenciesMet: Bool {
         python3Installed && pythonVersionValid &&
         pymobiledevice3Installed && pymobiledevice3VersionValid
@@ -59,22 +59,22 @@ class OnboardingViewModel: ObservableObject {
     @Published var dependencyResult: DependencyCheckResult?
     @Published var isCheckingDependencies = false
     @Published var showCopiedToast = false
-    
+
     private let minPythonVersion = "3.9"
     private let minPymobiledevice3Version = "6.1.5"
-    
+
     func nextStep() {
         if let nextStep = OnboardingStep(rawValue: currentStep.rawValue + 1) {
             withAnimation {
                 currentStep = nextStep
             }
-            
+
             if currentStep == .dependencies {
                 Task { await checkDependencies() }
             }
         }
     }
-    
+
     func previousStep() {
         if let prevStep = OnboardingStep(rawValue: currentStep.rawValue - 1) {
             withAnimation {
@@ -82,20 +82,20 @@ class OnboardingViewModel: ObservableObject {
             }
         }
     }
-    
+
     func checkDependencies() async {
         isCheckingDependencies = true
         defer { isCheckingDependencies = false }
-        
+
         // Check Python
         var pythonInstalled = false
         var pythonVer: String? = nil
         var pythonValid = false
-        
+
         do {
             try await PythonPathResolver.validateInstallation()
             pythonInstalled = true
-            
+
             if let version = await PythonPathResolver.version() {
                 pythonVer = version
                 // Parse version and validate
@@ -105,20 +105,20 @@ class OnboardingViewModel: ObservableObject {
         } catch {
             Logger.debug("Python validation failed: \(error)", category: .general)
         }
-        
+
         // Check pymobiledevice3
         var pmd3Installed = false
         var pmd3Ver: String? = nil
         var pmd3Valid = false
-        
+
         if pythonInstalled {
             pmd3Installed = await PythonPathResolver.isPymobiledevice3Installed()
-            
+
             if pmd3Installed {
                 do {
                     try await PythonPathResolver.validatePymobiledevice3()
                     pmd3Valid = true
-                    
+
                     // Try to get version string (simplified)
                     pmd3Ver = minPymobiledevice3Version // Placeholder
                 } catch {
@@ -126,7 +126,7 @@ class OnboardingViewModel: ObservableObject {
                 }
             }
         }
-        
+
         dependencyResult = DependencyCheckResult(
             python3Installed: pythonInstalled,
             pythonVersion: pythonVer,
@@ -136,23 +136,23 @@ class OnboardingViewModel: ObservableObject {
             pymobiledevice3VersionValid: pmd3Valid
         )
     }
-    
+
     func copyToClipboard(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        
+
         withAnimation {
             showCopiedToast = true
         }
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             withAnimation {
                 self.showCopiedToast = false
             }
         }
     }
-    
+
     func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "onboardingCompleted")
         UserDefaults.standard.set(Date(), forKey: "onboardingCompletedDate")
@@ -164,21 +164,21 @@ class OnboardingViewModel: ObservableObject {
 struct OnboardingView: View {
     @StateObject private var viewModel = OnboardingViewModel()
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
                 // Header
                 headerView
-                
+
                 // Content
                 contentView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
+
                 // Footer
                 footerView
             }
-            
+
             // Copied toast
             if viewModel.showCopiedToast {
                 VStack {
@@ -191,18 +191,18 @@ struct OnboardingView: View {
         }
         .frame(width: 700, height: 550)
     }
-    
+
     private var headerView: some View {
         VStack(spacing: 8) {
             Image(systemName: viewModel.currentStep.icon)
                 .font(.system(size: 48))
                 .foregroundColor(.blue)
                 .padding(.top, 30)
-            
+
             Text(viewModel.currentStep.title)
                 .font(.largeTitle)
                 .fontWeight(.bold)
-            
+
             // Progress indicator
             HStack(spacing: 8) {
                 ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
@@ -216,7 +216,7 @@ struct OnboardingView: View {
         .padding(.bottom, 20)
         .background(Color(NSColor.windowBackgroundColor))
     }
-    
+
     @ViewBuilder
     private var contentView: some View {
         switch viewModel.currentStep {
@@ -230,7 +230,7 @@ struct OnboardingView: View {
             completeStepView
         }
     }
-    
+
     private var footerView: some View {
         HStack {
             if viewModel.currentStep != .welcome {
@@ -239,9 +239,9 @@ struct OnboardingView: View {
                 }
                 .keyboardShortcut(.cancelAction)
             }
-            
+
             Spacer()
-            
+
             if viewModel.currentStep == .complete {
                 Button("Get Started") {
                     viewModel.completeOnboarding()
@@ -268,18 +268,18 @@ struct OnboardingView: View {
         .padding()
         .background(Color(NSColor.windowBackgroundColor))
     }
-    
+
     // MARK: - Step Views
-    
+
     private var welcomeStepView: some View {
         VStack(spacing: 20) {
             Spacer()
-            
+
             Text("Simulate GPS Locations on iOS 17+ Devices")
                 .font(.title2)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 FeatureRow(icon: "location.fill", title: "GPS Simulation", description: "Set custom locations on your iOS device")
                 FeatureRow(icon: "arrow.triangle.2.circlepath", title: "Route Playback", description: "Follow GPX routes with realistic movement")
@@ -287,12 +287,12 @@ struct OnboardingView: View {
                 FeatureRow(icon: "lock.shield.fill", title: "Secure", description: "All processing happens locally on your Mac")
             }
             .padding(.vertical)
-            
+
             Spacer()
         }
         .padding(.horizontal, 40)
     }
-    
+
     private var dependenciesStepView: some View {
         VStack(spacing: 20) {
             if viewModel.isCheckingDependencies {
@@ -328,7 +328,7 @@ struct OnboardingView: View {
                             .background(Color.orange.opacity(0.1))
                             .cornerRadius(8)
                         }
-                        
+
                         // Python 3
                         DependencyCard(
                             title: "Python 3.9+",
@@ -338,7 +338,7 @@ struct OnboardingView: View {
                             installCommand: "brew install python3",
                             onCopy: { viewModel.copyToClipboard($0) }
                         )
-                        
+
                         // pymobiledevice3
                         DependencyCard(
                             title: "pymobiledevice3",
@@ -348,7 +348,7 @@ struct OnboardingView: View {
                             installCommand: "pip3 install pymobiledevice3",
                             onCopy: { viewModel.copyToClipboard($0) }
                         )
-                        
+
                         Button("Re-check Dependencies") {
                             Task { await viewModel.checkDependencies() }
                         }
@@ -364,21 +364,21 @@ struct OnboardingView: View {
             }
         }
     }
-    
+
     private var deviceSetupStepView: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Prepare Your iOS Device")
                 .font(.title2)
                 .fontWeight(.semibold)
-            
+
             VStack(alignment: .leading, spacing: 16) {
                 SetupStep(number: 1, title: "Enable Developer Mode", description: "Settings → Privacy & Security → Developer Mode → ON")
                 SetupStep(number: 2, title: "Trust This Computer", description: "Connect via USB and tap 'Trust' when prompted")
                 SetupStep(number: 3, title: "Connect Device", description: "Use USB for fastest connection, or WiFi for convenience")
             }
-            
+
             Spacer()
-            
+
             HStack {
                 Image(systemName: "info.circle")
                     .foregroundColor(.blue)
@@ -392,24 +392,24 @@ struct OnboardingView: View {
         }
         .padding(.horizontal, 40)
     }
-    
+
     private var completeStepView: some View {
         VStack(spacing: 20) {
             Spacer()
-            
+
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80))
                 .foregroundColor(.green)
-            
+
             Text("You're All Set!")
                 .font(.title)
                 .fontWeight(.bold)
-            
+
             Text("PathChanger is ready to use")
                 .foregroundColor(.secondary)
-            
+
             Spacer()
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 QuickTip(icon: "location.circle.fill", text: "Connect your device and start the tunnel")
                 QuickTip(icon: "map.fill", text: "Click the map to set a location")
@@ -418,12 +418,12 @@ struct OnboardingView: View {
             .padding()
             .background(Color.secondary.opacity(0.1))
             .cornerRadius(12)
-            
+
             Spacer()
         }
         .padding(.horizontal, 40)
     }
-    
+
     private var copiedToast: some View {
         HStack {
             Image(systemName: "checkmark.circle.fill")
@@ -444,14 +444,14 @@ struct FeatureRow: View {
     let icon: String
     let title: String
     let description: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.title2)
                 .foregroundColor(.blue)
                 .frame(width: 30)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .fontWeight(.semibold)
@@ -470,38 +470,38 @@ struct DependencyCard: View {
     let version: String?
     let installCommand: String
     let onCopy: (String) -> Void
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: installed && valid ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundColor(installed && valid ? .green : .red)
-                
+
                 Text(title)
                     .fontWeight(.semibold)
-                
+
                 Spacer()
-                
+
                 if let version = version {
                     Text(version)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
-            
+
             if !installed || !valid {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(installed ? "Version too old" : "Not installed")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
+
                     HStack {
                         Text(installCommand)
                             .font(.system(.body, design: .monospaced))
                             .padding(8)
                             .background(Color.secondary.opacity(0.1))
                             .cornerRadius(4)
-                        
+
                         Button {
                             onCopy(installCommand)
                         } label: {
@@ -522,7 +522,7 @@ struct SetupStep: View {
     let number: Int
     let title: String
     let description: String
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             ZStack {
@@ -533,7 +533,7 @@ struct SetupStep: View {
                     .foregroundColor(.white)
                     .fontWeight(.bold)
             }
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .fontWeight(.semibold)
@@ -548,7 +548,7 @@ struct SetupStep: View {
 struct QuickTip: View {
     let icon: String
     let text: String
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)

@@ -15,7 +15,7 @@ extension Color {
     static let appSecondary = Color("AppSecondary")
     static let appBackground = Color("AppBackground")
     static let appSurface = Color("AppSurface")
-    
+
     // Fallbacks if assets are missing
     static let modernBlue = Color(hex: 0x007AFF)
     static let modernPurple = Color(hex: 0x5856D6)
@@ -51,7 +51,7 @@ struct GlassCardModifier: ViewModifier {
 
 struct PrimaryButtonModifier: ViewModifier {
     var isDisabled: Bool
-    
+
     func body(content: Content) -> some View {
         content
             .font(.headline)
@@ -71,7 +71,7 @@ extension View {
     func glassCard() -> some View {
         modifier(GlassCardModifier())
     }
-    
+
     func primaryButtonStyle(isDisabled: Bool = false) -> some View {
         modifier(PrimaryButtonModifier(isDisabled: isDisabled))
     }

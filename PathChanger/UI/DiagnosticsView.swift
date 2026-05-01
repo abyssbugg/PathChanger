@@ -15,10 +15,10 @@ struct DiagnosticResult: Identifiable {
     let status: Status
     let message: String
     let recoveryAction: String?
-    
+
     enum Status {
         case success, warning, failure, checking
-        
+
         var icon: String {
             switch self {
             case .success: return "checkmark.circle.fill"
@@ -27,7 +27,7 @@ struct DiagnosticResult: Identifiable {
             case .checking: return "circle.dotted"
             }
         }
-        
+
         var color: Color {
             switch self {
             case .success: return .green
@@ -43,7 +43,7 @@ struct DiagnosticResult: Identifiable {
 struct DiagnosticsView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var tunneldManager = TunneldManager.shared
-    
+
     @State private var results: [DiagnosticResult] = []
     @State private var isRunning = false
     @State private var pythonVersion: String = ""
@@ -51,7 +51,7 @@ struct DiagnosticsView: View {
     @State private var isExportingLogs = false
     @State private var exportedLogURL: URL?
     @State private var showExportSuccess = false
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             // Header
@@ -61,9 +61,9 @@ struct DiagnosticsView: View {
                 Text("System Diagnostics")
                     .font(.title2)
                     .fontWeight(.semibold)
-                
+
                 Spacer()
-                
+
                 Button {
                     Task { await exportDiagnosticLogs() }
                 } label: {
@@ -71,7 +71,7 @@ struct DiagnosticsView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(isExportingLogs)
-                
+
                 Button {
                     Task { await runDiagnostics() }
                 } label: {
@@ -80,9 +80,9 @@ struct DiagnosticsView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(isRunning)
             }
-            
+
             Divider()
-            
+
             // Results
             if results.isEmpty && !isRunning {
                 VStack(spacing: 12) {
@@ -103,14 +103,14 @@ struct DiagnosticsView: View {
                     .padding(.vertical, 8)
                 }
             }
-            
+
             // Summary
             if !results.isEmpty {
                 Divider()
-                
+
                 let failures = results.filter { $0.status == .failure }.count
                 let warnings = results.filter { $0.status == .warning }.count
-                
+
                 HStack {
                     if failures > 0 {
                         Label("\(failures) issues found", systemImage: "xmark.circle.fill")
@@ -122,9 +122,9 @@ struct DiagnosticsView: View {
                         Label("All checks passed!", systemImage: "checkmark.circle.fill")
                             .foregroundColor(.green)
                     }
-                    
+
                     Spacer()
-                    
+
                     if failures > 0 {
                         Text("Fix the issues above to enable location spoofing")
                             .font(.caption)
@@ -148,14 +148,14 @@ struct DiagnosticsView: View {
             }
         }
     }
-    
+
     @MainActor
     func exportDiagnosticLogs() async {
         isExportingLogs = true
-        
+
         // Log current diagnostic state before export
         Logger.info("Exporting diagnostic logs - Python: \(pythonVersion), pymobiledevice3: \(pymobiledevice3Version)", category: .general)
-        
+
         if let url = await Logger.exportLogs() {
             exportedLogURL = url
             showExportSuccess = true
@@ -164,15 +164,15 @@ struct DiagnosticsView: View {
             // Show error if export failed
             Logger.error("Failed to export diagnostic logs", category: .general)
         }
-        
+
         isExportingLogs = false
     }
-    
+
     @MainActor
     func runDiagnostics() async {
         isRunning = true
         results = []
-        
+
         // Check 1: Python3 installation
         results.append(DiagnosticResult(
             name: "Python 3",
@@ -182,7 +182,7 @@ struct DiagnosticsView: View {
         ))
         let pythonResult = await checkPython()
         results[results.count - 1] = pythonResult
-        
+
         // Check 2: pymobiledevice3 installation
         results.append(DiagnosticResult(
             name: "pymobiledevice3",
@@ -192,7 +192,7 @@ struct DiagnosticsView: View {
         ))
         let pmd3Result = await checkPymobiledevice3()
         results[results.count - 1] = pmd3Result
-        
+
         // Check 3: Tunnel status
         results.append(DiagnosticResult(
             name: "Tunnel Status",
@@ -202,7 +202,7 @@ struct DiagnosticsView: View {
         ))
         let tunnelResult = await checkTunnel()
         results[results.count - 1] = tunnelResult
-        
+
         // Check 4: Device connection
         results.append(DiagnosticResult(
             name: "Device Connected",
@@ -212,7 +212,7 @@ struct DiagnosticsView: View {
         ))
         let deviceResult = await checkDevice()
         results[results.count - 1] = deviceResult
-        
+
         // Check 5: Device selection
         results.append(DiagnosticResult(
             name: "Device Selected",
@@ -220,20 +220,20 @@ struct DiagnosticsView: View {
             message: appState.selectedDevice != nil ? "Device: \(appState.selectedDevice!.displayName)" : "No device selected",
             recoveryAction: appState.selectedDevice == nil ? "Select a device from the sidebar" : nil
         ))
-        
+
         // Check 6: Target location
         results.append(DiagnosticResult(
             name: "Target Location",
             status: appState.targetLocation != nil ? .success : .warning,
-            message: appState.targetLocation != nil ? 
-                String(format: "%.4f, %.4f", appState.targetLocation!.latitude, appState.targetLocation!.longitude) : 
+            message: appState.targetLocation != nil ?
+                String(format: "%.4f, %.4f", appState.targetLocation!.latitude, appState.targetLocation!.longitude) :
                 "No target location set",
             recoveryAction: appState.targetLocation == nil ? "Search for a location or click on the map" : nil
         ))
-        
+
         // Check 7: Location injection test (only if all previous passed)
-        if pythonResult.status == .success && 
-           pmd3Result.status == .success && 
+        if pythonResult.status == .success &&
+           pmd3Result.status == .success &&
            tunnelResult.status == .success &&
            appState.selectedDevice != nil {
             results.append(DiagnosticResult(
@@ -245,10 +245,10 @@ struct DiagnosticsView: View {
             let injectionResult = await checkLocationInjection()
             results[results.count - 1] = injectionResult
         }
-        
+
         isRunning = false
     }
-    
+
     func checkPython() async -> DiagnosticResult {
         do {
             let output = try await runCommand("/usr/bin/python3", args: ["--version"])
@@ -268,7 +268,7 @@ struct DiagnosticsView: View {
             )
         }
     }
-    
+
     func checkPymobiledevice3() async -> DiagnosticResult {
         do {
             let output = try await runCommand("/usr/bin/python3", args: ["-m", "pymobiledevice3", "version"])
@@ -288,16 +288,16 @@ struct DiagnosticsView: View {
             )
         }
     }
-    
+
     func checkTunnel() async -> DiagnosticResult {
         let isRunning = tunneldManager.isRunning
-        
+
         if isRunning {
             let rsdInfo = tunneldManager.tunnelInfo
             let message = rsdInfo != nil ?
                 "Running - RSD: \(rsdInfo!.rsdAddress):\(rsdInfo!.rsdPort)" :
                 "Running (RSD info not parsed)"
-            
+
             return DiagnosticResult(
                 name: "Tunnel Status",
                 status: rsdInfo != nil ? .success : .warning,
@@ -313,28 +313,28 @@ struct DiagnosticsView: View {
             )
         }
     }
-    
+
     func checkDevice() async -> DiagnosticResult {
         do {
             let output = try await runCommand("/usr/bin/python3", args: [
                 "-m", "pymobiledevice3", "usbmux", "list", "--no-color"
             ])
-            
+
             // Check for various device identifiers (supports both USB and WiFi/Network connections)
-            let hasDevice = output.contains("Identifier") || 
+            let hasDevice = output.contains("Identifier") ||
                            output.contains("UniqueDeviceID") ||
-                           output.contains("SerialNumber") || 
+                           output.contains("SerialNumber") ||
                            output.contains("UDID") ||
                            output.contains("DeviceName") ||
                            output.contains("ProductType") ||
                            output.contains("ConnectionType")
-            
+
             if hasDevice {
                 // Detect connection type
                 let isWiFi = output.contains("\"Network\"") || output.contains("ConnectionType\": \"Network")
                 let isUSB = output.contains("\"USB\"") || output.contains("ConnectionType\": \"USB")
                 let connectionType = isWiFi ? "WiFi" : (isUSB ? "USB" : "USB/WiFi")
-                
+
                 return DiagnosticResult(
                     name: "Device Connected",
                     status: .success,
@@ -358,7 +358,7 @@ struct DiagnosticsView: View {
             )
         }
     }
-    
+
     func checkLocationInjection() async -> DiagnosticResult {
         guard let device = appState.selectedDevice else {
             return DiagnosticResult(
@@ -368,11 +368,11 @@ struct DiagnosticsView: View {
                 recoveryAction: "Select a device first"
             )
         }
-        
+
         // Get iOS version for display and checking
         let iosVersion = device.productVersion ?? "Unknown"
         let iosVersionDisplay = "iOS \(iosVersion)"
-        
+
         // Check iOS version support before running test
         if !device.isIOSVersionSupported {
             // iOS 18+ detected - return warning immediately
@@ -383,7 +383,7 @@ struct DiagnosticsView: View {
                 recoveryAction: "Downgrade to iOS 17.6 or check https://github.com/doronz88/pymobiledevice3/issues for iOS 18 updates"
             )
         }
-        
+
         // Handle unknown version with warning
         if device.productVersion == nil {
             return DiagnosticResult(
@@ -393,11 +393,11 @@ struct DiagnosticsView: View {
                 recoveryAction: "Check device iOS version in Settings > General > About"
             )
         }
-        
+
         // Test with actual simulate-location set command using test coordinates (0.0, 0.0)
         do {
             var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set"]
-            
+
             // Add device connection arguments based on tunnel status
             if tunneldManager.isRunning, let rsdInfo = tunneldManager.tunnelInfo {
                 args.append(contentsOf: ["--rsd", rsdInfo.rsdAddress, String(rsdInfo.rsdPort)])
@@ -406,19 +406,19 @@ struct DiagnosticsView: View {
             } else {
                 args.append(contentsOf: ["--udid", device.id])
             }
-            
+
             // Add test coordinates
             args.append(contentsOf: ["--", "0.0", "0.0"])
-            
+
             let output = try await runCommand("/usr/bin/python3", args: args)
             let outputLower = output.lowercased()
-            
+
             // Check for specific error patterns that indicate failure
             let hasInvalidServiceError = outputLower.contains("invalidserviceerror")
             let hasDeveloperModeError = outputLower.contains("developermodeerror") || outputLower.contains("developer mode")
             let hasDeviceNotFoundError = outputLower.contains("devicenotfounderror")
             let hasServiceNotAvailable = outputLower.contains("servicenotavailableerror") || output.contains("-402653150")
-            
+
             if hasDeveloperModeError {
                 return DiagnosticResult(
                     name: "Location Injection",
@@ -458,7 +458,7 @@ struct DiagnosticsView: View {
             }
         } catch {
             let errorStr = "\(error)".lowercased()
-            
+
             // Check for iOS 18+ specific service unavailable error
             if errorStr.contains("servicenotavailableerror") || errorStr.contains("-402653150") {
                 return DiagnosticResult(
@@ -496,7 +496,7 @@ struct DiagnosticsView: View {
                     recoveryAction: "Device may be slow to respond - try again or restart tunnel"
                 )
             }
-            
+
             return DiagnosticResult(
                 name: "Location Injection",
                 status: .failure,
@@ -505,24 +505,24 @@ struct DiagnosticsView: View {
             )
         }
     }
-    
+
     func runCommand(_ path: String, args: [String]) async throws -> String {
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             let pipe = Pipe()
-            
+
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = args
             process.standardOutput = pipe
             process.standardError = pipe
-            
+
             do {
                 try process.run()
                 process.waitUntilExit()
-                
+
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
-                
+
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: output)
                 } else {
@@ -537,21 +537,21 @@ struct DiagnosticsView: View {
 
 struct DiagnosticResultRow: View {
     let result: DiagnosticResult
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: result.status.icon)
                 .foregroundColor(result.status.color)
                 .font(.title3)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(result.name)
                     .fontWeight(.medium)
-                
+
                 Text(result.message)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
                 if let recovery = result.recoveryAction {
                     Text(recovery)
                         .font(.caption)
@@ -559,7 +559,7 @@ struct DiagnosticResultRow: View {
                         .padding(.top, 2)
                 }
             }
-            
+
             Spacer()
         }
         .padding(12)
@@ -572,7 +572,7 @@ struct DiagnosticResultRow: View {
 struct DiagnosticsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var appState: AppState
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header with close button
@@ -590,7 +590,7 @@ struct DiagnosticsSheet: View {
             }
             .padding(.horizontal)
             .padding(.top, 12)
-            
+
             DiagnosticsView()
                 .environmentObject(appState)
         }

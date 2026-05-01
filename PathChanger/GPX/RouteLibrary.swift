@@ -22,7 +22,7 @@ struct SavedRoute: Identifiable, Codable {
     var lastUsed: Date?
     var createdAt: Date
     var color: RouteColor
-    
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -41,7 +41,7 @@ struct SavedRoute: Identifiable, Codable {
         self.createdAt = Date()
         self.color = color
     }
-    
+
     var formattedDistance: String {
         if distance >= 1000 {
             return String(format: "%.1f km", distance / 1000)
@@ -49,9 +49,9 @@ struct SavedRoute: Identifiable, Codable {
             return String(format: "%.0f m", distance)
         }
     }
-    
+
     var pointCount: Int { coordinates.count }
-    
+
     private static func calculateDistance(_ coords: [LocationCoordinate]) -> Double {
         guard coords.count > 1 else { return 0 }
         var total: Double = 0
@@ -62,19 +62,19 @@ struct SavedRoute: Identifiable, Codable {
         }
         return total
     }
-    
+
     private static func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
         let R = 6371000.0 // Earth radius in meters
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
         let dLat = (to.latitude - from.latitude) * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
-        
+
         let a = sin(dLat/2) * sin(dLat/2) +
                 cos(lat1) * cos(lat2) *
                 sin(dLon/2) * sin(dLon/2)
         let c = 2 * atan2(sqrt(a), sqrt(1-a))
-        
+
         return R * c
     }
 }
@@ -83,9 +83,9 @@ struct SavedRoute: Identifiable, Codable {
 
 enum RouteColor: String, CaseIterable, Codable, Identifiable {
     case blue, red, green, orange, purple, yellow, cyan, pink
-    
+
     var id: String { rawValue }
-    
+
     var color: Color {
         switch self {
         case .blue: return .blue
@@ -110,7 +110,7 @@ enum RouteLibraryError: Error, LocalizedError {
     case importFailed(Error)
     case exportFailed(Error)
     case emptyRoute
-    
+
     var errorDescription: String? {
         switch self {
         case .routeNotFound: return "Route not found in library"
@@ -130,34 +130,34 @@ class RouteLibraryManager: ObservableObject {
     @Published var favoriteRoutes: [SavedRoute] = []
     @Published var isLoading: Bool = false
     @Published var lastError: RouteLibraryError?
-    
+
     /// Clear the last error (call after displaying error to user)
     func clearError() {
         lastError = nil
     }
-    
+
     private let storageURL: URL
     private let maxRecent: Int = 10
-    
+
     init() {
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         storageURL = documentsPath.appendingPathComponent("PathChanger/routes.json")
-        
+
         // Ensure directory exists
         let directory = storageURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        
+
         loadRoutes()
     }
-    
+
     // MARK: - CRUD Operations
-    
+
     func addRoute(_ route: SavedRoute) {
         routes.append(route)
         updateDerivedLists()
         saveRoutes()
     }
-    
+
     /// Update an existing route. Returns true if the route was found and updated.
     @discardableResult
     func updateRoute(_ route: SavedRoute) -> Bool {
@@ -170,7 +170,7 @@ class RouteLibraryManager: ObservableObject {
         saveRoutes()
         return true
     }
-    
+
     /// Delete a route. Returns true if the route was found and deleted.
     @discardableResult
     func deleteRoute(_ route: SavedRoute) -> Bool {
@@ -184,13 +184,13 @@ class RouteLibraryManager: ObservableObject {
         saveRoutes()
         return true
     }
-    
+
     func deleteRoutes(at offsets: IndexSet) {
         routes.remove(atOffsets: offsets)
         updateDerivedLists()
         saveRoutes()
     }
-    
+
     /// Toggle a route's favorite status. Returns true if the route was found.
     @discardableResult
     func toggleFavorite(_ route: SavedRoute) -> Bool {
@@ -203,7 +203,7 @@ class RouteLibraryManager: ObservableObject {
         saveRoutes()
         return true
     }
-    
+
     /// Mark a route as recently used. Returns true if the route was found.
     @discardableResult
     func markAsUsed(_ route: SavedRoute) -> Bool {
@@ -216,31 +216,31 @@ class RouteLibraryManager: ObservableObject {
         saveRoutes()
         return true
     }
-    
+
     // MARK: - Import/Export
-    
+
     func importGPX(from url: URL) async throws -> SavedRoute {
         isLoading = true
         lastError = nil
         defer { isLoading = false }
-        
+
         do {
             let parser = GPXParser()
             let gpx = try parser.parse(fileURL: url)
             let coords = gpx.allCoordinates
-            
+
             guard !coords.isEmpty else {
                 let error = GPXParserError.emptyFile
                 lastError = .importFailed(error)
                 throw error
             }
-            
+
             let route = SavedRoute(
                 name: gpx.name,
                 description: gpx.description,
                 coordinates: coords
             )
-            
+
             addRoute(route)
             return route
         } catch let error as RouteLibraryError {
@@ -251,29 +251,29 @@ class RouteLibraryManager: ObservableObject {
             throw error
         }
     }
-    
+
     func importGPX(from data: Data, name: String) async throws -> SavedRoute {
         isLoading = true
         lastError = nil
         defer { isLoading = false }
-        
+
         do {
             let parser = GPXParser()
             let gpx = try parser.parse(data: data)
             let coords = gpx.allCoordinates
-            
+
             guard !coords.isEmpty else {
                 let error = GPXParserError.emptyFile
                 lastError = .importFailed(error)
                 throw error
             }
-            
+
             let route = SavedRoute(
                 name: gpx.name.isEmpty ? name : gpx.name,
                 description: gpx.description,
                 coordinates: coords
             )
-            
+
             addRoute(route)
             return route
         } catch let error as RouteLibraryError {
@@ -284,11 +284,11 @@ class RouteLibraryManager: ObservableObject {
             throw error
         }
     }
-    
+
     func exportGPX(route: SavedRoute) -> String {
         GPXWriter.createGPX(from: route.coordinates, name: route.name)
     }
-    
+
     func exportToFile(route: SavedRoute, to url: URL) throws {
         lastError = nil
         do {
@@ -299,12 +299,12 @@ class RouteLibraryManager: ObservableObject {
             throw error
         }
     }
-    
+
     // MARK: - Persistence
-    
+
     private func loadRoutes() {
         guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
-        
+
         do {
             let data = try Data(contentsOf: storageURL)
             routes = try JSONDecoder().decode([SavedRoute].self, from: data)
@@ -313,7 +313,7 @@ class RouteLibraryManager: ObservableObject {
             lastError = .loadFailed(error)
         }
     }
-    
+
     private func saveRoutes() {
         do {
             let data = try JSONEncoder().encode(routes)
@@ -322,7 +322,7 @@ class RouteLibraryManager: ObservableObject {
             lastError = .saveFailed(error)
         }
     }
-    
+
     private func updateDerivedLists() {
         favoriteRoutes = routes.filter { $0.isFavorite }
         recentRoutes = routes
@@ -331,9 +331,9 @@ class RouteLibraryManager: ObservableObject {
             .prefix(maxRecent)
             .map { $0 }
     }
-    
+
     // MARK: - Sample Routes
-    
+
     func addSampleRoutes() {
         let samples: [(String, [(Double, Double)])] = [
             ("Tokyo Imperial Palace Loop", [
@@ -351,7 +351,7 @@ class RouteLibraryManager: ObservableObject {
                 (37.7900, -122.3870), (37.7880, -122.3880), (37.7865, -122.3900)
             ])
         ]
-        
+
         for (name, points) in samples {
             let coords = points.map { LocationCoordinate(latitude: $0.0, longitude: $0.1) }
             let route = SavedRoute(name: name, coordinates: coords)
@@ -364,13 +364,13 @@ class RouteLibraryManager: ObservableObject {
 
 struct GPXDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.xml, UTType(filenameExtension: "gpx") ?? .xml] }
-    
+
     var text: String
-    
+
     init(text: String = "") {
         self.text = text
     }
-    
+
     init(configuration: ReadConfiguration) throws {
         if let data = configuration.file.regularFileContents {
             text = String(data: data, encoding: .utf8) ?? ""
@@ -378,7 +378,7 @@ struct GPXDocument: FileDocument {
             text = ""
         }
     }
-    
+
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: text.data(using: .utf8) ?? Data())
     }

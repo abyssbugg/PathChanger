@@ -18,7 +18,7 @@ struct ReconnectionStrategy {
     var backoffMultiplier: Double
     /// Jitter factor (0.0 - 1.0) to randomize delay and prevent thundering herd
     var jitterFactor: Double
-    
+
     static let `default` = ReconnectionStrategy(
         maxAttempts: 5,
         initialDelaySeconds: 1.0,
@@ -26,7 +26,7 @@ struct ReconnectionStrategy {
         backoffMultiplier: 2.0,
         jitterFactor: 0.25
     )
-    
+
     static let aggressive = ReconnectionStrategy(
         maxAttempts: 10,
         initialDelaySeconds: 0.5,
@@ -34,7 +34,7 @@ struct ReconnectionStrategy {
         backoffMultiplier: 1.5,
         jitterFactor: 0.2
     )
-    
+
     static let conservative = ReconnectionStrategy(
         maxAttempts: 3,
         initialDelaySeconds: 2.0,
@@ -42,16 +42,16 @@ struct ReconnectionStrategy {
         backoffMultiplier: 2.0,
         jitterFactor: 0.3
     )
-    
+
     /// Calculate delay with exponential backoff and jitter (REL-001)
     func delayForAttempt(_ attempt: Int) -> Double {
         let baseDelay = initialDelaySeconds * pow(backoffMultiplier, Double(attempt - 1))
         let cappedDelay = min(baseDelay, maxDelaySeconds)
-        
+
         // Apply jitter: delay * (1 ± jitterFactor)
         let jitterRange = cappedDelay * jitterFactor
         let jitter = Double.random(in: -jitterRange...jitterRange)
-        
+
         return max(0.1, cappedDelay + jitter)
     }
 }
@@ -65,13 +65,13 @@ actor CircuitBreaker {
         case open        // Failing, reject requests
         case halfOpen    // Testing if service recovered
     }
-    
+
     struct Config {
         let failureThreshold: Int      // Failures before opening
         let successThreshold: Int      // Successes in half-open to close
         let resetTimeout: TimeInterval // Time before trying half-open
         let monitoringWindow: TimeInterval // Window for failure counting
-        
+
         static let `default` = Config(
             failureThreshold: 5,
             successThreshold: 2,
@@ -79,7 +79,7 @@ actor CircuitBreaker {
             monitoringWindow: 60.0
         )
     }
-    
+
     private(set) var state: State = .closed
     private var failureCount: Int = 0
     private var successCount: Int = 0
@@ -87,15 +87,15 @@ actor CircuitBreaker {
     private var lastStateChange: Date = Date()
     private var failureTimestamps: [Date] = []
     private let config: Config
-    
+
     init(config: Config = .default) {
         self.config = config
     }
-    
+
     /// Check if request should be allowed
     func shouldAllowRequest() -> Bool {
         cleanupOldFailures()
-        
+
         switch state {
         case .closed:
             return true
@@ -110,7 +110,7 @@ actor CircuitBreaker {
             return true
         }
     }
-    
+
     /// Record a successful operation
     func recordSuccess() {
         switch state {
@@ -126,13 +126,13 @@ actor CircuitBreaker {
             break // Shouldn't happen
         }
     }
-    
+
     /// Record a failed operation
     func recordFailure() {
         let now = Date()
         failureTimestamps.append(now)
         lastFailureTime = now
-        
+
         switch state {
         case .closed:
             failureCount += 1
@@ -146,7 +146,7 @@ actor CircuitBreaker {
             break // Already open
         }
     }
-    
+
     /// Get circuit breaker statistics
     func getStats() -> CircuitBreakerStats {
         cleanupOldFailures()
@@ -159,7 +159,7 @@ actor CircuitBreaker {
             lastStateChange: lastStateChange
         )
     }
-    
+
     /// Force reset the circuit breaker
     func reset() {
         transitionTo(.closed)
@@ -168,7 +168,7 @@ actor CircuitBreaker {
         failureTimestamps.removeAll()
         lastFailureTime = nil
     }
-    
+
     private func transitionTo(_ newState: State) {
         guard state != newState else { return }
         state = newState
@@ -177,7 +177,7 @@ actor CircuitBreaker {
         successCount = 0
         Logger.info("Circuit breaker transitioned to \(newState)", category: .session)
     }
-    
+
     private func cleanupOldFailures() {
         let cutoff = Date().addingTimeInterval(-config.monitoringWindow)
         failureTimestamps.removeAll { $0 < cutoff }
@@ -201,14 +201,14 @@ enum ErrorClassification {
     case retryable      // Likely to succeed with delay
     case persistent     // Unlikely to recover without intervention
     case fatal          // Cannot recover automatically
-    
+
     var shouldRetry: Bool {
         switch self {
         case .transient, .retryable: return true
         case .persistent, .fatal: return false
         }
     }
-    
+
     var suggestedDelay: TimeInterval {
         switch self {
         case .transient: return 0.5
@@ -238,7 +238,7 @@ struct ErrorClassifier {
                 return .retryable
             }
         }
-        
+
         // Location injection errors
         if let injectionError = error as? LocationInjectionError {
             switch injectionError {
@@ -254,7 +254,7 @@ struct ErrorClassifier {
                 return .retryable
             }
         }
-        
+
         // Network errors
         if let urlError = error as? URLError {
             switch urlError.code {
@@ -266,7 +266,7 @@ struct ErrorClassifier {
                 return .retryable
             }
         }
-        
+
         // Default classification
         return .retryable
     }
@@ -280,12 +280,12 @@ enum ConnectionRecoveryState: Equatable {
     case reconnecting(attempt: Int, maxAttempts: Int)
     case failed(reason: String)
     case suspended
-    
+
     var isConnected: Bool {
         if case .connected = self { return true }
         return false
     }
-    
+
     var displayText: String {
         switch self {
         case .connected: return "Connected"
@@ -310,42 +310,42 @@ class ReliabilityManager: ObservableObject {
     @Published var isAutoReconnectEnabled: Bool = true
     @Published var circuitBreakerOpen: Bool = false
     @Published var persistentFailureDetected: Bool = false
-    
+
     // MARK: Configuration
     var strategy: ReconnectionStrategy = .default
-    
+
     // MARK: Circuit Breaker (REL-001)
     let circuitBreaker = CircuitBreaker()
-    
+
     // MARK: Failure Tracking (REL-001)
     private var consecutiveFailures: Int = 0
     private var failureHistory: [Date] = []
     private let persistentFailureThreshold = 10
     private let failureHistoryWindow: TimeInterval = 300 // 5 minutes
-    
+
     // MARK: Callbacks
     var onReconnect: (() async throws -> Bool)?
     var onConnectionLost: (() -> Void)?
     var onReconnectionFailed: ((String) -> Void)?
     var onPersistentFailure: ((String) -> Void)?
-    
+
     // MARK: Private
     private var reconnectionTask: Task<Void, Never>?
     private var uptimeTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
-    
+
     // MARK: Initialization
-    
+
     init() {
         startUptimeTracking()
     }
-    
+
     deinit {
         uptimeTimer?.invalidate()
     }
-    
+
     // MARK: Connection Events
-    
+
     func connectionEstablished() {
         recoveryState = .connected
         lastConnectionTime = Date()
@@ -355,24 +355,24 @@ class ReliabilityManager: ObservableObject {
         reconnectionTask?.cancel()
         reconnectionTask = nil
     }
-    
+
     func connectionLost() {
         guard recoveryState == .connected else { return }
-        
+
         recoveryState = .disconnected
         onConnectionLost?()
-        
+
         if isAutoReconnectEnabled {
             startReconnection()
         }
     }
-    
+
     func suspend() {
         reconnectionTask?.cancel()
         reconnectionTask = nil
         recoveryState = .suspended
     }
-    
+
     func resume() {
         if recoveryState == .suspended {
             recoveryState = .disconnected
@@ -381,15 +381,15 @@ class ReliabilityManager: ObservableObject {
             }
         }
     }
-    
+
     // MARK: Reconnection
-    
+
     func startReconnection() {
         guard reconnectionTask == nil else { return }
-        
+
         reconnectionTask = Task {
             var attempt = 0
-            
+
             while attempt < strategy.maxAttempts && !Task.isCancelled {
                 // Check circuit breaker (REL-001)
                 let shouldAllow = await circuitBreaker.shouldAllowRequest()
@@ -400,11 +400,11 @@ class ReliabilityManager: ObservableObject {
                     continue
                 }
                 await MainActor.run { circuitBreakerOpen = false }
-                
+
                 attempt += 1
                 reconnectionAttempts = attempt
                 recoveryState = .reconnecting(attempt: attempt, maxAttempts: strategy.maxAttempts)
-                
+
                 do {
                     if let reconnect = onReconnect {
                         if try await reconnect() {
@@ -420,13 +420,13 @@ class ReliabilityManager: ObservableObject {
                     // Reconnection attempt failed
                     await recordFailure(error)
                 }
-                
+
                 // Wait before next attempt with jitter (REL-001)
                 let delay = strategy.delayForAttempt(attempt)
                 Logger.debug("Reconnection delay: \(String(format: "%.2f", delay))s (attempt \(attempt))", category: .session)
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            
+
             // All attempts failed
             if !Task.isCancelled {
                 recoveryState = .failed(reason: "Max reconnection attempts reached")
@@ -435,24 +435,24 @@ class ReliabilityManager: ObservableObject {
             }
         }
     }
-    
+
     /// Record a failure and update tracking (REL-001)
     private func recordFailure(_ error: Error?) async {
         consecutiveFailures += 1
         failureHistory.append(Date())
         await circuitBreaker.recordFailure()
-        
+
         // Clean up old failures
         let cutoff = Date().addingTimeInterval(-failureHistoryWindow)
         failureHistory.removeAll { $0 < cutoff }
-        
+
         // Log error classification if available
         if let error = error {
             let classification = ErrorClassifier.classify(error)
             Logger.debug("Error classified as \(classification): \(error.localizedDescription)", category: .session)
         }
     }
-    
+
     /// Check for persistent failure pattern (REL-001)
     private func checkPersistentFailure() {
         if failureHistory.count >= persistentFailureThreshold && !persistentFailureDetected {
@@ -462,20 +462,20 @@ class ReliabilityManager: ObservableObject {
             onPersistentFailure?(message)
         }
     }
-    
+
     func cancelReconnection() {
         reconnectionTask?.cancel()
         reconnectionTask = nil
         recoveryState = .disconnected
     }
-    
+
     func retryNow() {
         cancelReconnection()
         reconnectionAttempts = 0
         consecutiveFailures = 0
         startReconnection()
     }
-    
+
     /// Reset circuit breaker and failure tracking (REL-001)
     func resetReliabilityState() async {
         await circuitBreaker.reset()
@@ -484,7 +484,7 @@ class ReliabilityManager: ObservableObject {
         persistentFailureDetected = false
         circuitBreakerOpen = false
     }
-    
+
     /// Get reliability statistics (REL-001)
     func getReliabilityStats() async -> ReliabilityStats {
         let cbStats = await circuitBreaker.getStats()
@@ -497,9 +497,9 @@ class ReliabilityManager: ObservableObject {
             reconnectionAttempts: reconnectionAttempts
         )
     }
-    
+
     // MARK: Uptime Tracking
-    
+
     private func startUptimeTracking() {
         uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -521,7 +521,7 @@ struct ReliabilityStats {
     let persistentFailureDetected: Bool
     let connectionUptime: TimeInterval
     let reconnectionAttempts: Int
-    
+
     var summary: String {
         """
         Reliability Stats:
@@ -541,13 +541,13 @@ struct ReliabilityStats {
 class SessionPersistence {
     private let userDefaults: UserDefaults
     private let sessionKey = "PathChanger.lastSession"
-    
+
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
     }
-    
+
     // MARK: Persisted Session
-    
+
     struct PersistedSession: Codable {
         var deviceId: String
         var deviceName: String
@@ -557,9 +557,9 @@ class SessionPersistence {
         var routeCoordinates: [LocationCoordinate]?
         var routeProgress: Double?
     }
-    
+
     // MARK: Save/Load
-    
+
     func saveSession(_ session: PersistedSession) {
         do {
             let data = try JSONEncoder().encode(session)
@@ -568,10 +568,10 @@ class SessionPersistence {
             Logger.error("Failed to save session: \(error)", category: .session)
         }
     }
-    
+
     func loadSession() -> PersistedSession? {
         guard let data = userDefaults.data(forKey: sessionKey) else { return nil }
-        
+
         do {
             let session = try JSONDecoder().decode(PersistedSession.self, from: data)
             // Only return if session is recent (within 1 hour)
@@ -581,10 +581,10 @@ class SessionPersistence {
         } catch {
             Logger.error("Failed to load session: \(error)", category: .session)
         }
-        
+
         return nil
     }
-    
+
     func clearSession() {
         userDefaults.removeObject(forKey: sessionKey)
     }
@@ -596,11 +596,11 @@ class SessionPersistence {
 class ErrorHandler: ObservableObject {
     @Published var currentError: AppError?
     @Published var errorHistory: [AppError] = []
-    
+
     private let maxHistorySize = 50
-    
+
     // MARK: App Error
-    
+
     struct AppError: Identifiable {
         let id = UUID()
         let type: ErrorType
@@ -610,7 +610,7 @@ class ErrorHandler: ObservableObject {
         let isRecoverable: Bool
         let action: ErrorAction?
     }
-    
+
     enum ErrorType {
         case connection
         case device
@@ -620,7 +620,7 @@ class ErrorHandler: ObservableObject {
         case system
         case iosVersionUnsupported
     }
-    
+
     enum ErrorAction {
         case retry
         case openSettings
@@ -628,15 +628,15 @@ class ErrorHandler: ObservableObject {
         case enableDeveloperMode
         case checkConnection
     }
-    
+
     // MARK: Handle Error
-    
+
     func handle(_ error: Error, context: String? = nil) {
         let appError = createAppError(from: error, context: context)
         currentError = appError
         addToHistory(appError)
     }
-    
+
     func handle(message: String, type: ErrorType = .system, suggestion: String? = nil, action: ErrorAction? = nil) {
         let appError = AppError(
             type: type,
@@ -649,17 +649,17 @@ class ErrorHandler: ObservableObject {
         currentError = appError
         addToHistory(appError)
     }
-    
+
     func clearCurrentError() {
         currentError = nil
     }
-    
+
     func clearHistory() {
         errorHistory.removeAll()
     }
-    
+
     // MARK: Private
-    
+
     private func createAppError(from error: Error, context: String?) -> AppError {
         // Device errors
         if let deviceError = error as? DeviceError {
@@ -672,7 +672,7 @@ class ErrorHandler: ObservableObject {
                 action: actionForDeviceError(deviceError)
             )
         }
-        
+
         // Location injection errors
         if let injectionError = error as? LocationInjectionError {
             return AppError(
@@ -684,7 +684,7 @@ class ErrorHandler: ObservableObject {
                 action: actionForInjectionError(injectionError)
             )
         }
-        
+
         // GPX errors
         if let gpxError = error as? GPXParserError {
             return AppError(
@@ -696,7 +696,7 @@ class ErrorHandler: ObservableObject {
                 action: nil
             )
         }
-        
+
         // Generic error
         return AppError(
             type: .system,
@@ -707,7 +707,7 @@ class ErrorHandler: ObservableObject {
             action: nil
         )
     }
-    
+
     private func actionForDeviceError(_ error: DeviceError) -> ErrorAction? {
         switch error {
         case .tunneldNotRunning: return .startTunneld
@@ -717,7 +717,7 @@ class ErrorHandler: ObservableObject {
         default: return .retry
         }
     }
-    
+
     private func actionForInjectionError(_ error: LocationInjectionError) -> ErrorAction? {
         switch error {
         case .tunneldNotRunning: return .startTunneld
@@ -727,7 +727,7 @@ class ErrorHandler: ObservableObject {
         default: return .retry
         }
     }
-    
+
     private func addToHistory(_ error: AppError) {
         errorHistory.insert(error, at: 0)
         if errorHistory.count > maxHistorySize {
@@ -745,15 +745,15 @@ class USBFallbackManager: ObservableObject {
     @Published var isUSBConnected: Bool = false
     @Published var preferUSB: Bool = false
     @Published var fallbackAttempts: Int = 0
-    
+
     private let maxFallbackAttempts = 3
-    
+
     enum ConnectionMode {
         case wireless
         case usb
         case auto
     }
-    
+
     var recommendedMode: ConnectionMode {
         if preferUSB && isUSBConnected {
             return .usb
@@ -766,30 +766,30 @@ class USBFallbackManager: ObservableObject {
         }
         return .auto
     }
-    
+
     func wirelessFailed() {
         isWirelessAvailable = false
         fallbackAttempts += 1
-        
+
         if fallbackAttempts >= maxFallbackAttempts && isUSBConnected {
             preferUSB = true
         }
     }
-    
+
     func wirelessRestored() {
         isWirelessAvailable = true
         fallbackAttempts = 0
     }
-    
+
     func usbConnected() {
         isUSBConnected = true
     }
-    
+
     func usbDisconnected() {
         isUSBConnected = false
         preferUSB = false
     }
-    
+
     func reset() {
         isWirelessAvailable = true
         fallbackAttempts = 0

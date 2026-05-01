@@ -10,7 +10,7 @@ import SwiftUI
 struct DependencyErrorView: View {
     @ObservedObject var validator: DependencyValidator
     @State private var copiedToClipboard = false
-    
+
     var body: some View {
         ZStack {
             // Background
@@ -23,35 +23,35 @@ struct DependencyErrorView: View {
                 endPoint: .bottomTrailing
             )
             .ignoresSafeArea()
-            
+
             VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 56))
                         .foregroundColor(.red)
-                    
+
                     Text("Dependency Issue")
                         .font(.system(size: 28, weight: .bold))
                         .foregroundColor(.white)
-                    
+
                     Text("PathChanger requires additional setup before it can run")
                         .font(.system(size: 14, weight: .regular))
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
                 }
                 .padding(.top, 32)
-                
+
                 Divider()
                     .background(Color.gray.opacity(0.3))
-                
+
                 // Errors List
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Issues Found")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
                         .padding(.bottom, 8)
-                    
+
                     ForEach(validator.errors) { error in
                         ErrorItemView(error: error)
                     }
@@ -60,21 +60,21 @@ struct DependencyErrorView: View {
                 .padding(16)
                 .background(Color(.sRGBLinear, red: 0.1, green: 0.08, blue: 0.15, opacity: 1.0))
                 .cornerRadius(12)
-                
+
                 // Solution Section
                 if let firstError = validator.errors.first {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("How to Fix")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
-                        
+
                         Text(firstError.suggestion)
                             .font(.system(size: 13, weight: .regular, design: .monospaced))
                             .foregroundColor(.green)
                             .padding(12)
                             .background(Color(.sRGBLinear, red: 0.0, green: 0.15, blue: 0.0, opacity: 1.0))
                             .cornerRadius(8)
-                        
+
                         HStack(spacing: 12) {
                             Button(action: {
                                 NSPasteboard.general.clearContents()
@@ -96,7 +96,7 @@ struct DependencyErrorView: View {
                                 .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
-                            
+
                             Link(destination: URL(string: "https://www.python.org")!) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "link")
@@ -110,7 +110,7 @@ struct DependencyErrorView: View {
                                 .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
-                            
+
                             Spacer()
                         }
                     }
@@ -119,7 +119,7 @@ struct DependencyErrorView: View {
                     .background(Color(.sRGBLinear, red: 0.1, green: 0.12, blue: 0.1, opacity: 1.0))
                     .cornerRadius(12)
                 }
-                
+
                 // Retry Section
                 VStack(spacing: 12) {
                     Button(action: {
@@ -139,13 +139,13 @@ struct DependencyErrorView: View {
                         .cornerRadius(8)
                     }
                     .buttonStyle(PlainButtonStyle())
-                    
+
                     Text("After installing the required dependencies, click above to retry.")
                         .font(.system(size: 12, weight: .regular))
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
                 }
-                
+
                 Spacer()
             }
             .padding(32)
@@ -159,28 +159,28 @@ struct DependencyErrorView: View {
 
 struct ErrorItemView: View {
     let error: DependencyValidator.ValidationError
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: errorIcon)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(errorColor)
                 .padding(.top, 3)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(errorTitle)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white)
-                
+
                 Text(error.message)
                     .font(.system(size: 12, weight: .regular))
                     .foregroundColor(.gray)
             }
-            
+
             Spacer()
         }
     }
-    
+
     var errorIcon: String {
         switch error.type {
         case .pythonMissing:
@@ -195,7 +195,7 @@ struct ErrorItemView: View {
             return "lock.circle.fill"
         }
     }
-    
+
     var errorColor: Color {
         switch error.type {
         case .pythonMissing, .pymobiledevice3Missing, .pythonNotExecutable:
@@ -204,7 +204,7 @@ struct ErrorItemView: View {
             return .yellow
         }
     }
-    
+
     var errorTitle: String {
         switch error.type {
         case .pythonMissing:

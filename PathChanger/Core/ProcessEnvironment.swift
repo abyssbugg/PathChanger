@@ -25,9 +25,9 @@ import Foundation
 /// process.environment = ProcessEnvironment.configured()
 /// ```
 public enum ProcessEnvironment {
-    
+
     // MARK: - PATH Configuration
-    
+
     /// Approved PATH directories in priority order
     ///
     /// # Security Note
@@ -44,7 +44,7 @@ public enum ProcessEnvironment {
         "/usr/sbin",                   // System administration binaries
         "/sbin"                        // Essential system administration binaries
     ]
-    
+
     /// Dynamic PATH directories that include user home
     ///
     /// These paths require runtime resolution using NSHomeDirectory()
@@ -53,12 +53,12 @@ public enum ProcessEnvironment {
             NSHomeDirectory() + "/.pyenv/shims"  // pyenv Python version manager
         ]
     }
-    
+
     // MARK: - PYTHONPATH Configuration
-    
+
     /// Supported Python versions for site-packages lookup
     private static let supportedPythonVersions = ["3.13", "3.12", "3.11", "3.10", "3.9"]
-    
+
     /// Generate Python site-packages paths for user installs
     ///
     /// # Security Note
@@ -70,7 +70,7 @@ public enum ProcessEnvironment {
             NSHomeDirectory() + "/Library/Python/\(version)/lib/python/site-packages"
         }
     }
-    
+
     /// Generate Python site-packages paths for Homebrew installs
     private static func homebrewPythonPaths() -> [String] {
         return supportedPythonVersions.flatMap { version in
@@ -80,9 +80,9 @@ public enum ProcessEnvironment {
             ]
         }
     }
-    
+
     // MARK: - Public API
-    
+
     /// Generate a fully configured environment for subprocess execution
     ///
     /// This method creates an environment dictionary suitable for Process.environment.
@@ -99,23 +99,23 @@ public enum ProcessEnvironment {
     /// - Returns: Environment dictionary ready for use with Process
     public static func configured(preserveExistingPath: Bool = false) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
-        
+
         // Build secure PATH
         var pathComponents = approvedPathDirectories + dynamicPathDirectories()
-        
+
         if preserveExistingPath, let existingPath = env["PATH"] {
             pathComponents.append(existingPath)
         }
-        
+
         env["PATH"] = pathComponents.joined(separator: ":")
-        
+
         // Build PYTHONPATH
         let pythonPaths = userPythonPaths() + homebrewPythonPaths()
         env["PYTHONPATH"] = pythonPaths.joined(separator: ":")
-        
+
         return env
     }
-    
+
     /// Generate a minimal environment with only essential variables
     ///
     /// Use this for processes that should run with minimal environmental influence.
@@ -124,10 +124,10 @@ public enum ProcessEnvironment {
     /// - Returns: Minimal environment dictionary
     public static func minimal() -> [String: String] {
         var env: [String: String] = [:]
-        
+
         // Only include essential PATH
         env["PATH"] = approvedPathDirectories.joined(separator: ":")
-        
+
         // Preserve locale settings for proper text handling
         if let lang = ProcessInfo.processInfo.environment["LANG"] {
             env["LANG"] = lang
@@ -135,18 +135,18 @@ public enum ProcessEnvironment {
         if let lcAll = ProcessInfo.processInfo.environment["LC_ALL"] {
             env["LC_ALL"] = lcAll
         }
-        
+
         // Preserve HOME for packages that need it
         env["HOME"] = NSHomeDirectory()
-        
+
         // Preserve USER for ownership checks
         if let user = ProcessInfo.processInfo.environment["USER"] {
             env["USER"] = user
         }
-        
+
         return env
     }
-    
+
     /// Check if a path is within the approved PATH directories
     ///
     /// - Parameter path: Full path to validate
@@ -157,7 +157,7 @@ public enum ProcessEnvironment {
             path.hasPrefix(approvedDir + "/") || path == approvedDir
         }
     }
-    
+
     /// Get the configured PATH as a string
     ///
     /// - Returns: Colon-separated PATH string
@@ -165,7 +165,7 @@ public enum ProcessEnvironment {
         let pathComponents = approvedPathDirectories + dynamicPathDirectories()
         return pathComponents.joined(separator: ":")
     }
-    
+
     /// Get the configured PYTHONPATH as a string
     ///
     /// - Returns: Colon-separated PYTHONPATH string

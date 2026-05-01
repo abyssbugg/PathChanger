@@ -17,7 +17,7 @@ enum CommandValidationError: Error, LocalizedError {
     case invalidFlag(String)
     case invalidArgumentPosition(String)
     case unexpectedArgumentCount(expected: Int, actual: Int)
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidSubcommand(let cmd):
@@ -37,7 +37,7 @@ enum CommandValidationError: Error, LocalizedError {
 /// Defense-in-depth command structure validation for pymobiledevice3 subprocess calls
 /// This provides allowlist validation on top of ArgumentSanitizer's character filtering
 struct SubprocessCommandValidator {
-    
+
     /// Allowed pymobiledevice3 subcommands (only commands we actually use)
     private static let allowedSubcommands: Set<String> = [
         // Location simulation commands
@@ -47,7 +47,7 @@ struct SubprocessCommandValidator {
         // Device listing commands
         "usbmux", "list", "remote", "ls"
     ]
-    
+
     /// Allowed command-line flags (only flags we actually use)
     private static let allowedFlags: Set<String> = [
         "-m",           // Python module flag
@@ -58,19 +58,19 @@ struct SubprocessCommandValidator {
         "--",           // Argument separator
         "-h", "--help"  // Help flags (safe to allow)
     ]
-    
+
     /// The expected module name for pymobiledevice3
     private static let expectedModule = "pymobiledevice3"
-    
+
     // MARK: - Validation Methods
-    
+
     /// Validate the entire command structure against allowlists
     /// - Parameter arguments: Array of command arguments (excluding python3 path)
     /// - Throws: CommandValidationError if validation fails
     static func validateCommandStructure(_ arguments: [String]) throws {
         // Log validation attempt
         Logger.debug("Validating command structure: \(arguments.count) arguments", category: .security)
-        
+
         // Validate module flag is first
         guard arguments.count >= 2,
               arguments[0] == "-m",
@@ -78,20 +78,20 @@ struct SubprocessCommandValidator {
             Logger.error("Command validation failed: Expected -m pymobiledevice3 prefix", category: .security)
             throw CommandValidationError.invalidSubcommand(arguments.prefix(2).joined(separator: " "))
         }
-        
+
         // Validate each argument
         var foundArgumentSeparator = false
-        
+
         for (index, arg) in arguments.enumerated() {
             // Skip the validated module prefix
             if index < 2 { continue }
-            
+
             // After --, everything is data arguments (coordinates, etc.)
             if arg == "--" {
                 foundArgumentSeparator = true
                 continue
             }
-            
+
             if foundArgumentSeparator {
                 // Data arguments after -- must be valid data types
                 guard isValidDataArgument(arg) else {
@@ -100,7 +100,7 @@ struct SubprocessCommandValidator {
                 }
                 continue
             }
-            
+
             // Check if it's a flag
             if arg.starts(with: "-") {
                 try validateFlag(arg)
@@ -109,35 +109,35 @@ struct SubprocessCommandValidator {
                 try validateArgument(arg, at: index)
             }
         }
-        
+
         Logger.debug("Command validation passed", category: .security)
     }
-    
+
     /// Validate a flag argument
     private static func validateFlag(_ flag: String) throws {
         // Handle flags with values (e.g., --flag=value)
         let flagName = flag.contains("=") ? String(flag.prefix(while: { $0 != "=" })) : flag
-        
+
         guard allowedFlags.contains(flagName) else {
             Logger.error("Blocked unknown flag: \(flag)", category: .security)
             throw CommandValidationError.invalidFlag(flag)
         }
     }
-    
+
     /// Validate a non-flag argument (subcommand or data)
     private static func validateArgument(_ arg: String, at index: Int) throws {
         // First check if it's a valid data argument
         if isValidDataArgument(arg) {
             return // Data arguments are allowed
         }
-        
+
         // Otherwise it must be a known subcommand
         guard allowedSubcommands.contains(arg) else {
             Logger.error("Blocked unknown subcommand: \(arg) at index \(index)", category: .security)
             throw CommandValidationError.invalidSubcommand(arg)
         }
     }
-    
+
     /// Check if argument is a valid data type (coordinate, UDID, address, port)
     /// - Parameter arg: The argument to check
     /// - Returns: true if it's a recognized data format
@@ -146,22 +146,22 @@ struct SubprocessCommandValidator {
         if let _ = Double(arg), arg.allSatisfy({ $0.isNumber || $0 == "." || $0 == "-" }) {
             return true
         }
-        
+
         // Device UDID: 40-character hexadecimal
         if ArgumentSanitizer.isValidDeviceUDID(arg) {
             return true
         }
-        
+
         // IPv6 address (for RSD connections)
         if ArgumentSanitizer.isValidIPv6Address(arg) {
             return true
         }
-        
+
         // Port number: numeric only
         if let port = Int(arg), ArgumentSanitizer.isValidPort(port) {
             return true
         }
-        
+
         return false
     }
 }
@@ -172,7 +172,7 @@ struct SubprocessCommandValidator {
 enum SubprocessSecurityError: Error, LocalizedError {
     case outputSizeExceeded(actualSize: Int, maxSize: Int)
     case subprocessExecutionFailed(reason: String)
-    
+
     var errorDescription: String? {
         switch self {
         case .outputSizeExceeded(let actualSize, let maxSize):
@@ -197,7 +197,7 @@ enum LocationInjectionError: Error, LocalizedError {
     case developerModeRequired
     case outputSizeExceeded
     case unsupportedIOSVersion(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidCoordinates:
@@ -222,7 +222,7 @@ enum LocationInjectionError: Error, LocalizedError {
             return "iOS \(version) is not supported for location simulation. iOS 18+ has known compatibility issues with pymobiledevice3's DVT location service."
         }
     }
-    
+
     var recoverySuggestion: String? {
         switch self {
         case .tunneldNotRunning:
@@ -250,22 +250,22 @@ struct InjectionStats {
     var failedInjections: Int = 0
     var averageLatencyMs: Double = 0
     var lastInjectionTime: Date?
-    
+
     var successRate: Double {
         guard totalInjections > 0 else { return 0 }
         return Double(successfulInjections) / Double(totalInjections) * 100
     }
-    
+
     mutating func recordSuccess(latencyMs: Double) {
         totalInjections += 1
         successfulInjections += 1
         lastInjectionTime = Date()
-        
+
         // Update rolling average
         let alpha = 0.1
         averageLatencyMs = averageLatencyMs * (1 - alpha) + latencyMs * alpha
     }
-    
+
     mutating func recordFailure() {
         totalInjections += 1
         failedInjections += 1
@@ -322,32 +322,32 @@ struct InjectionStats {
 /// - Note: Developer Mode must be enabled on the iOS device.
 /// - Important: Requires pymobiledevice3 to be installed.
 actor DevLocationBridge {
-    
+
     // MARK: Configuration
     private var python3Path: String { PythonPathResolver.path }
-    
+
     /// Whether to use persistent bridge for high-frequency operations
     /// This significantly reduces overhead for joystick mode
     private var usePersistentBridge: Bool = true
-    
+
     // MARK: Security Configuration
-    
+
     /// Maximum output size from subprocess (1 MB) - prevents DoS via excessive output
     /// Typical pymobiledevice3 responses are <10KB, so this is very generous
     private static let maxOutputSize = 1_048_576
-    
+
     /// Minimum allowed output size (safety check for configuration)
     private static let minOutputSize = 1024
-    
+
     // MARK: Rate Limiting
     private let rateLimiter = RateLimiter(capacity: 10, refillRate: 5.0, minIntervalMs: 100)
     private let requestQueue = RequestQueueManager(maxQueueSize: 50)
-    
+
     // MARK: Statistics
     private(set) var stats = InjectionStats()
-    
+
     // MARK: - Public API
-    
+
     /// Sets a simulated GPS location on the specified device.
     ///
     /// This method validates the coordinate, checks rate limits, and injects
@@ -378,16 +378,16 @@ actor DevLocationBridge {
     func setLocation(_ coordinate: LocationCoordinate, for device: Device, priority: QueuedLocationRequest.RequestPriority = .normal, usePerformanceMode: Bool = false) async throws {
         // Strict coordinate validation
         try coordinate.validated()
-        
+
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
-        
+
         // Pre-flight check: Ensure device is properly configured
         try await performPreflight(for: device)
-        
+
         // Rate limiting with token bucket
         let allowed = await rateLimiter.checkRequest()
-        
+
         if !allowed {
             // Queue the request if rate limited - use strategy-aware enqueue
             let queuedRequest = QueuedLocationRequest(
@@ -396,10 +396,10 @@ actor DevLocationBridge {
                 timestamp: Date(),
                 priority: priority
             )
-            
+
             // Use strategy-aware enqueue (latest-wins for joystick, sequential for routes)
             let enqueueResult = await requestQueue.enqueueWithStrategy(queuedRequest)
-            
+
             switch enqueueResult {
             case .success:
                 // Notify user via toast (only if not in performance mode to avoid spam)
@@ -408,14 +408,14 @@ actor DevLocationBridge {
                         ToastManager.shared.warning("Location update queued (rate limited)")
                     }
                 }
-                
+
                 // Process queue in background
                 Task {
                     await processQueue()
                 }
-                
+
                 throw LocationInjectionError.rateLimited
-                
+
             case .failure(let error):
                 // Queue rejected - provide specific error message
                 switch error {
@@ -428,9 +428,9 @@ actor DevLocationBridge {
                 }
             }
         }
-        
+
         let startTime = Date()
-        
+
         // Use persistent bridge for high-frequency/performance mode
         if usePersistentBridge && usePerformanceMode {
             do {
@@ -443,7 +443,7 @@ actor DevLocationBridge {
                 Logger.debug("Persistent bridge failed, falling back to subprocess: \(error)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
             }
         }
-        
+
         // Standard subprocess mode
         let arguments = try await buildLocationArguments(
             subcommand: "set",
@@ -454,33 +454,33 @@ actor DevLocationBridge {
                 String(format: "%.6f", coordinate.longitude)
             ]
         )
-        
+
         // Sanitize all arguments before execution
         let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-        
+
         let result = try await runPython(arguments: sanitizedArgs, device: device)
-        
+
         // Check for common errors
         try parseResult(result)
-        
+
         // Record success
         let latencyMs = Date().timeIntervalSince(startTime) * 1000
         stats.recordSuccess(latencyMs: latencyMs)
     }
-    
+
     /// Set location using the persistent bridge (high-performance mode)
     /// This reuses a long-running Python process for significantly reduced latency
     private func setLocationViaPersistentBridge(_ coordinate: LocationCoordinate, for device: Device) async throws {
         try await PersistentLocationBridge.shared.setLocation(coordinate, for: device)
     }
-    
+
     /// Enable or disable persistent bridge mode
     func setPerformanceMode(_ enabled: Bool) {
         usePersistentBridge = enabled
     }
-    
+
     // MARK: Queue Strategy & Metrics
-    
+
     /// Set the queue processing strategy
     /// - Parameter strategy: Use `.latestWins` for joystick mode (responsive),
     ///                       `.sequential` for route simulation (complete)
@@ -488,46 +488,46 @@ actor DevLocationBridge {
         await requestQueue.setStrategy(strategy)
         Logger.info("Queue strategy set to: \(strategy.rawValue)", category: .device)
     }
-    
+
     /// Get current queue processing strategy
     func getQueueStrategy() async -> QueueProcessingStrategy {
         await requestQueue.currentStrategy()
     }
-    
+
     /// Get queue lag metrics for monitoring
     func getQueueLagMetrics() async -> QueueLagMetrics {
         await requestQueue.getLagMetrics()
     }
-    
+
     /// Reset queue lag metrics
     func resetQueueLagMetrics() async {
         await requestQueue.resetLagMetrics()
     }
-    
+
     // MARK: Queue Processing
-    
+
     /// Process queued location requests
     private func processQueue() async {
         // Prevent concurrent queue processing
         guard !(await requestQueue.processing()) else { return }
         await requestQueue.setProcessing(true)
-        
+
         defer {
             Task {
                 await requestQueue.setProcessing(false)
             }
         }
-        
+
         while await requestQueue.peek() != nil {
             // Wait for rate limiter to allow request
             _ = await rateLimiter.waitForAllowance()
-            
+
             // Dequeue and process
             guard let queuedRequest = await requestQueue.dequeue() else { break }
-            
+
             // Record queue time for lag metrics
             await requestQueue.recordProcessed(queuedAt: queuedRequest.timestamp)
-            
+
             do {
                 // Process the queued request directly (bypass rate limiting since we already waited)
                 let arguments = try await buildLocationArguments(
@@ -539,24 +539,24 @@ actor DevLocationBridge {
                         String(format: "%.6f", queuedRequest.coordinate.longitude)
                     ]
                 )
-                
+
                 let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
                 let result = try await runPython(arguments: sanitizedArgs, device: queuedRequest.device)
                 try parseResult(result)
-                
+
                 stats.recordSuccess(latencyMs: 0) // Queue processing doesn't track individual latency
             } catch {
                 Logger.debug("Failed to process queued location request: \(error)", category: .device, deviceUDID: queuedRequest.device.id, iosVersion: queuedRequest.device.productVersion)
             }
         }
     }
-    
+
     /// Build pymobiledevice3 arguments based on device connection type with validation
     /// iOS 17+ requires tunnel access for developer services
     @MainActor
     private func buildLocationArguments(subcommand: String, device: Device, extraArgs: [String] = []) throws -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", subcommand]
-        
+
         // For iOS 17+, prefer --tunnel with UDID when tunneld is running (queries tunneld API automatically)
         // This is more reliable than manual --rsd as it handles connection management
         if TunneldManager.shared.isRunning {
@@ -577,41 +577,41 @@ actor DevLocationBridge {
             args.append(contentsOf: ["--udid", device.id])
             Logger.debug("Using UDID for device \(device.id) (tunnel not running)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
         }
-        
+
         args.append(contentsOf: extraArgs)
         return args
     }
-    
+
     // MARK: Clear Location
-    
+
     /// Clear simulated location (reset to real GPS) with validation
     func clearLocation(for device: Device) async throws {
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
-        
+
         let arguments = try await buildLocationArguments(subcommand: "clear", device: device)
-        
+
         // Sanitize arguments
         let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-        
+
         let result = try await runPython(arguments: sanitizedArgs, device: device)
-        
+
         // Check for errors
         if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
             throw LocationInjectionError.tunneldNotRunning
         }
-        
+
         if result.contains("DeviceNotFoundError") {
             throw LocationInjectionError.deviceNotFound
         }
-        
+
         if result.contains("ERROR") || result.lowercased().contains("error") {
             throw LocationInjectionError.clearFailed(result)
         }
     }
-    
+
     // MARK: Batch Injection
-    
+
     /// Inject multiple coordinates in sequence (for route playback)
     func injectRoute(
         coordinates: [LocationCoordinate],
@@ -622,46 +622,46 @@ actor DevLocationBridge {
         for (index, coordinate) in coordinates.enumerated() {
             try await setLocation(coordinate, for: device)
             onProgress(index + 1, coordinates.count, coordinate)
-            
+
             // Wait for interval
             if index < coordinates.count - 1 {
                 try await Task.sleep(nanoseconds: UInt64(intervalMs * 1_000_000))
             }
         }
     }
-    
+
     // MARK: Health Check
-    
+
     /// Check if location injection is available for device
     func checkAvailability(for device: Device) async -> Result<Bool, LocationInjectionError> {
         let arguments = await buildDvtArguments(subcommand: "ls", device: device)
-        
+
         do {
             let result = try await runPython(arguments: arguments, device: device)
-            
+
             if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
                 return .failure(.tunneldNotRunning)
             }
-            
+
             if result.contains("DeveloperModeError") {
                 return .failure(.developerModeRequired)
             }
-            
+
             if result.contains("DeviceNotFoundError") {
                 return .failure(.deviceNotFound)
             }
-            
+
             return .success(true)
         } catch {
             return .failure(.injectionFailed(error.localizedDescription))
         }
     }
-    
+
     /// Build pymobiledevice3 DVT arguments (for general DVT commands like 'ls')
     @MainActor
     private func buildDvtArguments(subcommand: String, device: Device) -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", subcommand]
-        
+
         // Prefer --tunnel when tunneld is running
         if TunneldManager.shared.isRunning {
             args.append(contentsOf: ["--tunnel", device.id])
@@ -670,22 +670,22 @@ actor DevLocationBridge {
         } else {
             args.append(contentsOf: ["--udid", device.id])
         }
-        
+
         return args
     }
-    
+
     // MARK: Statistics
-    
+
     func getStats() -> InjectionStats {
         return stats
     }
-    
+
     func resetStats() {
         stats = InjectionStats()
     }
-    
+
     // MARK: Pre-flight Checks
-    
+
     /// Perform pre-flight checks to ensure device is ready for location injection
     /// - Validates iOS version compatibility (iOS 17 or below)
     /// - Verifies developer mode is enabled
@@ -700,13 +700,13 @@ actor DevLocationBridge {
             }
             Logger.debug("iOS version \(version) is supported for location simulation", category: .device, deviceUDID: device.id, iosVersion: version)
         }
-        
+
         // Check developer mode
         let devModeResult = await checkDeveloperMode(for: device)
         if !devModeResult {
             throw LocationInjectionError.developerModeRequired
         }
-        
+
         // For WiFi devices, ensure tunnel is running
         if device.connectionType == .wifi {
             let isTunnelRunning = await MainActor.run { TunneldManager.shared.isRunning }
@@ -714,7 +714,7 @@ actor DevLocationBridge {
                 throw LocationInjectionError.tunneldNotRunning
             }
         }
-        
+
         // Verify device is reachable
         do {
             let testArgs = await buildDvtArguments(subcommand: "ls", device: device)
@@ -724,7 +724,7 @@ actor DevLocationBridge {
             throw LocationInjectionError.injectionFailed("Device not reachable: \(error.localizedDescription)")
         }
     }
-    
+
     /// Check if developer mode is enabled on device
     private func checkDeveloperMode(for device: Device) async -> Bool {
         do {
@@ -742,44 +742,44 @@ actor DevLocationBridge {
             } else {
                 args.append(contentsOf: ["--udid", device.id])
             }
-            
+
             let result = try await runPython(arguments: args, timeoutSeconds: 15.0, device: device)
             return !result.contains("DeveloperModeError") && !result.contains("ERROR")
         } catch {
             return false
         }
     }
-    
+
     // MARK: Private Methods
-    
+
     private func parseResult(_ result: String) throws {
         if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
             stats.recordFailure()
             throw LocationInjectionError.tunneldNotRunning
         }
-        
+
         if result.contains("DeviceNotFoundError") {
             stats.recordFailure()
             throw LocationInjectionError.deviceNotFound
         }
-        
+
         if result.contains("DeveloperModeError") {
             stats.recordFailure()
             throw LocationInjectionError.developerModeRequired
         }
-        
+
         // Handle DVT service error -402653150 (service not available)
         if result.contains("-402653150") || result.contains("402653150") {
             stats.recordFailure()
             throw LocationInjectionError.injectionFailed("DVT service unavailable. Ensure Developer Mode is enabled and device is trusted.")
         }
-        
+
         // Handle connection/protocol errors
         if result.contains("ConnectionError") || result.contains("BrokenPipeError") {
             stats.recordFailure()
             throw LocationInjectionError.tunneldNotRunning
         }
-        
+
         // Check for generic errors (but ignore warnings)
         let lowercased = result.lowercased()
         if lowercased.contains("error") && !lowercased.contains("warning") {
@@ -787,7 +787,7 @@ actor DevLocationBridge {
             throw LocationInjectionError.injectionFailed(result)
         }
     }
-    
+
     /// Run Python command with pymobiledevice3 with proper timeout protection
     /// - Parameters:
     ///   - arguments: Command line arguments for Python
@@ -803,23 +803,23 @@ actor DevLocationBridge {
     /// - Input validation via ArgumentSanitizer (caller's responsibility)
     private func runPython(arguments: [String], timeoutSeconds: Double? = nil, device: Device? = nil) async throws -> String {
         let timeout = await MainActor.run { timeoutSeconds ?? AppSettings.shared.commandTimeout }
-        
+
         // Security: Validate command structure against allowlist (defense-in-depth)
         // This catches any injection attempts that bypass other validation layers
         try SubprocessCommandValidator.validateCommandStructure(arguments)
-        
+
         // Extract device context for enhanced logging
         let deviceUDID = device?.id
         let iosVersion = device?.productVersion
-        
+
         // Security: Log full subprocess execution for audit trail with device context
         let fullCommand = "python3 " + arguments.joined(separator: " ")
         Logger.debug("[SECURITY] Subprocess execution: \(fullCommand)", category: .security, deviceUDID: deviceUDID, iosVersion: iosVersion, operation: "subprocess_exec")
-        
+
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        
+
         defer {
             // Ensure cleanup of file handles and process
             try? outputPipe.fileHandleForReading.close()
@@ -828,63 +828,63 @@ actor DevLocationBridge {
                 process.terminate()
             }
         }
-        
+
         process.executableURL = URL(fileURLWithPath: python3Path)
         process.arguments = arguments
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        
+
         // Set environment using centralized configuration
         process.environment = ProcessEnvironment.configured()
-        
+
         // Capture maxOutputSize and device context for use in closure
         let maxOutputSize = Self.maxOutputSize
         let capturedDeviceUDID = deviceUDID
         let capturedIOSVersion = iosVersion
         let capturedCommand = fullCommand
-        
+
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
             let resumeLock = NSLock()
-            
+
             DispatchQueue.global().async {
                 do {
                     try process.run()
-                    
+
                     // Track timeout state with thread-safe access via resumeLock
                     var didTimeout = false
-                    
+
                     // Timeout handler - protected by resumeLock to prevent data race
                     DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                         resumeLock.lock()
                         defer { resumeLock.unlock() }
-                        
+
                         if process.isRunning {
                             didTimeout = true
                             process.terminate()
                         }
                     }
-                    
+
                     // Wait for process completion
                     process.waitUntilExit()
-                    
+
                     // Check if we timed out - both read and write are now protected by resumeLock
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     if didTimeout {
                         Logger.info("[SECURITY] Subprocess timed out after \(timeout)s for command: \(capturedCommand)", category: .security, deviceUDID: capturedDeviceUDID, iosVersion: capturedIOSVersion, operation: "subprocess_timeout")
                         continuation.resume(throwing: LocationInjectionError.timeout)
                         return
                     }
-                    
+
                     // Read output with size limit to prevent DoS
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                    
+
                     // Security: Check output size limit
                     let totalSize = outputData.count + errorData.count
                     if totalSize > maxOutputSize {
@@ -892,24 +892,24 @@ actor DevLocationBridge {
                         continuation.resume(throwing: LocationInjectionError.outputSizeExceeded)
                         return
                     }
-                    
+
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let error = String(data: errorData, encoding: .utf8) ?? ""
                     let exitCode = process.terminationStatus
-                    
+
                     // Log detailed output with device context using structured metadata
                     // Use 2000 char limit for better debugging while staying within log size constraints
                     let truncationLimit = 2000
                     let stdoutTruncated = output.count > truncationLimit
                     let stderrTruncated = error.count > truncationLimit
-                    
+
                     var additionalInfo: [String: String] = [
                         "stdout": output.isEmpty ? "(empty)" : String(output.prefix(truncationLimit)),
                         "stderr": error.isEmpty ? "(empty)" : String(error.prefix(truncationLimit)),
                         "exit_code": "\(exitCode)",
                         "output_size": "\(totalSize)"
                     ]
-                    
+
                     // Add truncation flags when output was truncated
                     if stdoutTruncated {
                         additionalInfo["stdout_truncated"] = "true"
@@ -919,31 +919,31 @@ actor DevLocationBridge {
                         additionalInfo["stderr_truncated"] = "true"
                         additionalInfo["stderr_original_length"] = "\(error.count)"
                     }
-                    
+
                     let outputMetadata = LogMetadata(
                         deviceUDID: capturedDeviceUDID,
                         iosVersion: capturedIOSVersion,
                         operationType: "location_injection",
                         additionalInfo: additionalInfo
                     )
-                    
+
                     // Log for debugging with device context
                     if !output.isEmpty || !error.isEmpty {
                         Logger.info("Python subprocess completed", category: .device, metadata: outputMetadata)
                     }
-                    
+
                     // Security: Log successful completion with full context
                     Logger.debug("[SECURITY] Subprocess completed, exit_code=\(exitCode), output_size=\(totalSize) bytes", category: .security, deviceUDID: capturedDeviceUDID, iosVersion: capturedIOSVersion, operation: "subprocess_complete")
-                    
+
                     // Combine output and error for analysis
                     continuation.resume(returning: output + error)
                 } catch {
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     // Log error with full device context and command info
                     let errorMetadata = LogMetadata(
                         deviceUDID: capturedDeviceUDID,
@@ -961,9 +961,9 @@ actor DevLocationBridge {
             }
         }
     }
-    
+
     // MARK: - Security Testing Support
-    
+
     /// Returns the maximum output size limit for testing purposes
     static var maxOutputSizeLimit: Int {
         return maxOutputSize
@@ -979,15 +979,15 @@ class LocationBridgeManager: ObservableObject {
     @Published var lastInjectedLocation: LocationCoordinate?
     @Published var lastError: LocationInjectionError?
     @Published var injectionStats: InjectionStats = InjectionStats()
-    
+
     private let bridge = DevLocationBridge()
     private var retryCount: Int = 0
     private let maxRetries: Int = 3
-    
+
     func setLocation(_ coordinate: LocationCoordinate, for device: Device) async {
         isInjecting = true
         lastError = nil
-        
+
         do {
             try await bridge.setLocation(coordinate, for: device)
             lastInjectedLocation = coordinate
@@ -995,7 +995,7 @@ class LocationBridgeManager: ObservableObject {
             injectionStats = await bridge.getStats()
         } catch let error as LocationInjectionError {
             lastError = error
-            
+
             // Auto-retry for transient errors
             if retryCount < maxRetries && shouldRetry(error) {
                 retryCount += 1
@@ -1006,13 +1006,13 @@ class LocationBridgeManager: ObservableObject {
         } catch {
             lastError = .injectionFailed(error.localizedDescription)
         }
-        
+
         isInjecting = false
     }
-    
+
     func clearLocation(for device: Device) async {
         isInjecting = true
-        
+
         do {
             try await bridge.clearLocation(for: device)
             lastInjectedLocation = nil
@@ -1022,10 +1022,10 @@ class LocationBridgeManager: ObservableObject {
         } catch {
             lastError = .clearFailed(error.localizedDescription)
         }
-        
+
         isInjecting = false
     }
-    
+
     func checkAvailability(for device: Device) async -> Bool {
         let result = await bridge.checkAvailability(for: device)
         switch result {
@@ -1036,7 +1036,7 @@ class LocationBridgeManager: ObservableObject {
             return false
         }
     }
-    
+
     private func shouldRetry(_ error: LocationInjectionError) -> Bool {
         switch error {
         case .timeout, .rateLimited:

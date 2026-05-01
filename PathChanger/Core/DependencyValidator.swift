@@ -13,7 +13,7 @@ import Foundation
 class DependencyValidator: ObservableObject {
     @Published var validationStatus: ValidationStatus = .pending
     @Published var errors: [ValidationError] = []
-    
+
     enum ValidationStatus {
         case pending
         case validating
@@ -21,13 +21,13 @@ class DependencyValidator: ObservableObject {
         case invalid
         case installing
     }
-    
+
     struct ValidationError: Identifiable {
         let id = UUID()
         let type: ErrorType
         let message: String
         let suggestion: String
-        
+
         enum ErrorType {
             case pythonMissing
             case pythonVersionTooOld
@@ -36,26 +36,26 @@ class DependencyValidator: ObservableObject {
             case pythonNotExecutable
         }
     }
-    
+
     static let shared = DependencyValidator()
     private init() {}
-    
+
     /// Run complete dependency validation
     func validateAll() async {
         validationStatus = .validating
         errors.removeAll()
-        
+
         // Validate Python first
         await validatePython()
-        
+
         // Only if Python is valid, check pymobiledevice3
         if !errors.contains(where: { $0.type == .pythonMissing || $0.type == .pythonVersionTooOld }) {
             await validatePymobiledevice3()
         }
-        
+
         // Update status
         validationStatus = errors.isEmpty ? .valid : .invalid
-        
+
         // Log results
         if errors.isEmpty {
             Logger.info("✅ All dependencies validated successfully", category: .device)
@@ -66,7 +66,7 @@ class DependencyValidator: ObservableObject {
             }
         }
     }
-    
+
     /// Validate Python installation
     private func validatePython() async {
         do {
@@ -84,7 +84,7 @@ class DependencyValidator: ObservableObject {
             ))
         }
     }
-    
+
     /// Validate pymobiledevice3 installation
     private func validatePymobiledevice3() async {
         do {
@@ -102,7 +102,7 @@ class DependencyValidator: ObservableObject {
             ))
         }
     }
-    
+
     /// Map PythonResolverError to ValidationError for Python
     private func mapPythonError(_ error: PythonResolverError) -> ValidationError {
         switch error {
@@ -138,7 +138,7 @@ class DependencyValidator: ObservableObject {
             )
         }
     }
-    
+
     /// Map PythonResolverError to ValidationError for pymobiledevice3
     private func mapPmd3Error(_ error: PythonResolverError) -> ValidationError {
         switch error {
@@ -162,17 +162,17 @@ class DependencyValidator: ObservableObject {
             )
         }
     }
-    
+
     /// Check if validation was successful
     var isValid: Bool {
         validationStatus == .valid
     }
-    
+
     /// Get the first error message for display
     var firstErrorMessage: String? {
         errors.first?.message
     }
-    
+
     /// Get recovery suggestion for first error
     var firstErrorSuggestion: String? {
         errors.first?.suggestion

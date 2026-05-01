@@ -13,31 +13,31 @@ struct ErrorDialogView: View {
     let error: ErrorHandler.AppError
     let onDismiss: () -> Void
     let onAction: ((ErrorHandler.ErrorAction) -> Void)?
-    
+
     var body: some View {
         VStack(spacing: 16) {
             // Icon
             Image(systemName: iconForType(error.type))
                 .font(.system(size: 48))
                 .foregroundColor(colorForType(error.type))
-            
+
             // Title
             Text(titleForType(error.type))
                 .font(.headline)
-            
+
             // Message
             Text(error.message)
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-            
+
             // Suggestion
             if let suggestion = error.suggestion {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("How to fix:")
                         .font(.caption)
                         .fontWeight(.semibold)
-                    
+
                     Text(suggestion)
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -46,14 +46,14 @@ struct ErrorDialogView: View {
                 .background(Color.gray.opacity(0.15))
                 .cornerRadius(8)
             }
-            
+
             // Actions
             HStack(spacing: 12) {
                 Button("Dismiss") {
                     onDismiss()
                 }
                 .buttonStyle(.bordered)
-                
+
                 if let action = error.action, let onAction = onAction {
                     Button(actionButtonTitle(action)) {
                         onAction(action)
@@ -65,7 +65,7 @@ struct ErrorDialogView: View {
         .padding(24)
         .frame(maxWidth: 400)
     }
-    
+
     private func iconForType(_ type: ErrorHandler.ErrorType) -> String {
         switch type {
         case .connection: return "wifi.exclamationmark"
@@ -77,7 +77,7 @@ struct ErrorDialogView: View {
         case .iosVersionUnsupported: return "exclamationmark.triangle.fill"
         }
     }
-    
+
     private func colorForType(_ type: ErrorHandler.ErrorType) -> Color {
         switch type {
         case .connection, .network: return .orange
@@ -88,7 +88,7 @@ struct ErrorDialogView: View {
         case .iosVersionUnsupported: return .orange
         }
     }
-    
+
     private func titleForType(_ type: ErrorHandler.ErrorType) -> String {
         switch type {
         case .connection: return "Connection Error"
@@ -100,7 +100,7 @@ struct ErrorDialogView: View {
         case .iosVersionUnsupported: return "iOS Version Not Supported"
         }
     }
-    
+
     private func actionButtonTitle(_ action: ErrorHandler.ErrorAction) -> String {
         switch action {
         case .retry: return "Retry"
@@ -110,7 +110,7 @@ struct ErrorDialogView: View {
         case .checkConnection: return "Check Connection"
         }
     }
-    
+
     private func helpURLForType(_ type: ErrorHandler.ErrorType) -> URL? {
         // Link to relevant documentation based on error type
         let baseURL = "https://github.com/PathChanger/docs/wiki/"
@@ -140,7 +140,7 @@ struct EnhancedErrorDialogView: View {
     let onDismiss: () -> Void
     let onAction: ((ErrorHandler.ErrorAction) -> Void)?
     let onLearnMore: ((URL) -> Void)?
-    
+
     var body: some View {
         VStack(spacing: 16) {
             // Icon with animation
@@ -148,17 +148,17 @@ struct EnhancedErrorDialogView: View {
                 .font(.system(size: 48))
                 .foregroundColor(colorForType(error.type))
                 .symbolEffect(.pulse, isActive: error.type == .connection)
-            
+
             // Title
             Text(titleForType(error.type))
                 .font(.headline)
-            
+
             // Message
             Text(error.message)
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-            
+
             // Suggestion with recovery steps
             if let suggestion = error.suggestion {
                 VStack(alignment: .leading, spacing: 8) {
@@ -166,7 +166,7 @@ struct EnhancedErrorDialogView: View {
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.orange)
-                    
+
                     Text(suggestion)
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -176,7 +176,7 @@ struct EnhancedErrorDialogView: View {
                 .background(Color.orange.opacity(0.1))
                 .cornerRadius(8)
             }
-            
+
             // Actions with Learn More
             VStack(spacing: 8) {
                 HStack(spacing: 12) {
@@ -184,7 +184,7 @@ struct EnhancedErrorDialogView: View {
                         onDismiss()
                     }
                     .buttonStyle(.bordered)
-                    
+
                     if let action = error.action, let onAction = onAction {
                         Button(actionButtonTitle(action)) {
                             onAction(action)
@@ -192,7 +192,7 @@ struct EnhancedErrorDialogView: View {
                         .buttonStyle(.borderedProminent)
                     }
                 }
-                
+
                 // Learn More link
                 Button(action: {
                     if let url = helpURLForType(error.type) {
@@ -209,7 +209,7 @@ struct EnhancedErrorDialogView: View {
         .padding(24)
         .frame(maxWidth: 400)
     }
-    
+
     private func iconForType(_ type: ErrorHandler.ErrorType) -> String {
         switch type {
         case .connection: return "wifi.exclamationmark"
@@ -221,7 +221,7 @@ struct EnhancedErrorDialogView: View {
         case .iosVersionUnsupported: return "exclamationmark.triangle.fill"
         }
     }
-    
+
     private func colorForType(_ type: ErrorHandler.ErrorType) -> Color {
         switch type {
         case .connection, .network: return .orange
@@ -232,7 +232,7 @@ struct EnhancedErrorDialogView: View {
         case .iosVersionUnsupported: return .orange
         }
     }
-    
+
     private func titleForType(_ type: ErrorHandler.ErrorType) -> String {
         switch type {
         case .connection: return "Connection Error"
@@ -244,7 +244,7 @@ struct EnhancedErrorDialogView: View {
         case .iosVersionUnsupported: return "iOS Version Not Supported"
         }
     }
-    
+
     private func actionButtonTitle(_ action: ErrorHandler.ErrorAction) -> String {
         switch action {
         case .retry: return "Retry"
@@ -254,7 +254,7 @@ struct EnhancedErrorDialogView: View {
         case .checkConnection: return "Check Connection"
         }
     }
-    
+
     private func helpURLForType(_ type: ErrorHandler.ErrorType) -> URL? {
         let baseURL = "https://github.com/PathChanger/docs/wiki/"
         switch type {
@@ -282,7 +282,7 @@ struct IOS18WarningDialogView: View {
     let deviceVersion: String
     let onDismiss: () -> Void
     let onLearnMore: ((URL) -> Void)?
-    
+
     var body: some View {
         VStack(spacing: 16) {
             // Warning icon
@@ -290,24 +290,24 @@ struct IOS18WarningDialogView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.orange)
                 .symbolEffect(.pulse)
-            
+
             // Title
             Text("iOS \(deviceVersion) Not Supported")
                 .font(.headline)
-            
+
             // Message
             Text("Location simulation is not supported on iOS 18 and later due to Apple restrictions.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-            
+
             // Downgrade instructions
             VStack(alignment: .leading, spacing: 8) {
                 Label("Recommended Solution:", systemImage: "lightbulb.fill")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.orange)
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("1. Downgrade your device to iOS 17.6 or earlier")
                     Text("2. Check pymobiledevice3 GitHub for iOS 18 updates")
@@ -320,7 +320,7 @@ struct IOS18WarningDialogView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.orange.opacity(0.1))
             .cornerRadius(8)
-            
+
             // Actions
             VStack(spacing: 8) {
                 HStack(spacing: 12) {
@@ -328,7 +328,7 @@ struct IOS18WarningDialogView: View {
                         onDismiss()
                     }
                     .buttonStyle(.bordered)
-                    
+
                     Button("Learn More") {
                         if let url = URL(string: "https://github.com/doronz88/pymobiledevice3/issues") {
                             onLearnMore?(url)
@@ -336,7 +336,7 @@ struct IOS18WarningDialogView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-                
+
                 Button(action: {
                     if let url = URL(string: "https://ipsw.me") {
                         onLearnMore?(url)
@@ -358,13 +358,13 @@ struct IOS18WarningDialogView: View {
 
 struct ConnectionStatusBanner: View {
     @ObservedObject var reliabilityManager: ReliabilityManager
-    
+
     var body: some View {
         Group {
             switch reliabilityManager.recoveryState {
             case .connected:
                 EmptyView()
-                
+
             case .disconnected:
                 HStack {
                     Image(systemName: "wifi.slash")
@@ -379,7 +379,7 @@ struct ConnectionStatusBanner: View {
                 .padding()
                 .background(Color.orange.opacity(0.2))
                 .cornerRadius(8)
-                
+
             case .reconnecting(let attempt, let max):
                 HStack {
                     ProgressView()
@@ -395,7 +395,7 @@ struct ConnectionStatusBanner: View {
                 .padding()
                 .background(Color.yellow.opacity(0.2))
                 .cornerRadius(8)
-                
+
             case .failed(let reason):
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -411,7 +411,7 @@ struct ConnectionStatusBanner: View {
                 .padding()
                 .background(Color.red.opacity(0.2))
                 .cornerRadius(8)
-                
+
             case .suspended:
                 HStack {
                     Image(systemName: "pause.circle.fill")
@@ -437,16 +437,16 @@ struct ConnectionStatusBanner: View {
 struct TunneldStatusView: View {
     let isRunning: Bool
     let onStartRequest: () -> Void
-    
+
     var body: some View {
         HStack {
             Circle()
                 .fill(isRunning ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
-            
+
             Text(isRunning ? "tunneld running" : "tunneld not running")
                 .font(.caption)
-            
+
             if !isRunning {
                 Button("Start") {
                     onStartRequest()
@@ -462,33 +462,33 @@ struct TunneldStatusView: View {
 
 struct StartTunneldSheet: View {
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "terminal.fill")
                 .font(.system(size: 48))
                 .foregroundColor(.blue)
-            
+
             Text("Start tunneld")
                 .font(.headline)
-            
+
             Text("Location injection on iOS 17+ requires tunneld to be running.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Run this command in Terminal:")
                     .font(.caption)
                     .fontWeight(.semibold)
-                
+
                 HStack {
                     Text("sudo python3 -m pymobiledevice3 remote tunneld")
                         .font(.system(.body, design: .monospaced))
                         .padding(8)
                         .background(Color(.textBackgroundColor))
                         .cornerRadius(4)
-                    
+
                     Button {
                         copyToClipboard("sudo python3 -m pymobiledevice3 remote tunneld")
                     } label: {
@@ -500,11 +500,11 @@ struct StartTunneldSheet: View {
             .padding()
             .background(Color.gray.opacity(0.15))
             .cornerRadius(8)
-            
+
             Text("Keep the Terminal window open while using PathChanger.")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
+
             Button("Done") {
                 dismiss()
             }
@@ -513,7 +513,7 @@ struct StartTunneldSheet: View {
         .padding(24)
         .frame(width: 400)
     }
-    
+
     private func copyToClipboard(_ text: String) {
         #if os(macOS)
         NSPasteboard.general.clearContents()
@@ -526,21 +526,21 @@ struct StartTunneldSheet: View {
 
 struct DeveloperModeGuideSheet: View {
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "wrench.and.screwdriver.fill")
                 .font(.system(size: 48))
                 .foregroundColor(.purple)
-            
+
             Text("Enable Developer Mode")
                 .font(.headline)
-            
+
             Text("Developer Mode is required for location simulation on iOS 16+.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 StepRow(number: 1, text: "Open Settings on your iPhone")
                 StepRow(number: 2, text: "Go to Privacy & Security")
@@ -551,7 +551,7 @@ struct DeveloperModeGuideSheet: View {
             .padding()
             .background(Color.gray.opacity(0.15))
             .cornerRadius(8)
-            
+
             Button("Done") {
                 dismiss()
             }
@@ -565,7 +565,7 @@ struct DeveloperModeGuideSheet: View {
 struct StepRow: View {
     let number: Int
     let text: String
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(number)")
@@ -575,7 +575,7 @@ struct StepRow: View {
                 .frame(width: 20, height: 20)
                 .background(Color.blue)
                 .clipShape(Circle())
-            
+
             Text(text)
                 .font(.body)
         }

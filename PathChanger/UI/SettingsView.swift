@@ -16,12 +16,12 @@ struct SettingsView: View {
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
     @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = true
     @State private var showDiagnostics: Bool = false
-    
+
     var body: some View {
         Form {
             Section("Device Connection") {
                 Toggle("Auto-refresh device list", isOn: $autoRefreshDevices)
-                
+
                 if autoRefreshDevices {
                     HStack {
                         Text("Refresh interval")
@@ -36,29 +36,29 @@ struct SettingsView: View {
                     }
                 }
             }
-            
+
             // NEW: Connection Mode Section
             connectionModeSection
-            
+
             Section("Map Display") {
                 Picker("Default map style", selection: $defaultMapStyle) {
                     Text("Standard").tag("standard")
                     Text("Satellite").tag("satellite")
                     Text("Hybrid").tag("hybrid")
                 }
-                
+
                 Toggle("Show coordinates overlay", isOn: $showCoordinatesOnMap)
             }
-            
+
             // Enhanced tunneld section with auto-management
             tunneldSection
-            
+
             // Advanced Settings
             advancedSection
-            
+
             // Keyboard Shortcuts Section
             keyboardShortcutsSection
-            
+
             // Diagnostics Section
             Section("Troubleshooting") {
                 Button {
@@ -82,7 +82,7 @@ struct SettingsView: View {
                 DiagnosticsSheet()
                     .environmentObject(appState)
             }
-            
+
             Section("About") {
                 HStack {
                     Text("Version")
@@ -90,30 +90,30 @@ struct SettingsView: View {
                     Text("1.0.0")
                         .foregroundColor(.secondary)
                 }
-                
+
                 HStack {
                     Text("iOS Support")
                     Spacer()
                     Text("17.0-17.6 (iOS 18+ has limitations)")
                         .foregroundColor(.secondary)
                 }
-                
+
                 Link("Documentation", destination: URL(string: "https://github.com/doronz88/pymobiledevice3")!)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
     }
-    
+
     // MARK: - Tunnel Section (Multi-Mode Support)
-    
+
     private var tunneldSection: some View {
         Section("Tunnel (iOS 17+ Device Communication)") {
             // Tunnel Mode Picker
             VStack(alignment: .leading, spacing: 8) {
                 Text("Tunnel Mode")
                     .font(.headline)
-                
+
                 Picker("Mode", selection: $tunneldManager.preferredMode) {
                     ForEach(TunnelMode.allCases) { mode in
                         HStack {
@@ -124,14 +124,14 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                
+
                 // Mode description
                 Text(tunneldManager.preferredMode.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             .padding(.vertical, 4)
-            
+
             // Status indicator with start/stop controls
             HStack {
                 // Status indicator
@@ -145,7 +145,7 @@ struct SettingsView: View {
                             .fill(tunneldManager.isRunning ? Color.green : Color.red)
                             .frame(width: 10, height: 10)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
                             Text(tunneldStatusText)
@@ -163,9 +163,9 @@ struct SettingsView: View {
                         }
                     }
                 }
-                
+
                 Spacer()
-                
+
                 // Control buttons
                 if tunneldManager.isRunning {
                     Button("Stop") {
@@ -186,7 +186,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                 }
             }
-            
+
             // RSD Connection Info (if available)
             if let info = tunneldManager.tunnelInfo {
                 VStack(alignment: .leading, spacing: 4) {
@@ -216,7 +216,7 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 4)
             }
-            
+
             // Auto-start toggle
             Toggle(isOn: $autoStartTunneld) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -226,7 +226,7 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            
+
             // Error display
             if let error = tunneldManager.lastError {
                 HStack(alignment: .top, spacing: 8) {
@@ -238,7 +238,7 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 4)
             }
-            
+
             // Info about tunnel modes
             VStack(alignment: .leading, spacing: 8) {
                 Label {
@@ -249,7 +249,7 @@ struct SettingsView: View {
                     Image(systemName: "cable.connector")
                         .foregroundColor(.blue)
                 }
-                
+
                 Label {
                     Text("WiFi mode: True wireless, device must be on same network")
                         .font(.caption)
@@ -258,7 +258,7 @@ struct SettingsView: View {
                     Image(systemName: "wifi")
                         .foregroundColor(.blue)
                 }
-                
+
                 Label {
                     Text("Daemon mode: Background service, auto-discovers devices")
                         .font(.caption)
@@ -267,7 +267,7 @@ struct SettingsView: View {
                     Image(systemName: "server.rack")
                         .foregroundColor(.blue)
                 }
-                
+
                 Label {
                     Text("Requires administrator privileges")
                         .font(.caption)
@@ -280,7 +280,7 @@ struct SettingsView: View {
             .padding(.top, 4)
         }
     }
-    
+
     private func iconForTunnelMode(_ mode: TunnelMode) -> String {
         switch mode {
         case .auto: return "sparkles"
@@ -289,7 +289,7 @@ struct SettingsView: View {
         case .daemon: return "server.rack"
         }
     }
-    
+
     private var tunneldStatusText: String {
         if tunneldManager.isStarting {
             return "Starting..."
@@ -299,9 +299,9 @@ struct SettingsView: View {
             return "Not Running"
         }
     }
-    
+
     // MARK: - Connection Mode Section
-    
+
     private var connectionModeSection: some View {
         Section("Connection Mode") {
             // Connection Mode Picker
@@ -318,7 +318,7 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
-            
+
             // Connection Status Indicators
             HStack(spacing: 16) {
                 ConnectionStatusBadge(
@@ -326,7 +326,7 @@ struct SettingsView: View {
                     isConnected: appState.isUSBConnected,
                     icon: "cable.connector"
                 )
-                
+
                 ConnectionStatusBadge(
                     title: "WiFi",
                     isConnected: appState.isTunneldRunning,
@@ -334,7 +334,7 @@ struct SettingsView: View {
                 )
             }
             .padding(.vertical, 8)
-            
+
             // Prefer USB Toggle
             Toggle(isOn: $appState.preferUSBConnection) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -344,7 +344,7 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            
+
             // Fallback Information
             if !appState.isTunneldRunning && !appState.isUSBConnected {
                 HStack {
@@ -376,7 +376,7 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     private func iconForMode(_ mode: DeviceManager.ConnectionMode) -> String {
         switch mode {
         case .auto: return "arrow.triangle.2.circlepath"
@@ -384,9 +384,9 @@ struct SettingsView: View {
         case .wifi: return "wifi"
         }
     }
-    
+
     // MARK: - Advanced Settings Section
-    
+
     private var advancedSection: some View {
         Section("Advanced") {
             HStack {
@@ -403,7 +403,7 @@ struct SettingsView: View {
                 }
                 .frame(width: 150)
             }
-            
+
             HStack {
                 Text("Tunnel Start Timeout")
                 Spacer()
@@ -418,7 +418,7 @@ struct SettingsView: View {
                 }
                 .frame(width: 150)
             }
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("These timeouts control how long the app waits for device communication.")
                     .font(.caption)
@@ -429,9 +429,9 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     // MARK: - Keyboard Shortcuts Section
-    
+
     private var keyboardShortcutsSection: some View {
         Section("Keyboard Shortcuts") {
             VStack(alignment: .leading, spacing: 16) {
@@ -441,26 +441,26 @@ struct SettingsView: View {
                     ShortcutRow(shortcut: "⌘K", description: "Clear current location")
                     ShortcutRow(shortcut: "⌘R", description: "Refresh device list")
                 }
-                
+
                 Divider()
-                
+
                 // Simulation Commands
                 ShortcutGroup(title: "Simulation") {
                     ShortcutRow(shortcut: "⌘Space", description: "Start simulation")
                     ShortcutRow(shortcut: "⌘P", description: "Pause simulation")
                     ShortcutRow(shortcut: "⌘Esc", description: "Stop simulation")
                 }
-                
+
                 Divider()
-                
+
                 // Navigation Commands
                 ShortcutGroup(title: "Navigation") {
                     ShortcutRow(shortcut: "⌘⇧S", description: "Toggle sidebar")
                     ShortcutRow(shortcut: "⌘,", description: "Open settings")
                 }
-                
+
                 Divider()
-                
+
                 // Speed Control Commands
                 ShortcutGroup(title: "Speed Control") {
                     ShortcutRow(shortcut: "⌘⌥↑", description: "Increase simulation speed")
@@ -478,12 +478,12 @@ struct ConnectionStatusBadge: View {
     let title: String
     let isConnected: Bool
     let icon: String
-    
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundColor(isConnected ? .green : .gray)
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.caption)
@@ -505,14 +505,14 @@ struct ConnectionStatusBadge: View {
 struct ShortcutGroup<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.subheadline)
                 .fontWeight(.semibold)
                 .foregroundColor(.primary)
-            
+
             content()
         }
     }
@@ -522,7 +522,7 @@ struct ShortcutGroup<Content: View>: View {
 struct ShortcutRow: View {
     let shortcut: String
     let description: String
-    
+
     var body: some View {
         HStack {
             Text(shortcut)
@@ -530,11 +530,11 @@ struct ShortcutRow: View {
                 .fontWeight(.medium)
                 .foregroundColor(.blue)
                 .frame(width: 80, alignment: .leading)
-            
+
             Text(description)
                 .font(.callout)
                 .foregroundColor(.secondary)
-            
+
             Spacer()
         }
     }

@@ -18,7 +18,7 @@ enum L10n {
             String(format: NSLocalizedString("app.version", comment: ""), version)
         }
     }
-    
+
     // MARK: - Common Actions
     enum Action {
         static let cancel = LocalizedStringKey("action.cancel")
@@ -38,7 +38,7 @@ enum L10n {
         static let settings = LocalizedStringKey("action.settings")
         static let help = LocalizedStringKey("action.help")
     }
-    
+
     // MARK: - Onboarding
     enum Onboarding {
         static let welcomeTitle = LocalizedStringKey("onboarding.welcome.title")
@@ -54,7 +54,7 @@ enum L10n {
         static let next = LocalizedStringKey("onboarding.next")
         static let previous = LocalizedStringKey("onboarding.previous")
     }
-    
+
     // MARK: - Sidebar
     enum Sidebar {
         static let devices = LocalizedStringKey("sidebar.devices")
@@ -67,7 +67,7 @@ enum L10n {
             String(format: NSLocalizedString("sidebar.deviceCount", comment: ""), count)
         }
     }
-    
+
     // MARK: - Device
     enum Device {
         static let connected = LocalizedStringKey("device.connected")
@@ -85,7 +85,7 @@ enum L10n {
         }
         static let noLocation = LocalizedStringKey("device.noLocation")
     }
-    
+
     // MARK: - Simulation
     enum Simulation {
         static let title = LocalizedStringKey("simulation.title")
@@ -99,7 +99,7 @@ enum L10n {
         static let tapToSetLocation = LocalizedStringKey("simulation.tapToSetLocation")
         static let manualInput = LocalizedStringKey("simulation.manualInput")
     }
-    
+
     // MARK: - Joystick
     enum Joystick {
         static let title = LocalizedStringKey("joystick.title")
@@ -112,7 +112,7 @@ enum L10n {
         static let speedCar = LocalizedStringKey("joystick.speedCar")
         static let hint = LocalizedStringKey("joystick.hint")
     }
-    
+
     // MARK: - Route
     enum Route {
         static let title = LocalizedStringKey("route.title")
@@ -136,7 +136,7 @@ enum L10n {
             String(format: NSLocalizedString("route.pointCount", comment: ""), count)
         }
     }
-    
+
     // MARK: - Settings
     enum Settings {
         static let title = LocalizedStringKey("settings.title")
@@ -144,14 +144,14 @@ enum L10n {
         static let appearance = LocalizedStringKey("settings.appearance")
         static let advanced = LocalizedStringKey("settings.advanced")
         static let about = LocalizedStringKey("settings.about")
-        
+
         enum General {
             static let autoStartTunnel = LocalizedStringKey("settings.general.autoStartTunnel")
             static let autoStartTunnelDesc = LocalizedStringKey("settings.general.autoStartTunnelDesc")
             static let rememberLastLocation = LocalizedStringKey("settings.general.rememberLastLocation")
             static let rememberLastLocationDesc = LocalizedStringKey("settings.general.rememberLastLocationDesc")
         }
-        
+
         enum Appearance {
             static let theme = LocalizedStringKey("settings.appearance.theme")
             static let themeLight = LocalizedStringKey("settings.appearance.themeLight")
@@ -162,7 +162,7 @@ enum L10n {
             static let mapStyleSatellite = LocalizedStringKey("settings.appearance.mapStyleSatellite")
             static let mapStyleHybrid = LocalizedStringKey("settings.appearance.mapStyleHybrid")
         }
-        
+
         enum Advanced {
             static let tunnelMode = LocalizedStringKey("settings.advanced.tunnelMode")
             static let tunnelModeAuto = LocalizedStringKey("settings.advanced.tunnelModeAuto")
@@ -174,7 +174,7 @@ enum L10n {
             static let rateLimitDesc = LocalizedStringKey("settings.advanced.rateLimitDesc")
         }
     }
-    
+
     // MARK: - Tunnel
     enum Tunnel {
         static let status = LocalizedStringKey("tunnel.status")
@@ -190,7 +190,7 @@ enum L10n {
         static let modeWiFi = LocalizedStringKey("tunnel.modeWiFi")
         static let modeDaemon = LocalizedStringKey("tunnel.modeDaemon")
     }
-    
+
     // MARK: - Errors
     enum Error {
         static let title = LocalizedStringKey("error.title")
@@ -205,7 +205,7 @@ enum L10n {
         static let pymobiledeviceNotFound = LocalizedStringKey("error.pymobiledeviceNotFound")
         static let connectionFailed = LocalizedStringKey("error.connectionFailed")
     }
-    
+
     // MARK: - Toasts
     enum Toast {
         static let locationSet = LocalizedStringKey("toast.locationSet")
@@ -222,7 +222,7 @@ enum L10n {
         static let copied = LocalizedStringKey("toast.copied")
         static let queued = LocalizedStringKey("toast.queued")
     }
-    
+
     // MARK: - Accessibility
     enum Accessibility {
         static let map = LocalizedStringKey("accessibility.map")
@@ -235,7 +235,7 @@ enum L10n {
         static let startRouteButton = LocalizedStringKey("accessibility.startRouteButton")
         static let stopRouteButton = LocalizedStringKey("accessibility.stopRouteButton")
     }
-    
+
     // MARK: - Dependencies
     enum Dependency {
         static let title = LocalizedStringKey("dependency.title")
@@ -255,7 +255,7 @@ extension String {
     var localized: String {
         NSLocalizedString(self, comment: "")
     }
-    
+
     /// Returns the localized version with format arguments
     func localized(with arguments: CVarArg...) -> String {
         String(format: NSLocalizedString(self, comment: ""), arguments: arguments)
@@ -278,7 +278,7 @@ extension View {
     func localizedAccessibilityLabel(_ key: LocalizedStringKey) -> some View {
         self.accessibilityLabel(key)
     }
-    
+
     /// Adds a localized accessibility hint
     func localizedAccessibilityHint(_ key: LocalizedStringKey) -> some View {
         self.accessibilityHint(key)

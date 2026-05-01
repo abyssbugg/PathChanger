@@ -11,10 +11,10 @@ struct JoystickControlView: View {
     @EnvironmentObject var appState: AppState
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
-    
+
     private let outerRadius: CGFloat = 60
     private let innerRadius: CGFloat = 25
-    
+
     var body: some View {
         FloatingControlPanel(title: "Joystick", icon: "gamecontroller.fill") {
             VStack(spacing: 16) {
@@ -34,17 +34,17 @@ struct JoystickControlView: View {
                             Circle()
                                 .stroke(.white.opacity(0.1), lineWidth: 1)
                         )
-                    
+
                     // Direction Indicators
-                    ForEach(0..<4) { i in
+                    ForEach(0..<4) { directionIndex in
                         Image(systemName: "triangle.fill")
                             .font(.caption2)
                             .foregroundStyle(.secondary.opacity(0.5))
-                            .rotationEffect(.degrees(Double(i) * 90))
+                            .rotationEffect(.degrees(Double(directionIndex) * 90))
                             .offset(y: -outerRadius + 10)
-                            .rotationEffect(.degrees(Double(i) * 90))
+                            .rotationEffect(.degrees(Double(directionIndex) * 90))
                     }
-                    
+
                     // Knob
                     Circle()
                         .fill(
@@ -67,18 +67,18 @@ struct JoystickControlView: View {
                                     let maxOffset = outerRadius - innerRadius
                                     let rawX = value.translation.width
                                     let rawY = value.translation.height
-                                    
+
                                     // Clamp to circular boundary
                                     let distance = sqrt(rawX * rawX + rawY * rawY)
                                     let clampedDistance = min(distance, maxOffset)
                                     let angle = atan2(rawY, rawX)
-                                    let x = clampedDistance * cos(angle)
-                                    let y = clampedDistance * sin(angle)
-                                    state = CGSize(width: x, height: y)
-                                    
+                                    let knobX = clampedDistance * cos(angle)
+                                    let knobY = clampedDistance * sin(angle)
+                                    state = CGSize(width: knobX, height: knobY)
+
                                     // Normalize to unit circle (-1..1 range with magnitude <= 1)
-                                    let normalizedX = x / maxOffset
-                                    let normalizedY = -y / maxOffset // Invert Y for map coordinates
+                                    let normalizedX = knobX / maxOffset
+                                    let normalizedY = -knobY / maxOffset // Invert Y for map coordinates
                                     appState.updateJoystickDirection(CGPoint(x: normalizedX, y: normalizedY))
                                 }
                                 .onEnded { _ in
@@ -90,7 +90,7 @@ struct JoystickControlView: View {
                         )
                 }
                 .frame(width: 140, height: 140)
-                
+
                 // Instructions
                 Text("Drag to move")
                     .font(AppFont.caption)

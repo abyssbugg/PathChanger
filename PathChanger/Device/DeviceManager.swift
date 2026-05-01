@@ -75,13 +75,13 @@ actor DeviceCache {
         let cachedAt: Date
         let source: CacheSource
     }
-    
+
     enum CacheSource: String {
         case usb = "USB"
         case tunnel = "Tunnel"
         case lockdown = "Lockdown"
     }
-    
+
     /// Cache TTL configuration
     struct CacheConfig {
         /// Time-to-live for cached device info (default: 60 seconds)
@@ -90,33 +90,33 @@ actor DeviceCache {
         let deviceListTTL: TimeInterval
         /// Maximum cache entries
         let maxEntries: Int
-        
+
         static let `default` = CacheConfig(
             deviceInfoTTL: 60.0,
             deviceListTTL: 30.0,
             maxEntries: 50
         )
     }
-    
+
     private var cache: [String: CachedDevice] = [:]
     private var lastDiscoveryTime: Date?
     private let config: CacheConfig
-    
+
     // MARK: - Discovery Statistics
     private(set) var stats = DiscoveryStats()
-    
+
     struct DiscoveryStats {
         var totalDiscoveries: Int = 0
         var cacheHits: Int = 0
         var cacheMisses: Int = 0
         var averageDiscoveryTime: TimeInterval = 0
         private var discoveryTimes: [TimeInterval] = []
-        
+
         var hitRate: Double {
             let total = cacheHits + cacheMisses
             return total > 0 ? Double(cacheHits) / Double(total) : 0
         }
-        
+
         mutating func recordDiscovery(duration: TimeInterval) {
             totalDiscoveries += 1
             discoveryTimes.append(duration)
@@ -126,77 +126,77 @@ actor DeviceCache {
             }
             averageDiscoveryTime = discoveryTimes.reduce(0, +) / Double(discoveryTimes.count)
         }
-        
+
         mutating func recordHit() { cacheHits += 1 }
         mutating func recordMiss() { cacheMisses += 1 }
     }
-    
+
     init(config: CacheConfig = .default) {
         self.config = config
     }
-    
+
     // MARK: - Cache Operations
-    
+
     /// Get cached device if valid
     func getCachedDevice(udid: String) -> Device? {
         guard let entry = cache[udid] else {
             stats.recordMiss()
             return nil
         }
-        
+
         let age = Date().timeIntervalSince(entry.cachedAt)
         if age < config.deviceInfoTTL {
             stats.recordHit()
             return entry.device
         }
-        
+
         // Expired
         cache.removeValue(forKey: udid)
         stats.recordMiss()
         return nil
     }
-    
+
     /// Cache device information
     func cacheDevice(_ device: Device, source: CacheSource) {
         // Enforce max entries
         if cache.count >= config.maxEntries {
             evictOldestEntry()
         }
-        
+
         cache[device.id] = CachedDevice(
             device: device,
             cachedAt: Date(),
             source: source
         )
     }
-    
+
     /// Check if full discovery is needed based on TTL
     func needsFullDiscovery() -> Bool {
         guard let lastTime = lastDiscoveryTime else { return true }
         return Date().timeIntervalSince(lastTime) >= config.deviceListTTL
     }
-    
+
     /// Mark discovery completed
     func markDiscoveryComplete() {
         lastDiscoveryTime = Date()
     }
-    
+
     /// Record a discovery operation with its duration
     func recordDiscoveryDuration(_ duration: TimeInterval) {
         stats.recordDiscovery(duration: duration)
     }
-    
+
     /// Invalidate specific device cache
     func invalidate(udid: String) {
         cache.removeValue(forKey: udid)
     }
-    
+
     /// Invalidate all cache entries
     func invalidateAll() {
         cache.removeAll()
         lastDiscoveryTime = nil
     }
-    
+
     /// Get all cached devices (for incremental updates)
     func getAllCachedDevices() -> [Device] {
         let now = Date()
@@ -204,7 +204,7 @@ actor DeviceCache {
             .filter { now.timeIntervalSince($0.cachedAt) < config.deviceInfoTTL }
             .map { $0.device }
     }
-    
+
     /// Get cache statistics summary
     func getStatsSummary() -> String {
         """
@@ -215,7 +215,7 @@ actor DeviceCache {
         - Cache entries: \(cache.count)/\(config.maxEntries)
         """
     }
-    
+
     private func evictOldestEntry() {
         guard let oldest = cache.min(by: { $0.value.cachedAt < $1.value.cachedAt }) else { return }
         cache.removeValue(forKey: oldest.key)
@@ -234,7 +234,7 @@ enum DeviceError: Error, LocalizedError {
     case timeout
     case pairingRequired
     case trustRequired
-    
+
     var errorDescription: String? {
         switch self {
         case .deviceNotFound:
@@ -255,7 +255,7 @@ enum DeviceError: Error, LocalizedError {
             return "Trust this computer on your device when prompted."
         }
     }
-    
+
     var recoverySuggestion: String? {
         switch self {
         case .tunneldNotRunning:
@@ -278,12 +278,12 @@ enum DeviceConnectionState: Equatable {
     case connecting
     case connected
     case error(String)
-    
+
     var isConnected: Bool {
         if case .connected = self { return true }
         return false
     }
-    
+
     var statusText: String {
         switch self {
         case .disconnected: return "Disconnected"
@@ -292,7 +292,7 @@ enum DeviceConnectionState: Equatable {
         case .error(let msg): return "Error: \(msg)"
         }
     }
-    
+
     var statusColor: String {
         switch self {
         case .disconnected: return "gray"
@@ -311,30 +311,30 @@ actor SessionController {
     private var isActive: Bool = false
     private var lastHeartbeat: Date?
     private let heartbeatInterval: TimeInterval = 5.0
-    
+
     func startSession(with device: Device) async throws {
         self.device = device
         self.isActive = true
         self.lastHeartbeat = Date()
     }
-    
+
     func endSession() {
         self.device = nil
         self.isActive = false
         self.lastHeartbeat = nil
     }
-    
+
     func heartbeat() -> Bool {
         guard isActive else { return false }
         lastHeartbeat = Date()
         return true
     }
-    
+
     func isSessionValid() -> Bool {
         guard isActive, let lastBeat = lastHeartbeat else { return false }
         return Date().timeIntervalSince(lastBeat) < heartbeatInterval * 2
     }
-    
+
     var currentDevice: Device? {
         return device
     }
@@ -453,33 +453,33 @@ class DeviceManager: ObservableObject {
     @Published var isScanning: Bool = false
     @Published var lastError: DeviceError?
     @Published var connectionMode: ConnectionMode = .auto
-    
+
     // MARK: Connection Mode
     enum ConnectionMode: String, CaseIterable {
         case auto = "Auto"
         case usb = "USB Only"
         case wifi = "WiFi Only"
     }
-    
+
     // MARK: Device Cache (PERF-003)
     private let deviceCache = DeviceCache()
-    
+
     // MARK: Private Properties
     private let sessionController = SessionController()
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshEnabled: Bool = true
     private let autoRefreshInterval: TimeInterval = 120.0  // Reduced tunnel status check frequency to stabilize connection mode display
-    
+
     // MARK: Debouncing for UI Stability
     private var lastTunnelStateChange: Date = Date.distantPast
     private var stateDebounceInterval: TimeInterval { AppConstants.Tunnel.stateDebounceInterval }
-    
+
     // MARK: Tool Paths - Now unified to pymobiledevice3
     private var python3Path: String { PythonPathResolver.path }
-    
+
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
     private var tunnelStateObserver: AnyCancellable?
-    
+
     // MARK: Initialization
     init() {
         setupTunnelStateObserver()
@@ -489,7 +489,7 @@ class DeviceManager: ObservableObject {
             startAutoRefresh()
         }
     }
-    
+
     // MARK: - Tunnel State Observer (Task 31)
     /// Observes tunnel state changes to invalidate device cache when tunnel disconnects.
     /// This prevents serving stale cached data after device disconnection.
@@ -499,7 +499,7 @@ class DeviceManager: ObservableObject {
             .sink { [weak self] newState in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
-                    
+
                     // Invalidate cache when tunnel transitions to idle/error state
                     switch newState {
                     case .idle, .error:
@@ -520,12 +520,12 @@ class DeviceManager: ObservableObject {
                 }
             }
     }
-    
+
     deinit {
         refreshTask?.cancel()
         tunnelStateObserver?.cancel()
     }
-    
+
     // MARK: Auto Refresh
     private func startAutoRefresh() {
         refreshTask = Task {
@@ -538,41 +538,41 @@ class DeviceManager: ObservableObject {
             }
         }
     }
-    
+
     func stopAutoRefresh() {
         autoRefreshEnabled = false
         refreshTask?.cancel()
     }
-    
+
     // MARK: Cache Management (PERF-003)
-    
+
     /// Get device cache statistics summary
     func getCacheStatistics() async -> String {
         await deviceCache.getStatsSummary()
     }
-    
+
     /// Invalidate cache for a specific device
     func invalidateDeviceCache(udid: String) async {
         await deviceCache.invalidate(udid: udid)
     }
-    
+
     /// Invalidate all cached device information
     func invalidateAllDeviceCache() async {
         await deviceCache.invalidateAll()
     }
-    
+
     // MARK: Debounced State Updates
-    
+
     private func updateTunnelRunning(_ newValue: Bool) {
         let now = Date()
         guard now.timeIntervalSince(lastTunnelStateChange) >= stateDebounceInterval else { return }
-        
+
         if isTunneldRunning != newValue {
             isTunneldRunning = newValue
             lastTunnelStateChange = now
         }
     }
-    
+
     // MARK: Tunnel Status
     /// Check for both lockdown tunnel (iOS 17.4+) and legacy remote tunneld
     func checkTunneldStatus() async {
@@ -583,7 +583,7 @@ class DeviceManager: ObservableObject {
                 updateTunnelRunning(true)
                 return
             }
-            
+
             // Fall back to checking legacy tunneld - with small delay to avoid race conditions
             try? await Task.sleep(nanoseconds: 100_000_000)  // 0.1s delay to let process state stabilize
             let tunneldOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
@@ -593,7 +593,7 @@ class DeviceManager: ObservableObject {
             updateTunnelRunning(false)
         }
     }
-    
+
     // MARK: Device Discovery - Unified pymobiledevice3
     func refreshDevices() async {
         isScanning = true
@@ -608,14 +608,14 @@ class DeviceManager: ObservableObject {
                 Logger.debug("Device discovery completed in \(String(format: "%.2f", duration))s", category: .device)
             }
         }
-        
+
         // Discover devices from multiple sources in parallel
         async let usbDevicesTask = discoverUSBDevices()
         async let tunnelDevicesTask = discoverTunneldAPIDevices()
-        
+
         let usbDevices = await usbDevicesTask
         let tunnelDevices = await tunnelDevicesTask
-        
+
         // Merge devices, preferring tunnel devices for more complete info
         var deviceMap: [String: Device] = [:]
         for device in usbDevices {
@@ -624,13 +624,13 @@ class DeviceManager: ObservableObject {
         for device in tunnelDevices {
             deviceMap[device.id] = device
         }
-        
+
         let discoveredDevices = Array(deviceMap.values)
-        
+
         // Only update if there's a change to prevent UI flickering
         let currentIds = Set(devices.map { $0.id })
         let newIds = Set(discoveredDevices.map { $0.id })
-        
+
         if currentIds != newIds || devices.isEmpty {
             devices = discoveredDevices
         } else {
@@ -640,7 +640,7 @@ class DeviceManager: ObservableObject {
                 }
             }
         }
-        
+
         if let selected = selectedDevice {
             if !devices.contains(where: { $0.id == selected.id }) {
                 selectedDevice = devices.first
@@ -649,10 +649,10 @@ class DeviceManager: ObservableObject {
         } else if selectedDevice == nil && !devices.isEmpty {
             selectedDevice = devices.first
         }
-        
+
         lastError = nil
     }
-    
+
     // MARK: USB Device Discovery (pymobiledevice3 usbmux list)
     private func discoverUSBDevices() async -> [Device] {
         do {
@@ -660,14 +660,14 @@ class DeviceManager: ObservableObject {
                 "-m", "pymobiledevice3",
                 "usbmux", "list", "--no-color"
             ])
-            
+
             let baseDevices = parseDeviceListJSON(output, connectionType: ConnectionType.usb)
-            
+
             // For each USB device, fetch detailed lockdown info to get DeviceName
             // Use cache to avoid repeated lockdown queries (PERF-003)
             var devices: [Device] = []
             var fetchTasks: [Task<Device, Never>] = []
-            
+
             for baseDevice in baseDevices {
                 let task = Task {
                     // Check cache first (PERF-003)
@@ -682,7 +682,7 @@ class DeviceManager: ObservableObject {
                             deviceName: cachedDevice.deviceName
                         )
                     }
-                    
+
                     // Cache miss - fetch lockdown info
                     if let enrichedDevice = await self.fetchUSBDeviceInfo(udid: baseDevice.id, baseDevice: baseDevice) {
                         // Cache the enriched device info
@@ -695,19 +695,19 @@ class DeviceManager: ObservableObject {
                 }
                 fetchTasks.append(task)
             }
-            
+
             // Collect all enriched devices in parallel
             for task in fetchTasks {
                 let device = await task.value
                 devices.append(device)
             }
-            
+
             return devices
         } catch {
             return []
         }
     }
-    
+
     // MARK: Fetch USB Device Info via Lockdown
     private func fetchUSBDeviceInfo(udid: String, baseDevice: Device) async -> Device? {
         do {
@@ -717,7 +717,7 @@ class DeviceManager: ObservableObject {
                 "--udid", udid,
                 "--no-color"
             ], timeout: 10.0)
-            
+
             var info: [String: String] = [:]
             for line in output.split(separator: "\n") {
                 let parts = line.split(separator: ":", maxSplits: 1)
@@ -727,12 +727,12 @@ class DeviceManager: ObservableObject {
                     info[key] = value
                 }
             }
-            
+
             let deviceName = info["DeviceName"] ?? baseDevice.displayName
             let productType = info["ProductType"] ?? baseDevice.productType
             let productVersion = info["ProductVersion"] ?? baseDevice.productVersion
             let deviceClass = info["DeviceClass"]
-            
+
             let displayName: String
             if deviceName == "iPhone" || deviceName == "iPad" || deviceName == "iOS Device" {
                 let modelName = productType.map { Device.modelNameFrom(productType: $0) } ?? deviceClass ?? deviceName
@@ -748,9 +748,9 @@ class DeviceManager: ObservableObject {
                     displayName = deviceName
                 }
             }
-            
+
             Logger.debug("Enriched USB device info: \(displayName) [\(udid)]", category: .device)
-            
+
             return Device(
                 id: udid,
                 displayName: displayName,
@@ -764,32 +764,32 @@ class DeviceManager: ObservableObject {
             return nil
         }
     }
-    
+
     // MARK: Tunneld API Device Discovery
     private var tunneldAPIEndpoint: String { AppConstants.Tunnel.tunneldAPIEndpoint }
-    
+
     private func discoverTunneldAPIDevices() async -> [Device] {
         guard let url = URL(string: tunneldAPIEndpoint) else { return [] }
-        
+
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            
+
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 Logger.debug("Tunneld API returned non-200 status", category: .device)
                 return []
             }
-            
+
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: [[String: Any]]] else {
                 Logger.debug("Tunneld API returned invalid JSON format", category: .device)
                 return []
             }
-            
+
             Logger.debug("Tunneld API returned \(json.count) device(s)", category: .device)
-            
+
             // Fetch device info for all UDIDs in parallel with caching (PERF-003)
             var fetchTasks: [Task<Device, Never>] = []
-            
+
             for udid in json.keys {
                 let task = Task {
                     // Check cache first (PERF-003)
@@ -804,7 +804,7 @@ class DeviceManager: ObservableObject {
                             deviceName: cachedDevice.deviceName
                         )
                     }
-                    
+
                     // Cache miss - fetch detailed info
                     if let device = await self.fetchDeviceInfoViaTunnel(udid: udid) {
                         // Cache the device info
@@ -824,7 +824,7 @@ class DeviceManager: ObservableObject {
                 }
                 fetchTasks.append(task)
             }
-            
+
             // Collect all results
             var devices: [Device] = []
             for task in fetchTasks {
@@ -833,7 +833,7 @@ class DeviceManager: ObservableObject {
                     devices.append(device)
                 }
             }
-            
+
             Logger.info("✅ Discovered \(devices.count) device(s) via Tunneld API", category: .device)
             return devices
         } catch {
@@ -841,7 +841,7 @@ class DeviceManager: ObservableObject {
             return []
         }
     }
-    
+
     private func fetchDeviceInfoViaTunnel(udid: String) async -> Device? {
         do {
             let output = try await runPython(arguments: [
@@ -850,7 +850,7 @@ class DeviceManager: ObservableObject {
                 "--tunnel", udid,
                 "--no-color"
             ], timeout: 10.0)
-            
+
             var info: [String: String] = [:]
             for line in output.split(separator: "\n") {
                 let parts = line.split(separator: ":", maxSplits: 1)
@@ -860,12 +860,12 @@ class DeviceManager: ObservableObject {
                     info[key] = value
                 }
             }
-            
+
             let deviceName = info["DeviceName"] ?? "iOS Device"
             let productType = info["ProductType"]
             let productVersion = info["ProductVersion"]
             let deviceClass = info["DeviceClass"]
-            
+
             let displayName: String
             if deviceName == "iPhone" || deviceName == "iPad" || deviceName == "iOS Device" {
                 let modelName = productType.map { Device.modelNameFrom(productType: $0) } ?? deviceClass ?? deviceName
@@ -881,9 +881,9 @@ class DeviceManager: ObservableObject {
                     displayName = deviceName
                 }
             }
-            
+
             Logger.debug("Fetched device info via tunnel: \(displayName) [\(udid)]", category: .device)
-            
+
             return Device(
                 id: udid,
                 displayName: displayName,
@@ -897,43 +897,43 @@ class DeviceManager: ObservableObject {
             return nil
         }
     }
-    
+
     private func parseDeviceListJSON(_ output: String, connectionType: ConnectionType) -> [Device] {
         var devices: [Device] = []
-        
+
         // Find JSON array in output (skip warnings)
         guard let jsonStart = output.firstIndex(of: "["),
               let jsonEnd = output.lastIndex(of: "]") else {
             Logger.debug("No JSON array found in device list output", category: .device)
             return []
         }
-        
+
         let jsonString = String(output[jsonStart...jsonEnd])
-        
+
         guard let jsonData = jsonString.data(using: .utf8) else {
             Logger.debug("Failed to convert JSON string to data", category: .device)
             return []
         }
-        
+
         do {
             if let jsonArray = try JSONSerialization.jsonObject(with: jsonData) as? [[String: Any]] {
                 for item in jsonArray {
                     guard let udid = item["UniqueDeviceID"] as? String ?? item["Identifier"] as? String else {
                         continue
                     }
-                    
+
                     let deviceName = item["DeviceName"] as? String ?? "iOS Device"
                     let productType = item["ProductType"] as? String
                     let productVersion = item["ProductVersion"] as? String
                     let deviceClass = item["DeviceClass"] as? String
-                    
+
                     // Determine connection type from JSON if available
                     var connType = connectionType
                     if let jsonConnType = item["ConnectionType"] as? String {
                         // "Network" means connected via lockdown tunnel
                         connType = jsonConnType.lowercased().contains("usb") ? .usb : .wifi
                     }
-                    
+
                     // Build display name with device name and iOS version
                     // Show model name if device name is generic
                     let displayName: String
@@ -953,7 +953,7 @@ class DeviceManager: ObservableObject {
                             displayName = deviceName
                         }
                     }
-                    
+
                     let device = Device(
                         id: udid,
                         displayName: displayName,
@@ -962,7 +962,7 @@ class DeviceManager: ObservableObject {
                         productVersion: productVersion,
                         deviceName: deviceName
                     )
-                    
+
                     // Avoid duplicates by UDID
                     if !devices.contains(where: { $0.id == udid }) {
                         devices.append(device)
@@ -973,17 +973,17 @@ class DeviceManager: ObservableObject {
         } catch {
             Logger.debug("Failed to parse device JSON: \(error)", category: .device)
         }
-        
+
         return devices
     }
-    
+
     private func extractUDID(from text: String) -> String? {
         // UDID is typically 40 hex chars (old) or 25 chars with dashes (new format)
         let patterns = [
             "[0-9a-fA-F]{40}",  // Old format
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{16}"  // New format (00008xxx-xxxxxxxxxxxx)
         ]
-        
+
         for pattern in patterns {
             if let regex = try? NSRegularExpression(pattern: pattern),
                let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
@@ -993,7 +993,7 @@ class DeviceManager: ObservableObject {
         }
         return nil
     }
-    
+
     // MARK: WiFi/Tunneld Device Discovery
     private func discoverTunneldDevices() async -> [Device] {
         do {
@@ -1002,24 +1002,24 @@ class DeviceManager: ObservableObject {
                 "-m", "pymobiledevice3",
                 "remote", "browse", "--no-color"
             ], timeout: 5.0)
-            
+
             // Try JSON parsing first
             let jsonDevices = parseDeviceListJSON(output, connectionType: ConnectionType.wifi)
             if !jsonDevices.isEmpty {
                 return jsonDevices
             }
-            
+
             // Fallback to text parsing for older versions
             return parseTextDeviceList(output, connectionType: ConnectionType.wifi)
         } catch {
             return []
         }
     }
-    
+
     private func parseTextDeviceList(_ output: String, connectionType: ConnectionType) -> [Device] {
         var devices: [Device] = []
         let lines = output.components(separatedBy: .newlines)
-        
+
         for line in lines {
             if let udid = extractUDID(from: line) {
                 // Avoid duplicates
@@ -1036,10 +1036,10 @@ class DeviceManager: ObservableObject {
                 }
             }
         }
-        
+
         return devices
     }
-    
+
     // MARK: Device Info (pymobiledevice3 lockdown info)
     private func getDeviceInfo(udid: String, viaUSB: Bool) async -> Device? {
         do {
@@ -1049,9 +1049,9 @@ class DeviceManager: ObservableObject {
             } else {
                 args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", udid, "--no-color"]
             }
-            
+
             let output = try await runPython(arguments: args, timeout: 10.0)
-            
+
             var info: [String: String] = [:]
             for line in output.split(separator: "\n") {
                 let parts = line.split(separator: ":", maxSplits: 1)
@@ -1061,11 +1061,11 @@ class DeviceManager: ObservableObject {
                     info[key] = value
                 }
             }
-            
+
             let deviceName = info["DeviceName"] ?? info["DeviceClass"] ?? "iOS Device"
             let productType = info["ProductType"]
             let productVersion = info["ProductVersion"]
-            
+
             return Device(
                 id: udid,
                 displayName: "\(deviceName) (\(productVersion ?? "Unknown"))",
@@ -1078,20 +1078,20 @@ class DeviceManager: ObservableObject {
             return nil
         }
     }
-    
+
     // MARK: Connection Management
     func connect(to device: Device) async throws {
         connectionState = .connecting
-        
+
         // Check if tunneld is running for iOS 17+
         await checkTunneldStatus()
-        
+
         // For WiFi devices, tunneld must be running
         if device.connectionType == .wifi && !isTunneldRunning {
             connectionState = .error("tunneld not running")
             throw DeviceError.tunneldNotRunning
         }
-        
+
         // Verify device is reachable via pymobiledevice3
         do {
             let args: [String]
@@ -1100,7 +1100,7 @@ class DeviceManager: ObservableObject {
             } else {
                 args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", device.id, "-k", "ProductVersion", "--no-color"]
             }
-            
+
             _ = try await runPython(arguments: args, timeout: 10.0)
             selectedDevice = device
             connectionState = .connected
@@ -1110,12 +1110,12 @@ class DeviceManager: ObservableObject {
             throw DeviceError.connectionFailed(error.localizedDescription)
         }
     }
-    
+
     func disconnect() async {
         await sessionController.endSession()
         connectionState = .disconnected
     }
-    
+
     // MARK: Developer Mode Check
     func checkDeveloperMode(for device: Device) async -> Bool {
         do {
@@ -1125,37 +1125,37 @@ class DeviceManager: ObservableObject {
             } else {
                 args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--udid", device.id, "--no-color"]
             }
-            
+
             let output = try await runPython(arguments: args, timeout: 15.0)
             return !output.contains("DeveloperModeError") && !output.contains("ERROR")
         } catch {
             return false
         }
     }
-    
+
     // MARK: Python Command Execution
     /// Run Python command with proper timeout protection
     private func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        
+
         process.executableURL = URL(fileURLWithPath: python3Path)
         process.arguments = arguments
         process.standardOutput = outputPipe
         process.standardError = errorPipe
-        
+
         // Set environment using centralized configuration
         process.environment = ProcessEnvironment.configured()
-        
+
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
             let resumeLock = NSLock()
-            
+
             DispatchQueue.global().async {
                 do {
                     try process.run()
-                    
+
                     // Timeout handling with proper error throwing
                     var didTimeout = false
                     DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
@@ -1164,63 +1164,63 @@ class DeviceManager: ObservableObject {
                             process.terminate()
                         }
                     }
-                    
+
                     process.waitUntilExit()
-                    
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     if didTimeout {
                         continuation.resume(throwing: DeviceError.commandFailed("Command timed out after \(timeout) seconds"))
                         return
                     }
-                    
+
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                    
+
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
-                    
+
                     // Combine output
                     continuation.resume(returning: output + errorOutput)
                 } catch {
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     continuation.resume(throwing: DeviceError.commandFailed(error.localizedDescription))
                 }
             }
         }
     }
-    
+
     // MARK: Legacy Command Execution (for pgrep etc)
     private func runCommand(_ command: String, arguments: [String] = [], timeout: TimeInterval = 10.0) async throws -> String {
         let process = Process()
         let pipe = Pipe()
         let errorPipe = Pipe()
-        
+
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = errorPipe
-        
+
         // Set environment using centralized configuration
         process.environment = ProcessEnvironment.configured()
-        
+
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
             let resumeLock = NSLock()
-            
+
             DispatchQueue.global().async {
                 do {
                     try process.run()
-                    
+
                     var didTimeout = false
                     DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                         if process.isRunning {
@@ -1228,46 +1228,46 @@ class DeviceManager: ObservableObject {
                             process.terminate()
                         }
                     }
-                    
+
                     process.waitUntilExit()
-                    
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     if didTimeout {
                         continuation.resume(throwing: DeviceError.commandFailed("Command timed out after \(timeout) seconds"))
                         return
                     }
-                    
+
                     let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
-                    
+
                     continuation.resume(returning: output)
                 } catch {
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
-                    
+
                     guard !hasResumed else { return }
                     hasResumed = true
-                    
+
                     continuation.resume(throwing: DeviceError.commandFailed(error.localizedDescription))
                 }
             }
         }
     }
-    
+
     // MARK: Convenience Methods
     var hasDevices: Bool {
         !devices.isEmpty
     }
-    
+
     var isConnected: Bool {
         connectionState.isConnected
     }
-    
+
     func selectDevice(_ device: Device) async {
         do {
             try await connect(to: device)
@@ -1275,7 +1275,7 @@ class DeviceManager: ObservableObject {
             lastError = error as? DeviceError ?? .connectionFailed(error.localizedDescription)
         }
     }
-    
+
     func setConnectionMode(_ mode: ConnectionMode) {
         connectionMode = mode
         Task {

@@ -10,13 +10,13 @@ import SwiftUI
 struct DeviceListView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connected Devices")
                 .font(AppFont.heading)
                 .padding(.horizontal)
-            
+
             if appState.availableDevices.isEmpty {
                 ContentUnavailableView(
                     "No Devices Found",
@@ -40,7 +40,7 @@ struct DeviceListView: View {
                     .padding(.horizontal)
                 }
             }
-            
+
             // Refresh Button
             Button {
                 Task { await appState.refreshDevices() }
@@ -63,7 +63,7 @@ struct DeviceCard: View {
     let isSelected: Bool
     let isConnected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 16) {
@@ -72,11 +72,11 @@ struct DeviceCard: View {
                     Circle()
                         .fill(isSelected ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
                         .frame(width: 48, height: 48)
-                    
+
                     Image(systemName: "iphone")
                         .font(.title2)
                         .foregroundStyle(isSelected ? .blue : .secondary)
-                    
+
                     // iOS 18+ warning badge
                     if !device.isIOSVersionSupported {
                         Circle()
@@ -90,23 +90,23 @@ struct DeviceCard: View {
                             .offset(x: 16, y: -16)
                     }
                 }
-                
+
                 // Info
                 VStack(alignment: .leading, spacing: 4) {
                     Text(device.displayName)
                         .font(AppFont.body)
                         .fontWeight(.medium)
-                    
+
                     HStack(spacing: 6) {
                         Circle()
                             .fill(connectionColor)
                             .frame(width: 6, height: 6)
-                        
+
                         Text(connectionText)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    
+
                     // iOS version badge (only show if version is known)
                     if device.iosVersion != "Unknown" {
                         HStack(spacing: 4) {
@@ -121,9 +121,9 @@ struct DeviceCard: View {
                         }
                     }
                 }
-                
+
                 Spacer()
-                
+
                 // Selection Indicator
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
@@ -141,12 +141,12 @@ struct DeviceCard: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     private var connectionColor: Color {
         if !isSelected { return .gray }
         return isConnected ? .green : .yellow
     }
-    
+
     private var connectionText: String {
         if !isSelected { return "Tap to select" }
         return isConnected ? "Connected" : "Connecting..."

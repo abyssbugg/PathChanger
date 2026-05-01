@@ -23,7 +23,7 @@ enum CloudSyncError: Error, LocalizedError {
     case unauthorized
     case resourceNotFound
     case serverError(statusCode: Int)
-    
+
     var errorDescription: String? {
         switch self {
         case .notAuthenticated:
@@ -50,7 +50,7 @@ enum CloudSyncError: Error, LocalizedError {
             return "Server error (\(code)). Please try again later."
         }
     }
-    
+
     var isRetryable: Bool {
         switch self {
         case .networkUnavailable, .rateLimited, .serverError:
@@ -73,7 +73,7 @@ enum SyncState: Equatable {
     case conflict
     case error(String)
     case offline
-    
+
     var displayName: String {
         switch self {
         case .idle: return "Synced"
@@ -85,7 +85,7 @@ enum SyncState: Equatable {
         case .offline: return "Offline"
         }
     }
-    
+
     var icon: String {
         switch self {
         case .idle: return "checkmark.icloud"
@@ -115,20 +115,20 @@ struct ShareableRoute: CloudSyncable, Equatable {
     var version: Int
     var lastModified: Date
     var isDeleted: Bool
-    
+
     var name: String
     var description: String?
     var coordinates: [LocationCoordinate]
     var distance: Double
     var color: String
     var tags: [String]
-    
+
     // Sharing metadata
     var ownerId: String
     var sharedWith: [SharePermission]
     var isPublic: Bool
     var shareCode: String?
-    
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -153,7 +153,7 @@ struct ShareableRoute: CloudSyncable, Equatable {
         self.isPublic = false
         self.shareCode = nil
     }
-    
+
     private static func calculateDistance(_ coords: [LocationCoordinate]) -> Double {
         guard coords.count > 1 else { return 0 }
         var total: Double = 0
@@ -183,12 +183,12 @@ struct SharePermission: Codable, Equatable, Identifiable {
     let permission: PermissionLevel
     let grantedAt: Date
     var expiresAt: Date?
-    
+
     enum PermissionLevel: String, Codable, CaseIterable {
         case viewer = "viewer"
         case editor = "editor"
         case admin = "admin"
-        
+
         var displayName: String {
             switch self {
             case .viewer: return "Can view"
@@ -196,20 +196,20 @@ struct SharePermission: Codable, Equatable, Identifiable {
             case .admin: return "Full access"
             }
         }
-        
+
         var canEdit: Bool {
             self == .editor || self == .admin
         }
-        
+
         var canShare: Bool {
             self == .admin
         }
-        
+
         var canDelete: Bool {
             self == .admin
         }
     }
-    
+
     init(
         id: UUID = UUID(),
         userId: String,
@@ -235,13 +235,13 @@ struct CloudSyncSettings: Codable, Equatable {
     var autoSyncInterval: TimeInterval
     var conflictResolution: ConflictResolutionStrategy
     var maxStorageBytes: Int64
-    
+
     enum ConflictResolutionStrategy: String, Codable, CaseIterable {
         case keepLocal = "keep_local"
         case keepRemote = "keep_remote"
         case keepBoth = "keep_both"
         case askUser = "ask_user"
-        
+
         var displayName: String {
             switch self {
             case .keepLocal: return "Keep local version"
@@ -251,7 +251,7 @@ struct CloudSyncSettings: Codable, Equatable {
             }
         }
     }
-    
+
     static let `default` = CloudSyncSettings(
         isEnabled: false,
         syncOnWiFiOnly: false,
@@ -271,12 +271,12 @@ struct SyncMetadata: Codable {
     var conflictCount: Int
     var bytesUsed: Int64
     var bytesQuota: Int64
-    
+
     var usagePercentage: Double {
         guard bytesQuota > 0 else { return 0 }
         return Double(bytesUsed) / Double(bytesQuota)
     }
-    
+
     static let initial = SyncMetadata(
         lastSyncTime: nil,
         lastSyncVersion: 0,
@@ -296,13 +296,13 @@ struct SyncConflict<T: CloudSyncable>: Identifiable {
     let remoteItem: T
     let conflictType: ConflictType
     let detectedAt: Date
-    
+
     enum ConflictType {
         case bothModified
         case localDeletedRemoteModified
         case remoteDeletedLocalModified
     }
-    
+
     init(localItem: T, remoteItem: T, conflictType: ConflictType) {
         self.id = UUID()
         self.localItem = localItem
@@ -317,7 +317,7 @@ struct SyncConflict<T: CloudSyncable>: Identifiable {
 /// Manages cloud synchronization for routes and settings
 @MainActor
 class CloudSyncManager: ObservableObject {
-    
+
     // MARK: Published State
     @Published var syncState: SyncState = .idle
     @Published var settings: CloudSyncSettings = .default
@@ -325,36 +325,36 @@ class CloudSyncManager: ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var currentUser: CloudUser?
     @Published var pendingConflicts: [SyncConflict<ShareableRoute>] = []
-    
+
     // MARK: Singleton
     static let shared = CloudSyncManager()
-    
+
     // MARK: Private
     private var syncTask: Task<Void, Never>?
     private var autoSyncTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     private let pendingChangesQueue = DispatchQueue(label: "com.pathchanger.sync.pending", qos: .utility)
-    
+
     // Offline queue for pending changes
     private var pendingOperations: [PendingOperation] = []
-    
+
     // MARK: Initialization
-    
+
     private init() {
         loadSettings()
         loadMetadata()
         setupAutoSync()
     }
-    
+
     // MARK: - Authentication
-    
+
     /// Authenticate with cloud service
     func authenticate(email: String, password: String) async throws {
         syncState = .syncing
-        
+
         // Simulate authentication delay
         try await Task.sleep(nanoseconds: 500_000_000)
-        
+
         // In a real implementation, this would call an auth API
         currentUser = CloudUser(
             id: UUID().uuidString,
@@ -364,11 +364,11 @@ class CloudSyncManager: ObservableObject {
         )
         isAuthenticated = true
         syncState = .idle
-        
+
         // Start initial sync after authentication
         await performSync()
     }
-    
+
     /// Sign out from cloud service
     func signOut() {
         currentUser = nil
@@ -376,42 +376,42 @@ class CloudSyncManager: ObservableObject {
         syncState = .idle
         pendingOperations.removeAll()
     }
-    
+
     // MARK: - Sync Operations
-    
+
     /// Perform a full sync with the cloud
     func performSync() async {
         guard isAuthenticated else {
             syncState = .error("Not authenticated")
             return
         }
-        
+
         guard await checkNetworkAvailability() else {
             syncState = .offline
             return
         }
-        
+
         syncState = .syncing
-        
+
         do {
             // Process pending offline operations first
             try await processPendingOperations()
-            
+
             // Download remote changes
             syncState = .downloading(progress: 0.3)
             try await downloadRemoteChanges()
-            
+
             // Upload local changes
             syncState = .uploading(progress: 0.7)
             try await uploadLocalChanges()
-            
+
             // Update metadata
             metadata.lastSyncTime = Date()
             metadata.pendingChanges = 0
             saveMetadata()
-            
+
             syncState = .idle
-            
+
             Logger.info("Cloud sync completed successfully", category: .network)
         } catch {
             let errorMessage = (error as? CloudSyncError)?.errorDescription ?? error.localizedDescription
@@ -419,7 +419,7 @@ class CloudSyncManager: ObservableObject {
             Logger.error("Cloud sync failed", category: .network, metadata: LogMetadata(additionalInfo: ["error": errorMessage]))
         }
     }
-    
+
     /// Queue a local change for sync
     func queueChange<T: CloudSyncable>(_ item: T, operation: OperationType) {
         let pending = PendingOperation(
@@ -430,14 +430,14 @@ class CloudSyncManager: ObservableObject {
             timestamp: Date(),
             data: try? JSONEncoder().encode(item)
         )
-        
+
         pendingChangesQueue.sync {
             pendingOperations.append(pending)
         }
-        
+
         metadata.pendingChanges = pendingOperations.count
         saveMetadata()
-        
+
         // Trigger sync if auto-sync is enabled
         if settings.isEnabled {
             Task {
@@ -445,94 +445,94 @@ class CloudSyncManager: ObservableObject {
             }
         }
     }
-    
+
     // MARK: - Sharing
-    
+
     /// Share a route with another user
     func shareRoute(_ route: ShareableRoute, with email: String, permission: SharePermission.PermissionLevel) async throws -> ShareableRoute {
         guard isAuthenticated else {
             throw CloudSyncError.notAuthenticated
         }
-        
+
         var updatedRoute = route
         let newPermission = SharePermission(
             userId: UUID().uuidString, // In real impl, lookup user by email
             email: email,
             permission: permission
         )
-        
+
         updatedRoute.sharedWith.append(newPermission)
         updatedRoute.version += 1
         updatedRoute.lastModified = Date()
-        
+
         queueChange(updatedRoute, operation: .update)
-        
+
         Logger.info("Route shared", category: .network, metadata: LogMetadata(additionalInfo: [
             "route": route.name,
             "sharedWith": email,
             "permission": permission.rawValue
         ]))
-        
+
         return updatedRoute
     }
-    
+
     /// Generate a shareable link for a route
     func generateShareLink(for route: ShareableRoute) async throws -> URL {
         guard isAuthenticated else {
             throw CloudSyncError.notAuthenticated
         }
-        
+
         var updatedRoute = route
-        
+
         // Generate unique share code if not exists
         if updatedRoute.shareCode == nil {
             updatedRoute.shareCode = generateShareCode()
         }
-        
+
         updatedRoute.isPublic = true
         updatedRoute.version += 1
         updatedRoute.lastModified = Date()
-        
+
         queueChange(updatedRoute, operation: .update)
-        
+
         // In real implementation, this would be a server URL
         let shareURL = URL(string: "pathchanger://share/\(updatedRoute.shareCode ?? "")")!
-        
+
         return shareURL
     }
-    
+
     /// Import a route from a share link
     func importFromShareLink(_ url: URL) async throws -> ShareableRoute? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let shareCode = components.path.components(separatedBy: "/").last else {
             throw CloudSyncError.invalidData
         }
-        
+
         // In real implementation, this would fetch from server
         Logger.info("Importing route from share code", category: .network, metadata: LogMetadata(additionalInfo: ["code": shareCode]))
-        
+
         // Placeholder - would return fetched route
         return nil
     }
-    
+
     /// Revoke sharing for a user
     func revokeShare(_ route: ShareableRoute, userId: String) async throws -> ShareableRoute {
         guard isAuthenticated else {
             throw CloudSyncError.notAuthenticated
         }
-        
+
         var updatedRoute = route
         updatedRoute.sharedWith.removeAll { $0.userId == userId }
         updatedRoute.version += 1
         updatedRoute.lastModified = Date()
-        
+
         queueChange(updatedRoute, operation: .update)
-        
+
         return updatedRoute
     }
-    
+
     // MARK: - Conflict Resolution
-    
+
     /// Resolve a sync conflict
     func resolveConflict(_ conflict: SyncConflict<ShareableRoute>, resolution: CloudSyncSettings.ConflictResolutionStrategy) async throws {
         switch resolution {
@@ -540,70 +540,70 @@ class CloudSyncManager: ObservableObject {
             var updated = conflict.localItem
             updated.version = max(conflict.localItem.version, conflict.remoteItem.version) + 1
             queueChange(updated, operation: .update)
-            
+
         case .keepRemote:
             // Remote version is already in cloud, just update local
             // In real implementation, update local storage
             break
-            
+
         case .keepBoth:
             var localCopy = conflict.localItem
             localCopy.name = "\(localCopy.name) (Local)"
             localCopy.version = max(conflict.localItem.version, conflict.remoteItem.version) + 1
             queueChange(localCopy, operation: .create)
-            
+
         case .askUser:
             // Keep in pending conflicts for user decision
             return
         }
-        
+
         pendingConflicts.removeAll { $0.id == conflict.id }
         metadata.conflictCount = pendingConflicts.count
         saveMetadata()
     }
-    
+
     // MARK: - Settings
-    
+
     /// Update sync settings
     func updateSettings(_ newSettings: CloudSyncSettings) {
         settings = newSettings
         saveSettings()
         setupAutoSync()
     }
-    
+
     // MARK: - Private Methods
-    
+
     private func loadSettings() {
         if let data = UserDefaults.standard.data(forKey: "CloudSyncSettings"),
            let decoded = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {
             settings = decoded
         }
     }
-    
+
     private func saveSettings() {
         if let encoded = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(encoded, forKey: "CloudSyncSettings")
         }
     }
-    
+
     private func loadMetadata() {
         if let data = UserDefaults.standard.data(forKey: "SyncMetadata"),
            let decoded = try? JSONDecoder().decode(SyncMetadata.self, from: data) {
             metadata = decoded
         }
     }
-    
+
     private func saveMetadata() {
         if let encoded = try? JSONEncoder().encode(metadata) {
             UserDefaults.standard.set(encoded, forKey: "SyncMetadata")
         }
     }
-    
+
     private func setupAutoSync() {
         autoSyncTimer?.invalidate()
-        
+
         guard settings.isEnabled && settings.autoSyncInterval > 0 else { return }
-        
+
         autoSyncTimer = Timer.scheduledTimer(withTimeInterval: settings.autoSyncInterval, repeats: true) { [weak self] _ in
             guard let strongSelf = self else { return }
             Task { @MainActor in
@@ -611,15 +611,15 @@ class CloudSyncManager: ObservableObject {
             }
         }
     }
-    
+
     private func checkNetworkAvailability() async -> Bool {
         // In real implementation, check network reachability
         return true
     }
-    
+
     private func processPendingOperations() async throws {
         var remaining: [PendingOperation] = []
-        
+
         for operation in pendingOperations {
             do {
                 // In real implementation, send to server
@@ -628,22 +628,22 @@ class CloudSyncManager: ObservableObject {
                 remaining.append(operation)
             }
         }
-        
+
         pendingChangesQueue.sync {
             pendingOperations = remaining
         }
     }
-    
+
     private func downloadRemoteChanges() async throws {
         // In real implementation, fetch changes from server
         try await Task.sleep(nanoseconds: 100_000_000)
     }
-    
+
     private func uploadLocalChanges() async throws {
         // In real implementation, send local changes to server
         try await Task.sleep(nanoseconds: 100_000_000)
     }
-    
+
     private func generateShareCode() -> String {
         let characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         return String((0..<8).map { _ in characters.randomElement()! })
@@ -685,16 +685,16 @@ class CollaborationSession: ObservableObject {
     @Published var isActive: Bool = false
     @Published var participants: [CollaborationParticipant] = []
     @Published var sessionCode: String?
-    
+
     private var sessionId: String?
-    
+
     /// Start a new collaboration session
     func startSession() async throws -> String {
         let code = generateSessionCode()
         sessionCode = code
         sessionId = UUID().uuidString
         isActive = true
-        
+
         // Add self as host
         let hostParticipant = CollaborationParticipant(
             id: UUID().uuidString,
@@ -703,18 +703,18 @@ class CollaborationSession: ObservableObject {
             cursor: nil
         )
         participants = [hostParticipant]
-        
+
         Logger.info("Collaboration session started", category: .network, metadata: LogMetadata(additionalInfo: ["code": code]))
-        
+
         return code
     }
-    
+
     /// Join an existing collaboration session
     func joinSession(code: String, displayName: String) async throws {
         sessionCode = code
         sessionId = UUID().uuidString // Would be fetched from server
         isActive = true
-        
+
         let participant = CollaborationParticipant(
             id: UUID().uuidString,
             displayName: displayName,
@@ -722,10 +722,10 @@ class CollaborationSession: ObservableObject {
             cursor: nil
         )
         participants.append(participant)
-        
+
         Logger.info("Joined collaboration session", category: .network, metadata: LogMetadata(additionalInfo: ["code": code]))
     }
-    
+
     /// Leave the current session
     func leaveSession() {
         isActive = false
@@ -733,13 +733,13 @@ class CollaborationSession: ObservableObject {
         sessionCode = nil
         sessionId = nil
     }
-    
+
     /// Broadcast a location update to all participants
     func broadcastLocation(_ coordinate: LocationCoordinate) {
         guard isActive else { return }
         // In real implementation, send via WebSocket
     }
-    
+
     private func generateSessionCode() -> String {
         let characters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         return String((0..<6).map { _ in characters.randomElement()! })
@@ -753,7 +753,7 @@ struct CollaborationParticipant: Identifiable, Codable {
     let isHost: Bool
     var cursor: LocationCoordinate?
     var lastActive: Date = Date()
-    
+
     var isOnline: Bool {
         Date().timeIntervalSince(lastActive) < 60
     }
@@ -770,7 +770,7 @@ struct RouteVersion: Identifiable, Codable {
     let author: String
     let changeDescription: String
     let coordinateSnapshot: [LocationCoordinate]
-    
+
     init(route: ShareableRoute, author: String, description: String) {
         self.id = UUID()
         self.routeId = route.id
@@ -786,30 +786,30 @@ struct RouteVersion: Identifiable, Codable {
 @MainActor
 class RouteVersionManager: ObservableObject {
     @Published var versions: [UUID: [RouteVersion]] = [:]
-    
+
     private let maxVersionsPerRoute = 50
-    
+
     /// Record a new version
     func recordVersion(for route: ShareableRoute, author: String, description: String) {
         let version = RouteVersion(route: route, author: author, description: description)
-        
+
         if versions[route.id] == nil {
             versions[route.id] = []
         }
-        
+
         versions[route.id]?.append(version)
-        
+
         // Trim old versions
         if let count = versions[route.id]?.count, count > maxVersionsPerRoute {
             versions[route.id]?.removeFirst(count - maxVersionsPerRoute)
         }
     }
-    
+
     /// Get version history for a route
     func getHistory(for routeId: UUID) -> [RouteVersion] {
         return versions[routeId]?.sorted { $0.version > $1.version } ?? []
     }
-    
+
     /// Restore a route to a specific version
     func restore(version: RouteVersion) -> ShareableRoute {
         // Create a route from the version snapshot

@@ -10,11 +10,12 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "PathChanger", targets: ["PathChanger"]),
+        .executable(name: "PathChanger", targets: ["PathChanger"])
     ],
     dependencies: [
         // Sparkle for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.0")
     ],
     targets: [
         .executableTarget(
@@ -34,6 +35,6 @@ let package = Package(
             name: "PathChangerTests",
             dependencies: ["PathChanger"],
             path: "Tests/PathChangerTests"
-        ),
+        )
     ]
 )

@@ -16,7 +16,7 @@ struct LocationSearchResult: Identifiable, Equatable {
     let subtitle: String
     let coordinate: LocationCoordinate
     let mapItem: MKMapItem
-    
+
     static func == (lhs: LocationSearchResult, rhs: LocationSearchResult) -> Bool {
         lhs.id == rhs.id
     }
@@ -29,15 +29,15 @@ class LocationSearchService: ObservableObject {
     @Published var searchResults: [LocationSearchResult] = []
     @Published var isSearching: Bool = false
     @Published var errorMessage: String?
-    
+
     private var searchCompleter: MKLocalSearchCompleter
     private var searchTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
-    
+
     init() {
         searchCompleter = MKLocalSearchCompleter()
         searchCompleter.resultTypes = [.address, .pointOfInterest]
-        
+
         // Debounce search text changes
         $searchText
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
@@ -46,19 +46,19 @@ class LocationSearchService: ObservableObject {
             }
             .store(in: &cancellables)
     }
-    
+
     /// Search for locations matching the query
     func performSearch(query: String) {
         searchTask?.cancel()
-        
+
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         guard !trimmedQuery.isEmpty else {
             searchResults = []
             isSearching = false
             return
         }
-        
+
         // Check if it's a coordinate input (e.g., "37.7749, -122.4194")
         if let coordinate = parseCoordinateString(trimmedQuery) {
             searchResults = [
@@ -75,45 +75,45 @@ class LocationSearchService: ObservableObject {
             isSearching = false
             return
         }
-        
+
         isSearching = true
         errorMessage = nil
-        
+
         searchTask = Task {
             do {
                 let results = try await search(query: trimmedQuery)
-                
+
                 guard !Task.isCancelled else { return }
-                
+
                 searchResults = results
                 isSearching = false
             } catch {
                 guard !Task.isCancelled else { return }
-                
+
                 searchResults = []
                 isSearching = false
                 errorMessage = "Search failed: \(error.localizedDescription)"
             }
         }
     }
-    
+
     /// Perform MapKit local search
     private func search(query: String) async throws -> [LocationSearchResult] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         request.resultTypes = [.address, .pointOfInterest]
-        
+
         let search = MKLocalSearch(request: request)
         let response = try await search.start()
-        
+
         return response.mapItems.compactMap { item -> LocationSearchResult? in
             guard let location = item.placemark.location else { return nil }
-            
+
             let coordinate = LocationCoordinate(
                 latitude: location.coordinate.latitude,
                 longitude: location.coordinate.longitude
             )
-            
+
             return LocationSearchResult(
                 name: item.name ?? "Unknown",
                 subtitle: formatAddress(item.placemark),
@@ -122,7 +122,7 @@ class LocationSearchService: ObservableObject {
             )
         }
     }
-    
+
     /// Parse coordinate string (e.g., "37.7749, -122.4194")
     private func parseCoordinateString(_ text: String) -> LocationCoordinate? {
         // Remove common prefixes
@@ -131,12 +131,12 @@ class LocationSearchService: ObservableObject {
             .replacingOccurrences(of: "lon:", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "lng:", with: "", options: .caseInsensitive)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         // Try comma-separated format
         let components = cleanText.components(separatedBy: CharacterSet(charactersIn: ",; "))
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        
+
         guard components.count == 2,
               let lat = Double(components[0]),
               let lon = Double(components[1]),
@@ -144,14 +144,14 @@ class LocationSearchService: ObservableObject {
               lon >= -180, lon <= 180 else {
             return nil
         }
-        
+
         return LocationCoordinate(latitude: lat, longitude: lon)
     }
-    
+
     /// Format address from placemark
     private func formatAddress(_ placemark: MKPlacemark) -> String {
         var parts: [String] = []
-        
+
         if let thoroughfare = placemark.thoroughfare {
             parts.append(thoroughfare)
         }
@@ -164,10 +164,10 @@ class LocationSearchService: ObservableObject {
         if let country = placemark.country, parts.isEmpty {
             parts.append(country)
         }
-        
+
         return parts.isEmpty ? "Unknown location" : parts.joined(separator: ", ")
     }
-    
+
     /// Clear search
     func clearSearch() {
         searchTask?.cancel()

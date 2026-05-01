@@ -17,9 +17,9 @@ enum AppMode: String, CaseIterable, Identifiable {
     case route = "Multi-Spot"
     case joystick = "Joystick"
     case settings = "Settings"
-    
+
     var id: String { rawValue }
-    
+
     var icon: String {
         switch self {
         case .teleport: return "mappin.and.ellipse"
@@ -28,7 +28,7 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .settings: return "gear"
         }
     }
-    
+
     var description: String {
         switch self {
         case .teleport: return "Instantly change location"
@@ -47,7 +47,7 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var currentError: ErrorHandler.AppError?
     @State private var showErrorDialog = false
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // iOS 18+ Warning Banner
@@ -55,7 +55,7 @@ struct ContentView: View {
                 IOS18WarningBanner(device: device)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            
+
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView(selectedMode: $selectedMode)
                     .navigationTitle("Location Changer")
@@ -125,7 +125,7 @@ struct ContentView: View {
         // Toast notifications
         .withToasts()
     }
-    
+
     private func handleErrorAction(_ action: ErrorHandler.ErrorAction) {
         switch action {
         case .retry:
@@ -151,7 +151,7 @@ struct IOS18WarningBanner: View {
     @State private var isExpanded = false
     @State private var showDialog = false
     @State private var isDismissed = false
-    
+
     var body: some View {
         if !isDismissed && !AppPreferences.shared.isIOS18WarningDismissed(for: device.id) {
             VStack(spacing: 0) {
@@ -159,11 +159,11 @@ struct IOS18WarningBanner: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.title3)
                         .foregroundColor(.orange)
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
                         Text("iOS \(device.iosVersion) Not Supported")
                             .font(.subheadline.weight(.semibold))
-                        
+
                         if isExpanded {
                             Text("Location simulation may not work on iOS 18+. Downgrade to iOS 17.6 or check for pymobiledevice3 updates.")
                                 .font(.caption)
@@ -171,9 +171,9 @@ struct IOS18WarningBanner: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    
+
                     Spacer()
-                    
+
                     Button {
                         withAnimation(.spring(response: 0.3)) {
                             isExpanded.toggle()
@@ -184,13 +184,13 @@ struct IOS18WarningBanner: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
-                    
+
                     Button("Learn More") {
                         showDialog = true
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    
+
                     Button {
                         AppPreferences.shared.setIOS18WarningDismissed(for: device.id)
                         withAnimation {

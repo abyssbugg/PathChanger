@@ -11,7 +11,7 @@ struct SidebarView: View {
     @Binding var selectedMode: AppMode?
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -25,7 +25,7 @@ struct SidebarView: View {
             }
             .padding()
             .padding(.top, 10)
-            
+
             ScrollView {
                 VStack(spacing: 16) {
                     // Mode Selection
@@ -36,21 +36,21 @@ struct SidebarView: View {
                             }
                         }
                     }
-                    
+
                     Divider()
                         .padding(.horizontal)
-                    
+
                     // Device Section
                     deviceSection
                 }
                 .padding()
             }
-            
+
             Spacer()
-            
+
             // Tunnel Status
             tunnelStatusBar
-            
+
             // Footer / Version
             Text("v1.0.0 Pro")
                 .font(AppFont.caption)
@@ -59,9 +59,9 @@ struct SidebarView: View {
         }
         .background(Color.appSurface.opacity(0.5))
     }
-    
+
     // MARK: - Device Section
-    
+
     private var deviceSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -70,9 +70,9 @@ struct SidebarView: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
-                
+
                 Spacer()
-                
+
                 Button {
                     Task { await appState.refreshDevices() }
                 } label: {
@@ -83,7 +83,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .help("Refresh device list")
             }
-            
+
             if appState.availableDevices.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "iphone.slash")
@@ -107,21 +107,21 @@ struct SidebarView: View {
             }
         }
     }
-    
+
     // MARK: - Tunnel Status Bar
-    
+
     private var tunnelStatusBar: some View {
         HStack(spacing: 8) {
             Circle()
                 .fill(tunneldManager.isRunning ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
-            
+
             Text(tunneldManager.isRunning ? "Tunnel Active" : "Tunnel Inactive")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            
+
             Spacer()
-            
+
             if !tunneldManager.isRunning {
                 Button("Start") {
                     Task { await tunneldManager.startTunnel() }
@@ -144,7 +144,7 @@ struct SidebarDeviceRow: View {
     let isSelected: Bool
     let isConnected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
@@ -152,26 +152,26 @@ struct SidebarDeviceRow: View {
                     .font(.system(size: 16))
                     .foregroundStyle(isSelected ? .blue : .secondary)
                     .frame(width: 24)
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.displayName)
                         .font(.caption)
                         .fontWeight(isSelected ? .semibold : .regular)
                         .lineLimit(1)
-                    
+
                     HStack(spacing: 4) {
                         Circle()
                             .fill(statusColor)
                             .frame(width: 5, height: 5)
-                        
+
                         Text(statusText)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.caption)
@@ -191,12 +191,12 @@ struct SidebarDeviceRow: View {
         }
         .buttonStyle(.plain)
     }
-    
+
     private var statusColor: Color {
         if !isSelected { return .gray }
         return isConnected ? .green : .yellow
     }
-    
+
     private var statusText: String {
         if !isSelected { return "Tap to select" }
         return isConnected ? "Connected" : "Connecting..."
@@ -207,26 +207,26 @@ struct SidebarButton: View {
     let mode: AppMode
     let isSelected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: mode.icon)
                     .font(.system(size: 20))
                     .frame(width: 30)
-                
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text(mode.rawValue)
                         .font(AppFont.body)
                         .fontWeight(isSelected ? .semibold : .regular)
-                    
+
                     Text(mode.description)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                
+
                 Spacer()
-                
+
                 if isSelected {
                     Image(systemName: "chevron.right")
                         .font(.caption)

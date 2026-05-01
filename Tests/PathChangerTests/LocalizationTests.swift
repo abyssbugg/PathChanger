@@ -10,15 +10,15 @@ import XCTest
 import SwiftUI
 
 final class LocalizationTests: XCTestCase {
-    
+
     // MARK: - L10n Namespace Tests
-    
+
     func testAppNamespaceExists() {
         // Verify L10n.App namespace has expected keys
         XCTAssertNotNil(L10n.App.name)
         XCTAssertFalse(L10n.App.version("1.0.0").isEmpty)
     }
-    
+
     func testActionNamespaceExists() {
         // Verify common actions exist
         XCTAssertNotNil(L10n.Action.cancel)
@@ -38,7 +38,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Action.settings)
         XCTAssertNotNil(L10n.Action.help)
     }
-    
+
     func testOnboardingNamespaceExists() {
         XCTAssertNotNil(L10n.Onboarding.welcomeTitle)
         XCTAssertNotNil(L10n.Onboarding.welcomeSubtitle)
@@ -53,7 +53,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Onboarding.next)
         XCTAssertNotNil(L10n.Onboarding.previous)
     }
-    
+
     func testSidebarNamespaceExists() {
         XCTAssertNotNil(L10n.Sidebar.devices)
         XCTAssertNotNil(L10n.Sidebar.simulation)
@@ -62,7 +62,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Sidebar.noDevices)
         XCTAssertNotNil(L10n.Sidebar.refreshDevices)
     }
-    
+
     func testDeviceNamespaceExists() {
         XCTAssertNotNil(L10n.Device.connected)
         XCTAssertNotNil(L10n.Device.disconnected)
@@ -73,7 +73,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Device.multiSelect)
         XCTAssertNotNil(L10n.Device.noLocation)
     }
-    
+
     func testSimulationNamespaceExists() {
         XCTAssertNotNil(L10n.Simulation.title)
         XCTAssertNotNil(L10n.Simulation.coordinates)
@@ -86,7 +86,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Simulation.tapToSetLocation)
         XCTAssertNotNil(L10n.Simulation.manualInput)
     }
-    
+
     func testJoystickNamespaceExists() {
         XCTAssertNotNil(L10n.Joystick.title)
         XCTAssertNotNil(L10n.Joystick.enable)
@@ -98,7 +98,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Joystick.speedCar)
         XCTAssertNotNil(L10n.Joystick.hint)
     }
-    
+
     func testRouteNamespaceExists() {
         XCTAssertNotNil(L10n.Route.title)
         XCTAssertNotNil(L10n.Route.start)
@@ -112,20 +112,20 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Route.library)
         XCTAssertNotNil(L10n.Route.noRoute)
     }
-    
+
     func testSettingsNamespaceExists() {
         XCTAssertNotNil(L10n.Settings.title)
         XCTAssertNotNil(L10n.Settings.general)
         XCTAssertNotNil(L10n.Settings.appearance)
         XCTAssertNotNil(L10n.Settings.advanced)
         XCTAssertNotNil(L10n.Settings.about)
-        
+
         // General settings
         XCTAssertNotNil(L10n.Settings.General.autoStartTunnel)
         XCTAssertNotNil(L10n.Settings.General.autoStartTunnelDesc)
         XCTAssertNotNil(L10n.Settings.General.rememberLastLocation)
         XCTAssertNotNil(L10n.Settings.General.rememberLastLocationDesc)
-        
+
         // Appearance settings
         XCTAssertNotNil(L10n.Settings.Appearance.theme)
         XCTAssertNotNil(L10n.Settings.Appearance.themeLight)
@@ -135,7 +135,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Settings.Appearance.mapStyleStandard)
         XCTAssertNotNil(L10n.Settings.Appearance.mapStyleSatellite)
         XCTAssertNotNil(L10n.Settings.Appearance.mapStyleHybrid)
-        
+
         // Advanced settings
         XCTAssertNotNil(L10n.Settings.Advanced.tunnelMode)
         XCTAssertNotNil(L10n.Settings.Advanced.tunnelModeAuto)
@@ -146,7 +146,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Settings.Advanced.rateLimit)
         XCTAssertNotNil(L10n.Settings.Advanced.rateLimitDesc)
     }
-    
+
     func testTunnelNamespaceExists() {
         XCTAssertNotNil(L10n.Tunnel.status)
         XCTAssertNotNil(L10n.Tunnel.connected)
@@ -161,7 +161,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Tunnel.modeWiFi)
         XCTAssertNotNil(L10n.Tunnel.modeDaemon)
     }
-    
+
     func testErrorNamespaceExists() {
         XCTAssertNotNil(L10n.Error.title)
         XCTAssertNotNil(L10n.Error.unknown)
@@ -175,7 +175,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Error.pymobiledeviceNotFound)
         XCTAssertNotNil(L10n.Error.connectionFailed)
     }
-    
+
     func testToastNamespaceExists() {
         XCTAssertNotNil(L10n.Toast.locationSet)
         XCTAssertNotNil(L10n.Toast.locationCleared)
@@ -185,7 +185,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Toast.copied)
         XCTAssertNotNil(L10n.Toast.queued)
     }
-    
+
     func testAccessibilityNamespaceExists() {
         XCTAssertNotNil(L10n.Accessibility.map)
         XCTAssertNotNil(L10n.Accessibility.joystick)
@@ -197,7 +197,7 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Accessibility.startRouteButton)
         XCTAssertNotNil(L10n.Accessibility.stopRouteButton)
     }
-    
+
     func testDependencyNamespaceExists() {
         XCTAssertNotNil(L10n.Dependency.title)
         XCTAssertNotNil(L10n.Dependency.message)
@@ -207,84 +207,84 @@ final class LocalizationTests: XCTestCase {
         XCTAssertFalse(L10n.Dependency.brewCommand.isEmpty)
         XCTAssertFalse(L10n.Dependency.pipCommand.isEmpty)
     }
-    
+
     // MARK: - Format String Tests
-    
+
     func testVersionFormatString() {
         let version = L10n.App.version("1.2.3")
         // Either contains the version or returns the key (if not localized)
         XCTAssertTrue(version.contains("1.2.3") || version.contains("app.version"))
     }
-    
+
     func testDeviceCountFormatString() {
         let count = L10n.Sidebar.deviceCount(5)
         XCTAssertTrue(count.contains("5") || count.contains("deviceCount"))
     }
-    
+
     func testDeviceSelectedCountFormatString() {
         let count = L10n.Device.selectedCount(3)
         XCTAssertTrue(count.contains("3") || count.contains("selectedCount"))
     }
-    
+
     func testDeviceLastLocationFormatString() {
         let location = L10n.Device.lastLocation("37.7749, -122.4194")
         XCTAssertTrue(location.contains("37.7749") || location.contains("lastLocation"))
     }
-    
+
     func testRouteSpeedFormatString() {
         let speed = L10n.Route.speed("2.0")
         XCTAssertTrue(speed.contains("2.0") || speed.contains("route.speed"))
     }
-    
+
     func testRouteProgressFormatString() {
         let progress = L10n.Route.progress(75)
         XCTAssertTrue(progress.contains("75") || progress.contains("route.progress"))
     }
-    
+
     func testRoutePointCountFormatString() {
         let points = L10n.Route.pointCount(100)
         XCTAssertTrue(points.contains("100") || points.contains("pointCount"))
     }
-    
+
     func testDeviceConnectedToastFormatString() {
         let toast = L10n.Toast.deviceConnected("iPhone 15")
         XCTAssertTrue(toast.contains("iPhone 15") || toast.contains("deviceConnected"))
     }
-    
+
     func testDeviceDisconnectedToastFormatString() {
         let toast = L10n.Toast.deviceDisconnected("iPad Pro")
         XCTAssertTrue(toast.contains("iPad Pro") || toast.contains("deviceDisconnected"))
     }
-    
+
     // MARK: - String Extension Tests
-    
+
     func testStringLocalizedExtension() {
         // Test the extension exists and returns a non-empty string for known keys
         let localizedString = "action.cancel".localized
         XCTAssertFalse(localizedString.isEmpty)
     }
-    
+
     func testStringLocalizedWithArgumentsExtension() {
         let formatted = "app.version".localized(with: "1.0.0")
         // Either contains the value or returns something non-empty
         XCTAssertFalse(formatted.isEmpty)
     }
-    
+
     // MARK: - LocalizedStringKey Helper Tests
-    
+
     func testLocalizedStringKeyFactory() {
         let key = LocalizedStringKey.key("action.cancel")
         XCTAssertNotNil(key)
     }
-    
+
     // MARK: - Localization File Presence Tests
-    
+
     func testEnglishLocalizationFileExists() {
         // The Localizable.strings should be bundled with the app
         // This test validates the L10n structure is properly set up
         XCTAssertNotNil(L10n.App.name)
     }
-    
+
     func testAllActionKeysHaveValues() {
         // Verify action keys are properly configured
         let actions: [LocalizedStringKey] = [
@@ -305,12 +305,12 @@ final class LocalizationTests: XCTestCase {
             L10n.Action.settings,
             L10n.Action.help
         ]
-        
+
         XCTAssertEqual(actions.count, 16)
     }
-    
+
     // MARK: - Dependency Commands Tests
-    
+
     func testDependencyCommandsAreValid() {
         XCTAssertEqual(L10n.Dependency.brewCommand, "brew install python3")
         XCTAssertEqual(L10n.Dependency.pipCommand, "pip3 install pymobiledevice3")

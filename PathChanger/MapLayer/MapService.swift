@@ -19,14 +19,14 @@ class LocationAnnotation: NSObject, MKAnnotation, Identifiable {
     var title: String?
     var subtitle: String?
     var annotationType: AnnotationType
-    
+
     enum AnnotationType {
         case spoofedLocation
         case waypoint
         case destination
         case searchResult
     }
-    
+
     init(
         coordinate: CLLocationCoordinate2D,
         title: String? = nil,
@@ -50,7 +50,7 @@ struct MapRoute: Identifiable {
     let name: String
     let color: NSColor
     let lineWidth: CGFloat
-    
+
     init(
         coordinates: [CLLocationCoordinate2D],
         name: String = "Route",
@@ -62,11 +62,11 @@ struct MapRoute: Identifiable {
         self.color = color
         self.lineWidth = lineWidth
     }
-    
+
     var polyline: MKPolyline {
         MKPolyline(coordinates: coordinates, count: coordinates.count)
     }
-    
+
     var totalDistance: CLLocationDistance {
         guard coordinates.count > 1 else { return 0 }
         var distance: CLLocationDistance = 0
@@ -86,7 +86,7 @@ protocol MapServiceProtocol: AnyObject {
     var region: MKCoordinateRegion { get set }
     var annotations: [LocationAnnotation] { get }
     var routes: [MapRoute] { get }
-    
+
     func setRegion(_ region: MKCoordinateRegion, animated: Bool)
     func centerOn(coordinate: CLLocationCoordinate2D, span: MKCoordinateSpan?, animated: Bool)
     func addAnnotation(_ annotation: LocationAnnotation)
@@ -102,9 +102,9 @@ protocol MapServiceProtocol: AnyObject {
 enum MapProvider: String, CaseIterable, Identifiable {
     case mapKit = "Apple Maps"
     case mapbox = "Mapbox"
-    
+
     var id: String { rawValue }
-    
+
     var icon: String {
         switch self {
         case .mapKit: return "map"
@@ -120,62 +120,62 @@ class MapKitService: MapServiceProtocol, ObservableObject {
     @Published var region: MKCoordinateRegion
     @Published private(set) var annotations: [LocationAnnotation] = []
     @Published private(set) var routes: [MapRoute] = []
-    
+
     private var routeOverlays: [UUID: MKPolyline] = [:]
-    
+
     init(initialRegion: MKCoordinateRegion? = nil) {
         self.region = initialRegion ?? MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 35.6762, longitude: 139.6503),
             span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
         )
     }
-    
+
     func setRegion(_ region: MKCoordinateRegion, animated: Bool = true) {
         self.region = region
     }
-    
+
     func centerOn(coordinate: CLLocationCoordinate2D, span: MKCoordinateSpan? = nil, animated: Bool = true) {
         let newSpan = span ?? region.span
         region = MKCoordinateRegion(center: coordinate, span: newSpan)
     }
-    
+
     func addAnnotation(_ annotation: LocationAnnotation) {
         annotations.append(annotation)
     }
-    
+
     func removeAnnotation(_ annotation: LocationAnnotation) {
         annotations.removeAll { $0.id == annotation.id }
     }
-    
+
     func removeAllAnnotations() {
         annotations.removeAll()
     }
-    
+
     func addRoute(_ route: MapRoute) {
         routes.append(route)
         routeOverlays[route.id] = route.polyline
     }
-    
+
     func removeRoute(_ route: MapRoute) {
         routes.removeAll { $0.id == route.id }
         routeOverlays.removeValue(forKey: route.id)
     }
-    
+
     func clearAllRoutes() {
         routes.removeAll()
         routeOverlays.removeAll()
     }
-    
+
     func searchLocation(query: String) async throws -> [MKMapItem] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         request.region = region
-        
+
         let search = MKLocalSearch(request: request)
         let response = try await search.start()
         return response.mapItems
     }
-    
+
     /// Calculate route between two points
     func calculateRoute(
         from source: CLLocationCoordinate2D,
@@ -185,7 +185,7 @@ class MapKitService: MapServiceProtocol, ObservableObject {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: source))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
         request.transportType = .automobile
-        
+
         let directions = MKDirections(request: request)
         let response = try await directions.calculate()
         return response.routes.first
@@ -200,47 +200,47 @@ class MapboxService: MapServiceProtocol, ObservableObject {
     @Published var region: MKCoordinateRegion
     @Published private(set) var annotations: [LocationAnnotation] = []
     @Published private(set) var routes: [MapRoute] = []
-    
+
     init() {
         self.region = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 35.6762, longitude: 139.6503),
             span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
         )
     }
-    
+
     func setRegion(_ region: MKCoordinateRegion, animated: Bool = true) {
         self.region = region
     }
-    
+
     func centerOn(coordinate: CLLocationCoordinate2D, span: MKCoordinateSpan? = nil, animated: Bool = true) {
         let newSpan = span ?? region.span
         region = MKCoordinateRegion(center: coordinate, span: newSpan)
     }
-    
+
     func addAnnotation(_ annotation: LocationAnnotation) {
         annotations.append(annotation)
     }
-    
+
     func removeAnnotation(_ annotation: LocationAnnotation) {
         annotations.removeAll { $0.id == annotation.id }
     }
-    
+
     func removeAllAnnotations() {
         annotations.removeAll()
     }
-    
+
     func addRoute(_ route: MapRoute) {
         routes.append(route)
     }
-    
+
     func removeRoute(_ route: MapRoute) {
         routes.removeAll { $0.id == route.id }
     }
-    
+
     func clearAllRoutes() {
         routes.removeAll()
     }
-    
+
     func searchLocation(query: String) async throws -> [MKMapItem] {
         // Mapbox Geocoding API would be used here
         // For now, fall back to MapKit search
@@ -261,17 +261,17 @@ class MapManager: ObservableObject {
     @Published var mapStyle: MapStyleType = .standard
     @Published var showsUserLocation: Bool = false
     @Published var selectedAnnotation: LocationAnnotation?
-    
+
     private let mapKitService = MapKitService()
     private let mapboxService = MapboxService()
-    
+
     enum MapStyleType: String, CaseIterable, Identifiable {
         case standard = "Standard"
         case satellite = "Satellite"
         case hybrid = "Hybrid"
-        
+
         var id: String { rawValue }
-        
+
         var mapStyle: MapStyle {
             switch self {
             case .standard: return .standard
@@ -280,7 +280,7 @@ class MapManager: ObservableObject {
             }
         }
     }
-    
+
     var currentService: MapServiceProtocol {
         switch currentProvider {
         case .mapKit:
@@ -289,45 +289,45 @@ class MapManager: ObservableObject {
             return mapboxService
         }
     }
-    
+
     var region: MKCoordinateRegion {
         get { currentService.region }
         set { currentService.setRegion(newValue, animated: true) }
     }
-    
+
     var annotations: [LocationAnnotation] {
         currentService.annotations
     }
-    
+
     var routes: [MapRoute] {
         currentService.routes
     }
-    
+
     func switchProvider(to provider: MapProvider) {
         // Transfer state to new provider
         let currentRegion = currentService.region
         let currentAnnotations = currentService.annotations
         let currentRoutes = currentService.routes
-        
+
         currentProvider = provider
-        
+
         // Apply state to new provider
         currentService.setRegion(currentRegion, animated: false)
         currentAnnotations.forEach { currentService.addAnnotation($0) }
         currentRoutes.forEach { currentService.addRoute($0) }
     }
-    
+
     func centerOn(_ coordinate: LocationCoordinate, zoomLevel: Double = 0.01) {
         let span = MKCoordinateSpan(latitudeDelta: zoomLevel, longitudeDelta: zoomLevel)
         currentService.centerOn(coordinate: coordinate.clLocationCoordinate2D, span: span, animated: true)
     }
-    
+
     func addSpoofedLocationMarker(at coordinate: LocationCoordinate) {
         // Remove existing spoofed location marker
         currentService.annotations
             .filter { $0.annotationType == .spoofedLocation }
             .forEach { currentService.removeAnnotation($0) }
-        
+
         // Add new marker
         let annotation = LocationAnnotation(
             coordinate: coordinate.clLocationCoordinate2D,
@@ -337,7 +337,7 @@ class MapManager: ObservableObject {
         )
         currentService.addAnnotation(annotation)
     }
-    
+
     func search(query: String) async -> [MKMapItem] {
         do {
             return try await currentService.searchLocation(query: query)

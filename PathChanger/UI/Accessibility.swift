@@ -12,7 +12,7 @@ import SwiftUI
 
 /// Centralized accessibility identifiers for UI testing and screen reader navigation
 enum AccessibilityIdentifiers {
-    
+
     // MARK: - Navigation
     enum Navigation {
         static let sidebar = "sidebar"
@@ -20,7 +20,7 @@ enum AccessibilityIdentifiers {
         static let mainContent = "mainContent"
         static let settingsButton = "settingsButton"
     }
-    
+
     // MARK: - Device Management
     enum Devices {
         static let refreshButton = "refreshDevicesButton"
@@ -29,7 +29,7 @@ enum AccessibilityIdentifiers {
         static let deviceStatus = "deviceStatus"
         static let connectionIndicator = "connectionIndicator"
     }
-    
+
     // MARK: - Simulation Controls
     enum Simulation {
         static let startButton = "startSimulationButton"
@@ -39,7 +39,7 @@ enum AccessibilityIdentifiers {
         static let modeSelector = "modeSelector"
         static let loopToggle = "loopRouteToggle"
     }
-    
+
     // MARK: - Location
     enum Location {
         static let mapView = "mapView"
@@ -50,14 +50,14 @@ enum AccessibilityIdentifiers {
         static let clearLocationButton = "clearLocationButton"
         static let searchField = "searchField"
     }
-    
+
     // MARK: - Joystick
     enum Joystick {
         static let control = "joystickControl"
         static let directionIndicator = "directionIndicator"
         static let speedIndicator = "speedIndicator"
     }
-    
+
     // MARK: - Route
     enum Route {
         static let routeList = "routeList"
@@ -66,7 +66,7 @@ enum AccessibilityIdentifiers {
         static let exportButton = "exportRouteButton"
         static let progressIndicator = "routeProgressIndicator"
     }
-    
+
     // MARK: - Status
     enum Status {
         static let tunnelStatus = "tunnelStatus"
@@ -74,7 +74,7 @@ enum AccessibilityIdentifiers {
         static let statusMessage = "statusMessage"
         static let errorMessage = "errorMessage"
     }
-    
+
     // MARK: - Settings
     enum Settings {
         static let generalTab = "generalSettingsTab"
@@ -82,14 +82,14 @@ enum AccessibilityIdentifiers {
         static let loggingToggle = "loggingToggle"
         static let autoConnectToggle = "autoConnectToggle"
     }
-    
+
     // MARK: - Toast
     enum Toast {
         static let container = "toastContainer"
         static let message = "toastMessage"
         static let dismissButton = "toastDismissButton"
     }
-    
+
     // MARK: - Onboarding
     enum Onboarding {
         static let welcomeStep = "onboardingWelcome"
@@ -106,7 +106,7 @@ enum AccessibilityIdentifiers {
 
 /// Localized accessibility labels for VoiceOver
 enum AccessibilityLabels {
-    
+
     // MARK: - Actions
     enum Actions {
         static let startSimulation = "Start location simulation"
@@ -122,7 +122,7 @@ enum AccessibilityLabels {
         static let dismissToast = "Dismiss notification"
         static let openSettings = "Open settings"
     }
-    
+
     // MARK: - Status
     enum Status {
         static func tunnelConnected(mode: String) -> String {
@@ -142,7 +142,7 @@ enum AccessibilityLabels {
         static let simulationPaused = "Simulation paused"
         static let simulationStopped = "Simulation stopped"
     }
-    
+
     // MARK: - Navigation
     enum Navigation {
         static let sidebar = "Navigation sidebar"
@@ -150,7 +150,7 @@ enum AccessibilityLabels {
         static let routeSection = "Saved routes section"
         static let settingsSection = "Application settings"
     }
-    
+
     // MARK: - Values
     enum Values {
         static func coordinate(latitude: Double, longitude: Double) -> String {
@@ -186,7 +186,7 @@ enum AccessibilityHints {
 // MARK: - View Modifiers for Accessibility
 
 extension View {
-    
+
     /// Applies standard accessibility configuration for a button
     func accessibleButton(
         label: String,
@@ -199,7 +199,7 @@ extension View {
             .accessibilityIdentifier(identifier)
             .accessibilityAddTraits(.isButton)
     }
-    
+
     /// Applies accessibility configuration for a status indicator
     func accessibleStatus(
         label: String,
@@ -212,7 +212,7 @@ extension View {
             .accessibilityIdentifier(identifier)
             .accessibilityAddTraits(.updatesFrequently)
     }
-    
+
     /// Applies accessibility configuration for an interactive control
     func accessibleControl(
         label: String,
@@ -226,7 +226,7 @@ extension View {
             .accessibilityValue(value ?? "")
             .accessibilityIdentifier(identifier)
     }
-    
+
     /// Applies accessibility configuration for a navigable section
     func accessibleSection(
         label: String,
@@ -237,12 +237,12 @@ extension View {
             .accessibilityIdentifier(identifier)
             .accessibilityElement(children: .contain)
     }
-    
+
     /// Hides element from accessibility tree while keeping visible
     func accessibilityHiddenFromVoiceOver() -> some View {
         self.accessibilityHidden(true)
     }
-    
+
     /// Groups children into a single accessibility element
     func accessibilityGrouped(label: String) -> some View {
         self
@@ -259,16 +259,16 @@ enum KeyboardShortcuts {
     static let setLocation = KeyboardShortcut("l", modifiers: .command)
     static let clearLocation = KeyboardShortcut("k", modifiers: .command)
     static let refreshDevices = KeyboardShortcut("r", modifiers: .command)
-    
+
     // Simulation commands (Cmd+)
     static let startSimulation = KeyboardShortcut(.space, modifiers: .command)
     static let pauseSimulation = KeyboardShortcut("p", modifiers: .command)
     static let stopSimulation = KeyboardShortcut(.escape, modifiers: .command)
-    
+
     // Navigation (Cmd+Shift+)
     static let showSidebar = KeyboardShortcut("s", modifiers: [.command, .shift])
     static let showSettings = KeyboardShortcut(",", modifiers: .command)
-    
+
     // Speed control (Cmd+Option+)
     static let speedUp = KeyboardShortcut(.upArrow, modifiers: [.command, .option])
     static let speedDown = KeyboardShortcut(.downArrow, modifiers: [.command, .option])
@@ -280,9 +280,9 @@ enum KeyboardShortcuts {
 @MainActor
 class FocusManager: ObservableObject {
     static let shared = FocusManager()
-    
+
     @Published var currentFocus: FocusableElement?
-    
+
     enum FocusableElement: Hashable {
         case sidebar
         case deviceList
@@ -292,21 +292,21 @@ class FocusManager: ObservableObject {
         case routeList
         case simulationControls
     }
-    
+
     private init() {}
-    
+
     func moveFocus(to element: FocusableElement) {
         withAnimation(.easeInOut(duration: 0.2)) {
             currentFocus = element
         }
     }
-    
+
     func nextFocus() {
         guard let current = currentFocus else {
             currentFocus = .sidebar
             return
         }
-        
+
         let order: [FocusableElement] = [
             .sidebar,
             .deviceList,
@@ -316,7 +316,7 @@ class FocusManager: ObservableObject {
             .joystickControl,
             .routeList
         ]
-        
+
         if let index = order.firstIndex(of: current),
            index < order.count - 1 {
             currentFocus = order[index + 1]
@@ -324,13 +324,13 @@ class FocusManager: ObservableObject {
             currentFocus = order.first
         }
     }
-    
+
     func previousFocus() {
         guard let current = currentFocus else {
             currentFocus = .routeList
             return
         }
-        
+
         let order: [FocusableElement] = [
             .sidebar,
             .deviceList,
@@ -340,7 +340,7 @@ class FocusManager: ObservableObject {
             .joystickControl,
             .routeList
         ]
-        
+
         if let index = order.firstIndex(of: current),
            index > 0 {
             currentFocus = order[index - 1]
@@ -358,7 +358,7 @@ extension Color {
         // Use system colors that automatically adapt for accessibility
         self
     }
-    
+
     /// Checks if color meets WCAG 2.1 contrast requirements
     static func meetsContrastRatio(_ foreground: Color, _ background: Color) -> Bool {
         // Simplified check - in production would calculate actual luminance ratio
@@ -372,9 +372,9 @@ extension Color {
 @MainActor
 class AccessibilityAnnouncer {
     static let shared = AccessibilityAnnouncer()
-    
+
     private init() {}
-    
+
     /// Announces a message to VoiceOver users
     func announce(_ message: String, priority: AnnouncementPriority = .normal) {
         #if os(macOS)
@@ -388,38 +388,38 @@ class AccessibilityAnnouncer {
         )
         #endif
     }
-    
+
     enum AnnouncementPriority {
         case normal
         case high
     }
-    
+
     // MARK: - Common Announcements
-    
+
     func announceDeviceConnected(_ deviceName: String) {
         announce("\(deviceName) connected", priority: .high)
     }
-    
+
     func announceDeviceDisconnected(_ deviceName: String) {
         announce("\(deviceName) disconnected", priority: .high)
     }
-    
+
     func announceSimulationStarted(_ mode: String) {
         announce("Simulation started in \(mode) mode")
     }
-    
+
     func announceSimulationPaused() {
         announce("Simulation paused")
     }
-    
+
     func announceSimulationStopped() {
         announce("Simulation stopped")
     }
-    
+
     func announceLocationSet(latitude: Double, longitude: Double) {
         announce(String(format: "Location set to %.4f, %.4f", latitude, longitude))
     }
-    
+
     func announceError(_ message: String) {
         announce("Error: \(message)", priority: .high)
     }

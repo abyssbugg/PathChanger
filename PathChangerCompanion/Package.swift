@@ -8,12 +8,12 @@ let package = Package(
         .iOS(.v17)
     ],
     products: [
-        .executable(name: "PathChangerCompanion", targets: ["PathChangerCompanion"]),
+        .executable(name: "PathChangerCompanion", targets: ["PathChangerCompanion"])
     ],
     targets: [
         .executableTarget(
             name: "PathChangerCompanion",
             path: "."
-        ),
+        )
     ]
 )

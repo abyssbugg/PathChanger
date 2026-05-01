@@ -11,13 +11,13 @@ import XCTest
 // MARK: - Health Check Response Tests
 
 final class HealthCheckResponseTests: XCTestCase {
-    
+
     func testHealthStatusValues() {
         XCTAssertEqual(HealthCheckResponse.HealthStatus.healthy.rawValue, "healthy")
         XCTAssertEqual(HealthCheckResponse.HealthStatus.degraded.rawValue, "degraded")
         XCTAssertEqual(HealthCheckResponse.HealthStatus.unhealthy.rawValue, "unhealthy")
     }
-    
+
     func testHealthResponseEncoding() throws {
         let response = HealthCheckResponse(
             status: .healthy,
@@ -36,17 +36,17 @@ final class HealthCheckResponseTests: XCTestCase {
             uptime: 3600,
             timestamp: "2025-12-11T07:30:00Z"
         )
-        
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        
+
         let data = try encoder.encode(response)
         XCTAssertNotNil(data)
-        
+
         // Verify decoding
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(HealthCheckResponse.self, from: data)
-        
+
         XCTAssertEqual(decoded.status, .healthy)
         XCTAssertEqual(decoded.tunnel.mode, "usb")
         XCTAssertTrue(decoded.tunnel.connected)
@@ -57,7 +57,7 @@ final class HealthCheckResponseTests: XCTestCase {
         XCTAssertEqual(decoded.lastInjection, "2025-12-11T06:30:00Z")
         XCTAssertEqual(decoded.version, "1.0.0")
     }
-    
+
     func testTunnelHealthEncoding() throws {
         let tunnelHealth = HealthCheckResponse.TunnelHealth(
             mode: "wifi",
@@ -65,31 +65,31 @@ final class HealthCheckResponseTests: XCTestCase {
             uptime: nil,
             state: "idle"
         )
-        
+
         let encoder = JSONEncoder()
         let data = try encoder.encode(tunnelHealth)
-        
+
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(HealthCheckResponse.TunnelHealth.self, from: data)
-        
+
         XCTAssertEqual(decoded.mode, "wifi")
         XCTAssertFalse(decoded.connected)
         XCTAssertNil(decoded.uptime)
         XCTAssertEqual(decoded.state, "idle")
     }
-    
+
     func testDeviceHealthEncoding() throws {
         let deviceHealth = HealthCheckResponse.DeviceHealth(
             count: 3,
             connectedUDIDs: ["udid1", "udid2", "udid3"]
         )
-        
+
         let encoder = JSONEncoder()
         let data = try encoder.encode(deviceHealth)
-        
+
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(HealthCheckResponse.DeviceHealth.self, from: data)
-        
+
         XCTAssertEqual(decoded.count, 3)
         XCTAssertEqual(decoded.connectedUDIDs.count, 3)
         XCTAssertTrue(decoded.connectedUDIDs.contains("udid1"))
@@ -101,28 +101,28 @@ final class HealthCheckResponseTests: XCTestCase {
 // MARK: - Health Check Server Tests
 
 final class HealthCheckServerTests: XCTestCase {
-    
+
     @MainActor
     func testServerInitialState() async {
         let server = HealthCheckServer()
-        
+
         XCTAssertFalse(server.isRunning)
         XCTAssertEqual(server.port, HealthCheckConfig.defaultPort)
         XCTAssertNil(server.lastRequestTime)
         XCTAssertEqual(server.requestCount, 0)
     }
-    
+
     @MainActor
     func testPortConstants() {
         XCTAssertEqual(HealthCheckConfig.minPort, 1024)
         XCTAssertEqual(HealthCheckConfig.maxPort, 65535)
         XCTAssertEqual(HealthCheckConfig.defaultPort, 8080)
     }
-    
+
     @MainActor
     func testInvalidPortThrows() async {
         let server = HealthCheckServer()
-        
+
         // Port below minimum
         XCTAssertThrowsError(try server.start(port: 80)) { error in
             guard case HealthCheckError.invalidPort = error else {
@@ -130,7 +130,7 @@ final class HealthCheckServerTests: XCTestCase {
                 return
             }
         }
-        
+
         // Port 0 is invalid
         XCTAssertThrowsError(try server.start(port: 0)) { error in
             guard case HealthCheckError.invalidPort = error else {
@@ -139,35 +139,35 @@ final class HealthCheckServerTests: XCTestCase {
             }
         }
     }
-    
+
     @MainActor
     func testServerStopWhenNotRunning() async {
         let server = HealthCheckServer()
-        
+
         // Should not crash when stopping a non-running server
         server.stop()
-        
+
         XCTAssertFalse(server.isRunning)
     }
-    
+
     @MainActor
     func testServerClosuresConfiguration() async {
         let server = HealthCheckServer()
-        
+
         // Configure closures
         server.getTunnelState = { .running }
         server.getActiveMode = { .usb }
         server.getDeviceCount = { 2 }
         server.getDeviceUDIDs = { ["udid1", "udid2"] }
         server.getLastInjectionTime = { Date() }
-        
+
         // Verify closures are set
         XCTAssertNotNil(server.getTunnelState)
         XCTAssertNotNil(server.getActiveMode)
         XCTAssertNotNil(server.getDeviceCount)
         XCTAssertNotNil(server.getDeviceUDIDs)
         XCTAssertNotNil(server.getLastInjectionTime)
-        
+
         // Test closure returns
         XCTAssertEqual(server.getTunnelState?(), .running)
         XCTAssertEqual(server.getActiveMode?(), .usb)
@@ -179,27 +179,27 @@ final class HealthCheckServerTests: XCTestCase {
 // MARK: - Health Check Error Tests
 
 final class HealthCheckErrorTests: XCTestCase {
-    
+
     func testInvalidPortErrorDescription() {
         let error = HealthCheckError.invalidPort(80)
-        
+
         XCTAssertNotNil(error.errorDescription)
         XCTAssertTrue(error.errorDescription!.contains("80"))
         XCTAssertTrue(error.errorDescription!.contains("1024"))
         XCTAssertTrue(error.errorDescription!.contains("65535"))
     }
-    
+
     func testListenerCreationFailedErrorDescription() {
         let underlyingError = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "Test error"])
         let error = HealthCheckError.listenerCreationFailed(underlyingError)
-        
+
         XCTAssertNotNil(error.errorDescription)
         XCTAssertTrue(error.errorDescription!.contains("listener"))
     }
-    
+
     func testServerAlreadyRunningErrorDescription() {
         let error = HealthCheckError.serverAlreadyRunning
-        
+
         XCTAssertNotNil(error.errorDescription)
         XCTAssertTrue(error.errorDescription!.contains("already running"))
     }
@@ -208,7 +208,7 @@ final class HealthCheckErrorTests: XCTestCase {
 // MARK: - Tunnel State Display Name Tests
 
 final class TunnelStateDisplayNameTests: XCTestCase {
-    
+
     func testTunnelStateDisplayNames() {
         XCTAssertEqual(TunnelState.idle.displayName, "idle")
         XCTAssertEqual(TunnelState.starting.displayName, "starting")
@@ -216,7 +216,7 @@ final class TunnelStateDisplayNameTests: XCTestCase {
         XCTAssertEqual(TunnelState.stopping.displayName, "stopping")
         XCTAssertEqual(TunnelState.error("test").displayName, "error")
     }
-    
+
     func testTunnelStateIsActive() {
         XCTAssertFalse(TunnelState.idle.isActive)
         XCTAssertFalse(TunnelState.starting.isActive)

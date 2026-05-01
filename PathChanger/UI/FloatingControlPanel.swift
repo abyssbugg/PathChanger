@@ -11,13 +11,13 @@ struct FloatingControlPanel<Content: View>: View {
     let title: String?
     let icon: String?
     let content: Content
-    
+
     init(title: String? = nil, icon: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.icon = icon
         self.content = content()
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let title = title {
@@ -30,11 +30,11 @@ struct FloatingControlPanel<Content: View>: View {
                         .font(AppFont.caption)
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
-                    
+
                     Spacer()
                 }
             }
-            
+
             content
         }
         .padding(16)
@@ -53,7 +53,7 @@ struct FloatingControlPanel_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
             Color.blue.opacity(0.2).ignoresSafeArea()
-            
+
             FloatingControlPanel(title: "Teleport", icon: "mappin.and.ellipse") {
                 VStack {
                     TextField("Latitude", text: .constant("35.6812"))

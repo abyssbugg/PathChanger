@@ -11,7 +11,6 @@ import SwiftUI
 @main
 struct PathChangerCompanionApp: App {
     @StateObject private var connectionService = CompanionConnectionService()
-    
     var body: some Scene {
         WindowGroup {
             CompanionContentView()
@@ -24,24 +23,19 @@ struct PathChangerCompanionApp: App {
 
 struct CompanionContentView: View {
     @EnvironmentObject var connectionService: CompanionConnectionService
-    
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 // Connection status
                 ConnectionStatusView()
-                
                 Divider()
-                
                 // Spoofing status
                 if let status = connectionService.status {
                     SpoofingStatusView(status: status)
                 } else {
                     WaitingView()
                 }
-                
                 Spacer()
-                
                 // Emergency stop button
                 EmergencyStopButton()
                     .disabled(!connectionService.isConnected)
@@ -57,7 +51,7 @@ struct CompanionContentView: View {
                             connectionService.start()
                         }
                     } label: {
-                        Image(systemName: connectionService.isPeerDiscoveryActive ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                        Image(systemName: peerDiscoveryIconName)
                     }
                 }
             }
@@ -66,24 +60,30 @@ struct CompanionContentView: View {
             }
         }
     }
+
+    private var peerDiscoveryIconName: String {
+        connectionService.isPeerDiscoveryActive
+            ? "antenna.radiowaves.left.and.right"
+            : "antenna.radiowaves.left.and.right.slash"
+    }
 }
 
 // MARK: - Connection Status View
 
 struct ConnectionStatusView: View {
     @EnvironmentObject var connectionService: CompanionConnectionService
-    
+
     var body: some View {
         VStack(spacing: 12) {
             HStack {
                 Circle()
                     .fill(connectionService.isConnected ? Color.green : Color.red)
                     .frame(width: 12, height: 12)
-                
+
                 Text(connectionService.isConnected ? "Connected" : "Disconnected")
                     .font(.headline)
             }
-            
+
             if let peerName = connectionService.connectedPeerName {
                 Text("Connected to \(peerName)")
                     .font(.caption)
@@ -93,14 +93,14 @@ struct ConnectionStatusView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            
+
             // Discovered peers
             if !connectionService.discoveredPeers.isEmpty && !connectionService.isConnected {
                 VStack {
                     Text("Available:")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
+
                     ForEach(connectionService.discoveredPeers, id: \.displayName) { peer in
                         Button(peer.displayName) {
                             connectionService.connectToPeer(peer)
@@ -120,7 +120,7 @@ struct ConnectionStatusView: View {
 
 struct SpoofingStatusView: View {
     let status: SpoofingStatus
-    
+
     var body: some View {
         VStack(spacing: 16) {
             // Active status
@@ -128,34 +128,34 @@ struct SpoofingStatusView: View {
                 Image(systemName: status.isActive ? "location.fill" : "location.slash")
                     .foregroundColor(status.isActive ? .blue : .gray)
                     .font(.largeTitle)
-                
+
                 VStack(alignment: .leading) {
                     Text(status.isActive ? (status.isPaused ? "Paused" : "Active") : "Inactive")
                         .font(.headline)
-                    
+
                     if let device = status.deviceName {
                         Text(device)
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
-                
+
                 Spacer()
             }
-            
+
             // Current location
             if let lat = status.currentLatitude, let lon = status.currentLongitude {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Current Location")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
+
                     Text(String(format: "%.6f, %.6f", lat, lon))
                         .font(.system(.body, design: .monospaced))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            
+
             // Mode and speed
             HStack {
                 Label(status.mode, systemImage: modeIcon(status.mode))
@@ -164,7 +164,7 @@ struct SpoofingStatusView: View {
             }
             .font(.subheadline)
             .foregroundColor(.secondary)
-            
+
             // Route progress
             if let progress = status.routeProgress, progress > 0 {
                 VStack(alignment: .leading, spacing: 4) {
@@ -180,7 +180,7 @@ struct SpoofingStatusView: View {
         .background(Color(.systemGray6))
         .cornerRadius(12)
     }
-    
+
     private func modeIcon(_ mode: String) -> String {
         switch mode.lowercased() {
         case "teleport": return "location.fill"
@@ -199,11 +199,11 @@ struct WaitingView: View {
             Image(systemName: "location.slash")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
-            
+
             Text("Waiting for Status")
                 .font(.headline)
                 .foregroundColor(.secondary)
-            
+
             Text("Connect to PathChanger on your Mac to see spoofing status here.")
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -218,7 +218,7 @@ struct WaitingView: View {
 struct EmergencyStopButton: View {
     @EnvironmentObject var connectionService: CompanionConnectionService
     @State private var showConfirmation = false
-    
+
     var body: some View {
         Button {
             showConfirmation = true

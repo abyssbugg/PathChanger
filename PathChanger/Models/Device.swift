@@ -11,7 +11,7 @@ import Foundation
 enum ConnectionType: String, Codable, Hashable {
     case usb = "USB"
     case wifi = "WiFi"
-    
+
     var icon: String {
         switch self {
         case .usb: return "cable.connector"
@@ -28,18 +28,18 @@ struct Device: Identifiable, Hashable, Equatable {
     let productType: String?
     let productVersion: String?
     let deviceName: String?
-    
+
     /// Computed property for model name (derived from productType)
     var modelName: String {
         guard let productType = productType else { return "iPhone" }
         return Device.modelNameFrom(productType: productType)
     }
-    
+
     /// iOS version (alias for productVersion)
     var iosVersion: String {
         return productVersion ?? "Unknown"
     }
-    
+
     /// Major iOS version number parsed from productVersion.
     /// Returns nil if productVersion is nil or parsing fails.
     /// Requires major.minor format (e.g., "17.4"); single-component versions return nil.
@@ -48,7 +48,7 @@ struct Device: Identifiable, Hashable, Equatable {
         guard let version = productVersion else { return nil }
         return IOSVersionHelper.majorVersion(version)
     }
-    
+
     /// Minor iOS version number parsed from productVersion.
     /// Returns nil if productVersion is nil or parsing fails.
     /// Requires major.minor format (e.g., "17.4"); single-component versions return nil.
@@ -57,7 +57,7 @@ struct Device: Identifiable, Hashable, Equatable {
         guard let version = productVersion else { return nil }
         return IOSVersionHelper.minorVersion(version)
     }
-    
+
     /// Whether this device's iOS version is supported for location simulation.
     /// Returns true for iOS 17 and below, false for iOS 18+.
     /// Returns true if version cannot be determined (fail open for backward compatibility).
@@ -66,12 +66,12 @@ struct Device: Identifiable, Hashable, Equatable {
         guard let version = productVersion else { return true }
         return IOSVersionHelper.isVersionSupported(version)
     }
-    
+
     /// Whether device is connected wirelessly
     var isWireless: Bool {
         return connectionType == .wifi
     }
-    
+
     init(
         id: String,
         displayName: String,
@@ -87,7 +87,7 @@ struct Device: Identifiable, Hashable, Equatable {
         self.productVersion = productVersion
         self.deviceName = deviceName
     }
-    
+
     // Legacy initializer for compatibility
     init(
         id: String,
@@ -104,7 +104,7 @@ struct Device: Identifiable, Hashable, Equatable {
         self.productVersion = iosVersion
         self.deviceName = displayName
     }
-    
+
     /// Parse device from pymobiledevice3 lockdown info output
     static func from(udid: String, info: [String: String]) -> Device {
         let isWiFi = info["EnableWifiDebugging"] == "true" || info["connection"] == "wifi"
@@ -117,7 +117,7 @@ struct Device: Identifiable, Hashable, Equatable {
             deviceName: info["DeviceName"]
         )
     }
-    
+
     static func modelNameFrom(productType: String) -> String {
         let models: [String: String] = [
             // iPhone 16 series

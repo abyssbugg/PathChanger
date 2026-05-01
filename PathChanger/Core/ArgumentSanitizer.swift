@@ -14,7 +14,7 @@ enum ValidationError: Error, LocalizedError {
     case invalidArgument(String)
     case pathTraversalAttempt(String)
     case unsupportedIOSVersion(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidCoordinates(let lat, let lon):
@@ -33,24 +33,24 @@ enum ValidationError: Error, LocalizedError {
 
 /// Sanitizes and validates command-line arguments and user inputs
 enum ArgumentSanitizer {
-    
+
     /// Allowed character set for command arguments (alphanumeric + basic punctuation)
     private static let allowedCharacters: CharacterSet = {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: ".-_/:@") // Common safe characters
         return allowed
     }()
-    
+
     /// UDID regex pattern - supports both formats:
     /// - Legacy: 40-character hexadecimal (e.g., 00008030001234567890123456789012345678ab)
     /// - Modern: 00008XXX-XXXXXXXXXXXXXXXX format (e.g., 00008030-001234567890ABCD)
     private static let udidPattern = "^([0-9a-fA-F]{40}|[0-9a-fA-F]{8}-[0-9a-fA-F]{16})$"
-    
+
     /// IPv6 address pattern for RSD addresses
     private static let ipv6Pattern = "^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(%[0-9a-zA-Z]+)?$"
-    
+
     // MARK: - Coordinate Validation
-    
+
     /// Validate coordinate bounds
     /// - Parameters:
     ///   - latitude: Latitude value
@@ -60,34 +60,34 @@ enum ArgumentSanitizer {
         guard latitude >= -90.0 && latitude <= 90.0 else {
             throw ValidationError.invalidCoordinates(latitude: latitude, longitude: longitude)
         }
-        
+
         guard longitude >= -180.0 && longitude <= 180.0 else {
             throw ValidationError.invalidCoordinates(latitude: latitude, longitude: longitude)
         }
-        
+
         // Check for NaN and Infinity
         guard latitude.isFinite && longitude.isFinite else {
             throw ValidationError.invalidCoordinates(latitude: latitude, longitude: longitude)
         }
     }
-    
+
     // MARK: - UDID Validation
-    
+
     /// Validate device UDID format
     /// - Parameter udid: Device UDID to validate
     /// - Returns: True if valid, false otherwise
     static func isValidDeviceUDID(_ udid: String) -> Bool {
         guard !udid.isEmpty else { return false }
-        
+
         // Check against regex pattern
         guard let regex = try? NSRegularExpression(pattern: udidPattern) else {
             return false
         }
-        
+
         let range = NSRange(udid.startIndex..., in: udid)
         return regex.firstMatch(in: udid, range: range) != nil
     }
-    
+
     /// Validate device UDID and throw error if invalid
     /// - Parameter udid: Device UDID to validate
     /// - Throws: ValidationError if UDID is invalid
@@ -96,9 +96,9 @@ enum ArgumentSanitizer {
             throw ValidationError.invalidDeviceUDID(udid)
         }
     }
-    
+
     // MARK: - IPv6 Address Validation
-    
+
     /// Validate IPv6 address format using system-level inet_pton
     ///
     /// This method uses the POSIX inet_pton function for accurate IPv6 validation,
@@ -114,12 +114,12 @@ enum ArgumentSanitizer {
     /// - Returns: True if the address is a valid IPv6 address
     static func isValidIPv6Address(_ address: String) -> Bool {
         guard !address.isEmpty else { return false }
-        
+
         // Remove interface suffix if present (e.g., %en0 for link-local addresses)
         // Store the suffix for validation if needed
         let components = address.components(separatedBy: "%")
         let cleanAddress = components[0]
-        
+
         // Validate interface suffix if present
         if components.count > 1 {
             let interfaceSuffix = components[1]
@@ -129,25 +129,25 @@ enum ArgumentSanitizer {
                 return false
             }
         }
-        
+
         // Too many % signs is invalid
         guard components.count <= 2 else { return false }
-        
+
         // Use inet_pton for accurate IPv6 validation
         var addr = in6_addr()
         return inet_pton(AF_INET6, cleanAddress, &addr) == 1
     }
-    
+
     /// Validate and extract IPv6 address components
     /// - Parameter address: IPv6 address to parse
     /// - Returns: Tuple of (address, interfaceSuffix) if valid, nil otherwise
     static func parseIPv6Address(_ address: String) -> (address: String, interface: String?)? {
         guard !address.isEmpty else { return nil }
-        
+
         let components = address.components(separatedBy: "%")
         let cleanAddress = components[0]
         let interfaceSuffix = components.count > 1 ? components[1] : nil
-        
+
         // Validate interface suffix if present
         if let suffix = interfaceSuffix {
             guard !suffix.isEmpty,
@@ -155,18 +155,18 @@ enum ArgumentSanitizer {
                 return nil
             }
         }
-        
+
         // Validate the address itself
         var addr = in6_addr()
         guard inet_pton(AF_INET6, cleanAddress, &addr) == 1 else {
             return nil
         }
-        
+
         return (cleanAddress, interfaceSuffix)
     }
-    
+
     // MARK: - Argument Sanitization
-    
+
     /// Sanitize subprocess arguments to prevent injection attacks
     /// - Parameter arguments: Array of arguments to sanitize
     /// - Returns: Sanitized arguments
@@ -176,7 +176,7 @@ enum ArgumentSanitizer {
             try sanitizeSingleArgument(arg)
         }
     }
-    
+
     /// Sanitize a single argument
     /// - Parameter argument: Argument to sanitize
     /// - Returns: Sanitized argument
@@ -186,7 +186,7 @@ enum ArgumentSanitizer {
         if argument.contains("../") || argument.contains("..\\") {
             throw ValidationError.pathTraversalAttempt(argument)
         }
-        
+
         // Check for command injection attempts
         let dangerousPatterns = [";", "|", "&", "$", "`", "\n", "\r"]
         for pattern in dangerousPatterns {
@@ -194,7 +194,7 @@ enum ArgumentSanitizer {
                 throw ValidationError.invalidArgument(argument)
             }
         }
-        
+
         // Validate against allowed character set (with exceptions for specific patterns)
         // Allow negative numbers, coordinates, and IPv6 addresses
         if !isSpecialAllowedFormat(argument) {
@@ -203,40 +203,40 @@ enum ArgumentSanitizer {
                 throw ValidationError.invalidArgument(argument)
             }
         }
-        
+
         return argument
     }
-    
+
     /// Check if argument is a special allowed format (coordinates, IPv6, etc.)
     private static func isSpecialAllowedFormat(_ argument: String) -> Bool {
         // Allow negative numbers (coordinates)
         if argument.starts(with: "-") && Double(argument) != nil {
             return true
         }
-        
+
         // Allow IPv6 addresses
         if isValidIPv6Address(argument) {
             return true
         }
-        
+
         // Allow common flag patterns (--flag)
         if argument.starts(with: "--") && argument.count > 2 {
             let flagName = String(argument.dropFirst(2))
             return CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-")).isSuperset(of: CharacterSet(charactersIn: flagName))
         }
-        
+
         return false
     }
-    
+
     // MARK: - Port Validation
-    
+
     /// Validate port number
     /// - Parameter port: Port number to validate
     /// - Returns: True if valid (1-65535)
     static func isValidPort(_ port: Int) -> Bool {
         return port > 0 && port <= 65535
     }
-    
+
     /// Validate port number and throw error if invalid
     /// - Parameter port: Port number to validate
     /// - Throws: ValidationError if port is invalid
@@ -245,9 +245,9 @@ enum ArgumentSanitizer {
             throw ValidationError.invalidArgument("Port \(port) is out of valid range (1-65535)")
         }
     }
-    
+
     // MARK: - iOS Version Validation
-    
+
     /// Parse an iOS version string into major, minor, and optional patch components.
     /// Delegates to IOSVersionHelper for consistent parsing behavior across the codebase.
     /// - Parameter versionString: Version string like "17.4", "18.0", "18.0.1"
@@ -258,7 +258,7 @@ enum ArgumentSanitizer {
         }
         return (major: parsed.major, minor: parsed.minor, patch: parsed.patch)
     }
-    
+
     /// Check if an iOS version is supported for location simulation.
     /// Delegates to IOSVersionHelper for consistent support checking across the codebase.
     /// - Parameter versionString: Version string like "17.4", "18.0"
@@ -266,7 +266,7 @@ enum ArgumentSanitizer {
     static func isIOSVersionSupported(_ versionString: String) -> Bool {
         return IOSVersionHelper.isVersionSupported(versionString)
     }
-    
+
     /// Validate iOS version and throw error if unsupported.
     /// - Parameter versionString: Version string like "17.4", "18.0"
     /// - Throws: ValidationError.unsupportedIOSVersion if iOS 18+

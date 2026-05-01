@@ -13,7 +13,7 @@ struct SimulationView: View {
     let mode: AppMode
     @EnvironmentObject var appState: AppState
     @StateObject private var searchService = LocationSearchService()
-    
+
     @State private var position: MapCameraPosition = .region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 35.6762, longitude: 139.6503),
@@ -26,24 +26,24 @@ struct SimulationView: View {
     @State private var latitudeInput: String = ""
     @State private var longitudeInput: String = ""
     @State private var routeType: RouteType = .navigation
-    
+
     var body: some View {
         ZStack(alignment: .bottom) {
             // 1. Full Screen Map
             mapView
                 .ignoresSafeArea()
-            
+
             // 2. Top Controls (Search & Map Style)
             VStack {
                 topControls
                 Spacer()
             }
-            
+
             // 3. Floating Action Panel
             VStack(spacing: 16) {
                 // Mode-specific controls
                 modeSpecificControls
-                
+
                 // Main control panel
                 mainControlPanel
             }
@@ -60,9 +60,9 @@ struct SimulationView: View {
             }
         }
     }
-    
+
     // MARK: - Map View
-    
+
     @ViewBuilder
     private var mapView: some View {
         MapReader { proxy in
@@ -84,7 +84,7 @@ struct SimulationView: View {
                         .shadow(color: .blue.opacity(0.5), radius: 10)
                     }
                 }
-                
+
                 // Route markers if in route mode
                 if mode == .route && !appState.currentRoute.isEmpty {
                     ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
@@ -102,7 +102,7 @@ struct SimulationView: View {
             }
         }
     }
-    
+
     /// Handle tap on map to set location
     private func handleMapTap(at coordinate: CLLocationCoordinate2D) {
         // Validate the coordinate
@@ -111,20 +111,20 @@ struct SimulationView: View {
             appState.statusMessage = "Invalid coordinates from tap"
             return
         }
-        
+
         let location = LocationCoordinate(
             latitude: coordinate.latitude,
             longitude: coordinate.longitude
         )
-        
+
         // Update coordinate input fields for reference
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
-        
+
         // Set the target location
         appState.targetLocation = location
         appState.statusMessage = String(format: "Location set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
-        
+
         // If a device is selected and not simulating, we can directly apply the location
         if appState.selectedDevice != nil && !appState.isSimulating {
             Task {
@@ -132,9 +132,9 @@ struct SimulationView: View {
             }
         }
     }
-    
+
     // MARK: - Top Controls
-    
+
     private var topControls: some View {
         HStack(spacing: 12) {
             // Search bar with autocomplete
@@ -152,12 +152,12 @@ struct SimulationView: View {
                                 selectSearchResult(firstResult)
                             }
                         }
-                    
+
                     if searchService.isSearching {
                         ProgressView()
                             .scaleEffect(0.7)
                     }
-                    
+
                     if !searchService.searchText.isEmpty {
                         Button {
                             searchService.clearSearch()
@@ -172,7 +172,7 @@ struct SimulationView: View {
                 .padding(10)
                 .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                
+
                 // Search results dropdown
                 if showSearchResults && !searchService.searchResults.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
@@ -196,7 +196,7 @@ struct SimulationView: View {
                             .buttonStyle(.plain)
                             .background(Color.clear)
                             .contentShape(Rectangle())
-                            
+
                             if result.id != searchService.searchResults.prefix(5).last?.id {
                                 Divider()
                                     .padding(.horizontal, 8)
@@ -210,9 +210,9 @@ struct SimulationView: View {
                 }
             }
             .frame(maxWidth: 400)
-            
+
             Spacer()
-            
+
             // Map style picker
             HStack(spacing: 0) {
                 ForEach(MapStyleType.allCases) { style in
@@ -240,7 +240,7 @@ struct SimulationView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
             )
-            
+
             // Current location button
             Button {
                 if let location = appState.currentLocation {
@@ -262,9 +262,9 @@ struct SimulationView: View {
         }
         .padding()
     }
-    
+
     // MARK: - Mode Specific Controls
-    
+
     @ViewBuilder
     private var modeSpecificControls: some View {
         switch mode {
@@ -278,9 +278,9 @@ struct SimulationView: View {
             EmptyView()
         }
     }
-    
+
     // MARK: - Teleport Controls
-    
+
     private var teleportControls: some View {
         HStack(spacing: 12) {
             // Coordinate input
@@ -288,11 +288,11 @@ struct SimulationView: View {
                 TextField("Latitude", text: $latitudeInput)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
-                
+
                 TextField("Longitude", text: $longitudeInput)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 100)
-                
+
                 Button("Go") {
                     teleportToCoordinates()
                 }
@@ -304,9 +304,9 @@ struct SimulationView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
-    
+
     // MARK: - Route Controls
-    
+
     private var routeControls: some View {
         VStack(spacing: 12) {
             // Route type toggle
@@ -318,7 +318,7 @@ struct SimulationView: View {
             .frame(width: 200)
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            
+
             // Route info
             if !appState.currentRoute.isEmpty {
                 HStack {
@@ -326,7 +326,7 @@ struct SimulationView: View {
                         .foregroundStyle(.blue)
                     Text("\(appState.currentRoute.count) points")
                         .font(.caption)
-                    
+
                     if appState.isSimulating {
                         Text("• \(Int(appState.routeProgress * 100))%")
                             .font(.caption)
@@ -337,7 +337,7 @@ struct SimulationView: View {
                 .background(.ultraThinMaterial)
                 .clipShape(Capsule())
             }
-            
+
             // Import route button
             Button {
                 appState.showRouteImport = true
@@ -347,9 +347,9 @@ struct SimulationView: View {
             .buttonStyle(.bordered)
         }
     }
-    
+
     // MARK: - Main Control Panel
-    
+
     private var mainControlPanel: some View {
         HStack(spacing: 24) {
             // Speed Control
@@ -358,7 +358,7 @@ struct SimulationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
-                
+
                 HStack(spacing: 8) {
                     ForEach(SimulationSpeed.allCases, id: \.self) { speed in
                         Button {
@@ -375,10 +375,10 @@ struct SimulationView: View {
                     }
                 }
             }
-            
+
             Divider()
                 .frame(height: 40)
-            
+
             // Play/Pause Button
             Button {
                 Task {
@@ -402,7 +402,7 @@ struct SimulationView: View {
             }
             .buttonStyle(.plain)
             .disabled(!appState.canStartSimulation && !appState.isSimulating)
-            
+
             // Stop Button
             Button {
                 Task {
@@ -418,16 +418,16 @@ struct SimulationView: View {
             }
             .buttonStyle(.plain)
             .disabled(!appState.isSimulating)
-            
+
             Divider()
                 .frame(height: 40)
-            
+
             // Status
             VStack(alignment: .leading, spacing: 4) {
                 Text(appState.simulationStatusText)
                     .font(.caption)
                     .fontWeight(.medium)
-                
+
                 if let location = appState.currentLocation {
                     Text(location.formattedShort)
                         .font(.caption2)
@@ -445,25 +445,25 @@ struct SimulationView: View {
                 .stroke(.white.opacity(0.2), lineWidth: 0.5)
         )
     }
-    
+
     // MARK: - Helper Properties
-    
+
     private var playButtonIcon: String {
         if appState.isSimulating && !appState.isPaused {
             return "pause.fill"
         }
         return "play.fill"
     }
-    
+
     private var playButtonColor: Color {
         if appState.isSimulating && !appState.isPaused {
             return .orange
         }
         return .blue
     }
-    
+
     // MARK: - Actions
-    
+
     private func teleportToCoordinates() {
         guard let lat = Double(latitudeInput),
               let lon = Double(longitudeInput) else {
@@ -472,7 +472,7 @@ struct SimulationView: View {
             }
             return
         }
-        
+
         let coordinate = LocationCoordinate(latitude: lat, longitude: lon)
         guard coordinate.isValid else {
             withAnimation {
@@ -480,7 +480,7 @@ struct SimulationView: View {
             }
             return
         }
-        
+
         Task {
             await appState.setLocation(coordinate)
             withAnimation {
@@ -488,21 +488,21 @@ struct SimulationView: View {
             }
         }
     }
-    
+
     private func selectSearchResult(_ result: LocationSearchResult) {
         let coordinate = result.coordinate
-        
+
         // Update UI state
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
-        
+
         // Set the target location
         appState.targetLocation = coordinate
-        
+
         // Clear search and hide results
         searchService.clearSearch()
         showSearchResults = false
-        
+
         // Move map to location
         withAnimation {
             position = .region(MKCoordinateRegion(
@@ -510,9 +510,9 @@ struct SimulationView: View {
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             ))
         }
-        
+
         appState.statusMessage = "Selected: \(result.name)"
-        
+
         // If device is selected, apply location immediately
         if appState.selectedDevice != nil && !appState.isSimulating {
             Task {
@@ -528,9 +528,9 @@ enum MapStyleType: String, CaseIterable, Identifiable {
     case standard = "Standard"
     case satellite = "Satellite"
     case hybrid = "Hybrid"
-    
+
     var id: String { rawValue }
-    
+
     var style: MapStyle {
         switch self {
         case .standard: return .standard(elevation: .realistic)

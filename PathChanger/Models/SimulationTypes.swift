@@ -15,7 +15,7 @@ public enum SimulationModeType: String, CaseIterable {
     case teleport
     case route
     case joystick
-    
+
     public var displayName: String {
         switch self {
         case .teleport: return "Teleport Mode"
@@ -23,7 +23,7 @@ public enum SimulationModeType: String, CaseIterable {
         case .joystick: return "Joystick Control"
         }
     }
-    
+
     public var icon: String {
         switch self {
         case .teleport: return "location.fill"
@@ -31,7 +31,7 @@ public enum SimulationModeType: String, CaseIterable {
         case .joystick: return "gamecontroller.fill"
         }
     }
-    
+
     public var shortcutKey: KeyEquivalent {
         switch self {
         case .teleport: return "1"

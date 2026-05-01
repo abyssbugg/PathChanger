@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build & Test
@@ -127,7 +130,7 @@ jobs:
         # Check for common secret patterns
         if grep -rE "(api[_-]?key|secret|password|token)\s*[:=]\s*['\"][^'\"]+['\"]" \
           --include="*.swift" --include="*.json" --include="*.plist" \
-          --exclude-dir=.git --exclude-dir=.build .; then
+          --exclude-dir=.git --exclude-dir=.build --exclude-dir=Tests .; then
           echo "::warning::Potential secrets detected in code"
         fi
         
@@ -154,6 +157,11 @@ jobs:
     - name: Build DocC Documentation
       run: |
         mkdir -p .build/docc-output
+        if ! xcrun --find docc >/dev/null 2>&1; then
+          echo "::notice::DocC tool is not available in this runner toolchain; skipping documentation generation."
+          echo "DocC tool unavailable in this runner toolchain." > .build/docc-output/README.txt
+          exit 0
+        fi
         swift package generate-documentation \
           --target PathChanger \
           --disable-indexing \

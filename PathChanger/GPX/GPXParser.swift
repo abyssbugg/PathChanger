@@ -20,7 +20,7 @@ struct GPXFile: Identifiable, Codable {
     var waypoints: [GPXWaypoint]
     var tracks: [GPXTrack]
     var routes: [GPXRoute]
-    
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -40,7 +40,7 @@ struct GPXFile: Identifiable, Codable {
         self.tracks = tracks
         self.routes = routes
     }
-    
+
     /// All coordinates from tracks and routes
     var allCoordinates: [LocationCoordinate] {
         var coords: [LocationCoordinate] = []
@@ -54,19 +54,19 @@ struct GPXFile: Identifiable, Codable {
         }
         return coords
     }
-    
+
     /// Total number of points
     var totalPoints: Int {
         let trackPoints = tracks.reduce(0) { $0 + $1.segments.reduce(0) { $0 + $1.points.count } }
         let routePoints = routes.reduce(0) { $0 + $1.points.count }
         return waypoints.count + trackPoints + routePoints
     }
-    
+
     /// Calculate total distance in meters
     var totalDistance: Double {
         let coords = allCoordinates
         guard coords.count > 1 else { return 0 }
-        
+
         var distance: Double = 0
         for i in 1..<coords.count {
             let from = CLLocation(latitude: coords[i-1].latitude, longitude: coords[i-1].longitude)
@@ -86,7 +86,7 @@ struct GPXWaypoint: Identifiable, Codable {
     var elevation: Double?
     var time: Date?
     var symbol: String?
-    
+
     init(
         id: UUID = UUID(),
         coordinate: LocationCoordinate,
@@ -112,7 +112,7 @@ struct GPXTrack: Identifiable, Codable {
     var name: String?
     var description: String?
     var segments: [GPXTrackSegment]
-    
+
     init(id: UUID = UUID(), name: String? = nil, description: String? = nil, segments: [GPXTrackSegment] = []) {
         self.id = id
         self.name = name
@@ -125,7 +125,7 @@ struct GPXTrack: Identifiable, Codable {
 struct GPXTrackSegment: Identifiable, Codable {
     let id: UUID
     var points: [GPXTrackPoint]
-    
+
     init(id: UUID = UUID(), points: [GPXTrackPoint] = []) {
         self.id = id
         self.points = points
@@ -138,7 +138,7 @@ struct GPXTrackPoint: Identifiable, Codable {
     var coordinate: LocationCoordinate
     var elevation: Double?
     var time: Date?
-    
+
     init(id: UUID = UUID(), coordinate: LocationCoordinate, elevation: Double? = nil, time: Date? = nil) {
         self.id = id
         self.coordinate = coordinate
@@ -153,7 +153,7 @@ struct GPXRoute: Identifiable, Codable {
     var name: String?
     var description: String?
     var points: [GPXRoutePoint]
-    
+
     init(id: UUID = UUID(), name: String? = nil, description: String? = nil, points: [GPXRoutePoint] = []) {
         self.id = id
         self.name = name
@@ -168,7 +168,7 @@ struct GPXRoutePoint: Identifiable, Codable {
     var coordinate: LocationCoordinate
     var name: String?
     var elevation: Double?
-    
+
     init(id: UUID = UUID(), coordinate: LocationCoordinate, name: String? = nil, elevation: Double? = nil) {
         self.id = id
         self.coordinate = coordinate
@@ -184,7 +184,7 @@ enum GPXParserError: Error, LocalizedError {
     case parseError(String)
     case emptyFile
     case unsupportedVersion
-    
+
     var errorDescription: String? {
         switch self {
         case .invalidData: return "Invalid GPX data"
@@ -201,10 +201,10 @@ enum GPXParserError: Error, LocalizedError {
 /// Memory-efficient: processes XML elements incrementally without loading entire DOM
 class GPXParser: NSObject {
     private var currentGPX: GPXFile?
-    
+
     /// Track parsing statistics for performance monitoring
     private(set) var parseStats: ParseStatistics?
-    
+
     struct ParseStatistics {
         let pointCount: Int
         let parseTimeMs: Double
@@ -217,20 +217,20 @@ class GPXParser: NSObject {
     private var currentAttributes: [String: String] = [:]
     private var currentText: String = ""
     private var parseError: Error?
-    
+
     // ISO8601 date formatters for GPX timestamps (primary with fractional seconds, fallback without)
     private lazy var dateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-    
+
     private lazy var dateFormatterFallback: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
-    
+
     private func parseTimestamp(_ text: String) -> Date? {
         // Try primary formatter (with fractional seconds)
         if let date = dateFormatter.date(from: text) {
@@ -244,7 +244,7 @@ class GPXParser: NSObject {
         Logger.debug("Malformed GPX timestamp ignored: \(text)", category: .general)
         return nil
     }
-    
+
     /// Parse GPX data from Data using streaming XMLParser
     /// - Parameter data: GPX file data
     /// - Returns: Parsed GPXFile
@@ -253,10 +253,10 @@ class GPXParser: NSObject {
         guard !data.isEmpty else {
             throw GPXParserError.invalidData
         }
-        
+
         let startTime = CFAbsoluteTimeGetCurrent()
         let startMemory = getMemoryUsage()
-        
+
         currentGPX = GPXFile(name: "Untitled")
         currentTrack = nil
         currentSegment = nil
@@ -264,21 +264,21 @@ class GPXParser: NSObject {
         currentElement = ""
         currentText = ""
         parseError = nil
-        
+
         let parser = XMLParser(data: data)
         parser.delegate = self
         // Security: Disable external entity resolution to prevent XXE attacks
         parser.shouldResolveExternalEntities = false
-        
+
         if parser.parse() {
             guard let gpx = currentGPX else {
                 throw GPXParserError.parseError("Failed to create GPX object")
             }
-            
+
             if gpx.tracks.isEmpty && gpx.routes.isEmpty && gpx.waypoints.isEmpty {
                 throw GPXParserError.emptyFile
             }
-            
+
             // Record parsing statistics
             let endTime = CFAbsoluteTimeGetCurrent()
             let endMemory = getMemoryUsage()
@@ -287,13 +287,13 @@ class GPXParser: NSObject {
                 parseTimeMs: (endTime - startTime) * 1000,
                 peakMemoryBytes: max(0, endMemory - startMemory)
             )
-            
+
             return gpx
         } else {
             throw parseError ?? GPXParserError.parseError("Unknown parse error")
         }
     }
-    
+
     /// Get current memory usage for performance monitoring
     private func getMemoryUsage() -> Int64 {
         var info = mach_task_basic_info()
@@ -305,7 +305,7 @@ class GPXParser: NSObject {
         }
         return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
     }
-    
+
     /// Parse GPX from file URL
     func parse(fileURL: URL) throws -> GPXFile {
         let data = try Data(contentsOf: fileURL)
@@ -313,7 +313,7 @@ class GPXParser: NSObject {
         gpx.name = fileURL.deletingPathExtension().lastPathComponent
         return gpx
     }
-    
+
     /// Parse GPX from string
     func parse(string: String) throws -> GPXFile {
         guard let data = string.data(using: .utf8) else {
@@ -331,53 +331,53 @@ extension GPXParser: XMLParserDelegate {
         currentElement = elementName.lowercased()
         currentAttributes = attributeDict
         currentText = ""
-        
+
         switch currentElement {
         case "gpx":
             break
-            
+
         case "wpt":
             if let lat = attributeDict["lat"].flatMap(Double.init),
                let lon = attributeDict["lon"].flatMap(Double.init) {
                 let waypoint = GPXWaypoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
                 currentGPX?.waypoints.append(waypoint)
             }
-            
+
         case "trk":
             currentTrack = GPXTrack()
-            
+
         case "trkseg":
             currentSegment = GPXTrackSegment()
-            
+
         case "trkpt":
             if let lat = attributeDict["lat"].flatMap(Double.init),
                let lon = attributeDict["lon"].flatMap(Double.init) {
                 let point = GPXTrackPoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
                 currentSegment?.points.append(point)
             }
-            
+
         case "rte":
             currentRoute = GPXRoute()
-            
+
         case "rtept":
             if let lat = attributeDict["lat"].flatMap(Double.init),
                let lon = attributeDict["lon"].flatMap(Double.init) {
                 let point = GPXRoutePoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
                 currentRoute?.points.append(point)
             }
-            
+
         default:
             break
         }
     }
-    
+
     func parser(_ parser: XMLParser, foundCharacters string: String) {
         currentText += string
     }
-    
+
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         switch elementName.lowercased() {
         case "name":
             if currentRoute != nil {
@@ -389,7 +389,7 @@ extension GPXParser: XMLParserDelegate {
             } else {
                 currentGPX?.name = text
             }
-            
+
         case "desc":
             if currentRoute != nil {
                 currentRoute?.description = text
@@ -398,10 +398,10 @@ extension GPXParser: XMLParserDelegate {
             } else {
                 currentGPX?.description = text
             }
-            
+
         case "author":
             currentGPX?.author = text
-            
+
         case "time":
             if let date = parseTimestamp(text) {
                 if currentSegment != nil, let lastIndex = currentSegment?.points.indices.last {
@@ -410,7 +410,7 @@ extension GPXParser: XMLParserDelegate {
                     currentGPX?.time = date
                 }
             }
-            
+
         case "ele":
             if let elevation = Double(text) {
                 if currentSegment != nil, let lastIndex = currentSegment?.points.indices.last {
@@ -421,32 +421,32 @@ extension GPXParser: XMLParserDelegate {
                     currentGPX?.waypoints[lastIndex].elevation = elevation
                 }
             }
-            
+
         case "trkseg":
             if let segment = currentSegment {
                 currentTrack?.segments.append(segment)
             }
             currentSegment = nil
-            
+
         case "trk":
             if let track = currentTrack {
                 currentGPX?.tracks.append(track)
             }
             currentTrack = nil
-            
+
         case "rte":
             if let route = currentRoute {
                 currentGPX?.routes.append(route)
             }
             currentRoute = nil
-            
+
         default:
             break
         }
-        
+
         currentText = ""
     }
-    
+
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
         self.parseError = GPXParserError.parseError(parseError.localizedDescription)
     }
@@ -461,7 +461,7 @@ class GPXWriter {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
-    
+
     /// Create GPX string from coordinates
     static func createGPX(from coordinates: [LocationCoordinate], name: String = "Route") -> String {
         var xml = """
@@ -475,22 +475,22 @@ class GPXWriter {
             <trk>
                 <name>\(escapeXML(name))</name>
                 <trkseg>
-        
+
         """
-        
+
         for coord in coordinates {
             xml += "            <trkpt lat=\"\(coord.latitude)\" lon=\"\(coord.longitude)\"></trkpt>\n"
         }
-        
+
         xml += """
                 </trkseg>
             </trk>
         </gpx>
         """
-        
+
         return xml
     }
-    
+
     /// Escape XML special characters
     private static func escapeXML(_ text: String) -> String {
         text
@@ -500,7 +500,7 @@ class GPXWriter {
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&apos;")
     }
-    
+
     /// Export GPX to file URL
     /// - Parameters:
     ///   - coordinates: Array of coordinates to export
@@ -511,13 +511,13 @@ class GPXWriter {
         let gpxString = createGPX(from: coordinates, name: name)
         try gpxString.write(to: fileURL, atomically: true, encoding: .utf8)
     }
-    
+
     /// Export GPX and return Data
     static func exportGPXData(coordinates: [LocationCoordinate], name: String = "Route") -> Data? {
         let gpxString = createGPX(from: coordinates, name: name)
         return gpxString.data(using: .utf8)
     }
-    
+
     /// Create GPX from GPXFile object (preserves metadata)
     static func createGPX(from gpxFile: GPXFile) -> String {
         var xml = """
@@ -527,7 +527,7 @@ class GPXWriter {
             <metadata>
                 <name>\(escapeXML(gpxFile.name))</name>
         """
-        
+
         if let description = gpxFile.description {
             xml += "\n        <desc>\(escapeXML(description))</desc>"
         }
@@ -536,7 +536,7 @@ class GPXWriter {
         }
         xml += "\n        <time>\(dateFormatter.string(from: gpxFile.time ?? Date()))</time>"
         xml += "\n    </metadata>\n"
-        
+
         // Export waypoints
         for waypoint in gpxFile.waypoints {
             xml += "    <wpt lat=\"\(waypoint.coordinate.latitude)\" lon=\"\(waypoint.coordinate.longitude)\">"
@@ -548,7 +548,7 @@ class GPXWriter {
             }
             xml += "\n    </wpt>\n"
         }
-        
+
         // Export tracks
         for track in gpxFile.tracks {
             xml += "    <trk>\n"
@@ -568,7 +568,7 @@ class GPXWriter {
             }
             xml += "    </trk>\n"
         }
-        
+
         // Export routes
         for route in gpxFile.routes {
             xml += "    <rte>\n"
@@ -584,7 +584,7 @@ class GPXWriter {
             }
             xml += "    </rte>\n"
         }
-        
+
         xml += "</gpx>"
         return xml
     }

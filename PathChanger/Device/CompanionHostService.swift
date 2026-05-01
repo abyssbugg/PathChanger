@@ -45,50 +45,50 @@ class CompanionHostService: NSObject, ObservableObject {
     @Published var isCompanionConnected: Bool = false
     @Published var companionName: String?
     @Published var lastError: String?
-    
+
     // MARK: Callbacks
     var onEmergencyStop: (() -> Void)?
-    
+
     // MARK: MultipeerConnectivity
     private var peerID: MCPeerID
     private var session: MCSession?
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
-    
+
     private let serviceType = "locspoof-comp"
-    
+
     // MARK: Status Update Timer
     private var statusUpdateTimer: Timer?
     private var currentStatus: SpoofingStatus?
-    
+
     // MARK: Initialization
-    
+
     override init() {
         self.peerID = MCPeerID(displayName: Host.current().localizedName ?? "Mac")
         super.init()
     }
-    
+
     // MARK: Service Management
-    
+
     func start() {
         guard !isRunning else { return }
-        
+
         // Create session
         session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         session?.delegate = self
-        
+
         // Advertise as host
         advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: nil, serviceType: serviceType)
         advertiser?.delegate = self
         advertiser?.startAdvertisingPeer()
-        
+
         // Also browse for companions
         browser = MCNearbyServiceBrowser(peer: peerID, serviceType: serviceType)
         browser?.delegate = self
         browser?.startBrowsingForPeers()
-        
+
         isRunning = true
-        
+
         // Start status update timer
         statusUpdateTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -96,47 +96,47 @@ class CompanionHostService: NSObject, ObservableObject {
             }
         }
     }
-    
+
     func stop() {
         statusUpdateTimer?.invalidate()
         statusUpdateTimer = nil
-        
+
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
         session?.disconnect()
-        
+
         advertiser = nil
         browser = nil
         session = nil
-        
+
         isRunning = false
         isCompanionConnected = false
         companionName = nil
     }
-    
+
     // MARK: Status Updates
-    
+
     func updateStatus(_ status: SpoofingStatus) {
         currentStatus = status
         if isCompanionConnected {
             send(message: .status(status))
         }
     }
-    
+
     func sendLocationUpdate(latitude: Double, longitude: Double) {
         send(message: .locationUpdate(latitude: latitude, longitude: longitude))
     }
-    
+
     private func sendStatusUpdate() {
         guard isCompanionConnected, let status = currentStatus else { return }
         send(message: .status(status))
     }
-    
+
     // MARK: Message Sending
-    
+
     private func send(message: CompanionMessage) {
         guard let session = session, !session.connectedPeers.isEmpty else { return }
-        
+
         do {
             let data = try JSONEncoder().encode(message)
             try session.send(data, toPeers: session.connectedPeers, with: .reliable)
@@ -144,19 +144,19 @@ class CompanionHostService: NSObject, ObservableObject {
             lastError = "Failed to send: \(error.localizedDescription)"
         }
     }
-    
+
     // MARK: Message Receiving
-    
+
     private func handleReceivedMessage(_ message: CompanionMessage, from peer: MCPeerID) {
         switch message {
         case .emergencyStop:
             onEmergencyStop?()
             // Acknowledge
             send(message: .emergencyStop)
-            
+
         case .ping:
             send(message: .pong)
-            
+
         default:
             break
         }
@@ -176,22 +176,22 @@ extension CompanionHostService: MCSessionDelegate {
                 if let status = currentStatus {
                     send(message: .status(status))
                 }
-                
+
             case .notConnected:
                 if companionName == peerID.displayName {
                     isCompanionConnected = false
                     companionName = nil
                 }
-                
+
             case .connecting:
                 break
-                
+
             @unknown default:
                 break
             }
         }
     }
-    
+
     nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         do {
             let message = try JSONDecoder().decode(CompanionMessage.self, from: data)
@@ -204,7 +204,7 @@ extension CompanionHostService: MCSessionDelegate {
             }
         }
     }
-    
+
     nonisolated func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
     nonisolated func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {}
     nonisolated func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
@@ -220,7 +220,7 @@ extension CompanionHostService: MCNearbyServiceAdvertiserDelegate {
             invitationHandler(true, session)
         }
     }
-    
+
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
         Task { @MainActor in
             lastError = "Advertise failed: \(error.localizedDescription)"
@@ -238,9 +238,9 @@ extension CompanionHostService: MCNearbyServiceBrowserDelegate {
             browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
         }
     }
-    
+
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {}
-    
+
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
         Task { @MainActor in
             lastError = "Browse failed: \(error.localizedDescription)"

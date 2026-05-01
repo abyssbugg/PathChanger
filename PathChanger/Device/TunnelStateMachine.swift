@@ -30,34 +30,34 @@ import Combine
 enum TunnelEvent: Equatable, CustomStringConvertible {
     /// User or system requested tunnel start
     case startRequested(mode: TunnelMode)
-    
+
     /// Tunnel process has been successfully launched
     case processLaunched(pid: Int32?)
-    
+
     /// Tunnel has established connection (RSD parsed)
     case connectionEstablished(info: TunnelInfo)
-    
+
     /// User or system requested tunnel stop
     case stopRequested
-    
+
     /// Tunnel process has terminated gracefully
     case processStopped
-    
+
     /// Process or connection failed
     case errorOccurred(String)
-    
+
     /// Process health check failed
     case healthCheckFailed
-    
+
     /// Recovery attempt completed
     case recoveryAttempted
-    
+
     /// Timeout waiting for connection
     case connectionTimeout
-    
+
     /// External detection found tunnel already running
     case externalTunnelDetected(mode: TunnelMode)
-    
+
     var description: String {
         switch self {
         case .startRequested(let mode):
@@ -82,7 +82,7 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return "externalTunnelDetected(\(mode.rawValue))"
         }
     }
-    
+
     // Required for Equatable with associated values
     static func == (lhs: TunnelEvent, rhs: TunnelEvent) -> Bool {
         switch (lhs, rhs) {
@@ -121,31 +121,31 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
 struct TunnelContext: Equatable {
     /// Currently active tunnel mode
     var activeMode: TunnelMode?
-    
+
     /// RSD connection information
     var tunnelInfo: TunnelInfo?
-    
+
     /// Tracked process IDs
     var activeProcessIds: Set<Int32> = []
-    
+
     /// Last error message
     var lastError: String?
-    
+
     /// Retry count for auto-recovery
     var retryCount: Int = 0
-    
+
     /// Maximum retries before giving up
     let maxRetries: Int = 3
-    
+
     /// Whether recovery is in progress
     var isRecovering: Bool = false
-    
+
     /// Timestamp of last state change
     var lastStateChangeTime: Date = .distantPast
-    
+
     /// Human-readable status message
     var statusMessage: String?
-    
+
     /// Reset context for a fresh start
     mutating func reset() {
         activeMode = nil
@@ -156,12 +156,12 @@ struct TunnelContext: Equatable {
         isRecovering = false
         statusMessage = nil
     }
-    
+
     /// Track a new process ID
     mutating func trackProcess(_ pid: Int32) {
         activeProcessIds.insert(pid)
     }
-    
+
     /// Remove tracked process
     mutating func removeProcess(_ pid: Int32) {
         activeProcessIds.remove(pid)
@@ -174,10 +174,10 @@ struct TunnelContext: Equatable {
 enum TransitionResult {
     /// Transition succeeded
     case success(newState: TunnelState, actions: [TunnelAction])
-    
+
     /// Transition was invalid from current state
     case invalidTransition(reason: String)
-    
+
     /// Transition was ignored (e.g., duplicate event)
     case ignored
 }
@@ -191,31 +191,31 @@ enum TransitionResult {
 enum TunnelAction: Equatable, CustomStringConvertible {
     /// Launch tunnel process with specified mode
     case launchProcess(mode: TunnelMode)
-    
+
     /// Terminate tracked processes
     case terminateProcesses
-    
+
     /// Parse RSD info from logs
     case parseRsdInfo
-    
+
     /// Start health monitoring
     case startHealthMonitor
-    
+
     /// Stop health monitoring
     case stopHealthMonitor
-    
+
     /// Schedule recovery attempt
     case scheduleRecovery(delay: TimeInterval)
-    
+
     /// Log state transition for debugging
     case logTransition(from: TunnelState, to: TunnelState, event: TunnelEvent)
-    
+
     /// Notify observers of state change
     case notifyStateChange(state: TunnelState)
-    
+
     /// Clean up resources
     case cleanupResources
-    
+
     var description: String {
         switch self {
         case .launchProcess(let mode):
@@ -321,47 +321,47 @@ enum TunnelAction: Equatable, CustomStringConvertible {
 /// ```
 @MainActor
 final class TunnelStateMachine: ObservableObject {
-    
+
     // MARK: - Published State
-    
+
     /// Current tunnel state
     @Published private(set) var state: TunnelState = .idle
-    
+
     /// State context with additional data
     @Published private(set) var context: TunnelContext = TunnelContext()
-    
+
     // MARK: - Event History (for debugging)
-    
+
     /// Recent events for debugging (circular buffer)
     private var eventHistory: [TunnelEvent] = []
     private let maxHistorySize = 50
-    
+
     /// Recent transitions for debugging
     private var transitionHistory: [(from: TunnelState, to: TunnelState, event: TunnelEvent)] = []
-    
+
     // MARK: - Callbacks
-    
+
     /// Callback for performing actions
     var actionHandler: ((TunnelAction) async -> Void)?
-    
+
     // MARK: - Configuration
-    
+
     /// Debounce interval for rapid state changes
     private var debounceInterval: TimeInterval = 0.3
-    
+
     #if DEBUG
     /// Test mode flag to disable debouncing
     var testModeEnabled: Bool = false
     #endif
-    
+
     // MARK: - Initialization
-    
+
     init() {
         Logger.debug("[StateMachine] Initialized in state: \(state)", category: .device)
     }
-    
+
     // MARK: - Public API
-    
+
     /// Send an event to the state machine.
     ///
     /// This is the primary interface for triggering state transitions.
@@ -373,7 +373,7 @@ final class TunnelStateMachine: ObservableObject {
     func send(_ event: TunnelEvent) -> TransitionResult {
         // Record event in history
         recordEvent(event)
-        
+
         // Check debounce (skipped in test mode)
         let now = Date()
         #if DEBUG
@@ -381,7 +381,7 @@ final class TunnelStateMachine: ObservableObject {
         #else
         let shouldDebounce = true
         #endif
-        
+
         if shouldDebounce && now.timeIntervalSince(context.lastStateChangeTime) < debounceInterval {
             // Allow critical events through debounce
             let criticalEvents: [TunnelEvent] = [.stopRequested, .processStopped]
@@ -390,71 +390,71 @@ final class TunnelStateMachine: ObservableObject {
                 return .ignored
             }
         }
-        
+
         // Calculate transition
         let result = transition(from: state, event: event)
-        
+
         switch result {
         case .success(let newState, let actions):
             // Update state and context
             let oldState = state
             state = newState
             context.lastStateChangeTime = now
-            
+
             // Record transition
             recordTransition(from: oldState, to: newState, event: event)
-            
+
             // Log transition
             Logger.info("[StateMachine] \(oldState) -> \(newState) on \(event)", category: .device)
-            
+
             // Execute actions
             Task {
                 for action in actions {
                     await performAction(action)
                 }
             }
-            
+
             return result
-            
+
         case .invalidTransition(let reason):
             Logger.debug("[StateMachine] Invalid transition: \(event) from \(state) - \(reason)", category: .device)
             return result
-            
+
         case .ignored:
             return result
         }
     }
-    
+
     /// Get current state for external queries
     var currentState: TunnelState {
         state
     }
-    
+
     /// Get current context for external queries
     var currentContext: TunnelContext {
         context
     }
-    
+
     /// Check if tunnel is active
     var isActive: Bool {
         state.isActive
     }
-    
+
     /// Check if tunnel is in transition
     var isTransitioning: Bool {
         state.isTransitioning
     }
-    
+
     /// Get last error message
     var lastError: String? {
         context.lastError
     }
-    
+
     /// Get status message
     var statusMessage: String? {
         context.statusMessage
     }
-    
+
     /// Reset to initial state (for testing or recovery)
     func reset() {
         state = .idle
@@ -463,16 +463,16 @@ final class TunnelStateMachine: ObservableObject {
         transitionHistory.removeAll()
         Logger.debug("[StateMachine] Reset to initial state", category: .device)
     }
-    
+
     // MARK: - State Transition Logic
-    
+
     /// Core transition function.
     ///
     /// This is a pure function that determines the next state and actions
     /// based on the current state and incoming event.
     private func transition(from currentState: TunnelState, event: TunnelEvent) -> TransitionResult {
         switch (currentState, event) {
-            
+
         // MARK: From Idle
         case (.idle, .startRequested(let mode)):
             context.activeMode = mode
@@ -485,7 +485,7 @@ final class TunnelStateMachine: ObservableObject {
                     .launchProcess(mode: mode)
                 ]
             )
-            
+
         case (.idle, .externalTunnelDetected(let mode)):
             context.activeMode = mode
             context.statusMessage = "Tunnel already running (\(mode.rawValue))"
@@ -498,7 +498,7 @@ final class TunnelStateMachine: ObservableObject {
                     .startHealthMonitor
                 ]
             )
-            
+
         // MARK: From Starting
         case (.starting, .processLaunched(let pid)):
             if let pid = pid {
@@ -512,7 +512,7 @@ final class TunnelStateMachine: ObservableObject {
                     .parseRsdInfo
                 ]
             )
-            
+
         case (.starting, .connectionEstablished(let info)):
             context.tunnelInfo = info
             context.statusMessage = "\(context.activeMode?.rawValue ?? "Tunnel") active (RSD: \(info.rsdAddress):\(info.rsdPort))"
@@ -526,7 +526,7 @@ final class TunnelStateMachine: ObservableObject {
                     .startHealthMonitor
                 ]
             )
-            
+
         case (.starting, .errorOccurred(let message)):
             context.lastError = message
             context.statusMessage = "Failed: \(message)"
@@ -539,7 +539,7 @@ final class TunnelStateMachine: ObservableObject {
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .cleanupResources
                 ]
             )
-            
+
         case (.starting, .connectionTimeout):
             let message = "Connection timeout"
             context.lastError = message
@@ -553,7 +553,7 @@ final class TunnelStateMachine: ObservableObject {
                     .cleanupResources
                 ]
             )
-            
+
         case (.starting, .stopRequested):
             context.statusMessage = "Stopping..."
             return .success(
@@ -565,7 +565,7 @@ final class TunnelStateMachine: ObservableObject {
                     .notifyStateChange(state: .stopping)
                 ]
             )
-            
+
         // MARK: From Running
         case (.running, .stopRequested):
             context.statusMessage = "Stopping tunnel..."
@@ -578,7 +578,7 @@ final class TunnelStateMachine: ObservableObject {
                     .notifyStateChange(state: .stopping)
                 ]
             )
-            
+
         case (.running, .healthCheckFailed):
             let message = "Health check failed"
             context.lastError = message
@@ -592,7 +592,7 @@ final class TunnelStateMachine: ObservableObject {
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
                 ]
             )
-            
+
         case (.running, .errorOccurred(let message)):
             context.lastError = message
             context.statusMessage = "Error: \(message)"
@@ -605,7 +605,7 @@ final class TunnelStateMachine: ObservableObject {
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
                 ]
             )
-            
+
         // MARK: From Stopping
         case (.stopping, .processStopped):
             context.reset()
@@ -618,7 +618,7 @@ final class TunnelStateMachine: ObservableObject {
                     .cleanupResources
                 ]
             )
-            
+
         // MARK: From Error
         case (.error, .stopRequested):
             context.statusMessage = "Stopping..."
@@ -631,7 +631,7 @@ final class TunnelStateMachine: ObservableObject {
                     .notifyStateChange(state: .stopping)
                 ]
             )
-            
+
         case (.error, .recoveryAttempted):
             guard shouldAttemptRecovery() else {
                 return .invalidTransition(reason: "Max retries exceeded")
@@ -647,7 +647,7 @@ final class TunnelStateMachine: ObservableObject {
                     .launchProcess(mode: mode)
                 ]
             )
-            
+
         case (.error, .processStopped):
             context.reset()
             context.statusMessage = "Tunnel stopped after error"
@@ -658,28 +658,28 @@ final class TunnelStateMachine: ObservableObject {
                     .cleanupResources
                 ]
             )
-            
+
         // MARK: Invalid/Ignored Transitions
         case (.idle, .stopRequested),
              (.idle, .processStopped):
             return .ignored
-            
+
         case (.running, .startRequested):
             return .invalidTransition(reason: "Cannot start while already running")
-            
+
         case (.starting, .startRequested):
             return .invalidTransition(reason: "Cannot start while starting")
-            
+
         case (.stopping, .startRequested):
             return .invalidTransition(reason: "Cannot start while stopping")
-            
+
         default:
             return .invalidTransition(reason: "Unhandled transition: \(currentState) + \(event)")
         }
     }
-    
+
     // MARK: - Helper Methods
-    
+
     private func isErrorEvent(_ event: TunnelEvent) -> Bool {
         switch event {
         case .errorOccurred, .healthCheckFailed, .connectionTimeout:
@@ -688,30 +688,30 @@ final class TunnelStateMachine: ObservableObject {
             return false
         }
     }
-    
+
     private func shouldAttemptRecovery() -> Bool {
         context.retryCount < context.maxRetries
     }
-    
+
     private func recoveryDelay() -> TimeInterval {
         // Exponential backoff: 1s, 2s, 4s
         pow(2.0, Double(context.retryCount))
     }
-    
+
     private func recordEvent(_ event: TunnelEvent) {
         eventHistory.append(event)
         if eventHistory.count > maxHistorySize {
             eventHistory.removeFirst()
         }
     }
-    
+
     private func recordTransition(from: TunnelState, to: TunnelState, event: TunnelEvent) {
         transitionHistory.append((from: from, to: to, event: event))
         if transitionHistory.count > maxHistorySize {
             transitionHistory.removeFirst()
         }
     }
-    
+
     private func performAction(_ action: TunnelAction) async {
         Logger.debug("[StateMachine] Performing action: \(action)", category: .device)
         await actionHandler?(action)
@@ -735,17 +735,17 @@ extension TunnelStateMachine {
     var testEventHistory: [TunnelEvent] {
         eventHistory
     }
-    
+
     /// Get transition history for testing
     var testTransitionHistory: [(from: TunnelState, to: TunnelState, event: TunnelEvent)] {
         transitionHistory
     }
-    
+
     /// Force set state for testing (bypasses validation)
     func testSetState(_ newState: TunnelState) {
         state = newState
     }
-    
+
     /// Force set context for testing
     func testSetContext(_ newContext: TunnelContext) {
         context = newContext
