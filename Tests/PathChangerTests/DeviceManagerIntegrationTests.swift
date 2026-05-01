@@ -13,13 +13,18 @@ final class DeviceManagerIntegrationTests: XCTestCase {
     
     override func setUp() async throws {
         try await super.setUp()
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "Device discovery invokes pymobiledevice3 and depends on host USB/tunneld state."
+        )
         await MainActor.run {
             deviceManager = DeviceManager()
         }
     }
     
     override func tearDown() async throws {
-        await deviceManager.stopAutoRefresh()
+        if let deviceManager {
+            await deviceManager.stopAutoRefresh()
+        }
         deviceManager = nil
         try await super.tearDown()
     }

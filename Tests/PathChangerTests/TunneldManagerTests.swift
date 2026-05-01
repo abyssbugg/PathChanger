@@ -187,7 +187,10 @@ final class TunneldManagerTests: XCTestCase {
     
     // MARK: - Race Condition Prevention Tests
     
-    func testConcurrentStartCallsPrevented() async {
+    func testConcurrentStartCallsPrevented() async throws {
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "This test calls startTunnel(), which uses administrator-privileged AppleScript and cannot run in noninteractive CI."
+        )
         // First call should set state to starting
         // Subsequent calls should be ignored
         

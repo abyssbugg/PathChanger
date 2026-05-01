@@ -14,6 +14,9 @@ final class LocationInjectionIntegrationTests: XCTestCase {
     
     override func setUp() async throws {
         try await super.setUp()
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "Location injection tests may invoke pymobiledevice3 against host device services."
+        )
         locationBridge = DevLocationBridge()
         
         // Create test device

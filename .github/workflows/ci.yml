@@ -49,6 +49,9 @@ jobs:
       run: swift build -c release
 
     - name: Run Unit Tests
+      timeout-minutes: 20
+      env:
+        PATHCHANGER_RUN_DEVICE_TESTS: "0"
       run: swift test --enable-code-coverage
 
     - name: Build App Bundle Smoke Test
