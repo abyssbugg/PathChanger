@@ -1,0 +1,193 @@
+/*
+  Localizable.strings
+  PathChanger
+  
+  English localization (Base language)
+*/
+
+// MARK: - App
+"app.name" = "Location Spoofer";
+"app.version" = "Version %@";
+
+// MARK: - Common Actions
+"action.cancel" = "Cancel";
+"action.confirm" = "Confirm";
+"action.done" = "Done";
+"action.save" = "Save";
+"action.delete" = "Delete";
+"action.close" = "Close";
+"action.refresh" = "Refresh";
+"action.start" = "Start";
+"action.stop" = "Stop";
+"action.pause" = "Pause";
+"action.resume" = "Resume";
+"action.clear" = "Clear";
+"action.copy" = "Copy";
+"action.search" = "Search";
+"action.settings" = "Settings";
+"action.help" = "Help";
+
+// MARK: - Onboarding
+"onboarding.welcome.title" = "Welcome to Location Spoofer";
+"onboarding.welcome.subtitle" = "Simulate GPS locations on your iOS device";
+"onboarding.step1.title" = "Connect Device";
+"onboarding.step1.description" = "Connect your iOS device via USB or WiFi";
+"onboarding.step2.title" = "Enable Developer Mode";
+"onboarding.step2.description" = "Go to Settings > Privacy & Security > Developer Mode";
+"onboarding.step3.title" = "Start Spoofing";
+"onboarding.step3.description" = "Select a location and click Set Location";
+"onboarding.getStarted" = "Get Started";
+"onboarding.skip" = "Skip";
+"onboarding.next" = "Next";
+"onboarding.previous" = "Previous";
+
+// MARK: - Sidebar
+"sidebar.devices" = "Devices";
+"sidebar.simulation" = "Simulation";
+"sidebar.routes" = "Routes";
+"sidebar.settings" = "Settings";
+"sidebar.noDevices" = "No devices connected";
+"sidebar.refreshDevices" = "Refresh Devices";
+"sidebar.deviceCount" = "%d device(s)";
+
+// MARK: - Device List
+"device.connected" = "Connected";
+"device.disconnected" = "Disconnected";
+"device.usb" = "USB";
+"device.wifi" = "WiFi";
+"device.unknown" = "Unknown Device";
+"device.select" = "Select Device";
+"device.multiSelect" = "Select Multiple Devices";
+"device.selectedCount" = "%d Selected";
+"device.lastLocation" = "Last Location: %@";
+"device.noLocation" = "No location set";
+
+// MARK: - Simulation View
+"simulation.title" = "Location Simulation";
+"simulation.coordinates" = "Coordinates";
+"simulation.latitude" = "Latitude";
+"simulation.longitude" = "Longitude";
+"simulation.setLocation" = "Set Location";
+"simulation.clearLocation" = "Clear Location";
+"simulation.currentLocation" = "Current Location";
+"simulation.searchPlaceholder" = "Search address or place...";
+"simulation.tapToSetLocation" = "Tap the map to set location";
+"simulation.manualInput" = "Manual Input";
+
+// MARK: - Joystick
+"joystick.title" = "Joystick Control";
+"joystick.enable" = "Enable Joystick";
+"joystick.disable" = "Disable Joystick";
+"joystick.speed" = "Speed";
+"joystick.speedWalk" = "Walk";
+"joystick.speedRun" = "Run";
+"joystick.speedBike" = "Bike";
+"joystick.speedCar" = "Car";
+"joystick.hint" = "Use arrow keys or drag to move";
+
+// MARK: - Route Simulation
+"route.title" = "Route Simulation";
+"route.start" = "Start Route";
+"route.stop" = "Stop Route";
+"route.pause" = "Pause Route";
+"route.resume" = "Resume Route";
+"route.speed" = "Speed: %@x";
+"route.progress" = "Progress: %d%%";
+"route.loop" = "Loop";
+"route.pingPong" = "Ping Pong";
+"route.import" = "Import GPX";
+"route.export" = "Export GPX";
+"route.library" = "Route Library";
+"route.noRoute" = "No route loaded";
+"route.pointCount" = "%d points";
+
+// MARK: - Settings
+"settings.title" = "Settings";
+"settings.general" = "General";
+"settings.appearance" = "Appearance";
+"settings.advanced" = "Advanced";
+"settings.about" = "About";
+
+// General Settings
+"settings.general.autoStartTunnel" = "Auto-start Tunnel";
+"settings.general.autoStartTunnelDesc" = "Automatically start tunnel when app launches";
+"settings.general.rememberLastLocation" = "Remember Last Location";
+"settings.general.rememberLastLocationDesc" = "Restore last location when app restarts";
+
+// Appearance Settings
+"settings.appearance.theme" = "Theme";
+"settings.appearance.themeLight" = "Light";
+"settings.appearance.themeDark" = "Dark";
+"settings.appearance.themeSystem" = "System";
+"settings.appearance.mapStyle" = "Map Style";
+"settings.appearance.mapStyleStandard" = "Standard";
+"settings.appearance.mapStyleSatellite" = "Satellite";
+"settings.appearance.mapStyleHybrid" = "Hybrid";
+
+// Advanced Settings
+"settings.advanced.tunnelMode" = "Tunnel Mode";
+"settings.advanced.tunnelModeAuto" = "Auto";
+"settings.advanced.tunnelModeUSB" = "USB Only";
+"settings.advanced.tunnelModeWiFi" = "WiFi Only";
+"settings.advanced.pythonPath" = "Python Path";
+"settings.advanced.pythonPathAuto" = "Auto-detect";
+"settings.advanced.rateLimit" = "Rate Limit";
+"settings.advanced.rateLimitDesc" = "Maximum location updates per second";
+
+// MARK: - Tunnel
+"tunnel.status" = "Tunnel Status";
+"tunnel.connected" = "Connected";
+"tunnel.disconnected" = "Disconnected";
+"tunnel.connecting" = "Connecting...";
+"tunnel.error" = "Error";
+"tunnel.start" = "Start Tunnel";
+"tunnel.stop" = "Stop Tunnel";
+"tunnel.restart" = "Restart Tunnel";
+"tunnel.requiresSudo" = "Requires admin privileges";
+"tunnel.modeUSB" = "USB Mode";
+"tunnel.modeWiFi" = "WiFi Mode";
+"tunnel.modeDaemon" = "Daemon Mode";
+
+// MARK: - Errors
+"error.title" = "Error";
+"error.unknown" = "An unknown error occurred";
+"error.deviceNotFound" = "Device not found";
+"error.tunnelNotRunning" = "Tunnel is not running";
+"error.invalidCoordinates" = "Invalid coordinates";
+"error.rateLimited" = "Too many requests. Please slow down.";
+"error.timeout" = "Operation timed out";
+"error.developerModeRequired" = "Developer Mode must be enabled on the device";
+"error.pythonNotFound" = "Python 3 not found. Please install it.";
+"error.pymobiledeviceNotFound" = "pymobiledevice3 not found. Please install it.";
+"error.connectionFailed" = "Failed to connect to device";
+
+// MARK: - Toasts
+"toast.locationSet" = "Location set successfully";
+"toast.locationCleared" = "Location cleared";
+"toast.deviceConnected" = "Device connected: %@";
+"toast.deviceDisconnected" = "Device disconnected: %@";
+"toast.routeStarted" = "Route simulation started";
+"toast.routeStopped" = "Route simulation stopped";
+"toast.settingsSaved" = "Settings saved";
+"toast.copied" = "Copied to clipboard";
+"toast.queued" = "Location update queued";
+
+// MARK: - Accessibility
+"accessibility.map" = "Map view";
+"accessibility.joystick" = "Joystick control";
+"accessibility.deviceList" = "Device list";
+"accessibility.coordinateInput" = "Coordinate input";
+"accessibility.setLocationButton" = "Set location button";
+"accessibility.clearLocationButton" = "Clear location button";
+"accessibility.refreshButton" = "Refresh devices button";
+"accessibility.startRouteButton" = "Start route button";
+"accessibility.stopRouteButton" = "Stop route button";
+
+// MARK: - Dependency Errors
+"dependency.title" = "Missing Dependencies";
+"dependency.message" = "Some required components are missing:";
+"dependency.python" = "Python 3 is required";
+"dependency.pymobiledevice" = "pymobiledevice3 is required";
+"dependency.installInstructions" = "Installation Instructions";
+"dependency.brewCommand" = "brew install python3";
+"dependency.pipCommand" = "pip3 install pymobiledevice3";

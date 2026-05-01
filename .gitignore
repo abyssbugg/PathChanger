@@ -1,0 +1,46 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved.old
+
+# macOS build products
+build/
+dist/
+DerivedData/
+*.app/
+*.dSYM/
+*.xcarchive/
+
+# Logs and diagnostics
+*.log
+logs/
+dev-debug.log
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Python tooling
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Recovery staging
+.recovery/

@@ -1,0 +1,193 @@
+/*
+  Localizable.strings
+  PathChanger
+  
+  Japanese localization
+*/
+
+// MARK: - App
+"app.name" = "Location Spoofer";
+"app.version" = "バージョン %@";
+
+// MARK: - Common Actions
+"action.cancel" = "キャンセル";
+"action.confirm" = "確認";
+"action.done" = "完了";
+"action.save" = "保存";
+"action.delete" = "削除";
+"action.close" = "閉じる";
+"action.refresh" = "更新";
+"action.start" = "開始";
+"action.stop" = "停止";
+"action.pause" = "一時停止";
+"action.resume" = "再開";
+"action.clear" = "クリア";
+"action.copy" = "コピー";
+"action.search" = "検索";
+"action.settings" = "設定";
+"action.help" = "ヘルプ";
+
+// MARK: - Onboarding
+"onboarding.welcome.title" = "Location Spooferへようこそ";
+"onboarding.welcome.subtitle" = "iOSデバイスのGPS位置情報をシミュレート";
+"onboarding.step1.title" = "デバイスを接続";
+"onboarding.step1.description" = "iOSデバイスをUSBまたはWiFiで接続してください";
+"onboarding.step2.title" = "開発者モードを有効化";
+"onboarding.step2.description" = "設定 > プライバシーとセキュリティ > 開発者モード";
+"onboarding.step3.title" = "位置情報の偽装を開始";
+"onboarding.step3.description" = "場所を選択して「位置を設定」をクリック";
+"onboarding.getStarted" = "始める";
+"onboarding.skip" = "スキップ";
+"onboarding.next" = "次へ";
+"onboarding.previous" = "前へ";
+
+// MARK: - Sidebar
+"sidebar.devices" = "デバイス";
+"sidebar.simulation" = "シミュレーション";
+"sidebar.routes" = "ルート";
+"sidebar.settings" = "設定";
+"sidebar.noDevices" = "接続されているデバイスがありません";
+"sidebar.refreshDevices" = "デバイスを更新";
+"sidebar.deviceCount" = "%d 台のデバイス";
+
+// MARK: - Device List
+"device.connected" = "接続済み";
+"device.disconnected" = "切断";
+"device.usb" = "USB";
+"device.wifi" = "WiFi";
+"device.unknown" = "不明なデバイス";
+"device.select" = "デバイスを選択";
+"device.multiSelect" = "複数のデバイスを選択";
+"device.selectedCount" = "%d 選択中";
+"device.lastLocation" = "最後の位置: %@";
+"device.noLocation" = "位置情報なし";
+
+// MARK: - Simulation View
+"simulation.title" = "位置シミュレーション";
+"simulation.coordinates" = "座標";
+"simulation.latitude" = "緯度";
+"simulation.longitude" = "経度";
+"simulation.setLocation" = "位置を設定";
+"simulation.clearLocation" = "位置をクリア";
+"simulation.currentLocation" = "現在の位置";
+"simulation.searchPlaceholder" = "住所または場所を検索...";
+"simulation.tapToSetLocation" = "マップをタップして位置を設定";
+"simulation.manualInput" = "手動入力";
+
+// MARK: - Joystick
+"joystick.title" = "ジョイスティック操作";
+"joystick.enable" = "ジョイスティックを有効化";
+"joystick.disable" = "ジョイスティックを無効化";
+"joystick.speed" = "速度";
+"joystick.speedWalk" = "歩行";
+"joystick.speedRun" = "走行";
+"joystick.speedBike" = "自転車";
+"joystick.speedCar" = "車";
+"joystick.hint" = "矢印キーまたはドラッグで移動";
+
+// MARK: - Route Simulation
+"route.title" = "ルートシミュレーション";
+"route.start" = "ルート開始";
+"route.stop" = "ルート停止";
+"route.pause" = "ルート一時停止";
+"route.resume" = "ルート再開";
+"route.speed" = "速度: %@倍";
+"route.progress" = "進捗: %d%%";
+"route.loop" = "ループ";
+"route.pingPong" = "往復";
+"route.import" = "GPXをインポート";
+"route.export" = "GPXをエクスポート";
+"route.library" = "ルートライブラリ";
+"route.noRoute" = "ルートが読み込まれていません";
+"route.pointCount" = "%d ポイント";
+
+// MARK: - Settings
+"settings.title" = "設定";
+"settings.general" = "一般";
+"settings.appearance" = "外観";
+"settings.advanced" = "詳細設定";
+"settings.about" = "このアプリについて";
+
+// General Settings
+"settings.general.autoStartTunnel" = "トンネルを自動開始";
+"settings.general.autoStartTunnelDesc" = "アプリ起動時に自動的にトンネルを開始";
+"settings.general.rememberLastLocation" = "最後の位置を記憶";
+"settings.general.rememberLastLocationDesc" = "アプリ再起動時に最後の位置を復元";
+
+// Appearance Settings
+"settings.appearance.theme" = "テーマ";
+"settings.appearance.themeLight" = "ライト";
+"settings.appearance.themeDark" = "ダーク";
+"settings.appearance.themeSystem" = "システム";
+"settings.appearance.mapStyle" = "マップスタイル";
+"settings.appearance.mapStyleStandard" = "標準";
+"settings.appearance.mapStyleSatellite" = "衛星";
+"settings.appearance.mapStyleHybrid" = "ハイブリッド";
+
+// Advanced Settings
+"settings.advanced.tunnelMode" = "トンネルモード";
+"settings.advanced.tunnelModeAuto" = "自動";
+"settings.advanced.tunnelModeUSB" = "USBのみ";
+"settings.advanced.tunnelModeWiFi" = "WiFiのみ";
+"settings.advanced.pythonPath" = "Pythonパス";
+"settings.advanced.pythonPathAuto" = "自動検出";
+"settings.advanced.rateLimit" = "レート制限";
+"settings.advanced.rateLimitDesc" = "1秒あたりの最大位置更新回数";
+
+// MARK: - Tunnel
+"tunnel.status" = "トンネル状態";
+"tunnel.connected" = "接続済み";
+"tunnel.disconnected" = "切断";
+"tunnel.connecting" = "接続中...";
+"tunnel.error" = "エラー";
+"tunnel.start" = "トンネル開始";
+"tunnel.stop" = "トンネル停止";
+"tunnel.restart" = "トンネル再起動";
+"tunnel.requiresSudo" = "管理者権限が必要です";
+"tunnel.modeUSB" = "USBモード";
+"tunnel.modeWiFi" = "WiFiモード";
+"tunnel.modeDaemon" = "デーモンモード";
+
+// MARK: - Errors
+"error.title" = "エラー";
+"error.unknown" = "不明なエラーが発生しました";
+"error.deviceNotFound" = "デバイスが見つかりません";
+"error.tunnelNotRunning" = "トンネルが起動していません";
+"error.invalidCoordinates" = "無効な座標です";
+"error.rateLimited" = "リクエストが多すぎます。しばらくお待ちください。";
+"error.timeout" = "操作がタイムアウトしました";
+"error.developerModeRequired" = "デバイスで開発者モードを有効にする必要があります";
+"error.pythonNotFound" = "Python 3が見つかりません。インストールしてください。";
+"error.pymobiledeviceNotFound" = "pymobiledevice3が見つかりません。インストールしてください。";
+"error.connectionFailed" = "デバイスへの接続に失敗しました";
+
+// MARK: - Toasts
+"toast.locationSet" = "位置を設定しました";
+"toast.locationCleared" = "位置をクリアしました";
+"toast.deviceConnected" = "デバイス接続: %@";
+"toast.deviceDisconnected" = "デバイス切断: %@";
+"toast.routeStarted" = "ルートシミュレーションを開始しました";
+"toast.routeStopped" = "ルートシミュレーションを停止しました";
+"toast.settingsSaved" = "設定を保存しました";
+"toast.copied" = "クリップボードにコピーしました";
+"toast.queued" = "位置更新をキューに追加しました";
+
+// MARK: - Accessibility
+"accessibility.map" = "マップビュー";
+"accessibility.joystick" = "ジョイスティック操作";
+"accessibility.deviceList" = "デバイスリスト";
+"accessibility.coordinateInput" = "座標入力";
+"accessibility.setLocationButton" = "位置設定ボタン";
+"accessibility.clearLocationButton" = "位置クリアボタン";
+"accessibility.refreshButton" = "デバイス更新ボタン";
+"accessibility.startRouteButton" = "ルート開始ボタン";
+"accessibility.stopRouteButton" = "ルート停止ボタン";
+
+// MARK: - Dependency Errors
+"dependency.title" = "依存関係が不足しています";
+"dependency.message" = "必要なコンポーネントが不足しています:";
+"dependency.python" = "Python 3が必要です";
+"dependency.pymobiledevice" = "pymobiledevice3が必要です";
+"dependency.installInstructions" = "インストール手順";
+"dependency.brewCommand" = "brew install python3";
+"dependency.pipCommand" = "pip3 install pymobiledevice3";

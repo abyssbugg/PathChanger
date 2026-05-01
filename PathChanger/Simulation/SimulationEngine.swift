@@ -1,0 +1,687 @@
+//
+//  SimulationEngine.swift
+//  PathChanger
+//
+//  Core simulation engine for location playback with multiple modes
+//
+
+import Foundation
+import Combine
+import CoreLocation
+
+// MARK: - Simulation Mode Protocol
+
+/// A protocol that defines the interface for location simulation modes.
+///
+/// `SimulationModeProtocol` provides a common interface for different ways to simulate
+/// location updates on an iOS device. The protocol supports both continuous simulation
+/// (like route following or joystick control) and instantaneous simulation (teleportation).
+///
+/// ## Overview
+///
+/// Location simulation modes allow users to move their device's location in different ways:
+/// - **Teleport Mode**: Instantly move to a specific coordinate
+/// - **Route Mode**: Follow a predefined path with realistic movement
+/// - **Joystick Mode**: Manual directional control with configurable speed
+///
+/// ## Implementing a Custom Mode
+///
+/// To implement a custom simulation mode, conform to this protocol and implement
+/// all required properties and methods:
+///
+/// ```swift
+/// class CustomMode: SimulationModeProtocol {
+///     var isActive: Bool = false
+///     var currentCoordinate: LocationCoordinate?
+///
+///     func start() {
+///         isActive = true
+///         // Initialize simulation
+///     }
+///
+///     func stop() {
+///         isActive = false
+///         // Clean up resources
+///     }
+///
+///     func pause() {
+///         isActive = false
+///     }
+///
+///     func resume() {
+///         isActive = true
+///     }
+///
+///     func update() -> LocationCoordinate? {
+///         // Calculate and return next coordinate
+///         return currentCoordinate
+///     }
+/// }
+/// ```
+///
+/// ## Topics
+///
+/// ### State
+///
+/// - ``isActive``
+/// - ``currentCoordinate``
+///
+/// ### Lifecycle
+///
+/// - ``start()``
+/// - ``stop()``
+/// - ``pause()``
+/// - ``resume()``
+///
+/// ### Updates
+///
+/// - ``update()``
+protocol SimulationModeProtocol {
+    var isActive: Bool { get }
+    var currentCoordinate: LocationCoordinate? { get }
+    func start()
+    func stop()
+    func pause()
+    func resume()
+    func update() -> LocationCoordinate?
+}
+
+// MARK: - Speed Presets
+
+/// Speed presets for location simulation.
+///
+/// `SimulationSpeed` defines realistic movement speeds for simulating location changes.
+/// Each preset includes the appropriate update interval for smooth, natural-looking movement.
+///
+/// ## Overview
+///
+/// Choose a speed that matches your testing scenario:
+///
+/// | Speed | Movement | Realistic Use Case |
+/// |-------|----------|-------------------|
+/// | Walking | 5 km/h | Pedestrian navigation |
+/// | Running | 11 km/h | Fitness tracking |
+/// | Cycling | 20 km/h | Bike navigation |
+/// | Driving | 50 km/h | City driving |
+/// | Fast | 100 km/h | Highway driving |
+/// | Teleport | Instant | Quick location changes |
+///
+/// ## Example
+///
+/// ```swift
+/// let engine = SimulationEngine()
+/// engine.speed = .cycling
+///
+/// // Get speed information
+/// print("Speed: \(engine.speed.metersPerSecond) m/s")
+/// print("Updates every: \(engine.speed.updateInterval) seconds")
+/// ```
+enum SimulationSpeed: String, CaseIterable, Identifiable {
+    case walking = "Walking"
+    case running = "Running"
+    case cycling = "Cycling"
+    case driving = "Driving"
+    case fast = "Fast"
+    case teleport = "Instant"
+    
+    var id: String { rawValue }
+    
+    var displayName: String { rawValue }
+    
+    /// Speed in meters per second
+    var metersPerSecond: Double {
+        switch self {
+        case .walking: return 1.4      // ~5 km/h
+        case .running: return 3.0      // ~11 km/h
+        case .cycling: return 5.5      // ~20 km/h
+        case .driving: return 13.9     // ~50 km/h
+        case .fast: return 27.8        // ~100 km/h
+        case .teleport: return 1000.0  // Instant
+        }
+    }
+    
+    /// Update interval in seconds
+    var updateInterval: TimeInterval {
+        switch self {
+        case .walking, .running: return 1.0
+        case .cycling: return 0.5
+        case .driving: return 0.3
+        case .fast: return 0.2
+        case .teleport: return 0.1
+        }
+    }
+    
+    /// Icon for UI
+    var icon: String {
+        switch self {
+        case .walking: return "figure.walk"
+        case .running: return "figure.run"
+        case .cycling: return "bicycle"
+        case .driving: return "car.fill"
+        case .fast: return "car.2.fill"
+        case .teleport: return "location.fill"
+        }
+    }
+}
+
+// MARK: - Simulation State
+
+enum SimulationState: Equatable {
+    case idle
+    case running
+    case paused
+    case completed
+    case error(String)
+    
+    var isActive: Bool {
+        switch self {
+        case .running, .paused:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Teleport Mode
+
+/// Instant teleportation to a single location
+class TeleportMode: SimulationModeProtocol {
+    private(set) var isActive: Bool = false
+    private(set) var currentCoordinate: LocationCoordinate?
+    private var targetCoordinate: LocationCoordinate?
+    
+    func setTarget(_ coordinate: LocationCoordinate) {
+        targetCoordinate = coordinate
+    }
+    
+    func start() {
+        isActive = true
+        currentCoordinate = targetCoordinate
+    }
+    
+    func stop() {
+        isActive = false
+        currentCoordinate = nil
+    }
+    
+    func pause() {
+        // Teleport doesn't pause - it's instant
+    }
+    
+    func resume() {
+        // Teleport doesn't resume
+    }
+    
+    func update() -> LocationCoordinate? {
+        return currentCoordinate
+    }
+}
+
+// MARK: - Route Mode
+
+/// Follow a predefined route with interpolated points
+class RouteMode: SimulationModeProtocol {
+    private(set) var isActive: Bool = false
+    private(set) var currentCoordinate: LocationCoordinate?
+    
+    private var waypoints: [LocationCoordinate] = []
+    private var interpolatedPoints: [LocationCoordinate] = []
+    private var currentIndex: Int = 0
+    private var speed: SimulationSpeed = .driving
+    private var loop: Bool = false
+    
+    var progress: Double {
+        guard !interpolatedPoints.isEmpty else { return 0 }
+        return Double(currentIndex) / Double(interpolatedPoints.count)
+    }
+    
+    var totalDistance: CLLocationDistance {
+        guard waypoints.count > 1 else { return 0 }
+        var distance: CLLocationDistance = 0
+        for i in 1..<waypoints.count {
+            distance += RouteInterpolator.haversineDistance(from: waypoints[i-1], to: waypoints[i])
+        }
+        return distance
+    }
+    
+    var estimatedDuration: TimeInterval {
+        totalDistance / speed.metersPerSecond
+    }
+    
+    func configure(waypoints: [LocationCoordinate], speed: SimulationSpeed, loop: Bool = false) {
+        self.waypoints = waypoints
+        self.speed = speed
+        self.loop = loop
+        self.interpolatedPoints = RouteInterpolator.interpolateRoute(waypoints: waypoints, speed: speed)
+        self.currentIndex = 0
+    }
+    
+    func start() {
+        guard !interpolatedPoints.isEmpty else { return }
+        isActive = true
+        currentIndex = 0
+        currentCoordinate = interpolatedPoints.first
+    }
+    
+    func stop() {
+        isActive = false
+        currentIndex = 0
+        currentCoordinate = nil
+    }
+    
+    func pause() {
+        isActive = false
+    }
+    
+    func resume() {
+        isActive = true
+    }
+    
+    func update() -> LocationCoordinate? {
+        guard isActive, !interpolatedPoints.isEmpty else { return currentCoordinate }
+        
+        currentIndex += 1
+        
+        if currentIndex >= interpolatedPoints.count {
+            if loop {
+                currentIndex = 0
+            } else {
+                isActive = false
+                return currentCoordinate
+            }
+        }
+        
+        currentCoordinate = interpolatedPoints[currentIndex]
+        return currentCoordinate
+    }
+}
+
+// MARK: - Joystick Mode
+
+/// Manual control with directional input
+class JoystickMode: SimulationModeProtocol {
+    private(set) var isActive: Bool = false
+    private(set) var currentCoordinate: LocationCoordinate?
+    
+    private var speed: SimulationSpeed = .walking
+    private var direction: Double = 0  // Radians, 0 = North
+    private var isMoving: Bool = false
+    
+    /// Direction in degrees (0 = North, 90 = East, etc.)
+    var heading: Double {
+        get { direction * 180 / .pi }
+        set { direction = newValue * .pi / 180 }
+    }
+    
+    func configure(startLocation: LocationCoordinate, speed: SimulationSpeed) {
+        self.currentCoordinate = startLocation
+        self.speed = speed
+    }
+    
+    func setMoving(_ moving: Bool) {
+        isMoving = moving
+    }
+    
+    func setDirection(degrees: Double) {
+        heading = degrees
+    }
+    
+    func start() {
+        isActive = true
+    }
+    
+    func stop() {
+        isActive = false
+        isMoving = false
+    }
+    
+    func pause() {
+        isActive = false
+    }
+    
+    func resume() {
+        isActive = true
+    }
+    
+    func update() -> LocationCoordinate? {
+        guard isActive, isMoving, let current = currentCoordinate else {
+            return currentCoordinate
+        }
+        
+        // Calculate new position based on speed and direction
+        let distancePerUpdate = speed.metersPerSecond * speed.updateInterval
+        let newCoordinate = RouteInterpolator.moveCoordinate(
+            from: current,
+            distanceMeters: distancePerUpdate,
+            bearingDegrees: heading
+        )
+        
+        currentCoordinate = newCoordinate
+        return newCoordinate
+    }
+}
+
+// MARK: - Main Simulation Engine
+
+/// Main simulation engine coordinating all modes
+typealias EngineSimulationMode = SimulationModeType
+
+/// The main simulation engine that coordinates location spoofing across multiple modes.
+///
+/// `SimulationEngine` is the central component for simulating location on iOS devices.
+/// It manages three simulation modes and handles the communication with the device
+/// through ``DevLocationBridge``.
+///
+/// ## Overview
+///
+/// The simulation engine provides:
+/// - **Multi-mode support**: Teleport, Route, and Joystick modes
+/// - **Speed control**: Multiple speed presets from walking to instant teleport
+/// - **Device integration**: Automatic location injection to connected devices
+/// - **State management**: Observable state for SwiftUI integration
+///
+/// ## Getting Started
+///
+/// ```swift
+/// @StateObject private var engine = SimulationEngine()
+///
+/// // Set target device
+/// engine.setDevice(connectedDevice)
+///
+/// // Teleport to a location
+/// let coordinate = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
+/// try await engine.teleport(to: coordinate)
+///
+/// // Follow a route
+/// let route = [
+///     LocationCoordinate(latitude: 35.6762, longitude: 139.6503),
+///     LocationCoordinate(latitude: 35.6812, longitude: 139.7671)
+/// ]
+/// try await engine.startRoute(waypoints: route)
+/// ```
+///
+/// ## Simulation Modes
+///
+/// ### Teleport Mode
+///
+/// Instantly moves the device location to a specific coordinate:
+///
+/// ```swift
+/// try await engine.teleport(to: coordinate)
+/// ```
+///
+/// ### Route Mode
+///
+/// Follows a predefined path with realistic movement:
+///
+/// ```swift
+/// engine.loopRoute = true  // Optional: repeat the route
+/// engine.speed = .cycling
+/// try await engine.startRoute(waypoints: routeWaypoints)
+/// ```
+///
+/// ### Joystick Mode
+///
+/// Manual directional control for real-time movement:
+///
+/// ```swift
+/// engine.speed = .walking
+/// try await engine.startJoystick(at: startLocation)
+///
+/// // Update direction based on user input
+/// engine.setJoystickDirection(degrees: 45)  // Northeast
+/// engine.setJoystickMoving(true)  // Start moving
+/// ```
+///
+/// ## State Observation
+///
+/// The engine publishes state changes for UI updates:
+///
+/// ```swift
+/// struct SimulationView: View {
+///     @ObservedObject var engine: SimulationEngine
+///
+///     var body: some View {
+///         VStack {
+///             Text("Status: \(engine.state)")
+///             Text("Mode: \(engine.currentMode)")
+///
+///             if engine.currentMode == .route {
+///                 ProgressView(value: engine.routeProgress)
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+/// ## Thread Safety
+///
+/// `SimulationEngine` is marked `@MainActor` to ensure all state updates
+/// happen on the main thread, making it safe for SwiftUI observation.
+///
+/// ## Topics
+///
+/// ### Published State
+///
+/// - ``state``
+/// - ``currentMode``
+/// - ``speed``
+/// - ``currentCoordinate``
+/// - ``routeProgress``
+/// - ``elapsedTime``
+/// - ``loopRoute``
+///
+/// ### Device Management
+///
+/// - ``setDevice(_:)``
+///
+/// ### Simulation Control
+///
+/// - ``teleport(to:)``
+/// - ``startRoute(waypoints:)``
+/// - ``startJoystick(at:)``
+/// - ``pause()``
+/// - ``resume()``
+/// - ``stop()``
+///
+/// ### Joystick Control
+///
+/// - ``setJoystickDirection(degrees:)``
+/// - ``setJoystickMoving(_:)``
+@MainActor
+class SimulationEngine: ObservableObject {
+    // MARK: Published State
+    @Published var state: SimulationState = .idle
+    @Published var currentMode: EngineSimulationMode = .teleport
+    @Published var speed: SimulationSpeed = .driving
+    @Published var currentCoordinate: LocationCoordinate?
+    @Published var routeProgress: Double = 0.0
+    @Published var elapsedTime: TimeInterval = 0
+    @Published var loopRoute: Bool = false
+    
+    // MARK: Mode Instances
+    private let teleportMode = TeleportMode()
+    private let routeMode = RouteMode()
+    private let joystickMode = JoystickMode()
+    
+    // MARK: Timer
+    private var timer: Timer?
+    private var startTime: Date?
+    
+    // MARK: Device Bridge
+    private let locationBridge: DevLocationBridge
+    private var targetDevice: Device?
+    
+    // MARK: Initialization
+    init(locationBridge: DevLocationBridge = DevLocationBridge()) {
+        self.locationBridge = locationBridge
+    }
+    
+    // MARK: Device Management
+    func setDevice(_ device: Device) {
+        self.targetDevice = device
+    }
+    
+    // MARK: Teleport
+    func teleport(to coordinate: LocationCoordinate) async throws {
+        guard let device = targetDevice else {
+            state = .error("No device selected")
+            throw LocationInjectionError.deviceNotFound
+        }
+        
+        state = .running
+        teleportMode.setTarget(coordinate)
+        teleportMode.start()
+        
+        try await locationBridge.setLocation(coordinate, for: device)
+        currentCoordinate = coordinate
+        state = .completed
+    }
+    
+    // MARK: Route Simulation
+    func startRoute(waypoints: [LocationCoordinate]) async {
+        guard targetDevice != nil else {
+            state = .error("No device selected")
+            return
+        }
+        
+        guard waypoints.count >= 2 else {
+            state = .error("Route requires at least 2 waypoints")
+            return
+        }
+        
+        routeMode.configure(waypoints: waypoints, speed: speed, loop: loopRoute)
+        routeMode.start()
+        
+        state = .running
+        startTime = Date()
+        elapsedTime = 0
+        routeProgress = 0
+        
+        startTimer()
+    }
+    
+    // MARK: Joystick Control
+    func startJoystick(at location: LocationCoordinate) {
+        guard targetDevice != nil else {
+            state = .error("No device selected")
+            return
+        }
+        
+        joystickMode.configure(startLocation: location, speed: speed)
+        joystickMode.start()
+        
+        state = .running
+        startTime = Date()
+        currentCoordinate = location
+        
+        startTimer()
+    }
+    
+    func setJoystickDirection(degrees: Double) {
+        joystickMode.setDirection(degrees: degrees)
+    }
+    
+    func setJoystickMoving(_ moving: Bool) {
+        joystickMode.setMoving(moving)
+    }
+    
+    // MARK: Control
+    func pause() {
+        timer?.invalidate()
+        timer = nil
+        state = .paused
+        
+        switch currentMode {
+        case .route:
+            routeMode.pause()
+        case .joystick:
+            joystickMode.pause()
+        case .teleport:
+            break
+        }
+    }
+    
+    func resume() {
+        guard state == .paused else { return }
+        
+        state = .running
+        
+        switch currentMode {
+        case .route:
+            routeMode.resume()
+        case .joystick:
+            joystickMode.resume()
+        case .teleport:
+            break
+        }
+        
+        startTimer()
+    }
+    
+    func stop() async {
+        timer?.invalidate()
+        timer = nil
+        
+        teleportMode.stop()
+        routeMode.stop()
+        joystickMode.stop()
+        
+        // Clear location on device
+        if let device = targetDevice {
+            try? await locationBridge.clearLocation(for: device)
+        }
+        
+        state = .idle
+        currentCoordinate = nil
+        routeProgress = 0
+        elapsedTime = 0
+    }
+    
+    // MARK: Timer
+    private func startTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: speed.updateInterval, repeats: true) { [weak self] _ in
+            guard let strongSelf = self else { return }
+            Task { @MainActor in
+                await strongSelf.tick()
+            }
+        }
+    }
+    
+    private func tick() async {
+        guard state == .running else { return }
+        
+        // Update elapsed time
+        if let start = startTime {
+            elapsedTime = Date().timeIntervalSince(start)
+        }
+        
+        // Get next coordinate based on mode
+        var nextCoordinate: LocationCoordinate?
+        
+        switch currentMode {
+        case .teleport:
+            nextCoordinate = teleportMode.update()
+        case .route:
+            nextCoordinate = routeMode.update()
+            routeProgress = routeMode.progress
+            
+            if !routeMode.isActive {
+                state = .completed
+                timer?.invalidate()
+                timer = nil
+                return
+            }
+        case .joystick:
+            nextCoordinate = joystickMode.update()
+        }
+        
+        // Send to device
+        if let coordinate = nextCoordinate, let device = targetDevice {
+            currentCoordinate = coordinate
+            try? await locationBridge.setLocation(coordinate, for: device)
+        }
+    }
+}

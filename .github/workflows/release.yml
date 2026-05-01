@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+  APP_NAME: PathChanger
+
+jobs:
+  build-and-release:
+    name: Build, Package & Release
+    runs-on: macos-14
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        # Use Xcode 15.4 (Swift 5.10) for compatibility - Xcode 16 has Swift 6 strict concurrency
+        xcode-version: '15.4'
+        
+    - name: Install Dependencies
+      run: |
+        brew install create-dmg
+        
+    - name: Setup Sparkle
+      run: |
+        # Download Sparkle tools
+        curl -L -o sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/2.6.4/Sparkle-2.6.4.tar.xz"
+        mkdir -p sparkle-tools
+        tar -xf sparkle.tar.xz -C sparkle-tools
+        echo "$(pwd)/sparkle-tools/bin" >> $GITHUB_PATH
+        
+    - name: Get Version Info
+      id: version
+      run: |
+        VERSION="${GITHUB_REF_NAME#v}"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+        # Extract build number from Info.plist
+        BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Resources/Info.plist)
+        echo "build=$BUILD" >> $GITHUB_OUTPUT
+        
+        echo "Version: $VERSION, Build: $BUILD"
+        
+    - name: Cache Swift Package Manager
+      uses: actions/cache@v4
+      with:
+        path: .build
+        key: ${{ runner.os }}-spm-release-${{ hashFiles('Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-spm-release-
+          ${{ runner.os }}-spm-
+          
+    - name: Resolve Dependencies
+      run: swift package resolve
+
+    - name: Build Release
+      run: swift build -c release
+      
+    - name: Create App Bundle
+      run: |
+        # Use existing build script with ad-hoc signing
+        chmod +x build-app-bundle.sh
+        ./build-app-bundle.sh
+        
+    - name: Create DMG
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        # Create DMG with create-dmg (may fail if icon missing, fallback below)
+        create-dmg \
+          --volname "PathChanger" \
+          --window-pos 200 120 \
+          --window-size 600 400 \
+          --icon-size 100 \
+          --icon "PathChanger.app" 150 185 \
+          --hide-extension "PathChanger.app" \
+          --app-drop-link 450 185 \
+          --no-internet-enable \
+          "build/PathChanger-${VERSION}.dmg" \
+          "build/PathChanger.app" || true
+          
+        # Fallback to simple DMG if create-dmg fails
+        if [ ! -f "build/PathChanger-${VERSION}.dmg" ]; then
+          hdiutil create -volname "PathChanger" \
+            -srcfolder "build/PathChanger.app" \
+            -ov -format UDZO \
+            "build/PathChanger-${VERSION}.dmg"
+        fi
+        
+        echo "DMG created: build/PathChanger-${VERSION}.dmg"
+        ls -la build/*.dmg
+
+    - name: Sign DMG with Sparkle
+      id: sign
+      env:
+        SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+
+        if [ -n "$SPARKLE_PRIVATE_KEY" ]; then
+          # Sign the DMG and capture the signature
+          echo "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle_private_key
+          SIGNATURE=$(./sparkle-tools/bin/sign_update "$DMG_PATH" -f /tmp/sparkle_private_key)
+          rm /tmp/sparkle_private_key
+
+          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
+          echo "Sparkle signature generated"
+        else
+          echo "No SPARKLE_PRIVATE_KEY secret found, skipping signing"
+          echo "signature=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Generate Appcast
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BUILD="${{ steps.version.outputs.build }}"
+        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+        DMG_SIZE=$(stat -f%z "$DMG_PATH")
+        SIGNATURE="${{ steps.sign.outputs.signature }}"
+
+        # Get release notes from GitHub release body
+        RELEASE_NOTES='${{ github.event.release.body }}'
+
+        # Build enclosure attributes
+        if [ -n "$SIGNATURE" ]; then
+          ENCLOSURE="url=\"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg\" sparkle:version=\"$BUILD\" sparkle:shortVersionString=\"$VERSION\" length=\"$DMG_SIZE\" type=\"application/octet-stream\" sparkle:edSignature=\"$SIGNATURE\""
+        else
+          ENCLOSURE="url=\"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg\" sparkle:version=\"$BUILD\" sparkle:shortVersionString=\"$VERSION\" length=\"$DMG_SIZE\" type=\"application/octet-stream\""
+        fi
+
+        # Create appcast.xml
+        cat > build/appcast.xml << EOF
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <channel>
+            <title>PathChanger Updates</title>
+            <link>https://github.com/${{ github.repository }}</link>
+            <description>Most recent updates to PathChanger</description>
+            <language>en</language>
+            <item>
+              <title>Version $VERSION</title>
+              <pubDate>$(date -R)</pubDate>
+              <sparkle:version>$BUILD</sparkle:version>
+              <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+              <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+              <description><![CDATA[
+        $RELEASE_NOTES
+              ]]></description>
+              <enclosure $ENCLOSURE />
+            </item>
+          </channel>
+        </rss>
+        EOF
+
+        echo "Appcast generated:"
+        cat build/appcast.xml
+
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          build/PathChanger-${{ steps.version.outputs.version }}.dmg
+          build/appcast.xml
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Summary
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        echo "## 🚀 Release $VERSION Published!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Downloads" >> $GITHUB_STEP_SUMMARY
+        echo "- **DMG**: [PathChanger-${VERSION}.dmg](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Appcast**: [appcast.xml](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/appcast.xml)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### User Instructions" >> $GITHUB_STEP_SUMMARY
+        echo "Since this app is not notarized, users will need to:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Download the DMG" >> $GITHUB_STEP_SUMMARY
+        echo "2. Open it and drag PathChanger to Applications" >> $GITHUB_STEP_SUMMARY
+        echo "3. Right-click the app → Open → Click 'Open' in the dialog" >> $GITHUB_STEP_SUMMARY
+

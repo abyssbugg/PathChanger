@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- ============================================================== -->
+	<!-- SECURITY ENTITLEMENTS - PathChanger                         -->
+	<!-- Last Security Audit: 2025-12-11                                 -->
+	<!-- ============================================================== -->
+	
+	<!-- ============================================================== -->
+	<!-- CODE SIGNING ENTITLEMENTS                                       -->
+	<!-- ============================================================== -->
+	
+	<!-- JIT Compilation: DISABLED                                       -->
+	<!-- Explicitly disabled - not needed for this application           -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<false/>
+	
+	<!-- NOTE: The following HIGH-RISK entitlements were REMOVED:        -->
+	<!-- - allow-unsigned-executable-memory (NOT NEEDED)                 -->
+	<!-- - disable-library-validation (NOT NEEDED)                       -->
+	<!-- - allow-dyld-environment-variables (NOT NEEDED)                 -->
+	<!--                                                                 -->
+	<!-- RATIONALE: This app uses Process() to spawn external Python     -->
+	<!-- subprocess (pymobiledevice3). The subprocess runs in its OWN    -->
+	<!-- process space with its OWN entitlements. We do NOT:             -->
+	<!-- - Embed Python interpreter                                      -->
+	<!-- - Load Python libraries into our process                        -->
+	<!-- - Use DYLD environment variables (we use PYTHONPATH)            -->
+	<!-- Therefore, these dangerous entitlements are not required.       -->
+	
+	<!-- ============================================================== -->
+	<!-- NETWORK ENTITLEMENTS                                            -->
+	<!-- ============================================================== -->
+	
+	<!-- Network Client: ENABLED                                         -->
+	<!-- Required for: WiFi device discovery, tunneld API communication  -->
+	<!-- Used by: DeviceManager, TunneldManager for network operations   -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	
+	<!-- Network Server: ENABLED                                         -->
+	<!-- Required for: MultipeerConnectivity with Companion iOS app      -->
+	<!-- Used by: CompanionHostService for hosting advertiser sessions   -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	
+	<!-- ============================================================== -->
+	<!-- DEVICE ACCESS ENTITLEMENTS                                      -->
+	<!-- ============================================================== -->
+	
+	<!-- USB Device Access: ENABLED                                      -->
+	<!-- Required for: iOS device communication via USB                  -->
+	<!-- Used by: DeviceManager for device enumeration and connection    -->
+	<key>com.apple.security.device.usb</key>
+	<true/>
+	
+	<!-- Bluetooth Access: ENABLED                                       -->
+	<!-- Required for: MultipeerConnectivity with Companion iOS app      -->
+	<!-- Used by: CompanionHostService for Bluetooth-based discovery     -->
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+	
+	<!-- ============================================================== -->
+	<!-- FILE ACCESS ENTITLEMENTS                                        -->
+	<!-- ============================================================== -->
+	
+	<!-- User-Selected Files: ENABLED (Read/Write)                       -->
+	<!-- Required for: GPX file import/export via file dialogs           -->
+	<!-- Used by: GPXParser, RouteLibrary for user file operations       -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	
+	<!-- Downloads Folder: ENABLED (Read/Write)                          -->
+	<!-- Required for: Default location for GPX file operations          -->
+	<!-- Used by: RouteLibrary for saving/loading route files            -->
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	
+	<!-- ============================================================== -->
+	<!-- PRIVACY ENTITLEMENTS                                            -->
+	<!-- ============================================================== -->
+	
+	<!-- Location Information: ENABLED                                   -->
+	<!-- Required for: MapKit services, location display on map          -->
+	<!-- Used by: MapService for centering map on user location          -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
+</dict>
+</plist>
