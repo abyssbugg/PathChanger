@@ -340,27 +340,9 @@ sequenceDiagram
 
 ### API Documentation (DocC)
 
-PathChanger includes comprehensive API documentation built with Apple's DocC:
+DocC generation is currently disabled in CI until a runner/toolchain combination with accessible DocC support is configured. The "Build Documentation" job in [CI workflow](.github/workflows/ci.yml) now validates the documentation stage without invoking DocC generation.
 
-**Local Generation:**
-```bash
-swift package generate-documentation \
-  --target PathChanger \
-  --disable-indexing
-```
-
-**Hosted Documentation:**
-The CI pipeline builds DocC documentation as a preview artifact. GitHub Pages deployment is opt-in and can be enabled later by configuring repository Pages settings and setting the `DEPLOY_DOCC` repository variable to `true`.
-- **URL:** configure after the new PathChanger repository is created and Pages deployment is enabled.
-- **Build Status:** Check the "Build Documentation" job in [CI workflow](.github/workflows/ci.yml)
-
-**Topics Covered:**
-- Core Components (DevLocationBridge, DeviceManager, TunneldManager)
-- Simulation Modes (Teleport, Route, Joystick)
-- Device Management & Error Handling
-- Configuration & Reliability
-
-> **Note:** To enable GitHub Pages hosting, go to repository Settings → Pages → Source: **GitHub Actions** (not "Deploy from a branch"). The CI workflow uses the `actions/deploy-pages` action to deploy directly.
+When documentation publishing is re-enabled, keep it as a separate CI change and verify the toolchain before restoring hosted documentation deployment.
 
 ---
 

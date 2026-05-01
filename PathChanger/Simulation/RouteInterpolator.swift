@@ -24,10 +24,10 @@ struct RouteInterpolator {
 
         var allPoints: [LocationCoordinate] = []
 
-        for i in 0..<validWaypoints.count - 1 {
+        for waypointIndex in 0..<validWaypoints.count - 1 {
             let segment = interpolate(
-                from: validWaypoints[i],
-                to: validWaypoints[i + 1],
+                from: validWaypoints[waypointIndex],
+                to: validWaypoints[waypointIndex + 1],
                 speed: speed
             )
             allPoints.append(contentsOf: segment)
@@ -64,8 +64,8 @@ struct RouteInterpolator {
 
         var points: [LocationCoordinate] = []
 
-        for i in 0..<steps {
-            let fraction = Double(i) / Double(steps)
+        for stepIndex in 0..<steps {
+            let fraction = Double(stepIndex) / Double(steps)
             let lat = start.latitude + (end.latitude - start.latitude) * fraction
             let lon = start.longitude + (end.longitude - start.longitude) * fraction
             points.append(LocationCoordinate(latitude: lat, longitude: lon))
@@ -79,19 +79,18 @@ struct RouteInterpolator {
     static func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
         guard from.isValid, to.isValid else { return 0 }
 
-        let R = 6371000.0 // Earth radius in meters
+        let earthRadiusMeters = 6371000.0
 
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
         let dLat = (to.latitude - from.latitude) * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
-
-        let a = sin(dLat/2) * sin(dLat/2) +
+        let haversineTerm = sin(dLat/2) * sin(dLat/2) +
                 cos(lat1) * cos(lat2) *
                 sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(a), sqrt(1-a))
+        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1-haversineTerm))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 
     /// Move a coordinate by distance and bearing
@@ -109,15 +108,16 @@ struct RouteInterpolator {
         let normalizedBearing = bearingDegrees.truncatingRemainder(dividingBy: 360)
         let bearing = (normalizedBearing < 0 ? normalizedBearing + 360 : normalizedBearing) * .pi / 180
 
-        let R = 6371000.0 // Earth radius in meters
+        let earthRadiusMeters = 6371000.0
+        let angularDistance = distanceMeters / earthRadiusMeters
 
         let lat1 = from.latitude * .pi / 180
         let lon1 = from.longitude * .pi / 180
 
-        let lat2 = asin(sin(lat1) * cos(distanceMeters/R) +
-                       cos(lat1) * sin(distanceMeters/R) * cos(bearing))
-        let lon2 = lon1 + atan2(sin(bearing) * sin(distanceMeters/R) * cos(lat1),
-                                cos(distanceMeters/R) - sin(lat1) * sin(lat2))
+        let lat2 = asin(sin(lat1) * cos(angularDistance) +
+                       cos(lat1) * sin(angularDistance) * cos(bearing))
+        let lon2 = lon1 + atan2(sin(bearing) * sin(angularDistance) * cos(lat1),
+                                cos(angularDistance) - sin(lat1) * sin(lat2))
 
         let result = LocationCoordinate(
             latitude: lat2 * 180 / .pi,
@@ -137,10 +137,10 @@ struct RouteInterpolator {
         let lat2 = to.latitude * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
 
-        let y = sin(dLon) * cos(lat2)
-        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        let yComponent = sin(dLon) * cos(lat2)
+        let xComponent = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
 
-        let bearing = atan2(y, x) * 180 / .pi
+        let bearing = atan2(yComponent, xComponent) * 180 / .pi
         return (bearing + 360).truncatingRemainder(dividingBy: 360)
     }
 }

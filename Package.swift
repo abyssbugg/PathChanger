@@ -14,8 +14,7 @@ let package = Package(
     ],
     dependencies: [
         // Sparkle for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
-        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(

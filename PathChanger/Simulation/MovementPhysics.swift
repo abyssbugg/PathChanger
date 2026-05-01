@@ -321,36 +321,39 @@ class MovementPhysicsEngine {
         let lat2 = to.latitude * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
 
-        let y = sin(dLon) * cos(lat2)
-        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        let yComponent = sin(dLon) * cos(lat2)
+        let xComponent = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
 
-        let bearing = atan2(y, x) * 180 / .pi
+        let bearing = atan2(yComponent, xComponent) * 180 / .pi
         return normalizeAngle(bearing)
     }
 
     private func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
-        let R = 6371000.0 // Earth radius in meters
+        let earthRadiusMeters = 6371000.0
         let dLat = (to.latitude - from.latitude) * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
 
-        let a = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(a), sqrt(1-a))
+        let haversineTerm = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
+        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1-haversineTerm))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 
     private func moveCoordinate(from: LocationCoordinate, distanceMeters: Double, bearingDegrees: Double) -> LocationCoordinate {
-        let R = 6371000.0 // Earth radius in meters
-        let d = distanceMeters / R
+        let earthRadiusMeters = 6371000.0
+        let angularDistance = distanceMeters / earthRadiusMeters
         let bearing = bearingDegrees * .pi / 180
 
         let lat1 = from.latitude * .pi / 180
         let lon1 = from.longitude * .pi / 180
 
-        let lat2 = asin(sin(lat1) * cos(d) + cos(lat1) * sin(d) * cos(bearing))
-        let lon2 = lon1 + atan2(sin(bearing) * sin(d) * cos(lat1), cos(d) - sin(lat1) * sin(lat2))
+        let lat2 = asin(sin(lat1) * cos(angularDistance) + cos(lat1) * sin(angularDistance) * cos(bearing))
+        let lon2 = lon1 + atan2(
+            sin(bearing) * sin(angularDistance) * cos(lat1),
+            cos(angularDistance) - sin(lat1) * sin(lat2)
+        )
 
         return LocationCoordinate(
             latitude: lat2 * 180 / .pi,
@@ -393,10 +396,10 @@ class RouteRecorder: ObservableObject {
     public var totalDistance: Double {
         guard recordedPoints.count > 1 else { return 0 }
         var distance = 0.0
-        for i in 1..<recordedPoints.count {
+        for recordedPointIndex in 1..<recordedPoints.count {
             distance += haversineDistance(
-                from: recordedPoints[i-1].coordinate,
-                to: recordedPoints[i].coordinate
+                from: recordedPoints[recordedPointIndex - 1].coordinate,
+                to: recordedPoints[recordedPointIndex].coordinate
             )
         }
         return distance
@@ -476,9 +479,10 @@ class RouteRecorder: ObservableObject {
         var result: [(LocationCoordinate, TimeInterval)] = []
         result.append((recordedPoints[0].coordinate, 0.0))
 
-        for i in 1..<recordedPoints.count {
-            let delay = recordedPoints[i].timestamp.timeIntervalSince(recordedPoints[i-1].timestamp)
-            result.append((recordedPoints[i].coordinate, delay))
+        for recordedPointIndex in 1..<recordedPoints.count {
+            let delay = recordedPoints[recordedPointIndex].timestamp
+                .timeIntervalSince(recordedPoints[recordedPointIndex - 1].timestamp)
+            result.append((recordedPoints[recordedPointIndex].coordinate, delay))
         }
 
         return result
@@ -487,16 +491,16 @@ class RouteRecorder: ObservableObject {
     // MARK: Helpers
 
     private func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
-        let R = 6371000.0
+        let earthRadiusMeters = 6371000.0
         let dLat = (to.latitude - from.latitude) * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
 
-        let a = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(a), sqrt(1-a))
+        let haversineTerm = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
+        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1-haversineTerm))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 }
 
@@ -677,16 +681,16 @@ class PhysicsRouteSimulation: ObservableObject {
         progress = Double(currentWaypointIndex) / Double(max(1, waypoints.count - 1))
     }
 
-    private func distanceBetween(_ a: LocationCoordinate, _ b: LocationCoordinate) -> Double {
-        let R = 6371000.0
-        let dLat = (b.latitude - a.latitude) * .pi / 180
-        let dLon = (b.longitude - a.longitude) * .pi / 180
-        let lat1 = a.latitude * .pi / 180
-        let lat2 = b.latitude * .pi / 180
+    private func distanceBetween(_ start: LocationCoordinate, _ end: LocationCoordinate) -> Double {
+        let earthRadiusMeters = 6371000.0
+        let dLat = (end.latitude - start.latitude) * .pi / 180
+        let dLon = (end.longitude - start.longitude) * .pi / 180
+        let lat1 = start.latitude * .pi / 180
+        let lat2 = end.latitude * .pi / 180
 
-        let aa = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(aa), sqrt(1-aa))
+        let haversineTerm = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
+        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1-haversineTerm))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 }

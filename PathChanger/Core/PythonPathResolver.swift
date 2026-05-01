@@ -290,9 +290,9 @@ enum PythonPathResolver {
         let v1Components = v1.components(separatedBy: ".").compactMap { Int($0) }
         let v2Components = v2.components(separatedBy: ".").compactMap { Int($0) }
 
-        for i in 0..<max(v1Components.count, v2Components.count) {
-            let v1Value = i < v1Components.count ? v1Components[i] : 0
-            let v2Value = i < v2Components.count ? v2Components[i] : 0
+        for componentIndex in 0..<max(v1Components.count, v2Components.count) {
+            let v1Value = componentIndex < v1Components.count ? v1Components[componentIndex] : 0
+            let v2Value = componentIndex < v2Components.count ? v2Components[componentIndex] : 0
 
             if v1Value < v2Value { return .orderedAscending }
             if v1Value > v2Value { return .orderedDescending }
