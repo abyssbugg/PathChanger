@@ -207,14 +207,11 @@ class DeviceStateManager: ObservableObject {
                 seenUDIDs.insert(device.id)
             }
         }
+        let usbAvailable = uniqueDevices.contains { $0.connectionType == .usb }
+        updateUSBConnected(usbAvailable, force: true)
 
         // Only update if devices changed
-        let currentDeviceIds = Set(availableDevices.map { $0.id })
-        let newDeviceIds = Set(uniqueDevices.map { $0.id })
-
-        if currentDeviceIds != newDeviceIds {
-            availableDevices = uniqueDevices
-        } else {
+        if availableDevices != uniqueDevices {
             availableDevices = uniqueDevices
         }
 
@@ -236,7 +233,8 @@ class DeviceStateManager: ObservableObject {
         await deviceManager.checkTunneldStatus()
         updateTunnelRunning(deviceManager.isTunneldRunning)
 
-        if !isTunneldRunning && !TunneldManager.shared.isStarting {
+        if UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool == true,
+           !isTunneldRunning && !TunneldManager.shared.isStarting {
             await TunneldManager.shared.autoStart()
             updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
         }

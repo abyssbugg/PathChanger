@@ -50,9 +50,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // iOS 18+ Warning Banner
-            if let device = appState.selectedDevice, !device.isIOSVersionSupported {
-                IOS18WarningBanner(device: device)
+            // Newer iOS compatibility warning banner
+            if let device = appState.selectedDevice, device.hasLocationCompatibilityWarning {
+                IOSCompatibilityWarningBanner(device: device)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -78,7 +78,7 @@ struct ContentView: View {
             }
             .navigationSplitViewStyle(.balanced)
         }
-        .frame(minWidth: 1000, minHeight: 700)
+        .frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 700)
         // Onboarding sheet
         .sheet(isPresented: $appState.showOnboarding) {
             OnboardingView()
@@ -87,8 +87,8 @@ struct ContentView: View {
         .sheet(isPresented: $showErrorDialog) {
             if let error = currentError {
                 if error.type == .iosVersionUnsupported {
-                    IOS18WarningDialogView(
-                        deviceVersion: appState.selectedDevice?.iosVersion ?? "18+",
+                    IOSCompatibilityWarningDialogView(
+                        deviceVersion: appState.selectedDevice?.iosVersion ?? "newer",
                         onDismiss: {
                             showErrorDialog = false
                             appState.errorHandler.clearCurrentError()
@@ -144,16 +144,16 @@ struct ContentView: View {
     }
 }
 
-// MARK: - iOS 18+ Warning Banner
+// MARK: - Newer iOS Compatibility Warning Banner
 
-struct IOS18WarningBanner: View {
+struct IOSCompatibilityWarningBanner: View {
     let device: Device
     @State private var isExpanded = false
     @State private var showDialog = false
     @State private var isDismissed = false
 
     var body: some View {
-        if !isDismissed && !AppPreferences.shared.isIOS18WarningDismissed(for: device.id) {
+        if !isDismissed && !AppPreferences.shared.isNewerIOSWarningDismissed(for: device.id) {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -161,11 +161,11 @@ struct IOS18WarningBanner: View {
                         .foregroundColor(.orange)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("iOS \(device.iosVersion) Not Supported")
+                        Text("iOS \(device.iosVersion) Compatibility Warning")
                             .font(.subheadline.weight(.semibold))
 
                         if isExpanded {
-                            Text("Location simulation may not work on iOS 18+. Downgrade to iOS 17.6 or check for pymobiledevice3 updates.")
+                            Text("PathChanger will still try location simulation, but newer iOS versions may need upstream pymobiledevice3 fixes if DVT rejects the request.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -184,15 +184,25 @@ struct IOS18WarningBanner: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
+                    .accessibleButton(
+                        label: isExpanded ? "Collapse iOS compatibility warning" : "Expand iOS compatibility warning",
+                        hint: "Shows or hides details about newer iOS compatibility",
+                        identifier: "iosCompatibilityWarningDisclosureButton"
+                    )
 
                     Button("Learn More") {
                         showDialog = true
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .accessibleButton(
+                        label: "Learn more about iOS compatibility",
+                        hint: "Opens compatibility guidance",
+                        identifier: "iosCompatibilityWarningLearnMoreButton"
+                    )
 
                     Button {
-                        AppPreferences.shared.setIOS18WarningDismissed(for: device.id)
+                        AppPreferences.shared.setNewerIOSWarningDismissed(for: device.id)
                         withAnimation {
                             isDismissed = true
                         }
@@ -201,6 +211,11 @@ struct IOS18WarningBanner: View {
                             .foregroundColor(.secondary.opacity(0.6))
                     }
                     .buttonStyle(.borderless)
+                    .accessibleButton(
+                        label: "Dismiss iOS compatibility warning",
+                        hint: "Hides this compatibility warning for the selected device",
+                        identifier: "iosCompatibilityWarningDismissButton"
+                    )
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -213,7 +228,7 @@ struct IOS18WarningBanner: View {
                 )
             }
             .sheet(isPresented: $showDialog) {
-                IOS18WarningDialogView(
+                IOSCompatibilityWarningDialogView(
                     deviceVersion: device.iosVersion,
                     onDismiss: { showDialog = false },
                     onLearnMore: { url in

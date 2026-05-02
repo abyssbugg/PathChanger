@@ -77,8 +77,8 @@ struct DeviceCard: View {
                         .font(.title2)
                         .foregroundStyle(isSelected ? .blue : .secondary)
 
-                    // iOS 18+ warning badge
-                    if !device.isIOSVersionSupported {
+                    // Newer iOS compatibility warning badge
+                    if device.hasLocationCompatibilityWarning {
                         Circle()
                             .fill(.orange)
                             .frame(width: 16, height: 16)
@@ -110,14 +110,14 @@ struct DeviceCard: View {
                     // iOS version badge (only show if version is known)
                     if device.iosVersion != "Unknown" {
                         HStack(spacing: 4) {
-                            if !device.isIOSVersionSupported {
+                            if device.hasLocationCompatibilityWarning {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .font(.caption2)
                                     .foregroundStyle(.orange)
                             }
                             Text("iOS \(device.iosVersion)")
                                 .font(.caption2)
-                                .foregroundColor(device.isIOSVersionSupported ? .secondary : .orange)
+                                .foregroundColor(device.hasLocationCompatibilityWarning ? .orange : .secondary)
                         }
                     }
                 }

@@ -38,9 +38,9 @@ enum PythonResolverError: Error, LocalizedError {
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
-            return "Install pymobiledevice3 using:\npip3 install pymobiledevice3"
+            return "Install pymobiledevice3 using:\npython3 -m pip install -U pymobiledevice3"
         case .pymobiledevice3VersionTooOld:
-            return "Upgrade pymobiledevice3 using:\npip3 install --upgrade pymobiledevice3"
+            return "Upgrade pymobiledevice3 using:\npython3 -m pip install -U pymobiledevice3"
         case .invalidPythonVersion:
             return "Install Python 3.9 or later"
         }
@@ -51,14 +51,6 @@ enum PythonResolverError: Error, LocalizedError {
 /// Supports multiple installation methods: system, Homebrew, pyenv, etc.
 enum PythonPathResolver {
 
-    /// Common Python 3 installation paths on macOS
-    private static let searchPaths: [String] = [
-        "/usr/bin/python3",                          // System Python
-        "/usr/local/bin/python3",                    // Homebrew (Intel)
-        "/opt/homebrew/bin/python3",                 // Homebrew (Apple Silicon)
-        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",  // python.org installer
-    ]
-
     /// Cached resolved path
     private static var _resolvedPath: String?
 
@@ -67,6 +59,52 @@ enum PythonPathResolver {
 
     /// Minimum required pymobiledevice3 version
     private static let minimumPmd3Version = "6.1.5"
+
+    /// Common Python 3 installation paths on macOS, ordered by user-managed installs first.
+    private static var searchPaths: [String] {
+        let home = NSHomeDirectory()
+        let pyenvVersionsPath = "\(home)/.pyenv/versions"
+        let pyenvVersionPaths = (try? FileManager.default.contentsOfDirectory(atPath: pyenvVersionsPath))?
+            .sorted(by: >)
+            .map { "\(pyenvVersionsPath)/\($0)/bin/python3" } ?? []
+
+        let configuredPaths = [
+            "\(home)/.pyenv/shims/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/opt/local/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+            "/usr/bin/python3"
+        ]
+
+        return uniquePaths(pyenvVersionPaths + configuredPaths)
+    }
+
+    /// Search directories for CLI tools used by Process from GUI-launched apps.
+    private static var executableSearchDirectories: [String] {
+        let home = NSHomeDirectory()
+        let pyenvVersionsPath = "\(home)/.pyenv/versions"
+        let pyenvVersionBinPaths = (try? FileManager.default.contentsOfDirectory(atPath: pyenvVersionsPath))?
+            .sorted(by: >)
+            .map { "\(pyenvVersionsPath)/\($0)/bin" } ?? []
+
+        let configuredPaths = [
+            "\(home)/.pyenv/shims",
+            "\(home)/.local/bin",
+            "\(home)/Library/Python/3.13/bin",
+            "\(home)/Library/Python/3.12/bin",
+            "\(home)/Library/Python/3.11/bin",
+            "\(home)/Library/Python/3.10/bin",
+            "\(home)/Library/Python/3.9/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/bin",
+            "/bin"
+        ]
+
+        return uniquePaths(pyenvVersionBinPaths + configuredPaths)
+    }
 
     /// Get the Python 3 executable path
     /// Uses cached value if available, otherwise discovers dynamically
@@ -100,8 +138,8 @@ enum PythonPathResolver {
     /// Validate complete Python installation
     /// - Throws: PythonResolverError if validation fails
     static func validateInstallation() async throws {
-        // Check Python exists and is executable
-        let pythonPath = path
+        // Refresh lets a newly installed pyenv/Homebrew Python be picked up without restarting the app.
+        let pythonPath = refresh()
 
         guard FileManager.default.fileExists(atPath: pythonPath) else {
             throw PythonResolverError.pythonNotFound
@@ -111,17 +149,13 @@ enum PythonPathResolver {
             throw PythonResolverError.pythonNotExecutable(pythonPath)
         }
 
-        // Validate Python version
         try await checkPythonVersion()
     }
 
     /// Validate all dependencies (Python + pymobiledevice3)
     /// - Throws: PythonResolverError if any dependency is missing or invalid
     static func validateDependencies() async throws {
-        // First validate Python installation
         try await validateInstallation()
-
-        // Then check pymobiledevice3
         try await validatePymobiledevice3()
     }
 
@@ -132,7 +166,6 @@ enum PythonPathResolver {
             throw PythonResolverError.pythonNotFound
         }
 
-        // Parse version (e.g., "Python 3.9.6" -> 3.9)
         let components = versionString.components(separatedBy: " ")
         guard components.count >= 2,
               let versionPart = components.last(where: { $0.contains(".") }) else {
@@ -146,7 +179,6 @@ enum PythonPathResolver {
             throw PythonResolverError.invalidPythonVersion(versionString)
         }
 
-        // Check against minimum version
         if major < minimumPythonVersion.major ||
            (major == minimumPythonVersion.major && minor < minimumPythonVersion.minor) {
             throw PythonResolverError.invalidPythonVersion("\(major).\(minor)")
@@ -169,185 +201,63 @@ enum PythonPathResolver {
     static func validatePymobiledevice3() async throws {
         let version = try await checkPymobiledevice3Installation()
 
-        // Parse version and compare (simplified version check)
-        if compareVersions(version, minimumPmd3Version) == .orderedAscending {
+        if version != "unknown", compareVersions(version, minimumPmd3Version) == .orderedAscending {
             throw PythonResolverError.pymobiledevice3VersionTooOld(version)
         }
-    }
-
-    /// Check pymobiledevice3 installation and get version
-    /// - Returns: Version string (e.g., "6.1.5")
-    /// - Throws: PythonResolverError if not installed
-    private static func checkPymobiledevice3Installation() async throws -> String {
-        let pythonPath = path
-
-        // First, try using pip to check if pymobiledevice3 is installed
-        return try await checkPymobiledevice3WithPip()
-    }
-
-    /// Check pymobiledevice3 using pip show
-    private static func checkPymobiledevice3WithPip() async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-m", "pip", "show", "pymobiledevice3"]
-
-        // Set comprehensive PATH to find pymobiledevice3
-        var environment = ProcessInfo.processInfo.environment
-
-        // Add homebrew, pyenv, and system python paths
-        let paths = [
-            "/opt/homebrew/bin",      // Apple Silicon homebrew
-            "/usr/local/bin",         // Intel homebrew
-            "/opt/local/bin",         // MacPorts
-            "/usr/local/opt/python3/bin",  // Manual python install
-            NSHomeDirectory() + "/.pyenv/shims",  // pyenv
-            "/usr/bin",
-            "/bin"
-        ]
-
-        let existingPath = environment["PATH"] ?? ""
-        environment["PATH"] = paths.joined(separator: ":") + ":" + existingPath
-
-        // Add PYTHONPATH for pip packages
-        let pythonPaths = [
-            NSHomeDirectory() + "/Library/Python/3.11/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.10/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.9/lib/python/site-packages",
-            "/opt/homebrew/lib/python3.11/site-packages",
-            "/opt/homebrew/lib/python3.10/site-packages",
-            "/opt/homebrew/lib/python3.9/site-packages",
-            "/usr/local/lib/python3.11/site-packages",
-            "/usr/local/lib/python3.10/site-packages",
-            "/usr/local/lib/python3.9/site-packages"
-        ]
-        environment["PYTHONPATH"] = pythonPaths.joined(separator: ":")
-
-        process.environment = environment
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global().async {
-                defer {
-                    // Ensure cleanup of file handles and process
-                    try? pipe.fileHandleForReading.close()
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                }
-
-                do {
-                    try process.run()
-
-                    // Wait with timeout
-                    var didTimeout = false
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
-                        if process.isRunning {
-                            didTimeout = true
-                            process.terminate()
-                        }
-                    }
-
-                    process.waitUntilExit()
-
-                    if didTimeout {
-                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
-                        return
-                    }
-
-                    guard process.terminationStatus == 0 else {
-                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
-                        return
-                    }
-
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-
-                    // Extract version number from pip show output (format: "Version: X.Y.Z")
-                    let versionPattern = #"Version:\s*(\d+\.\d+\.\d+)"#
-                    if let regex = try? NSRegularExpression(pattern: versionPattern),
-                       let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-                       let range = Range(match.range(at: 1), in: output) {
-                        let version = String(output[range])
-                        continuation.resume(returning: version)
-                    } else {
-                        // If we got here with exit code 0, pymobiledevice3 is installed
-                        continuation.resume(returning: "unknown")
-                    }
-                } catch {
-                    continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
-                }
-            }
-        }
-    }
-
-    // MARK: - Helper Methods
-
-    /// Compare semantic versions
-    private static func compareVersions(_ v1: String, _ v2: String) -> ComparisonResult {
-        let v1Components = v1.components(separatedBy: ".").compactMap { Int($0) }
-        let v2Components = v2.components(separatedBy: ".").compactMap { Int($0) }
-
-        for componentIndex in 0..<max(v1Components.count, v2Components.count) {
-            let v1Value = componentIndex < v1Components.count ? v1Components[componentIndex] : 0
-            let v2Value = componentIndex < v2Components.count ? v2Components[componentIndex] : 0
-
-            if v1Value < v2Value { return .orderedAscending }
-            if v1Value > v2Value { return .orderedDescending }
-        }
-
-        return .orderedSame
     }
 
     /// Get the Python version string with timeout protection
     static func version() async -> String? {
         guard isAvailable else { return nil }
 
-        return try? await withTimeout(seconds: 5.0) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = ["--version"]
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            try process.run()
-
-            // Wait with timeout
-            let timeoutDate = Date().addingTimeInterval(5.0)
-            while process.isRunning && Date() < timeoutDate {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
-
-            if process.isRunning {
-                process.terminate()
-                return nil
-            }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        return try? await runProcess(
+            executablePath: path,
+            arguments: ["--version"],
+            timeout: 5.0
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Private
 
+    private static func checkPymobiledevice3Installation() async throws -> String {
+        do {
+            return try await checkPymobiledevice3WithModule()
+        } catch {
+            return try await checkPymobiledevice3WithPip()
+        }
+    }
+
+    /// Check pymobiledevice3 by running the module with the resolved Python.
+    private static func checkPymobiledevice3WithModule() async throws -> String {
+        let output = try await runProcess(
+            executablePath: path,
+            arguments: ["-m", "pymobiledevice3", "version"],
+            timeout: 5.0
+        )
+
+        return extractVersion(from: output) ?? "unknown"
+    }
+
+    /// Check pymobiledevice3 using pip show with the resolved Python.
+    private static func checkPymobiledevice3WithPip() async throws -> String {
+        let output = try await runProcess(
+            executablePath: path,
+            arguments: ["-m", "pip", "show", "pymobiledevice3"],
+            timeout: 5.0
+        )
+
+        return extractVersion(from: output) ?? "unknown"
+    }
+
     private static func resolvePath() -> String {
-        // First try `which python3` to respect user's PATH
+        for searchPath in searchPaths where FileManager.default.isExecutableFile(atPath: searchPath) {
+            return searchPath
+        }
+
         if let whichPath = resolveViaWhich() {
             return whichPath
         }
 
-        // Fall back to searching known paths
-        for searchPath in searchPaths {
-            if FileManager.default.isExecutableFile(atPath: searchPath) {
-                return searchPath
-            }
-        }
-
-        // Ultimate fallback (may not exist, validation will catch this)
         return "/usr/bin/python3"
     }
 
@@ -355,13 +265,13 @@ enum PythonPathResolver {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
         process.arguments = ["python3"]
+        process.environment = processEnvironment()
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
         defer {
-            // Ensure cleanup of file handles and process
             try? pipe.fileHandleForReading.close()
             if process.isRunning {
                 process.terminate()
@@ -371,7 +281,6 @@ enum PythonPathResolver {
         do {
             try process.run()
 
-            // Wait with timeout (2 seconds for which command)
             let timeoutDate = Date().addingTimeInterval(2.0)
             while process.isRunning && Date() < timeoutDate {
                 Thread.sleep(forTimeInterval: 0.1)
@@ -391,28 +300,109 @@ enum PythonPathResolver {
                 return path
             }
         } catch {
-            // Silently fall through to other methods
+            // Silently fall through to static paths.
         }
 
         return nil
     }
 
-    // MARK: - Timeout Helper
+    private static func runProcess(
+        executablePath: String,
+        arguments: [String],
+        timeout: TimeInterval
+    ) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.environment = processEnvironment()
 
-    private static func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T?) async throws -> T? {
-        try await withThrowingTaskGroup(of: T?.self) { group in
-            group.addTask {
-                try await operation()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async {
+                defer {
+                    try? pipe.fileHandleForReading.close()
+                    if process.isRunning {
+                        process.terminate()
+                    }
+                }
+
+                do {
+                    try process.run()
+
+                    var didTimeout = false
+                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                        if process.isRunning {
+                            didTimeout = true
+                            process.terminate()
+                        }
+                    }
+
+                    process.waitUntilExit()
+
+                    if didTimeout {
+                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
+                        return
+                    }
+
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+
+                    guard process.terminationStatus == 0 else {
+                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
+                        return
+                    }
+
+                    continuation.resume(returning: output)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
+        }
+    }
 
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
-            }
+    private static func processEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let existingPath = environment["PATH"] ?? ""
+        let pathEntries = uniquePaths(executableSearchDirectories + existingPath.split(separator: ":").map(String.init))
+        environment["PATH"] = pathEntries.joined(separator: ":")
+        environment["PYENV_ROOT"] = "\(NSHomeDirectory())/.pyenv"
+        return environment
+    }
 
-            let result = try await group.next()
-            group.cancelAll()
-            return result ?? nil
+    private static func extractVersion(from output: String) -> String? {
+        let versionPattern = #"(\d+\.\d+\.\d+)"#
+        guard let regex = try? NSRegularExpression(pattern: versionPattern),
+              let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+              let range = Range(match.range(at: 1), in: output) else {
+            return nil
+        }
+        return String(output[range])
+    }
+
+    private static func compareVersions(_ v1: String, _ v2: String) -> ComparisonResult {
+        let v1Components = v1.components(separatedBy: ".").compactMap { Int($0) }
+        let v2Components = v2.components(separatedBy: ".").compactMap { Int($0) }
+
+        for componentIndex in 0..<max(v1Components.count, v2Components.count) {
+            let v1Value = componentIndex < v1Components.count ? v1Components[componentIndex] : 0
+            let v2Value = componentIndex < v2Components.count ? v2Components[componentIndex] : 0
+
+            if v1Value < v2Value { return .orderedAscending }
+            if v1Value > v2Value { return .orderedDescending }
+        }
+
+        return .orderedSame
+    }
+
+    private static func uniquePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        return paths.filter { path in
+            guard !path.isEmpty, !seen.contains(path) else { return false }
+            seen.insert(path)
+            return true
         }
     }
 }

@@ -15,20 +15,20 @@ final class AppPreferences {
 
     private init() {}
 
-    // MARK: - iOS 18 Warning Banner State
+    // MARK: - Newer iOS Warning Banner State
 
-    private func ios18WarningDismissedKey(for deviceId: String) -> String {
-        "dismissedIOS18Warning_\(deviceId)"
+    private func newerIOSWarningDismissedKey(for deviceId: String) -> String {
+        "dismissedNewerIOSWarning_\(deviceId)"
     }
 
-    /// Check if the iOS 18 warning banner has been dismissed for a specific device
-    func isIOS18WarningDismissed(for deviceId: String) -> Bool {
-        defaults.bool(forKey: ios18WarningDismissedKey(for: deviceId))
+    /// Check if the newer-iOS warning banner has been dismissed for a specific device
+    func isNewerIOSWarningDismissed(for deviceId: String) -> Bool {
+        defaults.bool(forKey: newerIOSWarningDismissedKey(for: deviceId))
     }
 
-    /// Mark the iOS 18 warning banner as dismissed for a specific device
-    func setIOS18WarningDismissed(for deviceId: String) {
-        defaults.set(true, forKey: ios18WarningDismissedKey(for: deviceId))
+    /// Mark the newer-iOS warning banner as dismissed for a specific device
+    func setNewerIOSWarningDismissed(for deviceId: String) {
+        defaults.set(true, forKey: newerIOSWarningDismissedKey(for: deviceId))
     }
 
     // MARK: - Onboarding State

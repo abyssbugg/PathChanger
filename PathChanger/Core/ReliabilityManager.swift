@@ -248,8 +248,10 @@ struct ErrorClassifier {
                 return .retryable
             case .deviceNotFound, .tunneldNotRunning:
                 return .persistent
-            case .developerModeRequired, .unsupportedIOSVersion:
+            case .developerModeRequired:
                 return .fatal
+            case .unsupportedIOSVersion:
+                return .retryable
             case .invalidCoordinates, .rateLimited, .outputSizeExceeded:
                 return .retryable
             }
@@ -723,7 +725,7 @@ class ErrorHandler: ObservableObject {
         case .tunneldNotRunning: return .startTunneld
         case .developerModeRequired: return .enableDeveloperMode
         case .deviceNotFound: return .checkConnection
-        case .unsupportedIOSVersion: return nil
+        case .unsupportedIOSVersion: return .retry
         default: return .retry
         }
     }

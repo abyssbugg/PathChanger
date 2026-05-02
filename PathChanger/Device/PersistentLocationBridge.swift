@@ -98,18 +98,10 @@ final class PersistentLocationBridge: ObservableObject {
 
     /// Find Python and bridge script paths
     private func findPaths() {
-        // Find python3
-        let pathsToCheck = [
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3"
-        ]
-
-        for path in pathsToCheck {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                python3Path = path
-                break
-            }
+        // Find python3 using the same pyenv/Homebrew-aware resolver as the rest of the app.
+        let resolvedPythonPath = PythonPathResolver.path
+        if FileManager.default.isExecutableFile(atPath: resolvedPythonPath) {
+            python3Path = resolvedPythonPath
         }
 
         // Find bridge script (in app bundle or workspace)
@@ -167,26 +159,7 @@ final class PersistentLocationBridge: ObservableObject {
         newProcess.standardError = stderr
 
         // Set environment
-        var environment = ProcessInfo.processInfo.environment
-        let paths = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin"
-        ]
-        environment["PATH"] = paths.joined(separator: ":") + ":" + (environment["PATH"] ?? "")
-
-        // Add PYTHONPATH for pymobiledevice3
-        let pythonPaths = [
-            NSHomeDirectory() + "/Library/Python/3.11/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.10/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.9/lib/python/site-packages",
-            "/opt/homebrew/lib/python3.11/site-packages",
-            "/opt/homebrew/lib/python3.10/site-packages",
-            "/opt/homebrew/lib/python3.9/site-packages"
-        ]
-        environment["PYTHONPATH"] = pythonPaths.joined(separator: ":")
-        newProcess.environment = environment
+        newProcess.environment = ProcessEnvironment.configured(preserveExistingPath: true)
 
         // Setup output handler
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -379,23 +352,30 @@ final class PersistentLocationBridge: ObservableObject {
 
         // Wait for response with timeout
         return try await withCheckedThrowingContinuation { [weak self] continuation in
-            self?.responseLock.lock()
-            self?.pendingContinuation = continuation
-            self?.responseLock.unlock()
+            self?.setPendingContinuation(continuation)
+            let timeout = self?.responseTimeout ?? 10.0
 
             // Timeout handler
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(self?.responseTimeout ?? 10.0) * 1_000_000_000)
-                self?.responseLock.lock()
-                if let cont = self?.pendingContinuation {
-                    self?.pendingContinuation = nil
-                    self?.responseLock.unlock()
-                    cont.resume(throwing: PersistentBridgeError.timeout)
-                } else {
-                    self?.responseLock.unlock()
-                }
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self?.timeoutPendingContinuation()
             }
         }
+    }
+
+    private func setPendingContinuation(_ continuation: CheckedContinuation<BridgeResponse, Error>) {
+        responseLock.lock()
+        pendingContinuation = continuation
+        responseLock.unlock()
+    }
+
+    private func timeoutPendingContinuation() {
+        responseLock.lock()
+        let continuation = pendingContinuation
+        pendingContinuation = nil
+        responseLock.unlock()
+
+        continuation?.resume(throwing: PersistentBridgeError.timeout)
     }
 
     /// Handle output from Python process

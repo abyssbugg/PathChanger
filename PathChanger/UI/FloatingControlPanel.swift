@@ -19,17 +19,15 @@ struct FloatingControlPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.md) {
             if let title = title {
-                HStack {
+                HStack(spacing: AppSpacing.sm) {
                     if let icon = icon {
                         Image(systemName: icon)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.pcPrimary)
                     }
                     Text(title)
-                        .font(AppFont.caption)
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
+                        .appSectionLabel()
 
                     Spacer()
                 }
@@ -37,14 +35,8 @@ struct FloatingControlPanel<Content: View>: View {
 
             content
         }
-        .padding(16)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.2), radius: 15, x: 0, y: 5)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20)
-                .stroke(.white.opacity(0.2), lineWidth: 0.5)
-        )
+        .padding(AppSpacing.lg)
+        .appGlassPanel(cornerRadius: AppRadius.xl)
     }
 }
 

@@ -200,36 +200,32 @@ final class LocationInjectionIntegrationTests: XCTestCase {
         }
     }
 
-    // MARK: - iOS 18 Detection Tests
+    // MARK: - Newer iOS Compatibility Warning Tests
 
-    func testLocationInjectionFailsOnIOS18() async throws {
-        /// Test that location injection fails on iOS 18+ devices
-        let ios18Device = Device(
-            id: "test-ios18-device",
+    func testLocationInjectionDoesNotRejectNewerIOSVersion() async throws {
+        /// Test that newer iOS devices are not rejected by version validation
+        let newerIOSDevice = Device(
+            id: "00008030001234567890123456789012345678ab",
             displayName: "Test iPhone 16",
             connectionType: .usb,
             productType: "iPhone17,1",
-            productVersion: "18.0",
-            deviceName: "Test iOS 18 Device"
+            productVersion: "26.5",
+            deviceName: "Test Newer iOS Device"
         )
+        XCTAssertTrue(newerIOSDevice.isIOSVersionSupported)
+        XCTAssertTrue(newerIOSDevice.hasLocationCompatibilityWarning)
 
         let coordinate = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
 
         do {
-            try await locationBridge.setLocation(coordinate, for: ios18Device)
-            XCTFail("Expected unsupportedIOSVersion error to be thrown")
+            try await locationBridge.setLocation(coordinate, for: newerIOSDevice)
+            Logger.debug("✅ Location injection attempted on newer iOS", category: .device)
         } catch let error as LocationInjectionError {
-            switch error {
-            case .unsupportedIOSVersion(let version):
-                XCTAssertEqual(version, "18.0")
-                XCTAssertTrue(error.errorDescription?.contains("iOS 18") ?? false)
-                XCTAssertTrue(error.recoverySuggestion?.contains("Downgrade") ?? false)
-                Logger.debug("✅ iOS 18 detection working: \(error.errorDescription ?? "")", category: .device)
-            default:
-                // May also fail for other reasons (device not connected, etc.)
-                // This is acceptable in integration tests
-                Logger.debug("✅ Different error thrown (expected in integration test): \(error)", category: .device)
+            if case .unsupportedIOSVersion = error {
+                XCTFail("Newer iOS should not fail version validation")
             }
+            // Other errors are expected in integration tests without a connected matching device.
+            Logger.debug("✅ Different error thrown (expected in integration test): \(error)", category: .device)
         } catch {
             // Other errors are acceptable in integration tests
             Logger.debug("✅ Non-injection error thrown: \(error)", category: .device)
@@ -272,21 +268,21 @@ final class LocationInjectionIntegrationTests: XCTestCase {
         }
     }
 
-    func testIOS18ErrorMessageContainsGuidance() async throws {
-        /// Test that iOS 18 error provides helpful recovery suggestions
-        let error = LocationInjectionError.unsupportedIOSVersion("18.0")
+    func testNewerIOSErrorMessageContainsGuidance() async throws {
+        /// Test that legacy newer-iOS compatibility errors provide non-blocking guidance
+        let error = LocationInjectionError.unsupportedIOSVersion("26.5")
 
         // Verify error description
         XCTAssertNotNil(error.errorDescription)
-        XCTAssertTrue(error.errorDescription?.contains("iOS 18") ?? false)
-        XCTAssertTrue(error.errorDescription?.contains("not supported") ?? false)
+        XCTAssertTrue(error.errorDescription?.contains("iOS 26.5") ?? false)
+        XCTAssertTrue(error.errorDescription?.contains("compatibility issues") ?? false)
+        XCTAssertTrue(error.errorDescription?.contains("still try") ?? false)
 
         // Verify recovery suggestion
         XCTAssertNotNil(error.recoverySuggestion)
-        XCTAssertTrue(error.recoverySuggestion?.contains("Downgrade") ?? false)
-        XCTAssertTrue(error.recoverySuggestion?.contains("17.6") ?? false)
         XCTAssertTrue(error.recoverySuggestion?.contains("pymobiledevice3") ?? false)
+        XCTAssertTrue(error.recoverySuggestion?.contains("DVT error") ?? false)
 
-        Logger.debug("✅ iOS 18 error message contains proper guidance", category: .device)
+        Logger.debug("✅ Newer iOS compatibility message contains proper guidance", category: .device)
     }
 }

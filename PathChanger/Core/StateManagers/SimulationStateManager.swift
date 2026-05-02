@@ -301,12 +301,11 @@ class SimulationStateManager: ObservableObject {
         let latOffset = normalizedY * metersPerUpdate / 111_000 // ~111km per degree
         let lonOffset = normalizedX * metersPerUpdate / (111_000 * cos(current.latitude * .pi / 180))
 
-        if let newLocation = try? LocationCoordinate(
+        let newLocation = LocationCoordinate(
             latitude: current.latitude + latOffset,
             longitude: current.longitude + lonOffset
-        ) {
-            await setLocation(newLocation)
-        }
+        )
+        await setLocation(newLocation)
     }
 
     // MARK: Speed Control

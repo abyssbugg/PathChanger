@@ -321,9 +321,12 @@ final class ArgumentSanitizerTests: XCTestCase {
     }
 
     func testIOSVersionSupported() {
-        // iOS 17 and below should be supported
+        // PathChanger should not hard-block iOS versions
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("17.0"))
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("17.6"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("18.0"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("18.1"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("26.5"))
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("16.5"))
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("15.0"))
 
@@ -332,26 +335,25 @@ final class ArgumentSanitizerTests: XCTestCase {
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported(""))
     }
 
-    func testIOSVersionUnsupported() {
-        // iOS 18+ should not be supported
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("18.0"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("18.1"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("19.0"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("20.0"))
+    func testIOSVersionCompatibilityWarnings() {
+        XCTAssertFalse(ArgumentSanitizer.shouldWarnAboutIOSVersion("17.0"))
+        XCTAssertFalse(ArgumentSanitizer.shouldWarnAboutIOSVersion("17.6"))
+        XCTAssertTrue(ArgumentSanitizer.shouldWarnAboutIOSVersion("18.0"))
+        XCTAssertTrue(ArgumentSanitizer.shouldWarnAboutIOSVersion("18.1"))
+        XCTAssertTrue(ArgumentSanitizer.shouldWarnAboutIOSVersion("19.0"))
+        XCTAssertTrue(ArgumentSanitizer.shouldWarnAboutIOSVersion("26.5"))
+
+        // Invalid versions fail open without a warning.
+        XCTAssertFalse(ArgumentSanitizer.shouldWarnAboutIOSVersion("invalid"))
+        XCTAssertFalse(ArgumentSanitizer.shouldWarnAboutIOSVersion(""))
     }
 
-    func testIOSVersionValidationThrows() {
-        // iOS 18+ should throw
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("18.0")) { error in
-            guard case ValidationError.unsupportedIOSVersion(let version) = error else {
-                XCTFail("Expected unsupportedIOSVersion error")
-                return
-            }
-            XCTAssertEqual(version, "18.0")
-        }
-
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("18.1"))
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("19.0"))
+    func testIOSVersionValidationDoesNotThrowForNewerIOS() {
+        // Newer iOS versions should be attempted with warnings, not rejected.
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("18.0"))
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("18.1"))
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("19.0"))
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("26.5"))
     }
 
     func testIOSVersionValidationPasses() {

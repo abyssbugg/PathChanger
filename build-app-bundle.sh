@@ -14,7 +14,8 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="PathChanger"
 APP_BUNDLE_NAME="$APP_NAME.app"
-APP_DIR="build/$APP_BUNDLE_NAME"
+APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-/tmp/pathchanger-app-build}"
+APP_DIR="$APP_BUNDLE_BUILD_ROOT/$APP_BUNDLE_NAME"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -118,6 +119,14 @@ echo -e "${GREEN}✓ PkgInfo created${NC}"
 echo -e "${BLUE}Step 7: Cleaning extended attributes and resource forks...${NC}"
 # Remove all extended attributes
 xattr -cr "$APP_DIR"
+# Merge/delete AppleDouble files and remove Finder/resource fork metadata that codesign rejects.
+dot_clean -m "$APP_DIR"
+xattr -dr com.apple.FinderInfo "$APP_DIR" 2>/dev/null || true
+xattr -dr com.apple.ResourceFork "$APP_DIR" 2>/dev/null || true
+xattr -dr com.apple.provenance "$APP_DIR" 2>/dev/null || true
+xattr -dr "com.apple.fileprovider.fpfs#P" "$APP_DIR" 2>/dev/null || true
+# dot_clean can leave metadata behind on some macOS versions, so clean once more before signing.
+xattr -cr "$APP_DIR"
 # Remove any .DS_Store files
 find "$APP_DIR" -name ".DS_Store" -delete 2>/dev/null || true
 # Remove any ._* resource fork files
@@ -133,27 +142,37 @@ if [ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]; then
     if [ "$SIGNING_IDENTITY" = "-" ]; then
         # Local ad-hoc builds must not use hardened runtime library validation.
         # Sign the full framework tree ad-hoc so it can be loaded from the app bundle.
-        codesign --force --deep --sign - "$FRAMEWORKS_DIR/Sparkle.framework" 2>&1 | grep -v "replacing" || true
+        codesign --force --deep --sign - "$FRAMEWORKS_DIR/Sparkle.framework"
     else
         # Sign the Autoupdate executable
         if [ -f "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate" ]; then
-            codesign --force --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate" 2>&1 | grep -v "replacing" || true
+            codesign --force --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate"
         fi
         # Sign Updater.app if it exists
         if [ -d "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Updater.app" ]; then
-            codesign --force --deep --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Updater.app" 2>&1 | grep -v "replacing" || true
+            codesign --force --deep --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Updater.app"
         fi
         # Sign the framework itself
-        codesign --force --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework" 2>&1 | grep -v "replacing" || true
+        codesign --force --sign "$SIGNING_IDENTITY" "$FRAMEWORKS_DIR/Sparkle.framework"
     fi
 fi
+
+# codesign can rewrite framework bundle metadata; clean again before signing the app.
+dot_clean -m "$APP_DIR"
+xattr -dr com.apple.FinderInfo "$APP_DIR" 2>/dev/null || true
+xattr -dr com.apple.ResourceFork "$APP_DIR" 2>/dev/null || true
+xattr -dr com.apple.provenance "$APP_DIR" 2>/dev/null || true
+xattr -dr "com.apple.fileprovider.fpfs#P" "$APP_DIR" 2>/dev/null || true
+xattr -cr "$APP_DIR"
+find "$APP_DIR" -name ".DS_Store" -delete 2>/dev/null || true
+find "$APP_DIR" -name "._*" -delete 2>/dev/null || true
 
 if [ -f "$ENTITLEMENTS_FILE" ]; then
     if [ "$SIGNING_IDENTITY" = "-" ]; then
         # Ad-hoc signing with entitlements
         codesign --force --sign - \
             --entitlements "$ENTITLEMENTS_FILE" \
-            "$APP_DIR" 2>&1 | grep -v "replacing existing signature" || true
+            "$APP_DIR"
         echo -e "${GREEN}✓ Code signed (ad-hoc with entitlements)${NC}"
     else
         # Developer ID signing with entitlements and hardened runtime
@@ -161,17 +180,18 @@ if [ -f "$ENTITLEMENTS_FILE" ]; then
             --entitlements "$ENTITLEMENTS_FILE" \
             --options runtime \
             --timestamp \
-            "$APP_DIR" 2>&1 | grep -v "replacing existing signature" || true
+            "$APP_DIR"
         echo -e "${GREEN}✓ Code signed with Developer ID and hardened runtime${NC}"
     fi
 else
-    codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR" 2>&1 | grep -v "replacing existing signature" || true
+    codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
     echo -e "${GREEN}✓ Code signed (without entitlements)${NC}"
 fi
 
 # Step 9: Verify signature
 echo -e "${BLUE}Step 9: Verifying signature...${NC}"
-codesign --verify --verbose "$APP_DIR" && echo -e "${GREEN}✓ Signature verified${NC}" || echo -e "${RED}✗ Signature verification failed${NC}"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+echo -e "${GREEN}✓ Signature verified${NC}"
 
 # Step 10: Check entitlements
 echo -e "${BLUE}Step 10: Checking entitlements...${NC}"
@@ -184,7 +204,12 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}✓ App bundle created successfully!${NC}"
 echo -e "${GREEN}============================================${NC}"
 echo ""
-echo -e "Location: ${BLUE}$(pwd)/$APP_DIR${NC}"
+if [[ "$APP_DIR" = /* ]]; then
+    DISPLAY_APP_DIR="$APP_DIR"
+else
+    DISPLAY_APP_DIR="$(pwd)/$APP_DIR"
+fi
+echo -e "Location: ${BLUE}$DISPLAY_APP_DIR${NC}"
 echo -e "Size:     ${BLUE}$(du -sh "$APP_DIR" | cut -f1)${NC}"
 echo -e "Signing:  ${BLUE}$SIGNING_IDENTITY${NC}"
 echo ""

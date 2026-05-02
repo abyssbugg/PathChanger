@@ -22,15 +22,14 @@ PathChanger is a macOS application that enables GPS location spoofing on iOS dev
 
 ### iOS Version Compatibility
 
-PathChanger is optimized for **iOS 17.0 through 17.6**. 
+PathChanger is optimized for iOS 17 and attempts location simulation on newer iOS versions instead of blocking them.
 
-**iOS 18+ Limitations:**
-- Location simulation may not work due to Apple's DVT service changes
-- App automatically detects iOS 18+ and displays warnings
+**Newer iOS compatibility:**
+- Location simulation may depend on upstream pymobiledevice3 support for Apple's DVT service changes
+- App automatically detects newer iOS versions and displays warnings
 - See <doc:ErrorHandling> for troubleshooting steps
 
 **Recommended Setup:**
-- Use iOS 17.6 for best compatibility
 - Enable Developer Mode (Settings → Privacy & Security)
 - Keep pymobiledevice3 updated to latest version
 

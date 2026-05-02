@@ -30,7 +30,6 @@ struct ErrorDialogView: View {
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
-
             // Suggestion
             if let suggestion = error.suggestion {
                 VStack(alignment: .leading, spacing: 4) {
@@ -97,7 +96,7 @@ struct ErrorDialogView: View {
         case .permission: return "Permission Required"
         case .network: return "Network Error"
         case .system: return "Error"
-        case .iosVersionUnsupported: return "iOS Version Not Supported"
+        case .iosVersionUnsupported: return "iOS Compatibility Warning"
         }
     }
 
@@ -112,21 +111,13 @@ struct ErrorDialogView: View {
     }
 
     private func helpURLForType(_ type: ErrorHandler.ErrorType) -> URL? {
-        // Link to relevant documentation based on error type
-        let baseURL = "https://github.com/PathChanger/docs/wiki/"
         switch type {
-        case .connection:
-            return URL(string: baseURL + "Troubleshooting#connection-issues")
-        case .device:
-            return URL(string: baseURL + "Troubleshooting#device-issues")
-        case .location:
-            return URL(string: baseURL + "Troubleshooting#location-errors")
+        case .connection, .device, .location, .network:
+            return URL(string: "https://github.com/doronz88/pymobiledevice3")
         case .permission:
-            return URL(string: baseURL + "Setup#permissions")
-        case .network:
-            return URL(string: baseURL + "Troubleshooting#network-issues")
+            return URL(string: "https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device")
         case .system:
-            return URL(string: baseURL + "Troubleshooting")
+            return nil
         case .iosVersionUnsupported:
             return URL(string: "https://github.com/doronz88/pymobiledevice3/issues")
         }
@@ -194,16 +185,21 @@ struct EnhancedErrorDialogView: View {
                 }
 
                 // Learn More link
-                Button(action: {
-                    if let url = helpURLForType(error.type) {
-                        onLearnMore?(url)
+                if let helpURL = helpURLForType(error.type) {
+                    Button(action: {
+                        onLearnMore?(helpURL)
+                    }) {
+                        Label("Learn More", systemImage: "questionmark.circle")
+                            .font(.caption)
                     }
-                }) {
-                    Label("Learn More", systemImage: "questionmark.circle")
-                        .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundColor(.blue)
+                    .accessibleButton(
+                        label: "Learn more about this error",
+                        hint: "Opens related setup or troubleshooting documentation",
+                        identifier: "errorDialogLearnMoreButton"
+                    )
                 }
-                .buttonStyle(.plain)
-                .foregroundColor(.blue)
             }
         }
         .padding(24)
@@ -241,7 +237,7 @@ struct EnhancedErrorDialogView: View {
         case .permission: return "Permission Required"
         case .network: return "Network Error"
         case .system: return "Error"
-        case .iosVersionUnsupported: return "iOS Version Not Supported"
+        case .iosVersionUnsupported: return "iOS Compatibility Warning"
         }
     }
 
@@ -256,29 +252,22 @@ struct EnhancedErrorDialogView: View {
     }
 
     private func helpURLForType(_ type: ErrorHandler.ErrorType) -> URL? {
-        let baseURL = "https://github.com/PathChanger/docs/wiki/"
         switch type {
-        case .connection:
-            return URL(string: baseURL + "Troubleshooting#connection-issues")
-        case .device:
-            return URL(string: baseURL + "Troubleshooting#device-issues")
-        case .location:
-            return URL(string: baseURL + "Troubleshooting#location-errors")
+        case .connection, .device, .location, .network:
+            return URL(string: "https://github.com/doronz88/pymobiledevice3")
         case .permission:
-            return URL(string: baseURL + "Setup#permissions")
-        case .network:
-            return URL(string: baseURL + "Troubleshooting#network-issues")
+            return URL(string: "https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device")
         case .system:
-            return URL(string: baseURL + "Troubleshooting")
+            return nil
         case .iosVersionUnsupported:
             return URL(string: "https://github.com/doronz88/pymobiledevice3/issues")
         }
     }
 }
 
-// MARK: - iOS 18+ Warning Dialog
+// MARK: - Newer iOS Compatibility Warning Dialog
 
-struct IOS18WarningDialogView: View {
+struct IOSCompatibilityWarningDialogView: View {
     let deviceVersion: String
     let onDismiss: () -> Void
     let onLearnMore: ((URL) -> Void)?
@@ -292,26 +281,26 @@ struct IOS18WarningDialogView: View {
                 .symbolEffect(.pulse)
 
             // Title
-            Text("iOS \(deviceVersion) Not Supported")
+            Text("iOS \(deviceVersion) Compatibility Warning")
                 .font(.headline)
 
             // Message
-            Text("Location simulation is not supported on iOS 18 and later due to Apple restrictions.")
+            Text("Newer iOS versions may change Apple's DVT location service. PathChanger will still attempt location simulation instead of blocking.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
 
-            // Downgrade instructions
+            // Compatibility notes
             VStack(alignment: .leading, spacing: 8) {
-                Label("Recommended Solution:", systemImage: "lightbulb.fill")
+                Label("What to try:", systemImage: "lightbulb.fill")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.orange)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("1. Downgrade your device to iOS 17.6 or earlier")
-                    Text("2. Check pymobiledevice3 GitHub for iOS 18 updates")
-                    Text("3. Monitor Apple Developer forums for changes")
+                    Text("1. Keep pymobiledevice3 updated")
+                    Text("2. Start the tunnel, then try location simulation")
+                    Text("3. If it fails, copy the exact DVT error for upstream tracking")
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -337,16 +326,6 @@ struct IOS18WarningDialogView: View {
                     .buttonStyle(.borderedProminent)
                 }
 
-                Button(action: {
-                    if let url = URL(string: "https://ipsw.me") {
-                        onLearnMore?(url)
-                    }
-                }) {
-                    Label("Download iOS 17.6 IPSW", systemImage: "arrow.down.circle")
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.blue)
             }
         }
         .padding(24)

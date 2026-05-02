@@ -49,9 +49,19 @@ public enum ProcessEnvironment {
     ///
     /// These paths require runtime resolution using NSHomeDirectory()
     private static func dynamicPathDirectories() -> [String] {
-        return [
-            NSHomeDirectory() + "/.pyenv/shims"  // pyenv Python version manager
-        ]
+        let home = NSHomeDirectory()
+        let pyenvVersionsPath = "\(home)/.pyenv/versions"
+        let pyenvVersionBinPaths = (try? FileManager.default.contentsOfDirectory(atPath: pyenvVersionsPath))?
+            .sorted(by: >)
+            .map { "\(pyenvVersionsPath)/\($0)/bin" } ?? []
+        let userPythonBinPaths = supportedPythonVersions.map { version in
+            "\(home)/Library/Python/\(version)/bin"
+        }
+
+        return pyenvVersionBinPaths + [
+            "\(home)/.pyenv/shims",  // pyenv Python version manager
+            "\(home)/.local/bin"
+        ] + userPythonBinPaths
     }
 
     // MARK: - PYTHONPATH Configuration
@@ -108,6 +118,7 @@ public enum ProcessEnvironment {
         }
 
         env["PATH"] = pathComponents.joined(separator: ":")
+        env["PYENV_ROOT"] = NSHomeDirectory() + "/.pyenv"
 
         // Build PYTHONPATH
         let pythonPaths = userPythonPaths() + homebrewPythonPaths()
@@ -138,6 +149,7 @@ public enum ProcessEnvironment {
 
         // Preserve HOME for packages that need it
         env["HOME"] = NSHomeDirectory()
+        env["PYENV_ROOT"] = NSHomeDirectory() + "/.pyenv"
 
         // Preserve USER for ownership checks
         if let user = ProcessInfo.processInfo.environment["USER"] {

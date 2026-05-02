@@ -251,7 +251,7 @@ struct DiagnosticsView: View {
 
     func checkPython() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: ["--version"])
+            let output = try await runCommand(PythonPathResolver.path, args: ["--version"])
             pythonVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return DiagnosticResult(
                 name: "Python 3",
@@ -271,7 +271,7 @@ struct DiagnosticsView: View {
 
     func checkPymobiledevice3() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: ["-m", "pymobiledevice3", "version"])
+            let output = try await runCommand(PythonPathResolver.path, args: ["-m", "pymobiledevice3", "version"])
             pymobiledevice3Version = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return DiagnosticResult(
                 name: "pymobiledevice3",
@@ -316,8 +316,8 @@ struct DiagnosticsView: View {
 
     func checkDevice() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: [
-                "-m", "pymobiledevice3", "usbmux", "list", "--no-color"
+            let output = try await runCommand(PythonPathResolver.path, args: [
+                "-m", "pymobiledevice3", "--no-color", "usbmux", "list"
             ])
 
             // Check for various device identifiers (supports both USB and WiFi/Network connections)
@@ -372,27 +372,7 @@ struct DiagnosticsView: View {
         // Get iOS version for display and checking
         let iosVersion = device.productVersion ?? "Unknown"
         let iosVersionDisplay = "iOS \(iosVersion)"
-
-        // Check iOS version support before running test
-        if !device.isIOSVersionSupported {
-            // iOS 18+ detected - return warning immediately
-            return DiagnosticResult(
-                name: "Location Injection",
-                status: .warning,
-                message: "\(iosVersionDisplay) detected - location simulation may not work due to Apple restrictions",
-                recoveryAction: "Downgrade to iOS 17.6 or check https://github.com/doronz88/pymobiledevice3/issues for iOS 18 updates"
-            )
-        }
-
-        // Handle unknown version with warning
-        if device.productVersion == nil {
-            return DiagnosticResult(
-                name: "Location Injection",
-                status: .warning,
-                message: "iOS version unknown - location simulation may not work on iOS 18+",
-                recoveryAction: "Check device iOS version in Settings > General > About"
-            )
-        }
+        let hasCompatibilityWarning = device.hasLocationCompatibilityWarning
 
         // Test with actual simulate-location set command using test coordinates (0.0, 0.0)
         do {
@@ -410,7 +390,7 @@ struct DiagnosticsView: View {
             // Add test coordinates
             args.append(contentsOf: ["--", "0.0", "0.0"])
 
-            let output = try await runCommand("/usr/bin/python3", args: args)
+            let output = try await runCommand(PythonPathResolver.path, args: args)
             let outputLower = output.lowercased()
 
             // Check for specific error patterns that indicate failure
@@ -452,20 +432,21 @@ struct DiagnosticsView: View {
                 return DiagnosticResult(
                     name: "Location Injection",
                     status: .success,
-                    message: "\(iosVersionDisplay) - Location simulation test successful (used test coordinates 0.0, 0.0)",
+                    message: hasCompatibilityWarning
+                        ? "\(iosVersionDisplay) - Location simulation command succeeded; newer iOS may still be less reliable"
+                        : "\(iosVersionDisplay) - Location simulation test successful (used test coordinates 0.0, 0.0)",
                     recoveryAction: nil
                 )
             }
         } catch {
             let errorStr = "\(error)".lowercased()
-
-            // Check for iOS 18+ specific service unavailable error
+            // Check for newer-iOS service unavailable errors
             if errorStr.contains("servicenotavailableerror") || errorStr.contains("-402653150") {
                 return DiagnosticResult(
                     name: "Location Injection",
                     status: .failure,
                     message: "\(iosVersionDisplay) - Location simulation service unavailable",
-                    recoveryAction: "This may be an iOS restriction. Check https://github.com/doronz88/pymobiledevice3/issues for updates"
+                    recoveryAction: "Update pymobiledevice3, retry with a fresh tunnel, and report the exact DVT error upstream if it persists"
                 )
             } else if errorStr.contains("developer mode") || errorStr.contains("developermode") {
                 return DiagnosticResult(
@@ -515,6 +496,7 @@ struct DiagnosticsView: View {
             process.arguments = args
             process.standardOutput = pipe
             process.standardError = pipe
+            process.environment = ProcessEnvironment.configured(preserveExistingPath: true)
 
             do {
                 try process.run()

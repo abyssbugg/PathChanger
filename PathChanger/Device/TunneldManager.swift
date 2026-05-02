@@ -59,6 +59,7 @@ enum TunnelMode: String, CaseIterable, Identifiable {
         }
     }
 
+
     var command: [String] {
         switch self {
         case .auto:
@@ -193,7 +194,7 @@ struct PrivilegedCommandValidator {
 
     // MARK: - Security Constants
 
-    /// Allowed Python executable paths (prevents path injection attacks)
+    /// Allowed system Python executable paths (prevents path injection attacks)
     private static let allowedPythonPaths: Set<String> = [
         "/opt/homebrew/bin/python3",
         "/opt/homebrew/bin/python3.11",
@@ -227,7 +228,7 @@ struct PrivilegedCommandValidator {
     /// - Returns: Success if command is safe, failure with specific error otherwise
     static func validate(command: String, pythonPath: String) -> Result<Void, PrivilegedCommandError> {
         // Step 1: Validate Python path is in allowlist
-        if !allowedPythonPaths.contains(pythonPath) {
+        if !isPythonPathAllowed(pythonPath) {
             return .failure(.invalidPythonPath(pythonPath))
         }
 
@@ -263,7 +264,18 @@ struct PrivilegedCommandValidator {
 
     /// Quick check if a Python path is in the allowlist
     static func isPythonPathAllowed(_ path: String) -> Bool {
-        allowedPythonPaths.contains(path)
+        if allowedPythonPaths.contains(path) {
+            return true
+        }
+        let pyenvShimsPath = "\(NSHomeDirectory())/.pyenv/shims/python3"
+        if path == pyenvShimsPath && FileManager.default.isExecutableFile(atPath: path) {
+            return true
+        }
+
+        let pyenvVersionsPrefix = "\(NSHomeDirectory())/.pyenv/versions/"
+        return path.hasPrefix(pyenvVersionsPrefix) &&
+               path.hasSuffix("/bin/python3") &&
+               FileManager.default.isExecutableFile(atPath: path)
     }
 }
 
@@ -448,6 +460,10 @@ class TunneldManager: ObservableObject {
 
     /// Serial queue for tunnel operations
     private let tunnelQueue = DispatchQueue(label: "com.pathchanger.tunnelmanager", qos: .userInitiated)
+    /// UDID selected for the next tunnel start, populated from usbmux discovery.
+    private var targetTunnelUDID: String?
+    private var targetTunnelConnectionType: ConnectionType?
+    private var tunnelStartInFlight = false
 
     /// Active process IDs to prevent duplicates (mirrored from state machine context)
     private var activeProcessIds: Set<Int32> {
@@ -564,7 +580,7 @@ class TunneldManager: ObservableObject {
     func autoStart() async {
         // First check if any tunnel is already running
         if let runningMode = await detectRunningTunnel() {
-            stateMachine.send(.externalTunnelDetected(mode: runningMode))
+            stateMachine.send(.externalTunnelDetected(mode: runningMode, info: recoverRsdInfoFromLog()))
             return
         }
 
@@ -574,20 +590,74 @@ class TunneldManager: ObservableObject {
 
     /// Start tunnel with preferred mode (with auto-fallback)
     func startTunnel() async {
+        guard !tunnelStartInFlight else {
+            Logger.debug("Ignoring duplicate tunnel start request while another start is in progress", category: .device)
+            return
+        }
         // Check state via state machine
         guard !stateMachine.isActive && !stateMachine.isTransitioning else {
             return
         }
+        tunnelStartInFlight = true
+        defer {
+            tunnelStartInFlight = false
+        }
 
         lastError = nil
+
+        if await attachToRunningTunnelIfAvailable() {
+            return
+        }
 
         let modesToTry: [TunnelMode]
 
         if preferredMode == .auto {
-            // Auto mode: try in priority order
-            modesToTry = [.usb, .wifi, .daemon]
+            let availability = await deviceConnectionAvailability()
+            if let targetUDID = targetTunnelUDID, availability.usbUDID == targetUDID {
+                modesToTry = [.usb]
+            } else if let targetUDID = targetTunnelUDID,
+                      availability.networkUDID == targetUDID,
+                      targetTunnelConnectionType != .wifi {
+                modesToTry = [.usb]
+            } else if let targetUDID = targetTunnelUDID,
+                      availability.wifiBrowseUDID == targetUDID || targetTunnelConnectionType == .wifi {
+                targetTunnelUDID = targetUDID
+                modesToTry = [.wifi]
+            } else if let usbUDID = availability.usbUDID {
+                targetTunnelUDID = usbUDID
+                modesToTry = [.usb]
+            } else if let networkUDID = availability.networkUDID {
+                targetTunnelUDID = networkUDID
+                modesToTry = [.usb]
+            } else if let wifiBrowseUDID = availability.wifiBrowseUDID {
+                targetTunnelUDID = wifiBrowseUDID
+                modesToTry = [.wifi]
+            } else {
+                let message = "No USB or same-Wi-Fi device detected. For Wi-Fi, keep the iPhone awake and unlocked on the same network, and trust/pair it with this Mac before retrying."
+                lastError = message
+                statusMessage = message
+                Logger.error(message, category: .device)
+                return
+            }
         } else {
             // Specific mode requested
+            let availability = await deviceConnectionAvailability()
+            switch preferredMode {
+            case .wifi:
+                targetTunnelUDID = targetTunnelUDID ?? availability.wifiBrowseUDID ?? availability.networkUDID
+            case .usb:
+                if let targetUDID = targetTunnelUDID, availability.usbUDID == targetUDID {
+                    targetTunnelUDID = targetUDID
+                } else if let targetUDID = targetTunnelUDID, availability.networkUDID == targetUDID {
+                    targetTunnelUDID = targetUDID
+                } else {
+                    targetTunnelUDID = availability.usbUDID ?? availability.networkUDID
+                }
+            case .daemon:
+                targetTunnelUDID = nil
+            case .auto:
+                break
+            }
             modesToTry = [preferredMode]
         }
 
@@ -622,15 +692,8 @@ class TunneldManager: ObservableObject {
                 return
             }
 
-            // If not auto mode, don't try other modes
-            if preferredMode != .auto {
-                stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
-                break
-            }
-
-            Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
-            // Reset to idle to try next mode
-            stateMachine.reset()
+            stateMachine.send(.errorOccurred(lastError ?? "Failed to start \(mode.rawValue) tunnel"))
+            return
         }
 
         // All modes failed
@@ -651,6 +714,23 @@ class TunneldManager: ObservableObject {
         if !running {
             preferredMode = previousMode
         }
+    }
+
+    /// Prefer this device for the next USB or Wi-Fi tunnel start.
+    func setTargetDevice(_ device: Device?) {
+        guard let device else {
+            targetTunnelUDID = nil
+            targetTunnelConnectionType = nil
+            return
+        }
+
+        guard isSafeUDID(device.id) else {
+            Logger.debug("Ignoring unsafe tunnel target UDID", category: .security)
+            return
+        }
+
+        targetTunnelUDID = device.id
+        targetTunnelConnectionType = device.connectionType
     }
 
     /// Stop the tunnel
@@ -684,14 +764,8 @@ class TunneldManager: ObservableObject {
 
     /// Check if USB device is connected
     func isUSBDeviceConnected() async -> Bool {
-        do {
-            let output = try await runCommand(python3Path, arguments: [
-                "-m", "pymobiledevice3", "usbmux", "list", "--no-color"
-            ])
-            return output.contains("USB") || output.contains("ConnectionType")
-        } catch {
-            return false
-        }
+        let availability = await deviceConnectionAvailability()
+        return availability.usbUDID != nil || availability.networkUDID != nil
     }
 
     // MARK: - Process Validation
@@ -744,6 +818,114 @@ class TunneldManager: ObservableObject {
 
     // MARK: - Private Methods
 
+    private struct DeviceConnectionAvailability {
+        let usbUDID: String?
+        let networkUDID: String?
+        let wifiBrowseUDID: String?
+    }
+
+    private func deviceConnectionAvailability() async -> DeviceConnectionAvailability {
+        do {
+            let output = try await runCommand(python3Path, arguments: [
+                "-m", "pymobiledevice3", "--no-color", "usbmux", "list"
+            ], timeout: 8.0)
+
+            guard let jsonStart = output.firstIndex(of: "["),
+                  let jsonEnd = output.lastIndex(of: "]"),
+                  let data = String(output[jsonStart...jsonEnd]).data(using: .utf8),
+                  let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return DeviceConnectionAvailability(usbUDID: nil, networkUDID: nil, wifiBrowseUDID: nil)
+            }
+
+            var usbUDID: String?
+            var networkUDID: String?
+
+            for item in jsonArray {
+                guard let udid = item["UniqueDeviceID"] as? String ?? item["Identifier"] as? String,
+                      isSafeUDID(udid),
+                      let connectionType = item["ConnectionType"] as? String else {
+                    continue
+                }
+
+                if connectionType.lowercased().contains("usb"), usbUDID == nil {
+                    usbUDID = udid
+                } else if connectionType.lowercased().contains("network"), networkUDID == nil {
+                    networkUDID = udid
+                }
+            }
+
+            let wifiBrowseUDID = usbUDID == nil && networkUDID == nil
+                ? await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
+                : nil
+
+            return DeviceConnectionAvailability(usbUDID: usbUDID, networkUDID: networkUDID, wifiBrowseUDID: wifiBrowseUDID)
+        } catch {
+            let wifiBrowseUDID = await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
+            return DeviceConnectionAvailability(usbUDID: nil, networkUDID: nil, wifiBrowseUDID: wifiBrowseUDID)
+        }
+    }
+
+    private func isSafeUDID(_ value: String) -> Bool {
+        let pattern = #"^[A-Fa-f0-9-]{16,64}$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(value.startIndex..., in: value)
+        return regex.firstMatch(in: value, range: range) != nil
+    }
+
+    private func discoverNetworkUDIDViaRemoteBrowse(preferredUDID: String?) async -> String? {
+        do {
+            let output = try await runCommand(python3Path, arguments: [
+                "-m", "pymobiledevice3", "--no-color",
+                "remote", "browse",
+                "--timeout", "3"
+            ], timeout: 5.0)
+
+            let candidates = extractWiFiUDIDsFromRemoteBrowseOutput(output)
+            if let preferredUDID, candidates.contains(preferredUDID) {
+                return preferredUDID
+            }
+            return candidates.first
+        } catch {
+            return nil
+        }
+    }
+
+    private func extractWiFiUDIDsFromRemoteBrowseOutput(_ output: String) -> [String] {
+        guard let jsonStart = output.firstIndex(of: "{"),
+              let jsonEnd = output.lastIndex(of: "}"),
+              let data = String(output[jsonStart...jsonEnd]).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json.keys.contains("wifi") || json.keys.contains("usb") else {
+            return extractSafeUDIDs(from: output)
+        }
+
+        guard let wifiValue = json["wifi"],
+              let wifiData = try? JSONSerialization.data(withJSONObject: wifiValue),
+              let wifiString = String(data: wifiData, encoding: .utf8) else {
+            return []
+        }
+
+        return extractSafeUDIDs(from: wifiString)
+    }
+
+    private func extractSafeUDIDs(from text: String) -> [String] {
+        let pattern = #"[A-Fa-f0-9]{8}-[A-Fa-f0-9]{16}|[A-Fa-f0-9]{40}"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        let matches = regex.matches(in: text, range: range)
+
+        var results: [String] = []
+        for match in matches {
+            guard let matchRange = Range(match.range, in: text) else { continue }
+            let value = String(text[matchRange])
+            if isSafeUDID(value), !results.contains(value) {
+                results.append(value)
+            }
+        }
+
+        return results
+    }
+
     /// Detect which tunnel mode is currently running
     private func detectRunningTunnel() async -> TunnelMode? {
         for mode in [TunnelMode.usb, .wifi, .daemon] {
@@ -759,15 +941,38 @@ class TunneldManager: ObservableObject {
         return nil
     }
 
+    /// Attach to an already-running tunnel instead of launching another privileged process.
+    private func attachToRunningTunnelIfAvailable() async -> Bool {
+        guard let runningMode = await detectRunningTunnel() else {
+            return false
+        }
+
+        guard let recoveredInfo = recoverRsdInfoFromLog() else {
+            let message = "A tunnel process is already running, but PathChanger could not read its RSD address. Stop the existing tunnel and start it again."
+            lastError = message
+            statusMessage = message
+            Logger.error(message, category: .device)
+            return true
+        }
+
+        tunnelInfo = recoveredInfo
+        lastError = nil
+        statusMessage = "Tunnel already running (RSD: \(recoveredInfo.rsdAddress):\(recoveredInfo.rsdPort))"
+        Logger.info("Attached to existing \(runningMode.rawValue) tunnel at \(recoveredInfo.rsdAddress):\(recoveredInfo.rsdPort)", category: .device)
+        stateMachine.send(.externalTunnelDetected(mode: runningMode, info: recoveredInfo))
+        return true
+    }
+
     /// Attempt to start tunnel with specific mode
     private func attemptStart(mode: TunnelMode) async -> Bool {
         let command: String
+        let udidArgument = targetTunnelUDID.map { " --udid \($0)" } ?? ""
 
         switch mode {
         case .usb:
-            command = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel > \(logFilePath) 2>&1 &"
+            command = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel\(udidArgument) > \(logFilePath) 2>&1 &"
         case .wifi:
-            command = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi > \(logFilePath) 2>&1 &"
+            command = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi --protocol tcp\(udidArgument) > \(logFilePath) 2>&1 &"
         case .daemon:
             command = "\(python3Path) -m pymobiledevice3 remote tunneld > \(logFilePath) 2>&1 &"
         case .auto:
@@ -850,16 +1055,24 @@ class TunneldManager: ObservableObject {
             return
         }
 
-        if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
-            lastError = "No device found. Connect device via USB first."
+        if logContent.contains("Device is not connected") {
+            if mode == .wifi {
+                lastError = "No Wi-Fi tunnel-capable device found. Keep the iPhone awake and unlocked on the same Wi-Fi, and complete pymobiledevice3 remote pairing if this Mac has not been paired for Wi-Fi tunneling."
+            } else {
+                lastError = "Device is not connected. Connect and trust the iPhone, then retry."
+            }
+        } else if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
+            lastError = mode == .wifi
+                ? "No Wi-Fi device found. Keep the iPhone awake and unlocked on the same Wi-Fi, then trust or pair it with this Mac before retrying."
+                : "No device found. Connect the device via USB, unlock it, and tap Trust."
         } else if logContent.contains("not paired") || logContent.contains("PairingError") {
-            lastError = "Device not paired. Trust this computer on your device."
+            lastError = "Device not paired. Unlock the device, trust this computer over USB, or complete pymobiledevice3 remote pairing for Wi-Fi."
         } else if logContent.contains("Developer Mode") {
             lastError = "Developer Mode required. Enable in Settings > Privacy & Security."
         } else if logContent.contains("timeout") || logContent.contains("timed out") {
-            lastError = "Connection timed out. Check device and network."
+            lastError = "Connection timed out. Keep the device awake, verify both devices are on the same Wi-Fi, and retry."
         } else if mode == .wifi && logContent.contains("No remotepairing devices") {
-            lastError = "No WiFi devices found. Ensure device is on same network."
+            lastError = "No Wi-Fi pairing record found. Pair/trust the device first, keep it awake on the same network, then retry Wi-Fi tunnel startup."
         }
     }
 
@@ -1063,9 +1276,41 @@ class TunneldManager: ObservableObject {
 
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            if try JSONSerialization.jsonObject(with: data) is [String: Any] {
-                // Process API response (simplified - see extended implementation)
-                Logger.debug("📍 Successfully queried tunneld API", category: .device)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: [[String: Any]]] {
+                var updatedInfo = deviceTunnelInfo
+
+                for (udid, entries) in json {
+                    guard isSafeUDID(udid), let entry = entries.first else { continue }
+
+                    let address = entry["tunnel-address"] as? String ??
+                        entry["rsd-address"] as? String ??
+                        entry["address"] as? String
+                    let port = entry["tunnel-port"] as? Int ??
+                        entry["rsd-port"] as? Int ??
+                        entry["port"] as? Int ??
+                        Int(entry["tunnel-port"] as? String ?? "") ??
+                        Int(entry["rsd-port"] as? String ?? "") ??
+                        Int(entry["port"] as? String ?? "")
+                    let interface = entry["interface"] as? String
+
+                    guard let address,
+                          isValidRsdAddress(address),
+                          let port,
+                          isValidRsdPort(port) else {
+                        continue
+                    }
+
+                    updatedInfo[udid] = TunnelInfo(
+                        rsdAddress: address,
+                        rsdPort: port,
+                        mode: activeMode ?? stateMachine.currentContext.activeMode ?? .auto,
+                        interface: interface,
+                        processId: stateMachine.currentContext.activeProcessIds.first
+                    )
+                }
+
+                deviceTunnelInfo = updatedInfo
+                Logger.debug("📍 Successfully queried tunneld API for \(updatedInfo.count) device tunnel(s)", category: .device)
             }
         } catch {
             Logger.debug("Could not query tunneld API: \(error.localizedDescription)", category: .device)
@@ -1079,9 +1324,53 @@ class TunneldManager: ObservableObject {
         if let info = deviceTunnelInfo[deviceId] {
             return info
         }
+        if tunnelInfo == nil, let recoveredInfo = recoverRsdInfoFromLog() {
+            tunnelInfo = recoveredInfo
+        }
 
         // Fall back to legacy single tunnel info
         return tunnelInfo
+    }
+
+    /// Recover RSD info from the tunnel log when an existing lockdown tunnel was detected.
+    private func recoverRsdInfoFromLog() -> TunnelInfo? {
+        guard let logContent = try? String(contentsOfFile: logFilePath, encoding: .utf8) else {
+            return nil
+        }
+
+        var rsdAddress: String?
+        var rsdPort: Int?
+        var interface: String?
+
+        (rsdAddress, rsdPort) = parseRsdHintLine(from: logContent)
+
+        if rsdAddress == nil || rsdPort == nil {
+            (rsdAddress, rsdPort, interface) = parseStructuredLogLines(from: logContent)
+        }
+
+        if rsdAddress == nil || rsdPort == nil,
+           let jsonResult = try? parseJsonOutput(from: logContent) {
+            rsdAddress = jsonResult.address
+            rsdPort = jsonResult.port
+            interface = jsonResult.interface
+        }
+
+        guard let address = rsdAddress,
+              isValidRsdAddress(address),
+              let port = rsdPort,
+              isValidRsdPort(port) else {
+            return nil
+        }
+
+        let info = TunnelInfo(
+            rsdAddress: address,
+            rsdPort: port,
+            mode: activeMode ?? stateMachine.currentContext.activeMode ?? .usb,
+            interface: interface,
+            processId: stateMachine.currentContext.activeProcessIds.first
+        )
+        Logger.info("Recovered tunnel RSD info from log: \(address):\(port)", category: .device)
+        return info
     }
 
     /// Refresh device RSD info from tunneld API
@@ -1180,9 +1469,14 @@ class TunneldManager: ObservableObject {
         // Set up health monitor failure notifications
         healthMonitor.setFailureNotificationHandler { [weak self] in
             Task { @MainActor in
-                Logger.error("🔴 Health monitor detected critical failure - initiating auto-recovery", category: .device)
-                // Attempt automatic restart
-                await self?.restartTunnel()
+                guard let self = self else { return }
+                Logger.error("🔴 Tunnel connectivity lost; automatic privileged restart is disabled", category: .device)
+                self.lastError = "Tunnel connection lost. Reconnect the device and click Start to retry."
+                self.statusMessage = "Tunnel disconnected"
+                self.monitorTask?.cancel()
+                self.monitorTask = nil
+                self.healthMonitor.stopMonitoring()
+                self.stateMachine.send(.healthCheckFailed)
             }
         }
 
@@ -1203,7 +1497,7 @@ class TunneldManager: ObservableObject {
     }
 
     /// Maximum output size from subprocess (1 MB) - prevents DoS via excessive output
-    private static let maxOutputSize = 1_048_576
+    nonisolated private static let maxOutputSize = 1_048_576
 
     /// Run a command and return output with timeout protection and size limiting
     private func runCommand(_ command: String, arguments: [String], timeout: TimeInterval? = nil) async throws -> String {
@@ -1281,7 +1575,7 @@ class TunneldManager: ObservableObject {
     }
 
     /// Returns the maximum output size limit for testing purposes
-    static var maxOutputSizeLimit: Int {
+    nonisolated static var maxOutputSizeLimit: Int {
         return maxOutputSize
     }
 }
@@ -1294,10 +1588,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var updaterController = UpdaterController()
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
-        // Auto-start tunnel when app launches
-        Task { @MainActor in
-            await TunneldManager.shared.autoStart()
-        }
+        // Tunnel startup is manual by default to avoid unexpected administrator prompts on launch.
     }
 
     nonisolated func applicationWillTerminate(_ notification: Notification) {

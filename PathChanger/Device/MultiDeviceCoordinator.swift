@@ -393,11 +393,11 @@ class DeviceSelectionViewModel: ObservableObject {
     private let coordinator: MultiDeviceCoordinator
 
     @MainActor
-    init(coordinator: MultiDeviceCoordinator = .shared) {
-        self.coordinator = coordinator
+    init(coordinator: MultiDeviceCoordinator? = nil) {
+        self.coordinator = coordinator ?? MultiDeviceCoordinator.shared
 
         // Sync selection with coordinator
-        coordinator.$selectedDeviceIds
+        self.coordinator.$selectedDeviceIds
             .assign(to: &$selectedIds)
     }
 

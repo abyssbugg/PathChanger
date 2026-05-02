@@ -8,6 +8,7 @@
 
 import Foundation
 import Combine
+import Darwin
 
 // MARK: - Command Validation Error
 
@@ -161,6 +162,10 @@ struct SubprocessCommandValidator {
         if let port = Int(arg), ArgumentSanitizer.isValidPort(port) {
             return true
         }
+        // DVT ls root path
+        if arg == "/" {
+            return true
+        }
 
         return false
     }
@@ -219,7 +224,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .outputSizeExceeded:
             return "Subprocess output exceeded safety limit. This may indicate a malicious response."
         case .unsupportedIOSVersion(let version):
-            return "iOS \(version) is not supported for location simulation. iOS 18+ has known compatibility issues with pymobiledevice3's DVT location service."
+            return "iOS \(version) may have compatibility issues with pymobiledevice3's DVT location service. PathChanger will still try when you retry."
         }
     }
 
@@ -234,7 +239,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .outputSizeExceeded:
             return "If this persists, check pymobiledevice3 installation or report a bug."
         case .unsupportedIOSVersion:
-            return "Recommended solutions:\n1. Downgrade device to iOS 17.6 (most reliable)\n2. Check pymobiledevice3 GitHub for iOS 18 updates\n3. Monitor issue #1387 for community workarounds"
+            return "Update pymobiledevice3 regularly and report the exact DVT error upstream if location simulation is rejected."
         default:
             return nil
         }
@@ -345,6 +350,73 @@ actor DevLocationBridge {
 
     // MARK: Statistics
     private(set) var stats = InjectionStats()
+
+    private struct ActiveLocationProcess {
+        let process: Process
+        let outputPipe: Pipe
+        let errorPipe: Pipe
+    }
+
+    private final class LocationSetStartupState {
+        var output = ""
+        var error = ""
+        var completed = false
+        var continuation: CheckedContinuation<String, Error>?
+        let lock = NSLock()
+
+        var combinedOutput: String {
+            output + error
+        }
+
+        func setContinuation(_ continuation: CheckedContinuation<String, Error>) {
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func completeIfNeeded() -> (didComplete: Bool, continuation: CheckedContinuation<String, Error>?) {
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard !completed else {
+                return (false, nil)
+            }
+
+            completed = true
+            let continuation = self.continuation
+            self.continuation = nil
+            return (true, continuation)
+        }
+
+        func append(_ text: String, isError: Bool) -> (combined: String, completed: Bool) {
+            lock.lock()
+            if isError {
+                error += text
+            } else {
+                output += text
+            }
+            let combined = combinedOutput
+            let completed = self.completed
+            lock.unlock()
+
+            return (combined, completed)
+        }
+
+        func snapshot() -> (combined: String, completed: Bool) {
+            lock.lock()
+            let combined = combinedOutput
+            let completed = self.completed
+            lock.unlock()
+
+            return (combined, completed)
+        }
+    }
+
+    /// `developer dvt simulate-location set` intentionally remains running to hold
+    /// the DVT location simulation session open. Store it per device and terminate it
+    /// only when replacing or clearing the simulated location.
+    private var activeLocationProcesses: [String: ActiveLocationProcess] = [:]
+    private let locationSetStartupTimeout: TimeInterval = 15.0
 
     // MARK: - Public API
 
@@ -458,7 +530,7 @@ actor DevLocationBridge {
         // Sanitize all arguments before execution
         let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
 
-        let result = try await runPython(arguments: sanitizedArgs, device: device)
+        let result = try await runLocationSetProcess(arguments: sanitizedArgs, device: device)
 
         // Check for common errors
         try parseResult(result)
@@ -541,7 +613,7 @@ actor DevLocationBridge {
                 )
 
                 let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-                let result = try await runPython(arguments: sanitizedArgs, device: queuedRequest.device)
+                let result = try await runLocationSetProcess(arguments: sanitizedArgs, device: queuedRequest.device)
                 try parseResult(result)
 
                 stats.recordSuccess(latencyMs: 0) // Queue processing doesn't track individual latency
@@ -557,20 +629,20 @@ actor DevLocationBridge {
     private func buildLocationArguments(subcommand: String, device: Device, extraArgs: [String] = []) throws -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", subcommand]
 
-        // For iOS 17+, prefer --tunnel with UDID when tunneld is running (queries tunneld API automatically)
-        // This is more reliable than manual --rsd as it handles connection management
-        if TunneldManager.shared.isRunning {
-            try ArgumentSanitizer.validateDeviceUDID(device.id)
-            args.append(contentsOf: ["--tunnel", device.id])
-            Logger.debug("Using --tunnel \(device.id) for location injection", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
-        } else if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
-            // Fallback: Direct RSD if we have cached info but tunneld may have stopped
+        // Prefer direct RSD from lockdown start-tunnel. The pymobiledevice3 --tunnel
+        // flag talks to the remote tunneld API and can fail even when a lockdown
+        // tunnel is active and DVT is reachable through --rsd.
+        if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
             guard ArgumentSanitizer.isValidIPv6Address(tunnelInfo.rsdAddress) else {
                 throw LocationInjectionError.injectionFailed("Invalid RSD address: \(tunnelInfo.rsdAddress)")
             }
             try ArgumentSanitizer.validatePort(tunnelInfo.rsdPort)
             args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
             Logger.debug("Using RSD \(tunnelInfo.rsdAddress):\(tunnelInfo.rsdPort) for device \(device.id)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
+        } else if TunneldManager.shared.isRunning {
+            try ArgumentSanitizer.validateDeviceUDID(device.id)
+            args.append(contentsOf: ["--tunnel", device.id])
+            Logger.debug("Using --tunnel \(device.id) for location injection", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
         } else {
             // No tunnel running - try UDID (may not work on iOS 17+)
             try ArgumentSanitizer.validateDeviceUDID(device.id)
@@ -588,6 +660,8 @@ actor DevLocationBridge {
     func clearLocation(for device: Device) async throws {
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
+
+        await terminateActiveLocationProcess(for: device.id)
 
         let arguments = try await buildLocationArguments(subcommand: "clear", device: device)
 
@@ -662,13 +736,16 @@ actor DevLocationBridge {
     private func buildDvtArguments(subcommand: String, device: Device) -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", subcommand]
 
-        // Prefer --tunnel when tunneld is running
-        if TunneldManager.shared.isRunning {
-            args.append(contentsOf: ["--tunnel", device.id])
-        } else if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
+        // Prefer direct RSD from lockdown start-tunnel when available.
+        if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
             args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
+        } else if TunneldManager.shared.isRunning {
+            args.append(contentsOf: ["--tunnel", device.id])
         } else {
             args.append(contentsOf: ["--udid", device.id])
+        }
+        if subcommand == "ls" {
+            args.append("/")
         }
 
         return args
@@ -687,22 +764,22 @@ actor DevLocationBridge {
     // MARK: Pre-flight Checks
 
     /// Perform pre-flight checks to ensure device is ready for location injection
-    /// - Validates iOS version compatibility (iOS 17 or below)
+    /// - Warns about newer iOS compatibility without blocking attempts
     /// - Verifies developer mode is enabled
     /// - Ensures tunnel is running (for WiFi devices)
     /// - Checks device connectivity
     private func performPreflight(for device: Device) async throws {
-        // Check iOS version compatibility first (before expensive subprocess calls)
+        // Warn for newer iOS versions, but do not block the real DVT command.
         if let version = device.productVersion {
-            if !ArgumentSanitizer.isIOSVersionSupported(version) {
-                Logger.error("iOS \(version) detected on device \(device.id) - location simulation may fail", category: .device, deviceUDID: device.id, iosVersion: version)
-                throw LocationInjectionError.unsupportedIOSVersion(version)
+            if ArgumentSanitizer.shouldWarnAboutIOSVersion(version) {
+                Logger.info("iOS \(version) detected on device \(device.id) - attempting location simulation despite newer-iOS compatibility risk", category: .device, deviceUDID: device.id, iosVersion: version)
+            } else {
+                Logger.debug("iOS version \(version) is allowed for location simulation", category: .device, deviceUDID: device.id, iosVersion: version)
             }
-            Logger.debug("iOS version \(version) is supported for location simulation", category: .device, deviceUDID: device.id, iosVersion: version)
         }
 
-        // Check developer mode
-        let devModeResult = await checkDeveloperMode(for: device)
+        // Check developer mode without confusing tunnel connectivity failures with Developer Mode being disabled.
+        let devModeResult = try await checkDeveloperMode(for: device)
         if !devModeResult {
             throw LocationInjectionError.developerModeRequired
         }
@@ -726,27 +803,33 @@ actor DevLocationBridge {
     }
 
     /// Check if developer mode is enabled on device
-    private func checkDeveloperMode(for device: Device) async -> Bool {
+    private func checkDeveloperMode(for device: Device) async throws -> Bool {
         do {
-            // Use standard argument format starting with -m pymobiledevice3
-            var args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
-            if device.connectionType == .wifi {
-                let tunnelInfo = await MainActor.run {
-                    TunneldManager.shared.getRsdInfo(for: device.id)
-                }
-                if let tunnelInfo = tunnelInfo {
-                    args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
-                } else {
-                    args.append(contentsOf: ["--tunnel", device.id])
-                }
-            } else {
-                args.append(contentsOf: ["--udid", device.id])
+            let args = await buildDvtArguments(subcommand: "ls", device: device)
+            let result = try await runPython(arguments: args, timeoutSeconds: 15.0, device: device)
+
+            if result.contains("DeveloperModeError") {
+                return false
             }
 
-            let result = try await runPython(arguments: args, timeoutSeconds: 15.0, device: device)
-            return !result.contains("DeveloperModeError") && !result.contains("ERROR")
+            if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
+                throw LocationInjectionError.tunneldNotRunning
+            }
+
+            if result.contains("DeviceNotFoundError") {
+                throw LocationInjectionError.deviceNotFound
+            }
+
+            let lowercased = result.lowercased()
+            if lowercased.contains("error") && !lowercased.contains("warning") {
+                throw LocationInjectionError.injectionFailed("Developer service check failed: \(result)")
+            }
+
+            return true
+        } catch let error as LocationInjectionError {
+            throw error
         } catch {
-            return false
+            throw LocationInjectionError.injectionFailed("Developer service check failed: \(error.localizedDescription)")
         }
     }
 
@@ -786,6 +869,169 @@ actor DevLocationBridge {
             stats.recordFailure()
             throw LocationInjectionError.injectionFailed(result)
         }
+    }
+
+    private func runLocationSetProcess(arguments: [String], device: Device) async throws -> String {
+        try SubprocessCommandValidator.validateCommandStructure(arguments)
+
+        let deviceUDID = device.id
+        let iosVersion = device.productVersion
+        let fullCommand = "python3 " + arguments.joined(separator: " ")
+
+        await terminateActiveLocationProcess(for: deviceUDID)
+
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        let startupState = LocationSetStartupState()
+
+        process.executableURL = URL(fileURLWithPath: python3Path)
+        process.arguments = arguments
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        var environment = ProcessEnvironment.configured()
+        environment["PYTHONUNBUFFERED"] = "1"
+        process.environment = environment
+
+        let maxOutputSize = Self.maxOutputSize
+
+        @Sendable func cleanupHandlers() {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+        }
+        @Sendable func finish(_ result: Result<String, Error>, keepProcessAlive: Bool) {
+            let completion = startupState.completeIfNeeded()
+            guard completion.didComplete else {
+                return
+            }
+
+            cleanupHandlers()
+
+            if !keepProcessAlive, process.isRunning {
+                process.terminate()
+            }
+
+            switch result {
+            case .success(let output):
+                completion.continuation?.resume(returning: output)
+            case .failure(let error):
+                completion.continuation?.resume(throwing: error)
+            }
+        }
+
+        @Sendable func appendOutput(_ text: String, isError: Bool) {
+            let outputState = startupState.append(text, isError: isError)
+            let combined = outputState.combined
+
+            guard !outputState.completed else { return }
+
+            if combined.utf8.count > maxOutputSize {
+                finish(.failure(LocationInjectionError.outputSizeExceeded), keepProcessAlive: false)
+                return
+            }
+
+            if combined.contains("Press Ctrl+C") || combined.contains("SIGINT") || combined.contains("SIGTERM") {
+                Logger.info("DVT location set process is holding simulation open", category: .device, deviceUDID: deviceUDID, iosVersion: iosVersion)
+                finish(.success(combined), keepProcessAlive: true)
+            }
+        }
+
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            appendOutput(text, isError: false)
+        }
+
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            appendOutput(text, isError: true)
+        }
+
+        process.terminationHandler = { [weak self] terminatedProcess in
+            let outputState = startupState.snapshot()
+
+            Task {
+                await self?.removeActiveLocationProcess(for: deviceUDID, process: terminatedProcess)
+            }
+
+            guard !outputState.completed else { return }
+
+            let message = outputState.combined.isEmpty
+                ? "Location command exited before keeping the simulation session active."
+                : outputState.combined
+            finish(.success(message), keepProcessAlive: false)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            startupState.setContinuation(continuation)
+
+            do {
+                Logger.debug("[SECURITY] Starting persistent DVT location process: \(fullCommand)", category: .security, deviceUDID: deviceUDID, iosVersion: iosVersion, operation: "location_set_start")
+                try process.run()
+                activeLocationProcesses[deviceUDID] = ActiveLocationProcess(
+                    process: process,
+                    outputPipe: outputPipe,
+                    errorPipe: errorPipe
+                )
+            } catch {
+                finish(.failure(LocationInjectionError.injectionFailed("Python execution failed: \(error.localizedDescription)")), keepProcessAlive: false)
+                return
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(locationSetStartupTimeout * 1_000_000_000))
+
+                let outputState = startupState.snapshot()
+
+                guard !outputState.completed else { return }
+
+                if process.isRunning {
+                    Logger.info("DVT location set process remained running after startup window; treating as active simulation", category: .device, deviceUDID: deviceUDID, iosVersion: iosVersion)
+                    finish(.success(outputState.combined), keepProcessAlive: true)
+                } else {
+                    let message = outputState.combined.isEmpty
+                        ? "Location command exited before keeping the simulation session active."
+                        : outputState.combined
+                    finish(.success(message), keepProcessAlive: false)
+                }
+            }
+        }
+    }
+
+    private func terminateActiveLocationProcess(for deviceId: String) async {
+        guard let activeProcess = activeLocationProcesses.removeValue(forKey: deviceId) else {
+            return
+        }
+
+        activeProcess.outputPipe.fileHandleForReading.readabilityHandler = nil
+        activeProcess.errorPipe.fileHandleForReading.readabilityHandler = nil
+
+        if activeProcess.process.isRunning {
+            activeProcess.process.terminate()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+
+            if activeProcess.process.isRunning {
+                Darwin.kill(activeProcess.process.processIdentifier, SIGKILL)
+            }
+        }
+
+        try? activeProcess.outputPipe.fileHandleForReading.close()
+        try? activeProcess.errorPipe.fileHandleForReading.close()
+    }
+
+    private func removeActiveLocationProcess(for deviceId: String, process: Process) {
+        guard let activeProcess = activeLocationProcesses[deviceId],
+              activeProcess.process === process else {
+            return
+        }
+
+        activeLocationProcesses.removeValue(forKey: deviceId)
+        activeProcess.outputPipe.fileHandleForReading.readabilityHandler = nil
+        activeProcess.errorPipe.fileHandleForReading.readabilityHandler = nil
+        try? activeProcess.outputPipe.fileHandleForReading.close()
+        try? activeProcess.errorPipe.fileHandleForReading.close()
     }
 
     /// Run Python command with pymobiledevice3 with proper timeout protection

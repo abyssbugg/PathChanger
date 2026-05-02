@@ -57,17 +57,28 @@ enum IOSVersionHelper {
         return ParsedVersion(major: major, minor: minor, patch: patch)
     }
 
-    /// Check if an iOS version is supported for location simulation.
-    /// Returns true for iOS 17 and below, false for iOS 18+.
+    /// Check if an iOS version should be allowed to attempt location simulation.
+    /// Newer iOS versions may have upstream pymobiledevice3/DVT compatibility issues,
+    /// but PathChanger should not hard-block them because support can change upstream.
     /// Returns true if parsing fails (fail open for backward compatibility).
     ///
     /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Returns: true if supported or unknown, false if unsupported (iOS 18+)
+    /// - Returns: true if the app should attempt location simulation
     static func isVersionSupported(_ versionString: String) -> Bool {
+        return true
+    }
+
+    /// Check whether a version should show a compatibility warning.
+    /// iOS 18+ may change Apple's DVT location service behavior, so warn users
+    /// while still allowing the real command to run.
+    ///
+    /// - Parameter versionString: Version string like "17.4", "18.0", "26.5"
+    /// - Returns: true for iOS 18+; false for iOS 17 and below or unknown versions
+    static func shouldShowLocationCompatibilityWarning(_ versionString: String) -> Bool {
         guard let parsed = parseVersion(versionString) else {
-            return true // Fail open if parsing fails
+            return false
         }
-        return parsed.major <= 17
+        return parsed.major >= 18
     }
 
     /// Extract major version number from a version string.

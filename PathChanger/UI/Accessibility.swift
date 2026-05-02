@@ -64,7 +64,16 @@ enum AccessibilityIdentifiers {
         static let routeRow = "routeRow"
         static let importButton = "importRouteButton"
         static let exportButton = "exportRouteButton"
+        static let addWaypointButton = "addWaypointButton"
+        static let clearRouteButton = "clearRouteButton"
         static let progressIndicator = "routeProgressIndicator"
+    }
+
+    // MARK: - History
+    enum History {
+        static let historyList = "locationHistoryList"
+        static let historyRow = "locationHistoryRow"
+        static let clearButton = "clearLocationHistoryButton"
     }
 
     // MARK: - Status

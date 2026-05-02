@@ -24,14 +24,18 @@ struct PathChangerApp: App {
                 ContentView()
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
-                    .frame(minWidth: 1000, minHeight: 700)
+                    .frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 700)
                     .onAppear {
                         Task {
-                            // Validate dependencies before starting tunnel
+                            // Validate dependencies before device/tunnel workflows.
                             await dependencyValidator.validateAll()
 
                             if dependencyValidator.isValid {
-                                await tunneldManager.autoStart()
+                                await appState.refreshDevices()
+
+                                if UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool == true {
+                                    await tunneldManager.autoStart()
+                                }
                             }
                         }
                     }
@@ -123,6 +127,8 @@ class AppState: ObservableObject {
     // MARK: Location State
     @Published var currentLocation: LocationCoordinate?
     @Published var targetLocation: LocationCoordinate?
+    @Published var targetLocationName: String?
+    @Published var locationHistory: [LocationHistoryEntry] = []
 
     // MARK: Simulation State
     @Published var isSimulating: Bool = false
@@ -148,13 +154,14 @@ class AppState: ObservableObject {
     // MARK: Statistics
     @Published var injectionStats: InjectionStats = InjectionStats()
 
-    // MARK: iOS 18+ Warning State
-    /// Tracks device IDs that have already shown the iOS 18+ toast in this session
-    private var shownIOS18WarningDeviceIds: Set<String> = []
+    // MARK: Newer iOS Warning State
+    /// Tracks device IDs that have already shown the newer-iOS toast in this session
+    private var shownNewerIOSWarningDeviceIds: Set<String> = []
 
     // MARK: Reliability State
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
     @Published var isUSBConnected: Bool = false
+    @Published var isWiFiAvailable: Bool = false
     @Published var preferUSBConnection: Bool = false
 
     // MARK: Debouncing for UI Stability
@@ -173,8 +180,10 @@ class AppState: ObservableObject {
 
     // MARK: Private
     private let locationBridge = DevLocationBridge()
+    private let locationHistoryStore = LocationHistoryStore()
     private var simulationTask: Task<Void, Never>?
     private var joystickTask: Task<Void, Never>?
+    private var joystickBaseLocation: LocationCoordinate?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -222,14 +231,41 @@ class AppState: ObservableObject {
         }
     }
 
+    private func syncConnectionAvailability(from devices: [Device]) {
+        let usbAvailable = devices.contains { $0.connectionType == .usb }
+        let wifiAvailable = devices.contains { $0.connectionType == .wifi }
+
+        updateUSBConnected(usbAvailable, force: true)
+
+        if isWiFiAvailable != wifiAvailable {
+            isWiFiAvailable = wifiAvailable
+        }
+
+        if usbFallbackManager.isUSBConnected != usbAvailable {
+            if usbAvailable {
+                usbFallbackManager.usbConnected()
+            } else {
+                usbFallbackManager.usbDisconnected()
+            }
+        }
+
+        if wifiAvailable {
+            usbFallbackManager.wirelessRestored()
+        } else {
+            usbFallbackManager.isWirelessAvailable = false
+        }
+    }
+
     // MARK: Initialization
 
     init() {
         self.simulationEngine = SimulationEngine(locationBridge: locationBridge)
+        UserDefaults.standard.register(defaults: ["autoStartTunneld": false])
 
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
+        self.locationHistory = locationHistoryStore.entries
 
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -331,21 +367,30 @@ class AppState: ObservableObject {
                 seenUDIDs.insert(device.id)
             }
         }
+        syncConnectionAvailability(from: uniqueDevices)
 
-        // Only update if devices actually changed
-        let currentDeviceIds = Set(availableDevices.map { $0.id })
-        let newDeviceIds = Set(uniqueDevices.map { $0.id })
-
-        if currentDeviceIds != newDeviceIds {
-            availableDevices = uniqueDevices
-        } else {
-            // Update device info if same devices but with new data
+        if availableDevices != uniqueDevices {
             availableDevices = uniqueDevices
         }
 
-        if selectedDevice == nil, let first = availableDevices.first {
+        if let selected = selectedDevice {
+            if let updatedSelection = availableDevices.first(where: { $0.id == selected.id }) {
+                if selected != updatedSelection {
+                    selectedDevice = updatedSelection
+                    simulationEngine.setDevice(updatedSelection)
+                    TunneldManager.shared.setTargetDevice(updatedSelection)
+                }
+            } else if let first = availableDevices.first {
+                selectedDevice = first
+                simulationEngine.setDevice(first)
+                TunneldManager.shared.setTargetDevice(first)
+            } else {
+                selectedDevice = nil
+            }
+        } else if let first = availableDevices.first {
             selectedDevice = first
             simulationEngine.setDevice(first)
+            TunneldManager.shared.setTargetDevice(first)
         }
 
         connectionStatus = selectedDevice != nil ? .connected : .disconnected
@@ -358,51 +403,58 @@ class AppState: ObservableObject {
     func checkTunneldStatus() async {
         await deviceManager.checkTunneldStatus()
         updateTunnelRunning(deviceManager.isTunneldRunning)
-
-        if !isTunneldRunning && !TunneldManager.shared.isStarting {
+        if UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool == true,
+           !isTunneldRunning && !TunneldManager.shared.isStarting {
             await TunneldManager.shared.autoStart()
             updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
         }
 
-        if !isTunneldRunning {
-            usbFallbackManager.wirelessFailed()
-        } else {
+        if isWiFiAvailable {
             usbFallbackManager.wirelessRestored()
+        } else if !isTunneldRunning {
+            usbFallbackManager.wirelessFailed()
         }
     }
 
     func selectDevice(_ device: Device) {
         selectedDevice = device
         simulationEngine.setDevice(device)
+        TunneldManager.shared.setTargetDevice(device)
         connectionStatus = .connected
         reliabilityManager.connectionEstablished()
     }
 
     // MARK: Location Control
 
-    func setLocation(_ coordinate: LocationCoordinate) async {
+    func setLocation(
+        _ coordinate: LocationCoordinate,
+        source: String = "Manual",
+        name: String? = nil,
+        recordHistory: Bool = true,
+        showToast: Bool = true
+    ) async {
         guard let device = selectedDevice else {
             errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
             ToastManager.shared.error("No device selected")
             return
         }
 
-        // Check iOS version and show warning (once per device per session)
-        if !device.isIOSVersionSupported {
+        // Show newer-iOS compatibility warning once per device per session.
+        if device.hasLocationCompatibilityWarning {
             let versionStr = device.iosVersion
 
             // Only show toast if we haven't shown it for this device yet
-            if !shownIOS18WarningDeviceIds.contains(device.id) {
+            if !shownNewerIOSWarningDeviceIds.contains(device.id) {
                 ToastManager.shared.warning(
-                    "iOS \(versionStr) detected - location simulation may not work. Consider downgrading to iOS 17.6.",
+                    "iOS \(versionStr) detected - attempting location simulation, but newer iOS may need pymobiledevice3 updates.",
                     duration: 5.0
                 )
-                shownIOS18WarningDeviceIds.insert(device.id)
+                shownNewerIOSWarningDeviceIds.insert(device.id)
             }
 
             // Always log the attempt
             Logger.info(
-                "Attempting location injection on unsupported iOS version: \(versionStr)",
+                "Attempting location injection on newer iOS version with compatibility warning: \(versionStr)",
                 category: .device,
                 deviceUDID: device.id
             )
@@ -418,11 +470,17 @@ class AppState: ObservableObject {
             lastError = nil
             injectionStats = await locationBridge.getStats()
             errorHandler.clearCurrentError()
+            if recordHistory {
+                locationHistoryStore.record(coordinate: coordinate, name: name ?? targetLocationName, source: source)
+                locationHistory = locationHistoryStore.entries
+            }
 
             // Show success toast
             let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
             statusMessage = "Location spoofed to \(locationStr)"
-            ToastManager.shared.success("Location spoofed successfully!")
+            if showToast {
+                ToastManager.shared.success("Location spoofed successfully!")
+            }
 
         } catch let error as LocationInjectionError {
             errorHandler.handle(error, context: "Location injection")
@@ -449,6 +507,7 @@ class AppState: ObservableObject {
             try await locationBridge.clearLocation(for: device)
             currentLocation = nil
             targetLocation = nil
+            targetLocationName = nil
             isSimulating = false
             isPaused = false
             lastError = nil
@@ -460,19 +519,43 @@ class AppState: ObservableObject {
     }
 
     // MARK: Simulation Control
+    func canStartSimulation(for mode: AppMode) -> Bool {
+        guard canStartSimulation else { return false }
+
+        switch mode {
+        case .teleport:
+            return targetLocation != nil
+        case .route:
+            return currentRoute.count >= 2
+        case .joystick:
+            return currentLocation != nil || targetLocation != nil
+        case .settings:
+            return false
+        }
+    }
 
     func startSimulation() async {
+        await startSimulation(mode: .teleport)
+    }
+
+    func startSimulation(mode: AppMode) async {
         guard canStartSimulation else { return }
 
-        guard let target = targetLocation else {
-            lastError = "No target location selected"
+        switch mode {
+        case .teleport:
+            guard let target = targetLocation else {
+                lastError = "No target location selected"
+                return
+            }
+            isPaused = false
+            await setLocation(target, source: "Teleport", name: targetLocationName)
+        case .route:
+            await startRoutePlayback()
+        case .joystick:
+            await startJoystickControl()
+        case .settings:
             return
         }
-
-        // Start the simulation and inject location
-        isPaused = false
-        isSimulating = true
-        await setLocation(target)
     }
 
     func pauseSimulation() {
@@ -488,6 +571,7 @@ class AppState: ObservableObject {
         joystickTask?.cancel()
         simulationTask = nil
         joystickTask = nil
+        joystickBaseLocation = nil
 
         isPaused = false
         isSimulating = false
@@ -502,13 +586,61 @@ class AppState: ObservableObject {
     func loadRoute(from coordinates: [LocationCoordinate]) {
         currentRoute = coordinates
         routeProgress = 0
+        targetLocation = coordinates.first
+        targetLocationName = coordinates.isEmpty ? nil : "Route start"
+    }
+
+    func addRoutePoint(_ coordinate: LocationCoordinate? = nil) {
+        guard let point = coordinate ?? targetLocation, point.isValid else {
+            lastError = "Select a valid location before adding a waypoint"
+            return
+        }
+
+        currentRoute.append(point)
+        routeProgress = 0
+        targetLocation = point
+        targetLocationName = "Waypoint \(currentRoute.count)"
+        statusMessage = "Added waypoint \(currentRoute.count)"
+    }
+
+    func removeRoutePoint(at index: Int) {
+        guard currentRoute.indices.contains(index) else { return }
+        currentRoute.remove(at: index)
+        routeProgress = 0
+    }
+
+    func moveRoutePoint(from sourceIndex: Int, to destinationIndex: Int) {
+        guard currentRoute.indices.contains(sourceIndex),
+              destinationIndex >= 0,
+              destinationIndex < currentRoute.count,
+              sourceIndex != destinationIndex else {
+            return
+        }
+
+        let point = currentRoute.remove(at: sourceIndex)
+        currentRoute.insert(point, at: destinationIndex)
+        routeProgress = 0
+    }
+
+    func clearRoute() {
+        currentRoute.removeAll()
+        routeProgress = 0
+        statusMessage = "Route cleared"
     }
 
     func startRoutePlayback() async {
-        guard !currentRoute.isEmpty else {
-            lastError = "No route loaded"
+        guard canStartSimulation else { return }
+
+        guard currentRoute.count >= 2 else {
+            lastError = "Add at least two route points"
             return
         }
+        simulationTask?.cancel()
+        joystickTask?.cancel()
+        joystickTask = nil
+        isPaused = false
+        isSimulating = true
+        routeProgress = 0
 
         simulationTask = Task {
             let totalPoints = currentRoute.count
@@ -521,7 +653,13 @@ class AppState: ObservableObject {
                 }
 
                 let coordinate = currentRoute[currentIndex]
-                await setLocation(coordinate)
+                await setLocation(
+                    coordinate,
+                    source: "Route",
+                    name: "Route point \(currentIndex + 1)",
+                    recordHistory: currentIndex == 0 || currentIndex == totalPoints - 1,
+                    showToast: false
+                )
 
                 routeProgress = Double(currentIndex + 1) / Double(totalPoints)
                 currentIndex += 1
@@ -540,6 +678,88 @@ class AppState: ObservableObject {
 
     func updateJoystickDirection(_ direction: CGPoint) {
         joystickDirection = direction
+    }
+
+    func startJoystickControl() async {
+        guard canStartSimulation else { return }
+
+        guard let start = currentLocation ?? targetLocation else {
+            lastError = "Select a starting location before using joystick mode"
+            return
+        }
+
+        simulationTask?.cancel()
+        simulationTask = nil
+        joystickTask?.cancel()
+
+        joystickBaseLocation = start
+        targetLocation = start
+        isPaused = false
+        isSimulating = true
+
+        await setLocation(start, source: "Joystick", name: targetLocationName ?? "Joystick start", recordHistory: true)
+
+        joystickTask = Task {
+            while !Task.isCancelled {
+                if isPaused {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    continue
+                }
+
+                let direction = joystickDirection
+                let magnitude = min(1.0, max(0.0, sqrt(direction.x * direction.x + direction.y * direction.y)))
+
+                guard magnitude > 0.05, let base = joystickBaseLocation ?? currentLocation else {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    continue
+                }
+
+                let interval = max(1.0, simulationSpeed.updateInterval)
+                let distanceMeters = simulationSpeed.metersPerSecond * interval * Double(magnitude)
+                let eastMeters = Double(direction.x) * distanceMeters
+                let northMeters = Double(direction.y) * distanceMeters
+                let next = offsetCoordinate(from: base, eastMeters: eastMeters, northMeters: northMeters)
+
+                guard next.isValid else {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    continue
+                }
+
+                joystickBaseLocation = next
+                await setLocation(next, source: "Joystick", name: "Joystick movement", recordHistory: false, showToast: false)
+
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+        }
+    }
+
+    private func offsetCoordinate(from coordinate: LocationCoordinate, eastMeters: Double, northMeters: Double) -> LocationCoordinate {
+        let metersPerDegreeLatitude = 111_111.0
+        let latitudeRadians = coordinate.latitude * .pi / 180
+        let metersPerDegreeLongitude = max(1.0, metersPerDegreeLatitude * cos(latitudeRadians))
+
+        let nextLatitude = coordinate.latitude + (northMeters / metersPerDegreeLatitude)
+        let nextLongitude = coordinate.longitude + (eastMeters / metersPerDegreeLongitude)
+
+        return LocationCoordinate(latitude: nextLatitude, longitude: nextLongitude)
+    }
+
+    // MARK: Location History
+
+    func selectHistoryEntry(_ entry: LocationHistoryEntry) {
+        targetLocation = entry.coordinate
+        targetLocationName = entry.displayName
+        statusMessage = "Selected recent location: \(entry.displayName)"
+    }
+
+    func removeHistoryEntry(_ entry: LocationHistoryEntry) {
+        locationHistoryStore.remove(entry)
+        locationHistory = locationHistoryStore.entries
+    }
+
+    func clearLocationHistory() {
+        locationHistoryStore.clear()
+        locationHistory = locationHistoryStore.entries
     }
 
     // MARK: Speed Control

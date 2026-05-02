@@ -207,7 +207,7 @@ final class DeviceVersionTests: XCTestCase {
         )
         XCTAssertTrue(device176.isIOSVersionSupported)
 
-        // iOS 18.0 should NOT be supported
+        // iOS 18.0 should be allowed with a compatibility warning
         let device180 = Device(
             id: "test-device-002",
             displayName: "Test iPhone",
@@ -216,9 +216,10 @@ final class DeviceVersionTests: XCTestCase {
             productVersion: "18.0",
             deviceName: "Test Device"
         )
-        XCTAssertFalse(device180.isIOSVersionSupported)
+        XCTAssertTrue(device180.isIOSVersionSupported)
+        XCTAssertTrue(device180.hasLocationCompatibilityWarning)
 
-        // iOS 18.1 should NOT be supported
+        // iOS 18.1 should be allowed with a compatibility warning
         let device181 = Device(
             id: "test-device-003",
             displayName: "Test iPhone",
@@ -227,7 +228,8 @@ final class DeviceVersionTests: XCTestCase {
             productVersion: "18.1",
             deviceName: "Test Device"
         )
-        XCTAssertFalse(device181.isIOSVersionSupported)
+        XCTAssertTrue(device181.isIOSVersionSupported)
+        XCTAssertTrue(device181.hasLocationCompatibilityWarning)
 
         // nil version should be supported (fail open)
         let deviceNilVersion = Device(
@@ -239,6 +241,7 @@ final class DeviceVersionTests: XCTestCase {
             deviceName: "Test Device"
         )
         XCTAssertTrue(deviceNilVersion.isIOSVersionSupported)
+        XCTAssertFalse(deviceNilVersion.hasLocationCompatibilityWarning)
 
         // iOS 16.5 should be supported
         let device165 = Device(
@@ -250,6 +253,7 @@ final class DeviceVersionTests: XCTestCase {
             deviceName: "Test Device"
         )
         XCTAssertTrue(device165.isIOSVersionSupported)
+        XCTAssertFalse(device165.hasLocationCompatibilityWarning)
     }
 
     // MARK: - iosVersion Computed Property Tests

@@ -189,7 +189,8 @@ struct OnboardingView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(width: 700, height: 550)
+        .frame(minWidth: 560, idealWidth: 700, maxWidth: 820, minHeight: 480, idealHeight: 550, maxHeight: 720)
+        .accessibilityIdentifier(identifierForCurrentStep)
     }
 
     private var headerView: some View {
@@ -238,6 +239,11 @@ struct OnboardingView: View {
                     viewModel.previousStep()
                 }
                 .keyboardShortcut(.cancelAction)
+                .accessibleButton(
+                    label: "Back",
+                    hint: "Returns to the previous onboarding step",
+                    identifier: AccessibilityIdentifiers.Onboarding.previousButton
+                )
             }
 
             Spacer()
@@ -249,6 +255,11 @@ struct OnboardingView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
+                .accessibleButton(
+                    label: "Get started",
+                    hint: "Completes onboarding and opens PathChanger",
+                    identifier: AccessibilityIdentifiers.Onboarding.nextButton
+                )
             } else {
                 if viewModel.currentStep == .dependencies {
                     Button("Continue Anyway") {
@@ -256,12 +267,22 @@ struct OnboardingView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(viewModel.isCheckingDependencies)
+                    .accessibleButton(
+                        label: "Continue anyway",
+                        hint: "Continues onboarding even if dependency checks are incomplete",
+                        identifier: AccessibilityIdentifiers.Onboarding.nextButton
+                    )
                 } else {
                     Button("Next") {
                         viewModel.nextStep()
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(viewModel.currentStep == .dependencies && viewModel.isCheckingDependencies)
+                    .accessibleButton(
+                        label: "Next",
+                        hint: "Advances to the next onboarding step",
+                        identifier: AccessibilityIdentifiers.Onboarding.nextButton
+                    )
                 }
             }
         }
@@ -436,6 +457,19 @@ struct OnboardingView: View {
         .cornerRadius(8)
         .shadow(radius: 4)
     }
+
+    private var identifierForCurrentStep: String {
+        switch viewModel.currentStep {
+        case .welcome:
+            return AccessibilityIdentifiers.Onboarding.welcomeStep
+        case .dependencies:
+            return AccessibilityIdentifiers.Onboarding.dependenciesStep
+        case .deviceSetup:
+            return AccessibilityIdentifiers.Onboarding.deviceSetupStep
+        case .complete:
+            return AccessibilityIdentifiers.Onboarding.completeStep
+        }
+    }
 }
 
 // MARK: - Supporting Views
@@ -508,6 +542,11 @@ struct DependencyCard: View {
                             Image(systemName: "doc.on.doc")
                         }
                         .buttonStyle(.borderless)
+                        .accessibleButton(
+                            label: "Copy \(title) install command",
+                            hint: "Copies the command to the clipboard",
+                            identifier: "copy\(title.replacingOccurrences(of: " ", with: ""))InstallCommandButton"
+                        )
                     }
                 }
             }

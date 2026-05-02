@@ -26,7 +26,7 @@ enum ValidationError: Error, LocalizedError {
         case .pathTraversalAttempt(let arg):
             return "Security violation: Path traversal attempt detected in '\(arg)'"
         case .unsupportedIOSVersion(let version):
-            return "iOS version \(version) is not supported. Location simulation may not work on iOS 18+. Please downgrade to iOS 17.6 or check for pymobiledevice3 updates."
+            return "iOS version \(version) may have compatibility issues with pymobiledevice3's DVT location service. PathChanger will still attempt location simulation."
         }
     }
 }
@@ -259,20 +259,24 @@ enum ArgumentSanitizer {
         return (major: parsed.major, minor: parsed.minor, patch: parsed.patch)
     }
 
-    /// Check if an iOS version is supported for location simulation.
+    /// Check if an iOS version should be allowed to attempt location simulation.
     /// Delegates to IOSVersionHelper for consistent support checking across the codebase.
     /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Returns: false if iOS 18+, true if iOS 17 or below, true if parsing fails (fail open)
+    /// - Returns: true because PathChanger should not hard-block future iOS versions
     static func isIOSVersionSupported(_ versionString: String) -> Bool {
         return IOSVersionHelper.isVersionSupported(versionString)
     }
+    /// Check whether a version should show a compatibility warning.
+    /// - Parameter versionString: Version string like "17.4", "18.0", "26.5"
+    /// - Returns: true for iOS 18+; false for iOS 17 and below or unknown versions
+    static func shouldWarnAboutIOSVersion(_ versionString: String) -> Bool {
+        return IOSVersionHelper.shouldShowLocationCompatibilityWarning(versionString)
+    }
 
-    /// Validate iOS version and throw error if unsupported.
+    /// Validate iOS version. This intentionally fails open for future iOS releases.
     /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Throws: ValidationError.unsupportedIOSVersion if iOS 18+
+    /// - Throws: Currently never throws for version compatibility; kept for API compatibility.
     static func validateIOSVersion(_ versionString: String) throws {
-        guard isIOSVersionSupported(versionString) else {
-            throw ValidationError.unsupportedIOSVersion(versionString)
-        }
+        _ = isIOSVersionSupported(versionString)
     }
 }

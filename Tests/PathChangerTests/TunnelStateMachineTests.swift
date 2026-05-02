@@ -70,13 +70,22 @@ final class TunnelStateMachineTests: XCTestCase {
     }
 
     func testIdleToRunningOnExternalDetected() {
-        let result = stateMachine.send(.externalTunnelDetected(mode: .daemon))
+        let tunnelInfo = TunnelInfo(
+            rsdAddress: "192.168.1.101",
+            rsdPort: 55001,
+            mode: .daemon,
+            interface: "utun1",
+            processId: 54321
+        )
+
+        let result = stateMachine.send(.externalTunnelDetected(mode: .daemon, info: tunnelInfo))
 
         if case .success(let newState, let actions) = result {
             XCTAssertEqual(newState, .running)
             XCTAssertEqual(stateMachine.currentState, .running)
             XCTAssertTrue(stateMachine.isActive)
             XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
+            XCTAssertEqual(stateMachine.currentContext.tunnelInfo, tunnelInfo)
 
             // Should start health monitor
             XCTAssertTrue(actions.contains(.startHealthMonitor))

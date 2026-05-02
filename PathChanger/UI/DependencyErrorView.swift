@@ -24,7 +24,8 @@ struct DependencyErrorView: View {
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 24) {
+            ScrollView {
+                VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -32,11 +33,11 @@ struct DependencyErrorView: View {
                         .foregroundColor(.red)
 
                     Text("Dependency Issue")
-                        .font(.system(size: 28, weight: .bold))
+                        .font(AppFont.title)
                         .foregroundColor(.white)
 
                     Text("PathChanger requires additional setup before it can run")
-                        .font(.system(size: 14, weight: .regular))
+                        .font(AppFont.body)
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
                 }
@@ -65,13 +66,14 @@ struct DependencyErrorView: View {
                 if let firstError = validator.errors.first {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("How to Fix")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(AppFont.caption)
                             .foregroundColor(.white)
 
                         Text(firstError.suggestion)
                             .font(.system(size: 13, weight: .regular, design: .monospaced))
                             .foregroundColor(.green)
                             .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color(.sRGBLinear, red: 0.0, green: 0.15, blue: 0.0, opacity: 1.0))
                             .cornerRadius(8)
 
@@ -96,8 +98,13 @@ struct DependencyErrorView: View {
                                 .cornerRadius(8)
                             }
                             .buttonStyle(PlainButtonStyle())
+                            .accessibleButton(
+                                label: AccessibilityLabels.Actions.copyToClipboard,
+                                hint: "Copies the suggested install or repair command",
+                                identifier: "dependencyCopyCommandButton"
+                            )
 
-                            Link(destination: URL(string: "https://www.python.org")!) {
+                            Link(destination: helpURL(for: firstError.type)) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "link")
                                     Text("Learn More")
@@ -139,19 +146,34 @@ struct DependencyErrorView: View {
                         .cornerRadius(8)
                     }
                     .buttonStyle(PlainButtonStyle())
+                    .accessibleButton(
+                        label: "Retry dependency validation",
+                        hint: "Checks Python and pymobiledevice3 again",
+                        identifier: "dependencyRetryValidationButton"
+                    )
 
                     Text("After installing the required dependencies, click above to retry.")
-                        .font(.system(size: 12, weight: .regular))
+                        .font(AppFont.caption)
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
                 }
 
                 Spacer()
             }
-            .padding(32)
-            .frame(maxWidth: .infinity)
+                .padding(32)
+                .frame(maxWidth: 760)
+            }
         }
-        .frame(minWidth: 800, minHeight: 600)
+        .frame(minWidth: 560, idealWidth: 800, minHeight: 480, idealHeight: 600)
+    }
+
+    private func helpURL(for type: DependencyValidator.ValidationError.ErrorType) -> URL {
+        switch type {
+        case .pythonMissing, .pythonVersionTooOld, .pythonNotExecutable:
+            return URL(string: "https://www.python.org/downloads/macos/")!
+        case .pymobiledevice3Missing, .pymobiledevice3VersionTooOld:
+            return URL(string: "https://github.com/doronz88/pymobiledevice3")!
+        }
     }
 }
 

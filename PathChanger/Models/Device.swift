@@ -58,13 +58,20 @@ struct Device: Identifiable, Hashable, Equatable {
         return IOSVersionHelper.minorVersion(version)
     }
 
-    /// Whether this device's iOS version is supported for location simulation.
-    /// Returns true for iOS 17 and below, false for iOS 18+.
+    /// Whether this device should be allowed to attempt location simulation.
+    /// Returns true for future iOS versions so upstream pymobiledevice3 fixes can work
+    /// without requiring a PathChanger release.
     /// Returns true if version cannot be determined (fail open for backward compatibility).
     /// Uses shared IOSVersionHelper for consistent behavior with ArgumentSanitizer.
     var isIOSVersionSupported: Bool {
         guard let version = productVersion else { return true }
         return IOSVersionHelper.isVersionSupported(version)
+    }
+    /// Whether this device should show a newer-iOS compatibility warning.
+    /// This does not block location simulation.
+    var hasLocationCompatibilityWarning: Bool {
+        guard let version = productVersion else { return false }
+        return IOSVersionHelper.shouldShowLocationCompatibilityWarning(version)
     }
 
     /// Whether device is connected wirelessly

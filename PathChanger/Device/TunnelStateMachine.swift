@@ -56,7 +56,7 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
     case connectionTimeout
 
     /// External detection found tunnel already running
-    case externalTunnelDetected(mode: TunnelMode)
+    case externalTunnelDetected(mode: TunnelMode, info: TunnelInfo?)
 
     var description: String {
         switch self {
@@ -78,7 +78,10 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return "recoveryAttempted"
         case .connectionTimeout:
             return "connectionTimeout"
-        case .externalTunnelDetected(let mode):
+        case .externalTunnelDetected(let mode, let info):
+            if let info = info {
+                return "externalTunnelDetected(\(mode.rawValue), \(info.rsdAddress):\(info.rsdPort))"
+            }
             return "externalTunnelDetected(\(mode.rawValue))"
         }
     }
@@ -104,8 +107,8 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return true
         case (.connectionTimeout, .connectionTimeout):
             return true
-        case (.externalTunnelDetected(let m1), .externalTunnelDetected(let m2)):
-            return m1 == m2
+        case (.externalTunnelDetected(let m1, let i1), .externalTunnelDetected(let m2, let i2)):
+            return m1 == m2 && i1 == i2
         default:
             return false
         }
@@ -486,9 +489,14 @@ final class TunnelStateMachine: ObservableObject {
                 ]
             )
 
-        case (.idle, .externalTunnelDetected(let mode)):
+        case (.idle, .externalTunnelDetected(let mode, let info)):
             context.activeMode = mode
-            context.statusMessage = "Tunnel already running (\(mode.rawValue))"
+            context.tunnelInfo = info
+            if let info = info {
+                context.statusMessage = "Tunnel already running (\(mode.rawValue), RSD: \(info.rsdAddress):\(info.rsdPort))"
+            } else {
+                context.statusMessage = "Tunnel already running (\(mode.rawValue))"
+            }
             return .success(
                 newState: .running,
                 actions: [
@@ -690,7 +698,7 @@ final class TunnelStateMachine: ObservableObject {
     }
 
     private func shouldAttemptRecovery() -> Bool {
-        context.retryCount < context.maxRetries
+        UserDefaults.standard.bool(forKey: "autoRecoverTunneld") && context.retryCount < context.maxRetries
     }
 
     private func recoveryDelay() -> TimeInterval {
