@@ -368,12 +368,6 @@ extension Color {
         self
     }
 
-    /// Checks if color meets WCAG 2.1 contrast requirements
-    static func meetsContrastRatio(_ foreground: Color, _ background: Color) -> Bool {
-        // Simplified check - in production would calculate actual luminance ratio
-        // WCAG 2.1 requires 4.5:1 for normal text, 3:1 for large text
-        true
-    }
 }
 
 // MARK: - Accessibility Announcements
@@ -391,9 +385,16 @@ class AccessibilityAnnouncer {
             // No window available (e.g., in tests), skip announcement
             return
         }
+        let priorityValue = priority == .high
+            ? NSAccessibilityPriorityLevel.high.rawValue
+            : NSAccessibilityPriorityLevel.medium.rawValue
         NSAccessibility.post(
             element: window as Any,
-            notification: priority == .high ? .announcementRequested : .valueChanged
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: priorityValue
+            ]
         )
         #endif
     }

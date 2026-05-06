@@ -426,12 +426,49 @@ class TunneldManager: ObservableObject {
     @Published var statusMessage: String?
     @Published var requiresSudo: Bool = true
 
+    // MARK: WiFi Pairing State (drives the new WiFi Pairing card in SettingsView)
+
+    /// True while `scripts/pair_wifi.py` is being executed via AppleScript.
+    @Published var wifiPairingInProgress: Bool = false
+
+    /// Most recent stdout/stderr captured from `pair_wifi.py`. Truncated to a
+    /// reasonable size for UI display.
+    @Published var wifiPairingLog: String = ""
+
+    /// Result of the last in-app pair attempt, if any.
+    @Published var lastWiFiPairingResult: WiFiPairingResult?
+
+    /// UDIDs that are currently visible over Bonjour (`pmd3 remote browse`).
+    /// Empty until `probeBonjourWiFiDevices()` is called.
+    @Published var bonjourVisibleUDIDs: [String] = []
+
+    /// True while a Bonjour probe is in flight.
+    @Published var bonjourProbeInProgress: Bool = false
+
+    /// Outcome of an in-app `pair_wifi.py` run.
+    enum WiFiPairingResult: Equatable {
+        case success(deviceCount: Int)
+        case noDevicesFound
+        case scriptError(String)
+        case userCancelled
+        case scriptMissing
+    }
+
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .auto {
         didSet {
             UserDefaults.standard.set(preferredMode.rawValue, forKey: "tunnelMode")
+            // If the user changed modes while a tunnel is active, restart it so the
+            // new mode takes effect. Without this, switching the picker silently
+            // keeps the old transport (e.g. picking WiFi but staying on USB).
+            guard !isLoadingPreferredModeFromDefaults,
+                  oldValue != preferredMode else { return }
+            scheduleTunnelRestartIfRunning(previousMode: oldValue)
         }
     }
+
+    /// Suppresses the didSet auto-restart when seeding `preferredMode` from UserDefaults during init.
+    private var isLoadingPreferredModeFromDefaults: Bool = false
 
     /// Active tunnel mode (actual running mode)
     @Published var activeMode: TunnelMode?
@@ -500,11 +537,13 @@ class TunneldManager: ObservableObject {
         // Ensure log directory exists
         ensureLogDirectoryExists()
 
-        // Load saved preference
+        // Load saved preference (suppress auto-restart side effect during init)
+        isLoadingPreferredModeFromDefaults = true
         if let savedMode = UserDefaults.standard.string(forKey: "tunnelMode"),
            let mode = TunnelMode(rawValue: savedMode) {
             preferredMode = mode
         }
+        isLoadingPreferredModeFromDefaults = false
 
         // Set up state machine action handler
         stateMachine.actionHandler = { [weak self] action in
@@ -644,7 +683,22 @@ class TunneldManager: ObservableObject {
             let availability = await deviceConnectionAvailability()
             switch preferredMode {
             case .wifi:
-                targetTunnelUDID = targetTunnelUDID ?? availability.wifiBrowseUDID ?? availability.networkUDID
+                // BUG FIX (WiFi-Bug-3): Never fall back to availability.networkUDID for
+                // WiFi mode. `pmd3 remote start-tunnel -t wifi --udid <X>` filters
+                // across Bonjour-discovered devices; passing a usbmux network UDID will
+                // never match and the command fails with "No devices were found during
+                // bonjour browse". If wifiBrowseUDID is nil after Bug-2's fix, fail with
+                // a clear actionable error instead of silently passing a wrong UDID.
+                let resolved = targetTunnelUDID ?? availability.wifiBrowseUDID
+                if resolved == nil {
+                    let message = "No iPhone discovered over Bonjour. On the iPhone: open Settings → Developer and enable wireless pairing for this Mac, then retry. The Mac and iPhone must be on the same Wi-Fi network and the iPhone must be unlocked."
+                    lastError = message
+                    statusMessage = message
+                    Logger.error("[Tunnel] WiFi mode requested but no Bonjour-discoverable iPhone was found", category: .device)
+                    stateMachine.send(.errorOccurred(message))
+                    return
+                }
+                targetTunnelUDID = resolved
             case .usb:
                 if let targetUDID = targetTunnelUDID, availability.usbUDID == targetUDID {
                     targetTunnelUDID = targetUDID
@@ -670,24 +724,29 @@ class TunneldManager: ObservableObject {
             let success = await attemptStart(mode: mode)
 
             if success {
-                // Parse RSD info
-                await parseRsdInfo()
-
-                // Connection established - state machine handles the rest
-                if let info = stateMachine.currentContext.tunnelInfo {
-                    stateMachine.send(.connectionEstablished(info: info))
-                } else if let info = tunnelInfo {
+                // BUG FIX (WiFi-Bug-6): Don't fabricate a 127.0.0.1:0 TunnelInfo
+                // when parseRsdInfo can't extract a real address. The old fallback
+                // was indistinguishable from a real tunnel to downstream callers,
+                // so every later device command would silently fail. Instead we
+                // retry parseRsdInfo a few times (the log file is sometimes still
+                // being written when we first read it) and only treat tunnel
+                // setup as successful once we have a non-loopback / non-zero RSD.
+                //
+                // If after the retry budget we still can't parse a real address,
+                // tear the tunnel down and surface a specific error rather than
+                // pretending we have a working tunnel.
+                if let info = await waitForValidRsdInfo(mode: mode) {
                     stateMachine.send(.connectionEstablished(info: info))
                 } else {
-                    // Create minimal info if not parsed
-                    let info = TunnelInfo(
-                        rsdAddress: "127.0.0.1",
-                        rsdPort: 0,
-                        mode: mode,
-                        interface: nil,
-                        processId: stateMachine.currentContext.activeProcessIds.first
-                    )
-                    stateMachine.send(.connectionEstablished(info: info))
+                    let message = "Tunnel started but its RSD address could not be parsed from the tunnel log. The pmd3 output format may have changed; check ~/Library/Logs/PathChanger/tunnel.log and retry."
+                    Logger.error("[Tunnel] \(message)", category: .device)
+                    lastError = message
+                    statusMessage = message
+                    // Kill the tunnel process we just spawned — it's running but
+                    // useless to us, and leaving it would block future starts.
+                    killTrackedTunnelProcesses()
+                    stateMachine.send(.errorOccurred(message))
+                    return
                 }
                 return
             }
@@ -731,6 +790,25 @@ class TunneldManager: ObservableObject {
 
         targetTunnelUDID = device.id
         targetTunnelConnectionType = device.connectionType
+    }
+
+    /// Schedule a stop+start when the user changes the preferred mode and a
+    /// tunnel is currently running or starting. The previous mode is logged
+    /// for diagnostics. If no tunnel is active this is a no-op.
+    private func scheduleTunnelRestartIfRunning(previousMode: TunnelMode) {
+        guard stateMachine.isActive || stateMachine.isTransitioning else {
+            Logger.debug("[Tunnel] preferredMode changed (\(previousMode.rawValue) -> \(preferredMode.rawValue)) - no active tunnel, will use new mode on next start", category: .device)
+            return
+        }
+
+        Logger.info("[Tunnel] preferredMode changed (\(previousMode.rawValue) -> \(preferredMode.rawValue)) while active - restarting with new mode", category: .device)
+        statusMessage = "Switching tunnel to \(preferredMode.rawValue)..."
+
+        Task { @MainActor in
+            stopTunnel()
+            try? await Task.sleep(nanoseconds: 500_000_000) // 500ms grace for processes to exit
+            await startTunnel()
+        }
     }
 
     /// Stop the tunnel
@@ -854,13 +932,30 @@ class TunneldManager: ObservableObject {
                 }
             }
 
-            let wifiBrowseUDID = usbUDID == nil && networkUDID == nil
-                ? await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
-                : nil
+            // BUG FIX (WiFi-Bug-2): Always run Bonjour browse when the user actually
+            // wants WiFi (preferredMode == .wifi or .auto). Previously this was gated on
+            // BOTH usbUDID AND networkUDID being nil, which meant a single stale
+            // ConnectionType: Network entry left in usbmux from any prior USB-with-WiFi-sync
+            // pairing would silently skip Bonjour discovery, leaving Bug 3's wrong-UDID
+            // fallback as the only path. We still skip the (~3-5s) browse for explicit
+            // .usb / .daemon modes since they don't need it.
+            let needsWifiBrowse = preferredMode == .wifi || preferredMode == .auto
+            let wifiBrowseUDID: String?
+            if needsWifiBrowse {
+                wifiBrowseUDID = await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
+            } else {
+                wifiBrowseUDID = nil
+            }
 
             return DeviceConnectionAvailability(usbUDID: usbUDID, networkUDID: networkUDID, wifiBrowseUDID: wifiBrowseUDID)
         } catch {
-            let wifiBrowseUDID = await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
+            // usbmux failed entirely — fall through to Bonjour browse only if WiFi/auto.
+            let wifiBrowseUDID: String?
+            if preferredMode == .wifi || preferredMode == .auto {
+                wifiBrowseUDID = await discoverNetworkUDIDViaRemoteBrowse(preferredUDID: targetTunnelUDID)
+            } else {
+                wifiBrowseUDID = nil
+            }
             return DeviceConnectionAvailability(usbUDID: nil, networkUDID: nil, wifiBrowseUDID: wifiBrowseUDID)
         }
     }
@@ -941,9 +1036,84 @@ class TunneldManager: ObservableObject {
         return nil
     }
 
+    /// Public probe that returns the currently-running tunnel mode (USB / WiFi /
+    /// Daemon), or nil if no pmd3 tunnel process is alive.
+    ///
+    /// BUG FIX (WiFi-Bug-2): exposes the same pgrep-based detection that the
+    /// internal lifecycle uses, so AppState can stop routing tunnel-running
+    /// truth through DeviceManager (which doesn't know about WiFi tunnels) and
+    /// instead read directly from this single source.
+    func detectRunningTunnelMode() async -> TunnelMode? {
+        await detectRunningTunnel()
+    }
+
+    /// Repeatedly call `parseRsdInfo` until we have a non-loopback RSD address
+    /// and a non-zero port, or the retry budget is exhausted.
+    ///
+    /// BUG FIX (WiFi-Bug-6): The first read of the tunnel log can race with
+    /// pmd3 still flushing its banner output (especially for `remote start-tunnel`
+    /// where the bonjour browse and TLS handshake add a couple of seconds before
+    /// the `--rsd <addr> <port>` line lands). Retry up to ~5 seconds before
+    /// giving up, instead of fabricating a 127.0.0.1:0 placeholder.
+    private func waitForValidRsdInfo(mode: TunnelMode) async -> TunnelInfo? {
+        let maxAttempts = 4
+        for attempt in 0..<maxAttempts {
+            await parseRsdInfo()
+            if let info = stateMachine.currentContext.tunnelInfo, isUsableTunnelInfo(info) {
+                return info
+            }
+            if let info = tunnelInfo, isUsableTunnelInfo(info) {
+                return info
+            }
+            // Don't sleep after the last attempt.
+            if attempt < maxAttempts - 1 {
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
+            }
+        }
+
+        // Last-ditch: query the tunneld HTTP API once more in case the daemon
+        // already has a usable record even when log parsing failed.
+        await queryTunneldAPI()
+        if let firstDeviceInfo = deviceTunnelInfo.values.first(where: { isUsableTunnelInfo($0) }) {
+            tunnelInfo = firstDeviceInfo
+            return firstDeviceInfo
+        }
+
+        Logger.error("[Tunnel] waitForValidRsdInfo gave up for mode \(mode.rawValue) after \(maxAttempts) attempts", category: .device)
+        return nil
+    }
+
+    /// True only when a TunnelInfo can actually be used to talk to the device.
+    /// Rejects the legacy 127.0.0.1:0 placeholder and any zero-port info.
+    private func isUsableTunnelInfo(_ info: TunnelInfo) -> Bool {
+        guard info.rsdPort > 0, info.rsdPort <= 65_535 else { return false }
+        if info.rsdAddress == "127.0.0.1" { return false }
+        if info.rsdAddress.isEmpty { return false }
+        return isValidRsdAddress(info.rsdAddress)
+    }
+
     /// Attach to an already-running tunnel instead of launching another privileged process.
+    ///
+    /// Returns `true` only if a running tunnel exists AND it matches the user's `preferredMode`
+    /// (or `preferredMode == .auto`). When the user picks a specific mode different from what's
+    /// running (e.g. WiFi while a USB tunnel is up), this returns `false` so the caller will
+    /// proceed to stop the mismatching tunnel and start fresh in the requested mode.
     private func attachToRunningTunnelIfAvailable() async -> Bool {
         guard let runningMode = await detectRunningTunnel() else {
+            return false
+        }
+
+        // Mode-aware reattach gate: refuse to silently bind to a tunnel that doesn't
+        // match the user's explicit preference.
+        let modeMatches = preferredMode == .auto || preferredMode == runningMode
+        if !modeMatches {
+            Logger.info(
+                "[Tunnel] Existing \(runningMode.rawValue) tunnel detected but preferredMode is \(preferredMode.rawValue) - stopping it to start fresh in requested mode",
+                category: .device
+            )
+            statusMessage = "Stopping \(runningMode.rawValue) tunnel to switch to \(preferredMode.rawValue)..."
+            stopTunnel()
+            try? await Task.sleep(nanoseconds: 500_000_000) // grace for processes to exit
             return false
         }
 
@@ -1055,25 +1225,267 @@ class TunneldManager: ObservableObject {
             return
         }
 
+        // The most common WiFi-mode failure: pmd3 found no _remotepairing-manual-pairing
+        // Bonjour service. That means the iPhone hasn't been put into wireless-pairing mode
+        // yet. There is no Mac-side workaround; the user must enable it in iOS Settings.
+        let wifiPairingGuidance = """
+        Wi-Fi pairing not configured. On the iPhone:
+          1. Make sure it is UNLOCKED and on the SAME Wi-Fi as this Mac.
+          2. Settings → Privacy & Security → Developer Mode must be ON.
+          3. Settings → Developer → enable wireless pairing for this Mac
+             (the toggle name varies by iOS version: "Pair Wirelessly",
+             "Wireless Pairing", or "Allow Mac").
+          4. Then run, in Terminal:
+               sudo python3 \(scriptsDirectoryPath)/pair_wifi.py --timeout 30
+             and confirm the pairing prompt on the iPhone.
+          5. Retry Start in Wi-Fi mode.
+        """
+
+        if mode == .wifi && (
+            logContent.contains("No devices were found during bonjour browse") ||
+            logContent.contains("No remotepairing devices")
+        ) {
+            lastError = wifiPairingGuidance
+            return
+        }
+
         if logContent.contains("Device is not connected") {
             if mode == .wifi {
-                lastError = "No Wi-Fi tunnel-capable device found. Keep the iPhone awake and unlocked on the same Wi-Fi, and complete pymobiledevice3 remote pairing if this Mac has not been paired for Wi-Fi tunneling."
+                lastError = wifiPairingGuidance
             } else {
                 lastError = "Device is not connected. Connect and trust the iPhone, then retry."
             }
         } else if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
             lastError = mode == .wifi
-                ? "No Wi-Fi device found. Keep the iPhone awake and unlocked on the same Wi-Fi, then trust or pair it with this Mac before retrying."
+                ? wifiPairingGuidance
                 : "No device found. Connect the device via USB, unlock it, and tap Trust."
         } else if logContent.contains("not paired") || logContent.contains("PairingError") {
-            lastError = "Device not paired. Unlock the device, trust this computer over USB, or complete pymobiledevice3 remote pairing for Wi-Fi."
+            lastError = mode == .wifi
+                ? wifiPairingGuidance
+                : "Device not paired. Unlock the device, trust this computer over USB."
         } else if logContent.contains("Developer Mode") {
             lastError = "Developer Mode required. Enable in Settings > Privacy & Security."
         } else if logContent.contains("timeout") || logContent.contains("timed out") {
             lastError = "Connection timed out. Keep the device awake, verify both devices are on the same Wi-Fi, and retry."
-        } else if mode == .wifi && logContent.contains("No remotepairing devices") {
-            lastError = "No Wi-Fi pairing record found. Pair/trust the device first, keep it awake on the same network, then retry Wi-Fi tunnel startup."
         }
+    }
+
+    /// Best-effort path to the bundled scripts directory, used in error messages so we can
+    /// tell the user where pair_wifi.py lives in their app bundle.
+    private var scriptsDirectoryPath: String {
+        if let resourceURL = Bundle.main.resourceURL {
+            return resourceURL.appendingPathComponent("scripts", isDirectory: true).path
+        }
+        return "<PathChanger.app>/Contents/Resources/scripts"
+    }
+
+    /// Allow only paths that are safe to embed inside `do shell script "..." with
+    /// administrator privileges` after single-quoting. Disallows apostrophes,
+    /// shell metacharacters, AppleScript-quoting characters, and embedded newlines.
+    private func isShellSafePath(_ path: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        let bad: Set<Character> = ["'", "\\", "\"", "`", "$", ";", "|", "&", "\n", "\r", "<", ">"]
+        return !path.contains(where: { bad.contains($0) })
+    }
+
+    /// Resolve the absolute on-disk path of `pair_wifi.py`, walking from the app bundle's
+    /// Resources/scripts/ first and then the SwiftPM dev workspace as a fallback for
+    /// `swift run` builds. Returns nil if the script can't be found.
+    private func resolvePairWiFiScriptPath() -> String? {
+        let fileManager = FileManager.default
+
+        // 1. Bundled in PathChanger.app/Contents/Resources/scripts/pair_wifi.py
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundled = resourceURL.appendingPathComponent("scripts/pair_wifi.py").path
+            if fileManager.isReadableFile(atPath: bundled) {
+                return bundled
+            }
+        }
+
+        // 2. Dev / repo layout: <repo>/scripts/pair_wifi.py — useful when running
+        //    via `swift run` from a clone.
+        let cwdScript = fileManager.currentDirectoryPath + "/scripts/pair_wifi.py"
+        if fileManager.isReadableFile(atPath: cwdScript) {
+            return cwdScript
+        }
+
+        return nil
+    }
+
+    // MARK: - Public WiFi Pairing API
+
+    /// Probe the local network for iPhones that are advertising the
+    /// `_remotepairing._tcp` Bonjour service via `pmd3 remote browse`. Updates
+    /// `bonjourVisibleUDIDs` so the UI can show "iPhone visible over Bonjour: X"
+    /// before the user attempts a WiFi tunnel start.
+    ///
+    /// This is the preflight check that surfaces the silent failure mode users
+    /// would otherwise hit: if no iPhone advertises Bonjour, WiFi tunnel start
+    /// will fail no matter what (Bug 2/3 fixes don't help if there's nothing
+    /// to discover).
+    func probeBonjourWiFiDevices() async {
+        bonjourProbeInProgress = true
+        defer { bonjourProbeInProgress = false }
+
+        do {
+            let output = try await runCommand(python3Path, arguments: [
+                "-m", "pymobiledevice3", "--no-color",
+                "remote", "browse",
+                "--timeout", "5"
+            ], timeout: 8.0)
+
+            let candidates = extractWiFiUDIDsFromRemoteBrowseOutput(output)
+            bonjourVisibleUDIDs = candidates
+            Logger.info("[Tunnel] Bonjour probe found \(candidates.count) WiFi-discoverable device(s)", category: .device)
+        } catch {
+            bonjourVisibleUDIDs = []
+            Logger.debug("[Tunnel] Bonjour probe failed: \(error.localizedDescription)", category: .device)
+        }
+    }
+
+    /// Run the bundled `scripts/pair_wifi.py` helper with administrator
+    /// privileges. Drives a longer (default 30s) Bonjour browse window than
+    /// `pmd3 remote pair` and pairs the first discovered iPhone (or matches
+    /// against `nameFilter` if provided).
+    ///
+    /// This is the iOS-side prerequisite for WiFi mode. After this runs, the
+    /// pair record is on disk and `pmd3 remote start-tunnel -t wifi` can
+    /// connect without the user touching Terminal.
+    ///
+    /// - Parameters:
+    ///   - timeout: Bonjour browse window in seconds (default 30).
+    ///   - nameFilter: Optional substring to match the iPhone's Bonjour name.
+    func pairOverWiFi(timeout: TimeInterval = 30.0, nameFilter: String? = nil) async -> WiFiPairingResult {
+        guard !wifiPairingInProgress else {
+            return .scriptError("WiFi pairing is already in progress.")
+        }
+
+        // SECURITY: validate python path against the same allowlist used for tunnel
+        // launch commands so we can never call an attacker-controlled binary as root.
+        guard PrivilegedCommandValidator.isPythonPathAllowed(python3Path) else {
+            let message = "Refusing to run pair_wifi.py: python3 path is not in the security allowlist (\(python3Path))."
+            Logger.error(message, category: .security)
+            wifiPairingLog = message
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        }
+
+        guard let scriptPath = resolvePairWiFiScriptPath() else {
+            let message = "pair_wifi.py was not found in the app bundle (expected at \(scriptsDirectoryPath)/pair_wifi.py)."
+            Logger.error(message, category: .device)
+            wifiPairingLog = message
+            lastWiFiPairingResult = .scriptMissing
+            return .scriptMissing
+        }
+
+        // SECURITY: paths must end in the expected suffix and contain only safe
+        // characters before we string-concat them into a shell command. This
+        // closes the gap that PrivilegedCommandValidator can't (its allowlist is
+        // for tunnel commands only).
+        guard scriptPath.hasSuffix("/scripts/pair_wifi.py"),
+              isShellSafePath(scriptPath),
+              isShellSafePath(python3Path) else {
+            let message = "Refusing to run pair_wifi.py: resolved path is unsafe (\(scriptPath))."
+            Logger.error(message, category: .security)
+            wifiPairingLog = message
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        }
+
+        // Clamp the timeout to a sane window. Anything outside [5, 120] is a UI bug.
+        let timeoutSec = max(5, min(120, Int(timeout.rounded())))
+
+        wifiPairingInProgress = true
+        wifiPairingLog = ""
+        statusMessage = "Pairing over Wi-Fi (browsing Bonjour for up to \(timeoutSec)s)…"
+        defer { wifiPairingInProgress = false }
+
+        // Build the inner command that runs as root via osascript. All
+        // user-influenced segments are validated above; the only remaining
+        // free-form input is `nameFilter` which is restricted to alnum/dash/
+        // underscore/space. We single-quote inputs for the shell.
+        let logFile = "\(NSTemporaryDirectory())pathchanger-pair-wifi.log"
+        guard isShellSafePath(logFile) else {
+            let message = "Refusing to run pair_wifi.py: temporary log path is unsafe."
+            Logger.error(message, category: .security)
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        }
+
+        var inner = "'\(python3Path)' '\(scriptPath)' --timeout \(timeoutSec)"
+        if let nameFilter, !nameFilter.isEmpty,
+           nameFilter.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == " " }) {
+            inner += " --name '\(nameFilter)'"
+        }
+        inner += " > '\(logFile)' 2>&1"
+
+        let script = """
+        do shell script "\(inner)" with administrator privileges
+        """
+
+        let outcome: WiFiPairingResult = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                var asError: NSDictionary?
+                guard let appleScript = NSAppleScript(source: script) else {
+                    continuation.resume(returning: .scriptError("Could not create AppleScript wrapper"))
+                    return
+                }
+                _ = appleScript.executeAndReturnError(&asError)
+
+                // Read the log file regardless of error so we can show the user
+                // the script's own diagnostic output.
+                let logContent = (try? String(contentsOfFile: logFile, encoding: .utf8)) ?? ""
+                let truncated = logContent.count > 8000 ? String(logContent.suffix(8000)) : logContent
+
+                if let asError {
+                    let errorMessage = asError[NSAppleScript.errorMessage] as? String ?? "AppleScript error"
+                    if errorMessage.lowercased().contains("cancel") {
+                        Task { @MainActor in self.wifiPairingLog = truncated }
+                        continuation.resume(returning: .userCancelled)
+                    } else {
+                        Task { @MainActor in self.wifiPairingLog = truncated }
+                        continuation.resume(returning: .scriptError(errorMessage))
+                    }
+                    return
+                }
+
+                Task { @MainActor in self.wifiPairingLog = truncated }
+
+                if logContent.contains("Pair record written") {
+                    // Count how many devices the script reported.
+                    var deviceCount = 0
+                    for line in logContent.components(separatedBy: .newlines) where line.hasPrefix("[pair-wifi] Found ") {
+                        let parts = line.split(separator: " ")
+                        if parts.count > 2, let n = Int(parts[2]) {
+                            deviceCount = n
+                            break
+                        }
+                    }
+                    continuation.resume(returning: .success(deviceCount: max(deviceCount, 1)))
+                } else if logContent.contains("no _remotepairing-manual-pairing instances found") {
+                    continuation.resume(returning: .noDevicesFound)
+                } else {
+                    continuation.resume(returning: .scriptError("pair_wifi.py exited without writing a pair record. See log for details."))
+                }
+            }
+        }
+
+        await MainActor.run { self.lastWiFiPairingResult = outcome }
+
+        switch outcome {
+        case .success(let count):
+            statusMessage = "Wi-Fi pairing succeeded (\(count) device(s))."
+        case .noDevicesFound:
+            statusMessage = "Wi-Fi pairing failed: no iPhone advertising _remotepairing-manual-pairing on this network."
+        case .scriptError(let message):
+            statusMessage = "Wi-Fi pairing failed: \(message)"
+        case .userCancelled:
+            statusMessage = "Wi-Fi pairing cancelled."
+        case .scriptMissing:
+            statusMessage = "Wi-Fi pairing helper script not found in app bundle."
+        }
+
+        return outcome
     }
 
     /// Parse RSD address and port from tunnel log

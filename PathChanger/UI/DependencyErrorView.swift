@@ -13,44 +13,36 @@ struct DependencyErrorView: View {
 
     var body: some View {
         ZStack {
-            // Background
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(.sRGBLinear, red: 0.05, green: 0.05, blue: 0.1, opacity: 1.0),
-                    Color(.sRGBLinear, red: 0.08, green: 0.06, blue: 0.12, opacity: 1.0)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Color.pcBackground
+                .ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 24) {
                 // Header
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 56))
-                        .foregroundColor(.red)
+                        .font(.system(size: 48))
+                        .foregroundColor(.pcDanger)
 
                     Text("Dependency Issue")
                         .font(AppFont.title)
-                        .foregroundColor(.white)
+                        .foregroundColor(.pcText)
 
                     Text("PathChanger requires additional setup before it can run")
                         .font(AppFont.body)
-                        .foregroundColor(.gray)
+                        .foregroundColor(.pcTextMuted)
                         .multilineTextAlignment(.center)
                 }
                 .padding(.top, 32)
 
                 Divider()
-                    .background(Color.gray.opacity(0.3))
+                    .background(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
 
                 // Errors List
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Issues Found")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
+                        .font(AppFont.heading)
+                        .foregroundColor(.pcText)
                         .padding(.bottom, 8)
 
                     ForEach(validator.errors) { error in
@@ -59,23 +51,23 @@ struct DependencyErrorView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
-                .background(Color(.sRGBLinear, red: 0.1, green: 0.08, blue: 0.15, opacity: 1.0))
-                .cornerRadius(12)
+                .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel))
+                .clipShape(RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
 
                 // Solution Section
                 if let firstError = validator.errors.first {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("How to Fix")
                             .font(AppFont.caption)
-                            .foregroundColor(.white)
+                            .foregroundColor(.pcText)
 
                         Text(firstError.suggestion)
-                            .font(.system(size: 13, weight: .regular, design: .monospaced))
-                            .foregroundColor(.green)
+                            .font(AppFont.monospace)
+                            .foregroundColor(.pcSecondary)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(.sRGBLinear, red: 0.0, green: 0.15, blue: 0.0, opacity: 1.0))
-                            .cornerRadius(8)
+                            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField))
+                            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
 
                         HStack(spacing: 12) {
                             Button(action: {
@@ -90,14 +82,14 @@ struct DependencyErrorView: View {
                                     Image(systemName: copiedToClipboard ? "checkmark.circle.fill" : "doc.on.doc")
                                     Text(copiedToClipboard ? "Copied!" : "Copy Command")
                                 }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
+                                .font(AppFont.label)
+                                .foregroundColor(.pcText)
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 12)
-                                .background(Color.blue)
-                                .cornerRadius(8)
+                                .background(Color.pcAccent)
+                                .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .buttonStyle(.plain)
                             .accessibleButton(
                                 label: AccessibilityLabels.Actions.copyToClipboard,
                                 hint: "Copies the suggested install or repair command",
@@ -109,22 +101,22 @@ struct DependencyErrorView: View {
                                     Image(systemName: "link")
                                     Text("Learn More")
                                 }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
+                                .font(AppFont.label)
+                                .foregroundColor(.pcText)
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 12)
-                                .background(Color.gray)
-                                .cornerRadius(8)
+                                .background(Color.pcSurfaceHighest)
+                                .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .buttonStyle(.plain)
 
                             Spacer()
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
-                    .background(Color(.sRGBLinear, red: 0.1, green: 0.12, blue: 0.1, opacity: 1.0))
-                    .cornerRadius(12)
+                    .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel))
+                    .clipShape(RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
                 }
 
                 // Retry Section
@@ -138,14 +130,14 @@ struct DependencyErrorView: View {
                             Image(systemName: "arrow.clockwise")
                             Text("Retry Validation")
                         }
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .font(AppFont.label)
+                        .foregroundColor(.pcText)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .background(Color.blue)
-                        .cornerRadius(8)
+                        .background(Color.pcAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                     }
-                    .buttonStyle(PlainButtonStyle())
+                    .buttonStyle(.plain)
                     .accessibleButton(
                         label: "Retry dependency validation",
                         hint: "Checks Python and pymobiledevice3 again",
@@ -154,7 +146,7 @@ struct DependencyErrorView: View {
 
                     Text("After installing the required dependencies, click above to retry.")
                         .font(AppFont.caption)
-                        .foregroundColor(.gray)
+                        .foregroundColor(.pcTextMuted)
                         .multilineTextAlignment(.center)
                 }
 
@@ -185,18 +177,18 @@ struct ErrorItemView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: errorIcon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(AppFont.heading)
                 .foregroundColor(errorColor)
                 .padding(.top, 3)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(errorTitle)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
+                    .font(AppFont.label)
+                    .foregroundColor(.pcText)
 
                 Text(error.message)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(.gray)
+                    .font(AppFont.metadata)
+                    .foregroundColor(.pcTextMuted)
             }
 
             Spacer()
@@ -221,9 +213,9 @@ struct ErrorItemView: View {
     var errorColor: Color {
         switch error.type {
         case .pythonMissing, .pymobiledevice3Missing, .pythonNotExecutable:
-            return .red
+            return .pcDanger
         case .pythonVersionTooOld, .pymobiledevice3VersionTooOld:
-            return .yellow
+            return .pcWarning
         }
     }
 

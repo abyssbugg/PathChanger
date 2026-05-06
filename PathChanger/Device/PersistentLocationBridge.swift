@@ -104,28 +104,64 @@ final class PersistentLocationBridge: ObservableObject {
             python3Path = resolvedPythonPath
         }
 
-        // Find bridge script (in app bundle or workspace)
-        let bundlePath = Bundle.main.path(forResource: "location_bridge", ofType: "py")
-        let workspacePath = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        bridgeScriptPath = Self.resolveBridgeScriptPath()
 
-        // Try bundle first, then workspace
-        if let bundlePath = bundlePath, FileManager.default.fileExists(atPath: bundlePath) {
-            bridgeScriptPath = bundlePath
-        } else if FileManager.default.fileExists(atPath: workspacePath) {
-            bridgeScriptPath = workspacePath
-        } else {
-            // Try relative to executable
-            if let execPath = Bundle.main.executablePath {
-                let execDir = (execPath as NSString).deletingLastPathComponent
-                let relativePath = (execDir as NSString).appendingPathComponent("../Resources/scripts/location_bridge.py")
-                if FileManager.default.fileExists(atPath: relativePath) {
-                    bridgeScriptPath = relativePath
+        Logger.debug("[PersistentBridge] Python path: \(python3Path ?? "not found")", category: .device)
+        Logger.debug("[PersistentBridge] Bridge script: \(bridgeScriptPath ?? "not found")", category: .device)
+    }
+
+    /// Resolve the bridge script path across packaged-app, dev-checkout, and SwiftPM-binary layouts.
+    private static func resolveBridgeScriptPath() -> String? {
+        let fileManager = FileManager.default
+
+        // 1) Packaged app bundle: Contents/Resources/scripts/location_bridge.py
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundledPath = resourceURL
+                .appendingPathComponent("scripts", isDirectory: true)
+                .appendingPathComponent("location_bridge.py")
+                .path
+            if fileManager.isReadableFile(atPath: bundledPath) {
+                return bundledPath
+            }
+        }
+
+        // 2) SwiftPM Bundle.main.path lookups (top-level Resources or scripts subdirectory).
+        if let directPath = Bundle.main.path(forResource: "location_bridge", ofType: "py") {
+            return directPath
+        }
+        if let scriptsPath = Bundle.main.path(
+            forResource: "location_bridge",
+            ofType: "py",
+            inDirectory: "scripts"
+        ) {
+            return scriptsPath
+        }
+
+        // 3) Workspace fallback for `swift run` and dev launches from the repo root.
+        let workspacePath = fileManager.currentDirectoryPath + "/scripts/location_bridge.py"
+        if fileManager.isReadableFile(atPath: workspacePath) {
+            return workspacePath
+        }
+
+        // 4) Walk up from the executable looking for a Resources/scripts/ sibling.
+        if let execPath = Bundle.main.executablePath {
+            let candidates = [
+                (execPath as NSString)
+                    .deletingLastPathComponent
+                    + "/../Resources/scripts/location_bridge.py",
+                (execPath as NSString)
+                    .deletingLastPathComponent
+                    + "/../../Resources/scripts/location_bridge.py"
+            ]
+            for candidate in candidates {
+                let normalized = (candidate as NSString).standardizingPath
+                if fileManager.isReadableFile(atPath: normalized) {
+                    return normalized
                 }
             }
         }
 
-        Logger.debug("[PersistentBridge] Python path: \(python3Path ?? "not found")", category: .device)
-        Logger.debug("[PersistentBridge] Bridge script: \(bridgeScriptPath ?? "not found")", category: .device)
+        return nil
     }
 
     // MARK: - Public Methods

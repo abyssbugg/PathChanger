@@ -23,26 +23,26 @@ struct ErrorDialogView: View {
 
             // Title
             Text(titleForType(error.type))
-                .font(.headline)
+                .font(AppFont.heading)
 
             // Message
             Text(error.message)
-                .font(.body)
+                .font(AppFont.body)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.pcTextMuted)
             // Suggestion
             if let suggestion = error.suggestion {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("How to fix:")
-                        .font(.caption)
+                        .font(AppFont.metadata)
                         .fontWeight(.semibold)
 
                     Text(suggestion)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.metadata)
+                        .foregroundColor(.pcTextMuted)
                 }
                 .padding()
-                .background(Color.gray.opacity(0.15))
+                .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
                 .cornerRadius(8)
             }
 
@@ -51,13 +51,13 @@ struct ErrorDialogView: View {
                 Button("Dismiss") {
                     onDismiss()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
 
                 if let action = error.action, let onAction = onAction {
                     Button(actionButtonTitle(action)) {
                         onAction(action)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 }
             }
         }
@@ -79,12 +79,12 @@ struct ErrorDialogView: View {
 
     private func colorForType(_ type: ErrorHandler.ErrorType) -> Color {
         switch type {
-        case .connection, .network: return .orange
-        case .device: return .red
-        case .location: return .blue
-        case .permission: return .purple
-        case .system: return .gray
-        case .iosVersionUnsupported: return .orange
+        case .connection, .network: return .pcWarning
+        case .device: return .pcDanger
+        case .location: return .pcPrimary
+        case .permission: return .pcAccent
+        case .system: return .pcTextMuted
+        case .iosVersionUnsupported: return .pcWarning
         }
     }
 
@@ -142,29 +142,29 @@ struct EnhancedErrorDialogView: View {
 
             // Title
             Text(titleForType(error.type))
-                .font(.headline)
+                .font(AppFont.heading)
 
             // Message
             Text(error.message)
-                .font(.body)
+                .font(AppFont.body)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.pcTextMuted)
 
             // Suggestion with recovery steps
             if let suggestion = error.suggestion {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("How to fix:", systemImage: "lightbulb.fill")
-                        .font(.caption)
+                        .font(AppFont.metadata)
                         .fontWeight(.semibold)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.pcWarning)
 
                     Text(suggestion)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.metadata)
+                        .foregroundColor(.pcTextMuted)
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.1))
+                .background(Color.pcWarning.opacity(0.12))
                 .cornerRadius(8)
             }
 
@@ -174,13 +174,13 @@ struct EnhancedErrorDialogView: View {
                     Button("Dismiss") {
                         onDismiss()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
 
                     if let action = error.action, let onAction = onAction {
                         Button(actionButtonTitle(action)) {
                             onAction(action)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     }
                 }
 
@@ -190,10 +190,10 @@ struct EnhancedErrorDialogView: View {
                         onLearnMore?(helpURL)
                     }) {
                         Label("Learn More", systemImage: "questionmark.circle")
-                            .font(.caption)
+                            .font(AppFont.metadata)
                     }
                     .buttonStyle(.plain)
-                    .foregroundColor(.blue)
+                    .foregroundColor(.pcPrimary)
                     .accessibleButton(
                         label: "Learn more about this error",
                         hint: "Opens related setup or troubleshooting documentation",
@@ -220,12 +220,12 @@ struct EnhancedErrorDialogView: View {
 
     private func colorForType(_ type: ErrorHandler.ErrorType) -> Color {
         switch type {
-        case .connection, .network: return .orange
-        case .device: return .red
-        case .location: return .blue
-        case .permission: return .purple
-        case .system: return .gray
-        case .iosVersionUnsupported: return .orange
+        case .connection, .network: return .pcWarning
+        case .device: return .pcDanger
+        case .location: return .pcPrimary
+        case .permission: return .pcAccent
+        case .system: return .pcTextMuted
+        case .iosVersionUnsupported: return .pcWarning
         }
     }
 
@@ -277,37 +277,37 @@ struct IOSCompatibilityWarningDialogView: View {
             // Warning icon
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 48))
-                .foregroundColor(.orange)
+                .foregroundColor(.pcWarning)
                 .symbolEffect(.pulse)
 
             // Title
             Text("iOS \(deviceVersion) Compatibility Warning")
-                .font(.headline)
+                .font(AppFont.heading)
 
             // Message
             Text("Newer iOS versions may change Apple's DVT location service. PathChanger will still attempt location simulation instead of blocking.")
-                .font(.body)
+                .font(AppFont.body)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.pcTextMuted)
 
             // Compatibility notes
             VStack(alignment: .leading, spacing: 8) {
                 Label("What to try:", systemImage: "lightbulb.fill")
-                    .font(.caption)
+                    .font(AppFont.metadata)
                     .fontWeight(.semibold)
-                    .foregroundColor(.orange)
+                    .foregroundColor(.pcWarning)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("1. Keep pymobiledevice3 updated")
                     Text("2. Start the tunnel, then try location simulation")
                     Text("3. If it fails, copy the exact DVT error for upstream tracking")
                 }
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(AppFont.metadata)
+                .foregroundColor(.pcTextMuted)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.orange.opacity(0.1))
+            .background(Color.pcWarning.opacity(0.12))
             .cornerRadius(8)
 
             // Actions
@@ -316,14 +316,14 @@ struct IOSCompatibilityWarningDialogView: View {
                     Button("Dismiss") {
                         onDismiss()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
 
                     Button("Learn More") {
                         if let url = URL(string: "https://github.com/doronz88/pymobiledevice3/issues") {
                             onLearnMore?(url)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 }
 
             }
@@ -352,11 +352,11 @@ struct ConnectionStatusBanner: View {
                     Button("Reconnect") {
                         reliabilityManager.retryNow()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.orange.opacity(0.2))
+                .background(Color.pcWarning.opacity(0.12))
                 .cornerRadius(8)
 
             case .reconnecting(let attempt, let max):
@@ -368,43 +368,43 @@ struct ConnectionStatusBanner: View {
                     Button("Cancel") {
                         reliabilityManager.cancelReconnection()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.yellow.opacity(0.2))
+                .background(Color.pcWarning.opacity(0.12))
                 .cornerRadius(8)
 
             case .failed(let reason):
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
+                        .foregroundColor(.pcDanger)
                     Text(reason)
                     Spacer()
                     Button("Retry") {
                         reliabilityManager.retryNow()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.red.opacity(0.2))
+                .background(Color.pcDanger.opacity(0.12))
                 .cornerRadius(8)
 
             case .suspended:
                 HStack {
                     Image(systemName: "pause.circle.fill")
-                        .foregroundColor(.gray)
+                        .foregroundColor(.pcTextMuted)
                     Text("Connection suspended")
                     Spacer()
                     Button("Resume") {
                         reliabilityManager.resume()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.gray.opacity(0.2))
+                .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
                 .cornerRadius(8)
             }
         }
@@ -420,18 +420,18 @@ struct TunneldStatusView: View {
     var body: some View {
         HStack {
             Circle()
-                .fill(isRunning ? Color.green : Color.red)
+                .fill(isRunning ? Color.pcSecondary : Color.pcDanger)
                 .frame(width: 8, height: 8)
 
             Text(isRunning ? "tunneld running" : "tunneld not running")
-                .font(.caption)
+                .font(AppFont.metadata)
 
             if !isRunning {
                 Button("Start") {
                     onStartRequest()
                 }
-                .buttonStyle(.link)
-                .font(.caption)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcPrimary))
+                .font(AppFont.metadata)
             }
         }
     }
@@ -446,26 +446,26 @@ struct StartTunneldSheet: View {
         VStack(spacing: 20) {
             Image(systemName: "terminal.fill")
                 .font(.system(size: 48))
-                .foregroundColor(.blue)
+                .foregroundColor(.pcPrimary)
 
             Text("Start tunneld")
-                .font(.headline)
+                .font(AppFont.heading)
 
             Text("Location injection on iOS 17+ requires tunneld to be running.")
-                .font(.body)
-                .foregroundColor(.secondary)
+                .font(AppFont.body)
+                .foregroundColor(.pcTextMuted)
                 .multilineTextAlignment(.center)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Run this command in Terminal:")
-                    .font(.caption)
+                    .font(AppFont.metadata)
                     .fontWeight(.semibold)
 
                 HStack {
                     Text("sudo python3 -m pymobiledevice3 remote tunneld")
-                        .font(.system(.body, design: .monospaced))
+                        .font(AppFont.monospace)
                         .padding(8)
-                        .background(Color(.textBackgroundColor))
+                        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField))
                         .cornerRadius(4)
 
                     Button {
@@ -473,21 +473,21 @@ struct StartTunneldSheet: View {
                     } label: {
                         Image(systemName: "doc.on.doc")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                 }
             }
             .padding()
-            .background(Color.gray.opacity(0.15))
+            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
             .cornerRadius(8)
 
             Text("Keep the Terminal window open while using PathChanger.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(AppFont.metadata)
+                .foregroundColor(.pcTextMuted)
 
             Button("Done") {
                 dismiss()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
         }
         .padding(24)
         .frame(width: 400)
@@ -510,14 +510,14 @@ struct DeveloperModeGuideSheet: View {
         VStack(spacing: 20) {
             Image(systemName: "wrench.and.screwdriver.fill")
                 .font(.system(size: 48))
-                .foregroundColor(.purple)
+                .foregroundColor(.pcAccent)
 
             Text("Enable Developer Mode")
-                .font(.headline)
+                .font(AppFont.heading)
 
             Text("Developer Mode is required for location simulation on iOS 16+.")
-                .font(.body)
-                .foregroundColor(.secondary)
+                .font(AppFont.body)
+                .foregroundColor(.pcTextMuted)
                 .multilineTextAlignment(.center)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -528,13 +528,13 @@ struct DeveloperModeGuideSheet: View {
                 StepRow(number: 5, text: "Restart your device when prompted")
             }
             .padding()
-            .background(Color.gray.opacity(0.15))
+            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
             .cornerRadius(8)
 
             Button("Done") {
                 dismiss()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
         }
         .padding(24)
         .frame(width: 400)
@@ -548,15 +548,15 @@ struct StepRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text("\(number)")
-                .font(.caption)
+                .font(AppFont.metadata)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
                 .frame(width: 20, height: 20)
-                .background(Color.blue)
+                .background(Color.pcPrimary)
                 .clipShape(Circle())
 
             Text(text)
-                .font(.body)
+                .font(AppFont.body)
         }
     }
 }

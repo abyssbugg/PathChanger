@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var tunneldManager = TunneldManager.shared
+    let showsHeader: Bool
     @AppStorage("autoRefreshDevices") private var autoRefreshDevices: Bool = true
     @AppStorage("refreshInterval") private var refreshInterval: Double = 5.0
     @AppStorage("defaultMapStyle") private var defaultMapStyle: String = "standard"
@@ -17,13 +18,20 @@ struct SettingsView: View {
     @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = false
     @State private var showDiagnostics: Bool = false
 
+    init(showsHeader: Bool = true) {
+        self.showsHeader = showsHeader
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: AppSpacing.lg) {
-                settingsHeader
+            VStack(alignment: .leading, spacing: AppSpacing.xl) {
+                if showsHeader {
+                    settingsHeader
+                }
                 deviceConnectionCard
                 connectionModeCard
                 tunnelModeCard
+                wifiPairingCard
                 mapDisplayCard
                 advancedSettingsCard
                 keyboardShortcutsCard
@@ -31,7 +39,8 @@ struct SettingsView: View {
                 aboutCard
             }
             .padding(AppSpacing.xl)
-            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Color.pcBackground)
         .navigationTitle("Settings")
@@ -47,7 +56,7 @@ struct SettingsView: View {
                 .font(AppFont.title)
                 .foregroundStyle(Color.pcText)
             Text("Device connection, tunnel, display, shortcuts, and diagnostics")
-                .font(AppFont.caption)
+                .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
         }
         .padding(.bottom, AppSpacing.xs)
@@ -84,7 +93,7 @@ struct SettingsView: View {
     private var connectionModeCard: some View {
         PCSectionCard(
             title: "Connection Mode",
-            subtitle: "Prefer USB for stability while preserving true Wi-Fi availability detection.",
+            subtitle: "Choose how PathChanger connects to the selected device.",
             icon: "point.3.connected.trianglepath.dotted"
         ) {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
@@ -128,7 +137,7 @@ struct SettingsView: View {
         if !appState.isTunneldRunning && !appState.isUSBConnected && !appState.isWiFiAvailable {
             PCStatusChip(title: "No Connection", icon: "exclamationmark.triangle.fill", color: .pcWarning, detail: "connect USB or start tunnel")
         } else if appState.preferUSBConnection && appState.isUSBConnected {
-            PCStatusChip(title: "USB Preferred", icon: "checkmark.circle.fill", color: .pcSecondary, detail: "using cable")
+            PCStatusChip(title: "Using USB", icon: "checkmark.circle.fill", color: .pcSecondary, detail: "cable connected")
         } else if appState.selectedDevice?.connectionType == .usb {
             PCStatusChip(title: "USB", icon: "cable.connector", color: .pcPrimary, detail: appState.isTunneldRunning ? "active tunnel" : "direct")
         } else if appState.selectedDevice?.connectionType == .wifi {
@@ -141,7 +150,7 @@ struct SettingsView: View {
     private var tunnelModeCard: some View {
         PCSectionCard(
             title: "Tunnel Mode",
-            subtitle: "iOS 17+ communication through pymobiledevice3 tunnels.",
+            subtitle: "Connect to iOS devices through the selected tunnel transport.",
             icon: "network",
             badge: "iOS 17+"
         ) {
@@ -155,7 +164,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
 
                 Text(tunneldManager.preferredMode.description)
-                    .font(AppFont.caption)
+                    .font(AppFont.metadata)
                     .foregroundStyle(Color.pcTextMuted)
 
                 HStack(spacing: AppSpacing.md) {
@@ -168,14 +177,13 @@ struct SettingsView: View {
                             .frame(width: 8, height: 8)
                     }
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                         Text(tunneldStatusText)
                             .font(AppFont.body)
-                            .fontWeight(.semibold)
                             .foregroundStyle(Color.pcText)
                         if let message = tunneldManager.statusMessage {
                             Text(message)
-                                .font(AppFont.caption)
+                                .font(AppFont.metadata)
                                 .foregroundStyle(Color.pcTextMuted)
                         }
                     }
@@ -201,7 +209,11 @@ struct SettingsView: View {
                     }
                 }
                 .padding(AppSpacing.md)
-                .background(Color.pcSurfaceHigh.opacity(0.5), in: RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous))
+                .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                )
 
                 if let info = tunneldManager.tunnelInfo {
                     VStack(alignment: .leading, spacing: AppSpacing.xs) {
@@ -219,7 +231,7 @@ struct SettingsView: View {
 
                 if let error = tunneldManager.lastError {
                     Text(error)
-                        .font(AppFont.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcWarning)
                         .padding(AppSpacing.md)
                         .background(Color.pcWarning.opacity(0.1), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
@@ -231,9 +243,196 @@ struct SettingsView: View {
                     Label("Daemon mode: Background service, auto-discovers devices", systemImage: "server.rack")
                     Label("Requires administrator privileges", systemImage: "lock.shield")
                 }
-                .font(AppFont.caption)
+                .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
             }
+        }
+    }
+
+    /// Wi-Fi pairing card. Visible only when the user is targeting Wi-Fi mode
+    /// (preferredMode == .wifi or .auto). Surfaces:
+    ///   1. Whether any iPhone is currently advertising over Bonjour ("Probe").
+    ///   2. A "Pair Over Wi-Fi" button that drives `scripts/pair_wifi.py` with
+    ///      administrator privileges (30s Bonjour browse + iPhone-side prompt).
+    ///   3. The most recent script output, so users can diagnose failures
+    ///      without leaving the app.
+    @ViewBuilder
+    private var wifiPairingCard: some View {
+        if tunneldManager.preferredMode == .wifi || tunneldManager.preferredMode == .auto {
+            PCSectionCard(
+                title: "Wi-Fi Pairing",
+                subtitle: "Required once per Mac before WiFi-mode tunnels can connect.",
+                icon: "wifi.router",
+                badge: "iOS 17+"
+            ) {
+                VStack(alignment: .leading, spacing: AppSpacing.md) {
+                    bonjourProbeRow
+                    pairButtonRow
+                    if !tunneldManager.wifiPairingLog.isEmpty {
+                        pairScriptLogView
+                    }
+                    pairInstructions
+                }
+            }
+        }
+    }
+
+    private var bonjourProbeRow: some View {
+        HStack(alignment: .center, spacing: AppSpacing.md) {
+            Image(systemName: bonjourStatusIcon)
+                .font(.system(size: 18))
+                .foregroundStyle(bonjourStatusColor)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
+                Text(bonjourStatusTitle)
+                    .font(AppFont.body)
+                    .foregroundStyle(Color.pcText)
+                Text(bonjourStatusSubtitle)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
+            }
+
+            Spacer()
+
+            Button {
+                Task { await tunneldManager.probeBonjourWiFiDevices() }
+            } label: {
+                if tunneldManager.bonjourProbeInProgress {
+                    ProgressView().scaleEffect(0.7)
+                } else {
+                    Label("Probe", systemImage: "antenna.radiowaves.left.and.right")
+                }
+            }
+            .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
+            .disabled(tunneldManager.bonjourProbeInProgress)
+        }
+        .padding(AppSpacing.md)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+        )
+    }
+
+    private var pairButtonRow: some View {
+        HStack(alignment: .center, spacing: AppSpacing.md) {
+            Image(systemName: "key.horizontal")
+                .font(.system(size: 18))
+                .foregroundStyle(Color.pcAccent)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
+                Text("Pair this Mac with the iPhone over Wi-Fi")
+                    .font(AppFont.body)
+                    .foregroundStyle(Color.pcText)
+                Text(pairButtonSubtitle)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Button {
+                Task { _ = await tunneldManager.pairOverWiFi() }
+            } label: {
+                if tunneldManager.wifiPairingInProgress {
+                    HStack(spacing: AppSpacing.xs) {
+                        ProgressView().scaleEffect(0.65)
+                        Text("Pairing…")
+                    }
+                } else {
+                    Label("Pair Over Wi-Fi", systemImage: "wifi")
+                }
+            }
+            .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
+            .disabled(tunneldManager.wifiPairingInProgress)
+        }
+        .padding(AppSpacing.md)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+        )
+    }
+
+    private var pairScriptLogView: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            Text("Pairing log")
+                .font(AppFont.label)
+                .foregroundStyle(Color.pcTextMuted)
+            ScrollView {
+                Text(tunneldManager.wifiPairingLog)
+                    .font(AppFont.monoSmall)
+                    .foregroundStyle(Color.pcText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(AppSpacing.sm)
+            }
+            .frame(maxHeight: 160)
+            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
+        }
+    }
+
+    private var pairInstructions: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            Label("On the iPhone, enable Settings → Privacy & Security → Developer Mode", systemImage: "hammer")
+            Label("Settings → Developer → \u{201C}Pair Wirelessly\u{201D} (toggle name varies by iOS version)", systemImage: "wifi.circle")
+            Label("iPhone must be UNLOCKED and on the same Wi-Fi as this Mac", systemImage: "lock.open")
+            Label("You will be prompted for an administrator password and then for confirmation on the iPhone", systemImage: "checkmark.seal")
+        }
+        .font(AppFont.metadata)
+        .foregroundStyle(Color.pcTextMuted)
+    }
+
+    // MARK: WiFi Pairing Helpers
+
+    private var bonjourStatusIcon: String {
+        if tunneldManager.bonjourProbeInProgress { return "clock" }
+        return tunneldManager.bonjourVisibleUDIDs.isEmpty ? "questionmark.circle" : "wifi"
+    }
+
+    private var bonjourStatusColor: Color {
+        if tunneldManager.bonjourProbeInProgress { return .pcTextMuted }
+        return tunneldManager.bonjourVisibleUDIDs.isEmpty ? .pcWarning : .pcSecondary
+    }
+
+    private var bonjourStatusTitle: String {
+        if tunneldManager.bonjourProbeInProgress {
+            return "Probing local network…"
+        }
+        let count = tunneldManager.bonjourVisibleUDIDs.count
+        if count == 0 {
+            return "No iPhones currently visible over Bonjour"
+        }
+        return "\(count) iPhone(s) visible over Bonjour"
+    }
+
+    private var bonjourStatusSubtitle: String {
+        if tunneldManager.bonjourProbeInProgress {
+            return "Looking for `_remotepairing._tcp` services on this Wi-Fi…"
+        }
+        if tunneldManager.bonjourVisibleUDIDs.isEmpty {
+            return "Click \u{201C}Probe\u{201D} to scan, or pair the iPhone first."
+        }
+        return tunneldManager.bonjourVisibleUDIDs.prefix(2).joined(separator: ", ")
+            + (tunneldManager.bonjourVisibleUDIDs.count > 2 ? ", …" : "")
+    }
+
+    private var pairButtonSubtitle: String {
+        switch tunneldManager.lastWiFiPairingResult {
+        case .success(let count):
+            return "Last attempt succeeded (\(count) device(s) paired)."
+        case .noDevicesFound:
+            return "Last attempt found no _remotepairing-manual-pairing instances. Enable wireless pairing on the iPhone and retry."
+        case .scriptError(let message):
+            return "Last attempt failed: \(message)"
+        case .userCancelled:
+            return "Pairing was cancelled. You can retry anytime."
+        case .scriptMissing:
+            return "pair_wifi.py is missing from the app bundle. Reinstall PathChanger."
+        case .none:
+            return "Runs scripts/pair_wifi.py with admin privileges; iPhone will prompt for confirmation."
         }
     }
 
@@ -300,18 +499,18 @@ struct SettingsView: View {
                     ShortcutRow(shortcut: "⌘K", description: "Clear current location")
                     ShortcutRow(shortcut: "⌘R", description: "Refresh device list")
                 }
-                Divider().overlay(Color.white.opacity(0.08))
+                Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
                 ShortcutGroup(title: "Simulation") {
                     ShortcutRow(shortcut: "⌘Space", description: "Start simulation")
                     ShortcutRow(shortcut: "⌘P", description: "Pause simulation")
                     ShortcutRow(shortcut: "⌘Esc", description: "Stop simulation")
                 }
-                Divider().overlay(Color.white.opacity(0.08))
+                Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
                 ShortcutGroup(title: "Navigation") {
                     ShortcutRow(shortcut: "⌘⇧S", description: "Toggle sidebar")
                     ShortcutRow(shortcut: "⌘,", description: "Open settings")
                 }
-                Divider().overlay(Color.white.opacity(0.08))
+                Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
                 ShortcutGroup(title: "Speed Control") {
                     ShortcutRow(shortcut: "⌘⌥↑", description: "Increase simulation speed")
                     ShortcutRow(shortcut: "⌘⌥↓", description: "Decrease simulation speed")
@@ -321,7 +520,7 @@ struct SettingsView: View {
     }
 
     private var troubleshootingCard: some View {
-        PCSectionCard(title: "Troubleshooting", subtitle: "Check Python, tunnel, device, and injection status.", icon: "stethoscope") {
+        PCSectionCard(title: "Troubleshooting", subtitle: "Check required tools, device access, and tunnel status.", icon: "stethoscope") {
             Button {
                 showDiagnostics = true
             } label: {
@@ -342,8 +541,8 @@ struct SettingsView: View {
                 }
 
                 SettingsLine(title: "iOS Support") {
-                    Text("Attempts all versions; newer iOS may need pymobiledevice3 updates")
-                        .font(AppFont.caption)
+                    Text("Attempts newer iOS versions when support tools allow it")
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                         .multilineTextAlignment(.trailing)
                 }
@@ -353,182 +552,6 @@ struct SettingsView: View {
                         .foregroundStyle(Color.pcPrimary)
                 }
             }
-        }
-    }
-
-    // MARK: - Tunnel Section (Multi-Mode Support)
-
-    private var tunneldSection: some View {
-        Section("Tunnel (iOS 17+ Device Communication)") {
-            // Tunnel Mode Picker
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Tunnel Mode")
-                    .font(.headline)
-
-                Picker("Mode", selection: $tunneldManager.preferredMode) {
-                    ForEach(TunnelMode.allCases) { mode in
-                        HStack {
-                            Image(systemName: iconForTunnelMode(mode))
-                            Text(mode.rawValue)
-                        }
-                        .tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                // Mode description
-                Text(tunneldManager.preferredMode.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 4)
-
-            // Status indicator with start/stop controls
-            HStack {
-                // Status indicator
-                HStack(spacing: 8) {
-                    if tunneldManager.isStarting {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                            .frame(width: 10, height: 10)
-                    } else {
-                        Circle()
-                            .fill(tunneldManager.isRunning ? Color.green : Color.red)
-                            .frame(width: 10, height: 10)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(tunneldStatusText)
-                                .fontWeight(.medium)
-                            if let mode = tunneldManager.activeMode {
-                                Text("(\(mode.rawValue))")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        if let message = tunneldManager.statusMessage {
-                            Text(message)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                // Control buttons
-                if tunneldManager.isRunning {
-                    Button("Stop") {
-                        tunneldManager.stopTunnel()
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                } else if tunneldManager.isStarting {
-                    Button("Starting...") { }
-                        .buttonStyle(.bordered)
-                        .disabled(true)
-                } else {
-                    Button("Start") {
-                        Task {
-                            await tunneldManager.startTunnel()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-
-            // RSD Connection Info (if available)
-            if let info = tunneldManager.tunnelInfo {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Image(systemName: "network")
-                            .foregroundColor(.blue)
-                        Text("RSD Address: \(info.rsdAddress)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Image(systemName: "number")
-                            .foregroundColor(.blue)
-                        Text("Port: \(info.rsdPort)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    if let interface = info.interface {
-                        HStack {
-                            Image(systemName: "antenna.radiowaves.left.and.right")
-                                .foregroundColor(.blue)
-                            Text("Interface: \(interface)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-
-            // Auto-start toggle
-            Toggle(isOn: $autoStartTunneld) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Auto-start tunnel on app launch")
-                    Text("Automatically manages the tunnel lifecycle")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Error display
-            if let error = tunneldManager.lastError {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            // Info about tunnel modes
-            VStack(alignment: .leading, spacing: 8) {
-                Label {
-                    Text("USB mode: Fastest, requires USB cable")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } icon: {
-                    Image(systemName: "cable.connector")
-                        .foregroundColor(.blue)
-                }
-
-                Label {
-                    Text("WiFi mode: True wireless, device must be on same network")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } icon: {
-                    Image(systemName: "wifi")
-                        .foregroundColor(.blue)
-                }
-
-                Label {
-                    Text("Daemon mode: Background service, auto-discovers devices")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } icon: {
-                    Image(systemName: "server.rack")
-                        .foregroundColor(.blue)
-                }
-
-                Label {
-                    Text("Requires administrator privileges")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } icon: {
-                    Image(systemName: "lock.shield")
-                        .foregroundColor(.orange)
-                }
-            }
-            .padding(.top, 4)
         }
     }
 
@@ -547,102 +570,7 @@ struct SettingsView: View {
         } else if tunneldManager.isRunning {
             return "Running"
         } else {
-            return "Not Running"
-        }
-    }
-
-    // MARK: - Connection Mode Section
-
-    private var connectionModeSection: some View {
-        Section("Connection Mode") {
-            // Connection Mode Picker
-            Picker("Preferred Connection", selection: Binding(
-                get: { appState.deviceManager.connectionMode },
-                set: { appState.deviceManager.setConnectionMode($0) }
-            )) {
-                ForEach(DeviceManager.ConnectionMode.allCases, id: \.self) { mode in
-                    HStack {
-                        Image(systemName: iconForMode(mode))
-                        Text(mode.rawValue)
-                    }
-                    .tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            // Connection Status Indicators
-            HStack(spacing: 16) {
-                ConnectionStatusBadge(
-                    title: "USB",
-                    isConnected: appState.isUSBConnected,
-                    icon: "cable.connector"
-                )
-
-                ConnectionStatusBadge(
-                    title: "Wi-Fi",
-                    isConnected: appState.isWiFiAvailable,
-                    icon: "wifi"
-                )
-            }
-            .padding(.vertical, 8)
-
-            // Prefer USB Toggle
-            Toggle(isOn: $appState.preferUSBConnection) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Prefer USB when available")
-                    Text("USB connection is more stable but requires a cable")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Fallback Information
-            if !appState.isTunneldRunning && !appState.isUSBConnected && !appState.isWiFiAvailable {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                    Text("No connection available. Connect via USB or start a tunnel.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.preferUSBConnection && appState.isUSBConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Using USB connection (preferred)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.selectedDevice?.connectionType == .usb {
-                HStack {
-                    Image(systemName: "cable.connector")
-                        .foregroundColor(.blue)
-                    Text(appState.isTunneldRunning ? "Using USB connection via active tunnel" : "Using USB connection")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.selectedDevice?.connectionType == .wifi {
-                HStack {
-                    Image(systemName: "wifi")
-                        .foregroundColor(.blue)
-                    Text(appState.isTunneldRunning ? "Using Wi-Fi connection via active tunnel" : "Wi-Fi device available")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.isTunneldRunning {
-                HStack {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                        .foregroundColor(.green)
-                    Text("Tunnel active")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
+            return "Tunnel inactive"
         }
     }
 
@@ -654,91 +582,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Advanced Settings Section
-
-    private var advancedSection: some View {
-        Section("Advanced") {
-            HStack {
-                Text("Command Timeout")
-                Spacer()
-                Picker("", selection: Binding(
-                    get: { AppSettings.shared.commandTimeout },
-                    set: { AppSettings.shared.commandTimeout = $0 }
-                )) {
-                    Text("15 seconds").tag(15.0)
-                    Text("30 seconds").tag(30.0)
-                    Text("45 seconds").tag(45.0)
-                    Text("60 seconds").tag(60.0)
-                }
-                .frame(width: 150)
-            }
-
-            HStack {
-                Text("Tunnel Start Timeout")
-                Spacer()
-                Picker("", selection: Binding(
-                    get: { AppSettings.shared.tunnelTimeout },
-                    set: { AppSettings.shared.tunnelTimeout = $0 }
-                )) {
-                    Text("30 seconds").tag(30.0)
-                    Text("45 seconds").tag(45.0)
-                    Text("60 seconds").tag(60.0)
-                    Text("90 seconds").tag(90.0)
-                }
-                .frame(width: 150)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("These timeouts control how long the app waits for device communication.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text("Increase if you experience timeout errors on slow connections.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-
-    // MARK: - Keyboard Shortcuts Section
-
-    private var keyboardShortcutsSection: some View {
-        Section("Keyboard Shortcuts") {
-            VStack(alignment: .leading, spacing: 16) {
-                // Location Commands
-                ShortcutGroup(title: "Location") {
-                    ShortcutRow(shortcut: "⌘L", description: "Set location at current coordinates")
-                    ShortcutRow(shortcut: "⌘K", description: "Clear current location")
-                    ShortcutRow(shortcut: "⌘R", description: "Refresh device list")
-                }
-
-                Divider()
-
-                // Simulation Commands
-                ShortcutGroup(title: "Simulation") {
-                    ShortcutRow(shortcut: "⌘Space", description: "Start simulation")
-                    ShortcutRow(shortcut: "⌘P", description: "Pause simulation")
-                    ShortcutRow(shortcut: "⌘Esc", description: "Stop simulation")
-                }
-
-                Divider()
-
-                // Navigation Commands
-                ShortcutGroup(title: "Navigation") {
-                    ShortcutRow(shortcut: "⌘⇧S", description: "Toggle sidebar")
-                    ShortcutRow(shortcut: "⌘,", description: "Open settings")
-                }
-
-                Divider()
-
-                // Speed Control Commands
-                ShortcutGroup(title: "Speed Control") {
-                    ShortcutRow(shortcut: "⌘⌥↑", description: "Increase simulation speed")
-                    ShortcutRow(shortcut: "⌘⌥↓", description: "Decrease simulation speed")
-                }
-            }
-            .padding(.vertical, 8)
-        }
-    }
 }
 
 // MARK: - Settings Helper Views
@@ -762,7 +605,7 @@ struct SettingsLine<Trailing: View>: View {
                     .foregroundStyle(Color.pcText)
                 if let subtitle {
                     Text(subtitle)
-                        .font(AppFont.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -773,10 +616,10 @@ struct SettingsLine<Trailing: View>: View {
             trailing
         }
         .padding(AppSpacing.md)
-        .background(Color.pcSurfaceHigh.opacity(0.38), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
     }
 }
@@ -787,26 +630,25 @@ struct ConnectionStatusBadge: View {
     let icon: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppSpacing.sm) {
             Image(systemName: icon)
-                .foregroundColor(isConnected ? .pcSecondary : .pcTextMuted)
+                .foregroundColor(.pcTextMuted)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text(title)
-                    .font(.caption)
-                    .fontWeight(.medium)
+                    .font(AppFont.label)
                     .foregroundStyle(Color.pcText)
                 Text(isConnected ? "Available" : "Unavailable")
-                    .font(.caption2)
+                    .font(AppFont.metadata)
                     .foregroundColor(isConnected ? .pcSecondary : .pcTextMuted)
             }
         }
         .padding(AppSpacing.sm)
-        .background(isConnected ? Color.pcSecondary.opacity(0.1) : Color.pcSurfaceHigh.opacity(0.35))
+        .background(isConnected ? Color.pcSecondary.opacity(AppSurfaceAlpha.idleRow) : Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
         .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(isConnected ? Color.pcSecondary.opacity(0.24) : Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(isConnected ? Color.pcSecondary.opacity(AppSurfaceAlpha.hoverRow) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
     }
 }
@@ -819,13 +661,12 @@ struct ShortcutGroup<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             Text(title)
                 .font(AppFont.labelCaps)
-                .fontWeight(.semibold)
-                .foregroundColor(.pcPrimary)
+                .foregroundColor(.pcTextMuted)
                 .textCase(.uppercase)
-                .tracking(1.4)
+                .tracking(0.7)
 
             content()
         }
@@ -840,13 +681,12 @@ struct ShortcutRow: View {
     var body: some View {
         HStack {
             Text(shortcut)
-                .font(.system(.body, design: .monospaced))
-                .fontWeight(.medium)
-                .foregroundColor(.pcPrimary)
+                .font(AppFont.monoSmall)
+                .foregroundColor(.pcText)
                 .frame(width: 80, alignment: .leading)
 
             Text(description)
-                .font(.callout)
+                .font(AppFont.body)
                 .foregroundColor(.pcTextMuted)
 
             Spacer()

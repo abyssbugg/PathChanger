@@ -1,297 +1,325 @@
 #!/usr/bin/env python3
 """
-Persistent Location Bridge for PathChanger
+Persistent Location Bridge for PathChanger (pymobiledevice3 9.x API)
 
-This script maintains a persistent connection to iOS devices for efficient
-location injection. It reads JSON commands from stdin and writes JSON
-responses to stdout.
+Maintains a persistent asyncio event loop and a cached DVT/LocationSimulation
+session per device, so high-frequency callers (Multi-Spot route playback,
+Joystick) get ~10-20 ms per location update instead of ~5-15 s per fresh
+subprocess.
 
-Protocol:
-    Request:  {"cmd": "set_location", "lat": 37.785834, "lng": -122.406417, "udid": "DEVICE_UDID", "rsd_address": null, "rsd_port": null}
-    Response: {"success": true} or {"success": false, "error": "message"}
+Protocol (JSON over stdin/stdout, one object per line):
+    Request:  {"cmd": "set_location", "lat": 37.78, "lng": -122.40,
+               "udid": "<UDID>",
+               "rsd_address": "fd8a:8bb8::1", "rsd_port": 12345}
+    Response: {"success": true} or {"success": false, "error": "..."}
 
-Commands:
-    - set_location: Set simulated location on device
-    - ping: Health check
-    - quit: Graceful shutdown
+Commands: set_location, clear_location, ping, quit
 
-Security:
-    - Input validation on all JSON fields
-    - No arbitrary command execution
-    - Rate limiting handled by Swift layer
+The pmd3 9.x DVT API moved to async context managers:
+    async with RemoteServiceDiscoveryService((addr, port)) as rsd, \\
+               DvtProvider(rsd) as dvt, \\
+               LocationSimulation(dvt) as ls:
+        await ls.set(lat, lng)
+
+This bridge keeps those async context managers OPEN across calls by manually
+driving __aenter__ / __aexit__ on a long-lived asyncio loop.
 """
 
-import sys
+import asyncio
 import json
 import signal
-import traceback
-from typing import Optional, Tuple
-from contextlib import contextmanager
+import sys
+import threading
+from typing import Any, Optional, Tuple
 
-# Graceful shutdown flag
+# --- Lazy imports ---------------------------------------------------------
+#
+# pmd3 import paths changed between 8.x and 9.x. We import lazily so the
+# bridge can still send useful error responses if pmd3 isn't installed.
+_IMPORT_ERROR: Optional[str] = None
+DvtProvider = None  # type: ignore
+LocationSimulation = None  # type: ignore
+RemoteServiceDiscoveryService = None  # type: ignore
+create_using_usbmux = None  # type: ignore
+
+
+def _lazy_import() -> bool:
+    """Import pmd3 9.x symbols. Returns True on success."""
+    global _IMPORT_ERROR, DvtProvider, LocationSimulation
+    global RemoteServiceDiscoveryService, create_using_usbmux
+    if DvtProvider is not None:
+        return True
+    try:
+        from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+            DvtProvider as _DvtProvider,
+        )
+        from pymobiledevice3.services.dvt.instruments.location_simulation import (
+            LocationSimulation as _LocationSimulation,
+        )
+        from pymobiledevice3.remote.remote_service_discovery import (
+            RemoteServiceDiscoveryService as _RSD,
+        )
+        from pymobiledevice3.lockdown import (
+            create_using_usbmux as _create_using_usbmux,
+        )
+        DvtProvider = _DvtProvider
+        LocationSimulation = _LocationSimulation
+        RemoteServiceDiscoveryService = _RSD
+        create_using_usbmux = _create_using_usbmux
+        return True
+    except Exception as exc:
+        _IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+        return False
+
+
+# --- Async session cache --------------------------------------------------
+
+class _CachedSession:
+    """Wraps the three async context managers we need for one device.
+
+    We hold the entered values so we can call .set()/.clear() repeatedly
+    without re-doing the (slow) DVT handshake. On error or shutdown we
+    invoke __aexit__ in reverse order to release resources cleanly.
+    """
+
+    def __init__(self) -> None:
+        self.rsd: Any = None
+        self.dvt_cm: Any = None
+        self.dvt: Any = None
+        self.ls_cm: Any = None
+        self.ls: Any = None
+
+    async def open(
+        self,
+        udid: str,
+        rsd_address: Optional[str],
+        rsd_port: Optional[int],
+    ) -> None:
+        if rsd_address and rsd_port:
+            self.rsd = RemoteServiceDiscoveryService((rsd_address, int(rsd_port)))
+            await self.rsd.connect()
+            service_provider = self.rsd
+        else:
+            # USB-only fallback path; on iOS 17+ this normally fails because
+            # DVT requires the lockdown tunnel, but we keep it for older OSes.
+            service_provider = create_using_usbmux(serial=udid)
+
+        self.dvt_cm = DvtProvider(service_provider)
+        self.dvt = await self.dvt_cm.__aenter__()
+        self.ls_cm = LocationSimulation(self.dvt)
+        self.ls = await self.ls_cm.__aenter__()
+
+    async def close(self) -> None:
+        # Reverse order of opens; swallow errors so one bad close doesn't
+        # stop the others.
+        for cm in (self.ls_cm, self.dvt_cm):
+            if cm is not None:
+                try:
+                    await cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
+        if self.rsd is not None:
+            try:
+                await self.rsd.close()
+            except Exception:
+                pass
+        self.rsd = self.dvt_cm = self.dvt = self.ls_cm = self.ls = None
+
+
+class AsyncBridge:
+    """Keeps one cached _CachedSession per (udid, rsd_address, rsd_port)."""
+
+    def __init__(self) -> None:
+        self._cache: dict[Tuple[str, Optional[str], Optional[int]], _CachedSession] = {}
+
+    async def _get(
+        self,
+        udid: str,
+        rsd_address: Optional[str],
+        rsd_port: Optional[int],
+    ) -> _CachedSession:
+        key = (udid, rsd_address, rsd_port)
+        sess = self._cache.get(key)
+        if sess is not None:
+            return sess
+        sess = _CachedSession()
+        try:
+            await sess.open(udid, rsd_address, rsd_port)
+        except Exception:
+            # Don't pollute the cache with a half-open session.
+            await sess.close()
+            raise
+        self._cache[key] = sess
+        return sess
+
+    async def _drop(
+        self,
+        udid: str,
+        rsd_address: Optional[str],
+        rsd_port: Optional[int],
+    ) -> None:
+        key = (udid, rsd_address, rsd_port)
+        sess = self._cache.pop(key, None)
+        if sess is not None:
+            await sess.close()
+
+    async def set_location(
+        self,
+        lat: float,
+        lng: float,
+        udid: str,
+        rsd_address: Optional[str],
+        rsd_port: Optional[int],
+    ) -> dict:
+        try:
+            sess = await self._get(udid, rsd_address, rsd_port)
+            await sess.ls.set(lat, lng)
+            return {"success": True}
+        except Exception as exc:
+            # On error, drop the cached session so the next call reconnects.
+            await self._drop(udid, rsd_address, rsd_port)
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    async def clear_location(
+        self,
+        udid: str,
+        rsd_address: Optional[str],
+        rsd_port: Optional[int],
+    ) -> dict:
+        try:
+            sess = await self._get(udid, rsd_address, rsd_port)
+            await sess.ls.clear()
+            return {"success": True}
+        except Exception as exc:
+            await self._drop(udid, rsd_address, rsd_port)
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    async def close_all(self) -> None:
+        for sess in list(self._cache.values()):
+            try:
+                await sess.close()
+            except Exception:
+                pass
+        self._cache.clear()
+
+
+# --- Validation ----------------------------------------------------------
+
+def _validate_request(request: Any) -> Tuple[bool, str]:
+    if not isinstance(request, dict):
+        return False, "Request must be a JSON object"
+    cmd = request.get("cmd")
+    if cmd not in ("set_location", "clear_location", "ping", "quit"):
+        return False, f"Unknown command: {cmd!r}"
+    if cmd in ("set_location", "clear_location"):
+        udid = request.get("udid")
+        if not isinstance(udid, str) or not udid:
+            return False, "Missing or invalid 'udid' field"
+    if cmd == "set_location":
+        try:
+            lat = float(request.get("lat"))
+            lng = float(request.get("lng"))
+        except (TypeError, ValueError):
+            return False, "Invalid coordinates"
+        if not (-90.0 <= lat <= 90.0):
+            return False, "Latitude out of range"
+        if not (-180.0 <= lng <= 180.0):
+            return False, "Longitude out of range"
+    return True, ""
+
+
+# --- Main loop -----------------------------------------------------------
+
 _shutdown_requested = False
 
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
+def _signal_handler(signum, frame):  # noqa: ARG001
     global _shutdown_requested
     _shutdown_requested = True
 
 
-# Register signal handlers
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 
-class DeviceConnection:
-    """Manages cached connection to a device's DVT service."""
-    
-    def __init__(self):
-        self._service_cache: dict = {}
-        self._dvt_module = None
-        self._lockdown_module = None
-        self._tunnel_module = None
-        self._initialized = False
-    
-    def _lazy_import(self):
-        """Import pymobiledevice3 modules lazily to avoid import errors on startup."""
-        if self._initialized:
-            return True
-            
-        try:
-            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-            from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-            from pymobiledevice3.lockdown import create_using_usbmux, create_using_tcp
-            from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-            
-            self._dvt_module = DvtSecureSocketProxyService
-            self._location_module = LocationSimulation
-            self._lockdown_usb = create_using_usbmux
-            self._lockdown_tcp = create_using_tcp
-            self._rsd_module = RemoteServiceDiscoveryService
-            self._initialized = True
-            return True
-        except ImportError as e:
-            return False
-    
-    def _get_or_create_service(self, udid: str, rsd_address: Optional[str], rsd_port: Optional[int]) -> Tuple[any, any]:
-        """Get cached DVT service or create new one."""
-        cache_key = f"{udid}:{rsd_address}:{rsd_port}"
-        
-        if cache_key in self._service_cache:
-            cached = self._service_cache[cache_key]
-            # Check if service is still valid
-            try:
-                # Test connection by accessing a property
-                if cached['dvt'] is not None:
-                    return cached['dvt'], cached['location']
-            except:
-                # Connection dead, remove from cache
-                del self._service_cache[cache_key]
-        
-        # Create new connection
-        try:
-            if rsd_address and rsd_port:
-                # WiFi/tunnel connection via RSD
-                rsd = self._rsd_module((rsd_address, rsd_port))
-                rsd.connect()
-                dvt = self._dvt_module(rsd)
-            else:
-                # USB connection
-                lockdown = self._lockdown_usb(serial=udid)
-                dvt = self._dvt_module(lockdown=lockdown)
-            
-            dvt.perform_handshake()
-            location_service = self._location_module(dvt)
-            
-            self._service_cache[cache_key] = {
-                'dvt': dvt,
-                'location': location_service,
-                'rsd': rsd if rsd_address else None
-            }
-            
-            return dvt, location_service
-        except Exception as e:
-            raise RuntimeError(f"Failed to connect to device: {str(e)}")
-    
-    def set_location(self, lat: float, lng: float, udid: str, 
-                     rsd_address: Optional[str] = None, 
-                     rsd_port: Optional[int] = None) -> dict:
-        """Set simulated location on device."""
-        if not self._lazy_import():
-            return {"success": False, "error": "pymobiledevice3 not installed"}
-        
-        try:
-            dvt, location_service = self._get_or_create_service(udid, rsd_address, rsd_port)
-            location_service.simulate_location(lat, lng)
-            return {"success": True}
-        except Exception as e:
-            # Clear cache on error to force reconnection
-            cache_key = f"{udid}:{rsd_address}:{rsd_port}"
-            if cache_key in self._service_cache:
-                del self._service_cache[cache_key]
-            return {"success": False, "error": str(e)}
-    
-    def clear_location(self, udid: str, 
-                       rsd_address: Optional[str] = None, 
-                       rsd_port: Optional[int] = None) -> dict:
-        """Clear simulated location on device."""
-        if not self._lazy_import():
-            return {"success": False, "error": "pymobiledevice3 not installed"}
-        
-        try:
-            dvt, location_service = self._get_or_create_service(udid, rsd_address, rsd_port)
-            location_service.clear_simulated_location()
-            return {"success": True}
-        except Exception as e:
-            # Clear cache on error
-            cache_key = f"{udid}:{rsd_address}:{rsd_port}"
-            if cache_key in self._service_cache:
-                del self._service_cache[cache_key]
-            return {"success": False, "error": str(e)}
-    
-    def close_all(self):
-        """Close all cached connections."""
-        for cache_key, cached in list(self._service_cache.items()):
-            try:
-                if cached.get('rsd'):
-                    cached['rsd'].close()
-                if cached.get('dvt'):
-                    cached['dvt'].close()
-            except:
-                pass
-        self._service_cache.clear()
-
-
-def validate_coordinate(value: any) -> Optional[float]:
-    """Validate and convert coordinate value."""
-    if value is None:
-        return None
-    try:
-        coord = float(value)
-        if coord != coord:  # NaN check
-            return None
-        return coord
-    except (TypeError, ValueError):
-        return None
-
-
-def validate_request(request: dict) -> Tuple[bool, str]:
-    """Validate incoming request structure."""
-    if not isinstance(request, dict):
-        return False, "Request must be a JSON object"
-    
-    cmd = request.get("cmd")
-    if not cmd:
-        return False, "Missing 'cmd' field"
-    
-    if cmd not in ("set_location", "clear_location", "ping", "quit"):
-        return False, f"Unknown command: {cmd}"
-    
-    if cmd == "set_location":
-        lat = validate_coordinate(request.get("lat"))
-        lng = validate_coordinate(request.get("lng"))
-        if lat is None or lng is None:
-            return False, "Invalid coordinates"
-        if not (-90 <= lat <= 90):
-            return False, "Latitude must be between -90 and 90"
-        if not (-180 <= lng <= 180):
-            return False, "Longitude must be between -180 and 180"
-        
-        udid = request.get("udid")
-        if not udid or not isinstance(udid, str):
-            return False, "Missing or invalid 'udid' field"
-    
-    if cmd == "clear_location":
-        udid = request.get("udid")
-        if not udid or not isinstance(udid, str):
-            return False, "Missing or invalid 'udid' field"
-    
-    return True, ""
-
-
-def process_command(connection: DeviceConnection, request: dict) -> dict:
-    """Process a single command and return response."""
-    cmd = request.get("cmd")
-    
-    if cmd == "ping":
-        return {"success": True, "message": "pong"}
-    
-    if cmd == "quit":
-        global _shutdown_requested
-        _shutdown_requested = True
-        return {"success": True, "message": "shutting down"}
-    
-    if cmd == "set_location":
-        return connection.set_location(
-            lat=float(request["lat"]),
-            lng=float(request["lng"]),
-            udid=request["udid"],
-            rsd_address=request.get("rsd_address"),
-            rsd_port=request.get("rsd_port")
-        )
-    
-    if cmd == "clear_location":
-        return connection.clear_location(
-            udid=request["udid"],
-            rsd_address=request.get("rsd_address"),
-            rsd_port=request.get("rsd_port")
-        )
-    
-    return {"success": False, "error": "Unknown command"}
-
-
-def main():
-    """Main event loop - reads commands from stdin, writes responses to stdout."""
-    connection = DeviceConnection()
-    
-    # Signal ready status
-    sys.stdout.write(json.dumps({"ready": True}) + "\n")
+def _emit(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
-    
+
+
+async def _serve(bridge: AsyncBridge) -> None:
+    """Read NDJSON requests from stdin and write NDJSON responses to stdout."""
+    _emit({"ready": True})
+
+    loop = asyncio.get_running_loop()
+    while not _shutdown_requested:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            break  # EOF
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError as exc:
+            _emit({"success": False, "error": f"Invalid JSON: {exc}"})
+            continue
+
+        valid, msg = _validate_request(request)
+        if not valid:
+            _emit({"success": False, "error": msg})
+            continue
+
+        cmd = request["cmd"]
+
+        if cmd == "ping":
+            _emit({"success": True, "message": "pong"})
+            continue
+
+        if cmd == "quit":
+            _emit({"success": True, "message": "shutting down"})
+            break
+
+        if not _lazy_import():
+            _emit({
+                "success": False,
+                "error": f"pymobiledevice3 import failed: {_IMPORT_ERROR}",
+            })
+            continue
+
+        if cmd == "set_location":
+            result = await bridge.set_location(
+                lat=float(request["lat"]),
+                lng=float(request["lng"]),
+                udid=request["udid"],
+                rsd_address=request.get("rsd_address"),
+                rsd_port=request.get("rsd_port"),
+            )
+            _emit(result)
+            continue
+
+        if cmd == "clear_location":
+            result = await bridge.clear_location(
+                udid=request["udid"],
+                rsd_address=request.get("rsd_address"),
+                rsd_port=request.get("rsd_port"),
+            )
+            _emit(result)
+            continue
+
+        # Defense-in-depth: should be unreachable due to validation
+        _emit({"success": False, "error": f"Unhandled command: {cmd}"})
+
+    await bridge.close_all()
+
+
+def main() -> None:
+    bridge = AsyncBridge()
     try:
-        while not _shutdown_requested:
-            try:
-                line = sys.stdin.readline()
-                if not line:
-                    # EOF received
-                    break
-                
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Parse JSON request
-                try:
-                    request = json.loads(line)
-                except json.JSONDecodeError as e:
-                    response = {"success": False, "error": f"Invalid JSON: {str(e)}"}
-                    sys.stdout.write(json.dumps(response) + "\n")
-                    sys.stdout.flush()
-                    continue
-                
-                # Validate request
-                valid, error_msg = validate_request(request)
-                if not valid:
-                    response = {"success": False, "error": error_msg}
-                    sys.stdout.write(json.dumps(response) + "\n")
-                    sys.stdout.flush()
-                    continue
-                
-                # Process command
-                response = process_command(connection, request)
-                sys.stdout.write(json.dumps(response) + "\n")
-                sys.stdout.flush()
-                
-            except Exception as e:
-                # Don't crash on errors, log and continue
-                response = {"success": False, "error": f"Internal error: {str(e)}"}
-                sys.stdout.write(json.dumps(response) + "\n")
-                sys.stdout.flush()
-    
-    finally:
-        # Cleanup
-        connection.close_all()
+        asyncio.run(_serve(bridge))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

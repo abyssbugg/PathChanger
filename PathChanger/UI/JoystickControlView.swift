@@ -12,8 +12,8 @@ struct JoystickControlView: View {
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
 
-    private let outerRadius: CGFloat = 84
-    private let innerRadius: CGFloat = 28
+    private let outerRadius: CGFloat = 76
+    private let innerRadius: CGFloat = 24
 
     var body: some View {
         FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill") {
@@ -21,48 +21,31 @@ struct JoystickControlView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: AppSpacing.xs) {
                         Text("Manual movement")
-                            .font(AppFont.subheading)
+                            .font(AppFont.title)
                             .foregroundStyle(Color.pcText)
                         Text("Drag the control pad to stream direction updates")
-                            .font(AppFont.monoSmall)
+                            .font(AppFont.metadata)
                             .foregroundStyle(Color.pcTextMuted)
                     }
 
                     Spacer()
-
-                    PCStatusChip(
-                        title: appState.isSimulating ? "Active" : "Ready",
-                        icon: "dot.radiowaves.left.and.right",
-                        color: appState.isSimulating ? .pcSecondary : .pcPrimary
-                    )
                 }
                 ZStack {
                     Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.pcAccent.opacity(0.18),
-                                    Color.pcSurfaceHigh.opacity(0.72),
-                                    Color.pcSurface.opacity(0.85)
-                                ],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: outerRadius
-                            )
-                        )
+                        .fill(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow))
                         .frame(width: outerRadius * 2, height: outerRadius * 2)
                         .overlay(
                             Circle()
-                                .stroke(Color.pcAccent.opacity(0.22), lineWidth: 2)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
                         )
-                        .shadow(color: Color.pcAccent.opacity(0.12), radius: 18)
+                        .shadow(color: Color.black.opacity(0.08), radius: 4, y: 2)
 
                     Circle()
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: 1)
                         .frame(width: outerRadius * 1.45, height: outerRadius * 1.45)
 
                     Circle()
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: 1)
                         .frame(width: outerRadius * 0.82, height: outerRadius * 0.82)
 
                     Text("N").font(AppFont.monoSmall).foregroundStyle(Color.pcTextMuted)
@@ -75,23 +58,11 @@ struct JoystickControlView: View {
                         .offset(x: outerRadius - 13)
 
                     Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.pcPrimary, Color.pcAccent],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .fill(Color.pcAccent)
                         .frame(width: innerRadius * 2, height: innerRadius * 2)
-                        .shadow(color: Color.pcAccent.opacity(0.45), radius: 12)
                         .overlay(
                             Circle()
-                                .stroke(Color.white.opacity(0.25), lineWidth: 2)
-                        )
-                        .overlay(
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 5, height: 5)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
                         )
                         .offset(x: knobPosition.x + dragOffset.width, y: knobPosition.y + dragOffset.height)
                         .gesture(
@@ -127,10 +98,10 @@ struct JoystickControlView: View {
                 Text("Drag to move")
                     .font(AppFont.monoSmall)
                     .foregroundStyle(Color.pcTextMuted)
-                    .italic()
             }
-            .frame(width: 300)
+            .frame(width: 288)
         }
+        .frame(maxWidth: 360, alignment: .leading)
     }
 }
 
@@ -138,7 +109,7 @@ struct JoystickControlView: View {
 struct JoystickControlView_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.blue.opacity(0.2).ignoresSafeArea()
+            Color.pcBackground.ignoresSafeArea()
             JoystickControlView()
                 .environmentObject(AppState())
         }

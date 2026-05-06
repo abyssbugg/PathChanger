@@ -2,7 +2,7 @@
 //  VisualComponents.swift
 //  PathChanger
 //
-//  Shared reference-inspired visual components backed by the app design system
+//  Shared visual components backed by the app design system
 //
 
 import SwiftUI
@@ -14,41 +14,40 @@ struct PCStatusChip: View {
     var detail: String? = nil
 
     var body: some View {
-        HStack(spacing: AppSpacing.xs) {
+        HStack(spacing: AppSpacing.sm) {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
-                .shadow(color: color.opacity(0.45), radius: 6)
 
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(color)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(color.opacity(0.92))
             }
 
             Text(title)
-                .font(AppFont.monoSmall)
+                .font(AppFont.label)
                 .foregroundStyle(Color.pcText)
                 .textCase(.uppercase)
-                .tracking(1.6)
+                .tracking(0.6)
 
             if let detail {
                 Divider()
                     .frame(height: 12)
-                    .background(Color.white.opacity(0.16))
+                    .background(Color.pcOutline.opacity(0.65))
 
                 Text(detail)
-                    .font(AppFont.monoSmall)
+                    .font(AppFont.metadata)
                     .foregroundStyle(Color.pcTextMuted)
                     .lineLimit(1)
             }
         }
         .padding(.horizontal, AppSpacing.md)
-        .padding(.vertical, AppSpacing.xs)
-        .background(Color.pcSurface.opacity(0.72), in: Capsule())
+        .frame(minHeight: 28)
+        .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
         .overlay(
-            Capsule()
-                .stroke(color.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
     }
 }
@@ -62,35 +61,37 @@ struct PCSectionCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppSpacing.lg) {
-            HStack(alignment: .firstTextBaseline, spacing: AppSpacing.sm) {
+            HStack(alignment: .top, spacing: AppSpacing.sm) {
                 if let icon {
                     Image(systemName: icon)
-                        .foregroundStyle(Color.pcPrimary)
+                        .font(AppFont.label)
+                        .foregroundStyle(Color.pcTextMuted)
+                        .frame(width: 16)
                 }
 
-                VStack(alignment: .leading, spacing: AppSpacing.xs) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     HStack(spacing: AppSpacing.sm) {
                         Text(title)
-                            .font(AppFont.subheading)
+                            .font(AppFont.title)
                             .foregroundStyle(Color.pcText)
 
                         if let badge {
                             Text(badge)
-                                .font(AppFont.monoSmall)
-                                .foregroundStyle(Color.pcPrimary)
-                                .padding(.horizontal, AppSpacing.xs)
-                                .padding(.vertical, 2)
-                                .background(Color.pcPrimary.opacity(0.1), in: Capsule())
+                                .font(AppFont.metadata)
+                                .foregroundStyle(Color.pcTextMuted)
+                                .padding(.horizontal, AppSpacing.sm)
+                                .frame(height: 22)
+                                .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
                                 .overlay(
-                                    Capsule()
-                                        .stroke(Color.pcPrimary.opacity(0.22), lineWidth: 1)
+                                    RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
                                 )
                         }
                     }
 
                     if let subtitle {
                         Text(subtitle)
-                            .font(AppFont.caption)
+                            .font(AppFont.metadata)
                             .foregroundStyle(Color.pcTextMuted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -109,6 +110,7 @@ struct PCSectionCard<Content: View>: View {
 struct PCFieldShell<Content: View>: View {
     let label: String
     var prefix: String? = nil
+    var isFocused: Bool = false
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -119,8 +121,8 @@ struct PCFieldShell<Content: View>: View {
             HStack(spacing: AppSpacing.sm) {
                 if let prefix {
                     Text(prefix)
-                        .font(AppFont.monoSmall)
-                        .foregroundStyle(Color.pcPrimary)
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted)
                         .frame(width: 34, alignment: .leading)
                 }
 
@@ -129,11 +131,11 @@ struct PCFieldShell<Content: View>: View {
                     .foregroundStyle(Color.pcText)
             }
             .padding(.horizontal, AppSpacing.md)
-            .padding(.vertical, AppSpacing.sm)
-            .background(Color.pcSurfaceHigh.opacity(0.78), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+            .frame(minHeight: 32)
+            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                    .stroke(isFocused ? Color.pcAccent.opacity(0.6) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
             )
         }
     }

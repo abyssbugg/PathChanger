@@ -30,10 +30,10 @@ struct DiagnosticResult: Identifiable {
 
         var color: Color {
             switch self {
-            case .success: return .green
-            case .warning: return .orange
-            case .failure: return .red
-            case .checking: return .gray
+            case .success: return .pcSecondary
+            case .warning: return .pcWarning
+            case .failure: return .pcDanger
+            case .checking: return .pcTextMuted
             }
         }
     }
@@ -53,14 +53,15 @@ struct DiagnosticsView: View {
     @State private var showExportSuccess = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AppSpacing.md) {
             // Header
             HStack {
                 Image(systemName: "stethoscope")
-                    .font(.title2)
+                    .font(AppFont.heading)
+                    .foregroundStyle(Color.pcTextMuted)
                 Text("System Diagnostics")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                    .font(AppFont.title)
+                    .foregroundStyle(Color.pcText)
 
                 Spacer()
 
@@ -69,7 +70,7 @@ struct DiagnosticsView: View {
                 } label: {
                     Label(isExportingLogs ? "Exporting..." : "Export Logs", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                 .disabled(isExportingLogs)
 
                 Button {
@@ -77,25 +78,25 @@ struct DiagnosticsView: View {
                 } label: {
                     Label(isRunning ? "Running..." : "Run Diagnostics", systemImage: "play.fill")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 .disabled(isRunning)
             }
-
-            Divider()
+            Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
 
             // Results
             if results.isEmpty && !isRunning {
-                VStack(spacing: 12) {
+                VStack(spacing: AppSpacing.sm) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 48))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.pcTextMuted)
                     Text("Click 'Run Diagnostics' to check your setup")
-                        .foregroundColor(.secondary)
+                        .font(AppFont.body)
+                        .foregroundColor(.pcTextMuted)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: AppSpacing.sm) {
                         ForEach(results) { result in
                             DiagnosticResultRow(result: result)
                         }
@@ -106,7 +107,7 @@ struct DiagnosticsView: View {
 
             // Summary
             if !results.isEmpty {
-                Divider()
+                Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
 
                 let failures = results.filter { $0.status == .failure }.count
                 let warnings = results.filter { $0.status == .warning }.count
@@ -114,26 +115,27 @@ struct DiagnosticsView: View {
                 HStack {
                     if failures > 0 {
                         Label("\(failures) issues found", systemImage: "xmark.circle.fill")
-                            .foregroundColor(.red)
+                            .foregroundColor(.pcDanger)
                     } else if warnings > 0 {
                         Label("\(warnings) warnings", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
+                            .foregroundColor(.pcWarning)
                     } else {
                         Label("All checks passed!", systemImage: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                            .foregroundColor(.pcSecondary)
                     }
 
                     Spacer()
 
                     if failures > 0 {
                         Text("Fix the issues above to enable location spoofing")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(AppFont.metadata)
+                            .foregroundColor(.pcTextMuted)
                     }
                 }
             }
         }
-        .padding()
+        .padding(AppSpacing.lg)
+        .background(Color.pcBackground)
         .frame(minWidth: 500, minHeight: 400)
         .alert("Logs Exported", isPresented: $showExportSuccess) {
             Button("Show in Finder") {
@@ -521,32 +523,36 @@ struct DiagnosticResultRow: View {
     let result: DiagnosticResult
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: AppSpacing.sm) {
             Image(systemName: result.status.icon)
                 .foregroundColor(result.status.color)
-                .font(.title3)
+                .font(AppFont.heading)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text(result.name)
-                    .fontWeight(.medium)
+                    .font(AppFont.label)
+                    .foregroundColor(.pcText)
 
                 Text(result.message)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(AppFont.metadata)
+                    .foregroundColor(.pcTextMuted)
 
                 if let recovery = result.recoveryAction {
                     Text(recovery)
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                        .font(AppFont.metadata)
+                        .foregroundColor(.pcPrimary)
                         .padding(.top, 2)
                 }
             }
 
             Spacer()
         }
-        .padding(12)
-        .background(Color(.controlBackgroundColor))
-        .cornerRadius(8)
+        .padding(AppSpacing.sm)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+        )
     }
 }
 
@@ -564,14 +570,14 @@ struct DiagnosticsSheet: View {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.heading)
+                        .foregroundColor(.pcTextMuted)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.escape)
             }
-            .padding(.horizontal)
-            .padding(.top, 12)
+            .padding(.horizontal, AppSpacing.lg)
+            .padding(.top, AppSpacing.sm)
 
             DiagnosticsView()
                 .environmentObject(appState)

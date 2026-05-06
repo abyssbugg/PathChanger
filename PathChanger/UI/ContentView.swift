@@ -66,7 +66,7 @@ struct ContentView: View {
                     case .teleport, .route, .joystick:
                         SimulationView(mode: mode)
                     case .settings:
-                        SettingsView()
+                        SettingsView(showsHeader: false)
                     }
                 } else {
                     ContentUnavailableView(
@@ -157,17 +157,18 @@ struct IOSCompatibilityWarningBanner: View {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.title3)
-                        .foregroundColor(.orange)
+                        .font(AppFont.subheading)
+                        .foregroundColor(.pcWarning)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("iOS \(device.iosVersion) Compatibility Warning")
-                            .font(.subheadline.weight(.semibold))
+                        Text("Limited support for iOS \(device.iosVersion)")
+                            .font(AppFont.subheading)
+                            .foregroundStyle(Color.pcText)
 
                         if isExpanded {
-                            Text("PathChanger will still try location simulation, but newer iOS versions may need upstream pymobiledevice3 fixes if DVT rejects the request.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            Text("PathChanger can attempt location simulation on this device, but some iOS \(device.iosVersion) builds may block the request. Update support tools if simulation fails.")
+                                .font(AppFont.metadata)
+                                .foregroundStyle(Color.pcTextMuted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -180,10 +181,10 @@ struct IOSCompatibilityWarningBanner: View {
                         }
                     } label: {
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(AppFont.metadata)
+                            .foregroundColor(.pcTextMuted)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .accessibleButton(
                         label: isExpanded ? "Collapse iOS compatibility warning" : "Expand iOS compatibility warning",
                         hint: "Shows or hides details about newer iOS compatibility",
@@ -193,7 +194,7 @@ struct IOSCompatibilityWarningBanner: View {
                     Button("Learn More") {
                         showDialog = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcWarning))
                     .controlSize(.small)
                     .accessibleButton(
                         label: "Learn more about iOS compatibility",
@@ -208,21 +209,21 @@ struct IOSCompatibilityWarningBanner: View {
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary.opacity(0.6))
+                            .foregroundColor(.pcTextMuted)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .accessibleButton(
                         label: "Dismiss iOS compatibility warning",
                         hint: "Hides this compatibility warning for the selected device",
                         identifier: "iosCompatibilityWarningDismissButton"
                     )
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Color.orange.opacity(0.15))
+                .padding(.horizontal, AppSpacing.md)
+                .padding(.vertical, AppSpacing.sm)
+                .background(Color.pcWarning.opacity(0.12))
                 .overlay(
                     Rectangle()
-                        .fill(Color.orange.opacity(0.3))
+                        .fill(Color.pcWarning.opacity(AppSurfaceAlpha.selectedRow))
                         .frame(height: 1),
                     alignment: .bottom
                 )
@@ -247,7 +248,6 @@ struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(AppState())
-            .preferredColorScheme(.dark)
     }
 }
 #endif

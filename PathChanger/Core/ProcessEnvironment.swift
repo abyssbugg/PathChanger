@@ -47,21 +47,29 @@ public enum ProcessEnvironment {
 
     /// Dynamic PATH directories that include user home
     ///
-    /// These paths require runtime resolution using NSHomeDirectory()
+    /// These paths require runtime resolution using NSHomeDirectory().
+    ///
+    /// # Security Note
+    /// Only `pyenv` directories are included here. User-writable bin paths
+    /// such as `~/.local/bin` and `~/Library/Python/<v>/bin` are intentionally
+    /// EXCLUDED to prevent local privilege escalation: any code dropped into
+    /// those locations would otherwise be picked up by sub-shells running as
+    /// the privileged tunnel commands.
+    ///
+    /// pmd3 is invoked exclusively via `python3 -m pymobiledevice3` using the
+    /// absolute Python path resolved by `PythonPathResolver`, with PYTHONPATH
+    /// set to the user / Homebrew site-packages directories — so we never
+    /// need a `pymobiledevice3` shim binary on PATH.
     private static func dynamicPathDirectories() -> [String] {
         let home = NSHomeDirectory()
         let pyenvVersionsPath = "\(home)/.pyenv/versions"
         let pyenvVersionBinPaths = (try? FileManager.default.contentsOfDirectory(atPath: pyenvVersionsPath))?
             .sorted(by: >)
             .map { "\(pyenvVersionsPath)/\($0)/bin" } ?? []
-        let userPythonBinPaths = supportedPythonVersions.map { version in
-            "\(home)/Library/Python/\(version)/bin"
-        }
 
         return pyenvVersionBinPaths + [
-            "\(home)/.pyenv/shims",  // pyenv Python version manager
-            "\(home)/.local/bin"
-        ] + userPythonBinPaths
+            "\(home)/.pyenv/shims"  // pyenv Python version manager
+        ]
     }
 
     // MARK: - PYTHONPATH Configuration

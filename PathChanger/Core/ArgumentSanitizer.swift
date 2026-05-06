@@ -138,6 +138,36 @@ enum ArgumentSanitizer {
         return inet_pton(AF_INET6, cleanAddress, &addr) == 1
     }
 
+    /// Validate IPv4 address format using POSIX inet_pton.
+    ///
+    /// Used for RSD addresses produced by `pmd3 remote start-tunnel -t wifi`,
+    /// which can be IPv4 (e.g. `192.168.1.50`) on local networks rather than
+    /// the IPv6 link-local addresses USB lockdown tunnels emit.
+    ///
+    /// - Parameter address: IPv4 address candidate.
+    /// - Returns: True if the address is a valid IPv4 dotted-quad.
+    static func isValidIPv4Address(_ address: String) -> Bool {
+        guard !address.isEmpty else { return false }
+        // inet_pton(AF_INET, ...) is strict about leading zeros / length and
+        // returns 1 only for canonical IPv4 dotted-quad strings.
+        var addr = in_addr()
+        return inet_pton(AF_INET, address, &addr) == 1
+    }
+
+    /// Validate that `address` is a usable RSD address — either IPv4 or IPv6.
+    ///
+    /// BUG FIX (WiFi-Bug-7): `DevLocationBridge.buildLocationArguments` previously
+    /// gated `--rsd <address>` on `isValidIPv6Address` only, which caused WiFi
+    /// tunnels emitting IPv4 RSD addresses to be rejected with "Invalid RSD
+    /// address" even though the tunnel was working. Use this combinator instead
+    /// for RSD address validation.
+    ///
+    /// - Parameter address: RSD address as parsed from the tunnel log.
+    /// - Returns: True if the address is a valid IPv4 or IPv6 literal.
+    static func isValidRsdAddress(_ address: String) -> Bool {
+        return isValidIPv4Address(address) || isValidIPv6Address(address)
+    }
+
     /// Validate and extract IPv6 address components
     /// - Parameter address: IPv6 address to parse
     /// - Returns: Tuple of (address, interfaceSuffix) if valid, nil otherwise
@@ -214,8 +244,12 @@ enum ArgumentSanitizer {
             return true
         }
 
-        // Allow IPv6 addresses
-        if isValidIPv6Address(argument) {
+        // Allow IPv4 / IPv6 addresses (RSD address argument for `--rsd <addr> <port>`)
+        // BUG FIX (WiFi-Bug-7): also accept IPv4 so WiFi-mode RSD addresses survive
+        // sanitizeSubprocessArgs even though `192.168.1.50` would otherwise fail the
+        // alnum+".-_/:@" charset check on systems where the alphanumerics set treats
+        // dots as non-alphanumeric.
+        if isValidRsdAddress(argument) {
             return true
         }
 

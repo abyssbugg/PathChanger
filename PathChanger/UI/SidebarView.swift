@@ -17,22 +17,21 @@ struct SidebarView: View {
             // Header
             HStack {
                 Image(systemName: "location.circle.fill")
-                    .font(.title)
-                    .foregroundStyle(Color.pcPrimary)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.pcTextMuted)
                 Text("PathChanger")
-                    .font(AppFont.heading)
+                    .font(AppFont.title)
                     .foregroundStyle(Color.pcText)
                 Spacer()
             }
-            .padding(AppSpacing.lg)
-            .background(Color.pcSurface.opacity(0.35), in: RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
-            .padding(.horizontal, AppSpacing.md)
-            .padding(.top, 10)
+            .padding(.horizontal, AppSpacing.xl)
+            .padding(.top, AppSpacing.lg)
+            .padding(.bottom, AppSpacing.md)
 
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: AppSpacing.xl) {
                     // Mode Selection
-                    VStack(spacing: 8) {
+                    VStack(spacing: AppSpacing.sm) {
                         ForEach(AppMode.allCases) { mode in
                             SidebarButton(mode: mode, isSelected: selectedMode == mode) {
                                 selectedMode = mode
@@ -43,18 +42,21 @@ struct SidebarView: View {
                     .accessibilityLabel("Simulation mode selector")
 
                     Divider()
-                        .padding(.horizontal)
+                        .overlay(Color.pcOutline)
+                        .padding(.horizontal, AppSpacing.sm)
 
                     // Device Section
                     deviceSection
 
                     Divider()
-                        .padding(.horizontal)
+                        .overlay(Color.pcOutline)
+                        .padding(.horizontal, AppSpacing.sm)
 
                     // Location History
                     locationHistorySection
                 }
-                .padding()
+                .padding(.horizontal, AppSpacing.xl)
+                .padding(.vertical, AppSpacing.md)
             }
 
             Spacer()
@@ -64,17 +66,11 @@ struct SidebarView: View {
 
             // Footer / Version
             Text("v1.0.0 Pro")
-                .font(AppFont.caption)
+                .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
-                .padding(.bottom, 8)
+                .padding(.bottom, AppSpacing.md)
         }
-        .background(
-            LinearGradient(
-                colors: [Color.pcBackground, Color.pcSurface.opacity(0.92)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        .background(Color.pcBackground)
         .accessibleSection(
             label: AccessibilityLabels.Navigation.sidebar,
             identifier: AccessibilityIdentifiers.Navigation.sidebar
@@ -84,7 +80,7 @@ struct SidebarView: View {
     // MARK: - Device Section
 
     private var deviceSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.lg) {
             HStack {
                 Text("Devices")
                     .appSectionLabel()
@@ -95,10 +91,11 @@ struct SidebarView: View {
                     Task { await appState.refreshDevices() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                 }
                 .buttonStyle(.plain)
+                .appHoverOverlay(cornerRadius: AppRadius.sm)
                 .help("Refresh device list")
                 .accessibleButton(
                     label: AccessibilityLabels.Actions.refreshDevices,
@@ -108,15 +105,15 @@ struct SidebarView: View {
             }
 
             if appState.availableDevices.isEmpty {
-                HStack(spacing: 8) {
+                HStack(spacing: AppSpacing.sm) {
                     Image(systemName: "iphone.slash")
                         .foregroundStyle(Color.pcTextMuted)
                     Text("No devices found")
-                        .font(.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
+                .padding(.vertical, AppSpacing.md)
             } else {
                 ForEach(appState.availableDevices) { device in
                     SidebarDeviceRow(
@@ -138,7 +135,7 @@ struct SidebarView: View {
     // MARK: - Location History
 
     private var locationHistorySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppSpacing.lg) {
             HStack {
                 Text("Location History")
                     .appSectionLabel()
@@ -149,9 +146,7 @@ struct SidebarView: View {
                     Button("Clear") {
                         appState.clearLocationHistory()
                     }
-                    .font(.caption2)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.pcTextMuted)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .accessibleButton(
                         label: "Clear location history",
                         hint: "Removes all saved recent locations",
@@ -161,17 +156,17 @@ struct SidebarView: View {
             }
 
             if appState.locationHistory.isEmpty {
-                HStack(spacing: 8) {
+                HStack(spacing: AppSpacing.sm) {
                     Image(systemName: "clock")
                         .foregroundStyle(Color.pcTextMuted)
                     Text("Successful locations appear here")
-                        .font(.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 10)
+                .padding(.vertical, AppSpacing.sm)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: AppSpacing.sm) {
                     ForEach(appState.locationHistory.prefix(6)) { entry in
                         locationHistoryRow(entry)
                     }
@@ -187,27 +182,26 @@ struct SidebarView: View {
     }
 
     private func locationHistoryRow(_ entry: LocationHistoryEntry) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
+            HStack(alignment: .top, spacing: AppSpacing.sm) {
                 Image(systemName: "mappin.and.ellipse")
-                    .font(.caption)
-                    .foregroundStyle(Color.pcPrimary)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
                     .frame(width: 18)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     Text(entry.displayName)
-                        .font(.caption)
-                        .fontWeight(.medium)
+                        .font(AppFont.label)
                         .foregroundStyle(Color.pcText)
                         .lineLimit(1)
 
                     Text(entry.coordinate.formattedShort)
-                        .font(.caption2.monospacedDigit())
+                        .font(AppFont.monoSmall)
                         .foregroundStyle(Color.pcTextMuted)
 
                     Text("\(entry.source) • \(entry.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption2)
-                        .foregroundStyle(Color.pcTextMuted.opacity(0.72))
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted.opacity(0.78))
                         .lineLimit(1)
                 }
 
@@ -217,20 +211,18 @@ struct SidebarView: View {
                     appState.removeHistoryEntry(entry)
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.caption2)
+                        .font(AppFont.metadata)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.pcTextMuted)
                 .accessibilityLabel("Remove recent location \(entry.displayName)")
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: AppSpacing.sm) {
                 Button("Select") {
                     appState.selectHistoryEntry(entry)
                 }
-                .font(.caption2)
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                 .accessibilityLabel("Select recent location \(entry.displayName)")
                 .accessibilityHint("Sets this history entry as the target location without applying it")
 
@@ -240,18 +232,16 @@ struct SidebarView: View {
                         await appState.setLocation(entry.coordinate, source: "History", name: entry.displayName)
                     }
                 }
-                .font(.caption2)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.mini)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
                 .disabled(!appState.canStartSimulation)
                 .accessibilityLabel("Apply recent location \(entry.displayName)")
             }
         }
-        .padding(10)
-        .background(Color.pcSurfaceHigh.opacity(0.45), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .padding(AppSpacing.sm)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Recent location \(entry.displayName), \(entry.coordinate.formattedShort)")
@@ -261,24 +251,27 @@ struct SidebarView: View {
     // MARK: - Tunnel Status Bar
 
     private var tunnelStatusBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppSpacing.sm) {
             Circle()
                 .fill(tunneldManager.isRunning ? Color.pcSecondary : Color.pcDanger)
-                .frame(width: 8, height: 8)
+                .frame(width: 6, height: 6)
 
             Text(tunneldManager.isRunning ? "Tunnel Active" : "Tunnel Inactive")
-                .font(.caption2)
+                .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
 
             Spacer()
 
             if !tunneldManager.isRunning {
-                Button("Start") {
+                Button {
                     Task { await tunneldManager.startTunnel() }
+                } label: {
+                    Text("Start")
+                        .lineLimit(1)
+                        .fixedSize()
                 }
-                .font(.caption2)
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
+                .frame(minWidth: 56)
                 .accessibleButton(
                     label: "Start device tunnel",
                     hint: "Starts the tunnel required for location simulation",
@@ -286,10 +279,10 @@ struct SidebarView: View {
                 )
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.1, shadowOpacity: 0.08)
         .padding(.horizontal, AppSpacing.md)
+        .padding(.vertical, AppSpacing.sm)
+        .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.1, shadowOpacity: 0.08)
+        .padding(.horizontal, AppSpacing.xl)
         .padding(.bottom, AppSpacing.xs)
         .accessibleStatus(
             label: tunneldManager.isRunning ? AccessibilityLabels.Status.tunnelConnected(mode: "selected connection") : AccessibilityLabels.Status.tunnelDisconnected,
@@ -309,16 +302,15 @@ struct SidebarDeviceRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: AppSpacing.sm) {
                 Image(systemName: "iphone")
-                    .font(.system(size: 16))
-                    .foregroundStyle(isSelected ? Color.pcPrimary : Color.pcTextMuted)
+                    .font(AppFont.body)
+                    .foregroundStyle(Color.pcTextMuted)
                     .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     Text(device.displayName)
-                        .font(.caption)
-                        .fontWeight(isSelected ? .semibold : .regular)
+                        .font(isSelected ? AppFont.label : AppFont.body)
                         .foregroundStyle(Color.pcText)
                         .lineLimit(1)
 
@@ -328,7 +320,7 @@ struct SidebarDeviceRow: View {
                             .frame(width: 5, height: 5)
 
                         Text(statusText)
-                            .font(.caption2)
+                            .font(AppFont.metadata)
                             .foregroundStyle(Color.pcTextMuted)
                     }
                 }
@@ -337,22 +329,24 @@ struct SidebarDeviceRow: View {
 
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(Color.pcSecondary)
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted)
                 }
             }
-            .padding(AppSpacing.sm)
+            .padding(.horizontal, AppSpacing.sm)
+            .padding(.vertical, AppSpacing.sm)
             .background(
                 RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                    .fill(isSelected ? Color.pcAccent.opacity(0.12) : Color.pcSurfaceHigh.opacity(0.22))
+                    .fill(isSelected ? Color.pcAccent.opacity(AppSurfaceAlpha.idleRow) : Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.idleRow))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                    .stroke(isSelected ? Color.pcAccent.opacity(0.32) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(isSelected ? Color.pcAccent.opacity(AppSurfaceAlpha.hoverRow) : Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .appHoverOverlay(cornerRadius: AppRadius.md)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(device.displayName), \(statusText)")
         .accessibilityHint(AccessibilityHints.deviceRow)
@@ -377,20 +371,19 @@ struct SidebarButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
+            HStack(spacing: AppSpacing.sm) {
                 Image(systemName: mode.icon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(isSelected ? Color.pcPrimary : Color.pcTextMuted)
-                    .frame(width: 30)
+                    .font(AppFont.body)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .frame(width: 24)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     Text(mode.rawValue)
-                        .font(AppFont.body)
-                        .fontWeight(isSelected ? .semibold : .regular)
-                        .foregroundStyle(isSelected ? Color.pcText : Color.pcText.opacity(0.9))
+                        .font(isSelected ? AppFont.label : AppFont.body)
+                        .foregroundStyle(Color.pcText)
 
                     Text(mode.description)
-                        .font(.caption2)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                 }
 
@@ -398,23 +391,25 @@ struct SidebarButton: View {
 
                 if isSelected {
                     Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(Color.pcPrimary)
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted)
                 }
             }
-            .padding(AppSpacing.md)
+            .padding(.horizontal, AppSpacing.sm)
+            .padding(.vertical, AppSpacing.sm)
             .background(
                 RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous)
-                    .fill(isSelected ? Color.pcAccent.opacity(0.16) : Color.pcSurfaceHigh.opacity(0.2))
+                    .fill(isSelected ? Color.pcAccent.opacity(AppSurfaceAlpha.idleRow) : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous)
-                    .stroke(isSelected ? Color.pcPrimary.opacity(0.32) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(isSelected ? Color.pcAccent.opacity(AppSurfaceAlpha.hoverRow) : Color.clear, lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.pcPrimary : Color.pcText)
+        .appHoverOverlay(cornerRadius: AppRadius.lg)
+        .foregroundStyle(Color.pcText)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(mode.rawValue), \(mode.description)")
         .accessibilityHint("Selects \(mode.rawValue) mode")

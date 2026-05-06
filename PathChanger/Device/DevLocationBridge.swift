@@ -543,6 +543,11 @@ actor DevLocationBridge {
     /// Set location using the persistent bridge (high-performance mode)
     /// This reuses a long-running Python process for significantly reduced latency
     private func setLocationViaPersistentBridge(_ coordinate: LocationCoordinate, for device: Device) async throws {
+        // iOS only allows one DVT simulate-location session per device. If a previous
+        // call left a `pmd3 simulate-location set` subprocess holding DVT open, the
+        // persistent bridge's connection attempt will fail with InvalidServiceError.
+        // Free DVT first so the bridge can take over cleanly.
+        await terminateActiveLocationProcess(for: device.id)
         try await PersistentLocationBridge.shared.setLocation(coordinate, for: device)
     }
 
@@ -633,7 +638,20 @@ actor DevLocationBridge {
         // flag talks to the remote tunneld API and can fail even when a lockdown
         // tunnel is active and DVT is reachable through --rsd.
         if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
-            guard ArgumentSanitizer.isValidIPv6Address(tunnelInfo.rsdAddress) else {
+            // BUG FIX (WiFi-Bug-9): trap the bogus RSD info that older builds of
+            // attemptStart used to fabricate when parseRsdInfo failed. After the
+            // Bug-6 fix this path shouldn't fire, but we keep the guard so any
+            // future regression surfaces a specific actionable error rather than
+            // a misleading "Device not reachable" subprocess failure.
+            if tunnelInfo.rsdAddress == "127.0.0.1" || tunnelInfo.rsdPort == 0 {
+                throw LocationInjectionError.injectionFailed(
+                    "Tunnel is up but its RSD address could not be parsed (\(tunnelInfo.rsdAddress):\(tunnelInfo.rsdPort)). Stop and restart the tunnel; if the problem persists, check ~/Library/Logs/PathChanger/tunnel.log."
+                )
+            }
+            // BUG FIX (WiFi-Bug-7): accept either IPv4 or IPv6 RSD addresses.
+            // `pmd3 remote start-tunnel -t wifi` may emit IPv4 (e.g. 192.168.1.50)
+            // even though USB lockdown tunnels emit IPv6 link-local addresses.
+            guard ArgumentSanitizer.isValidRsdAddress(tunnelInfo.rsdAddress) else {
                 throw LocationInjectionError.injectionFailed("Invalid RSD address: \(tunnelInfo.rsdAddress)")
             }
             try ArgumentSanitizer.validatePort(tunnelInfo.rsdPort)

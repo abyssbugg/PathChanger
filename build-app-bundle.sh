@@ -110,6 +110,28 @@ else
     echo -e "${YELLOW}⚠ AppIcon.icns not found in Resources${NC}"
 fi
 
+# Step 5.6: Copy persistent location bridge script (required for Multi-Spot/Joystick performance mode)
+echo -e "${BLUE}Step 5.6: Copying persistent location bridge script...${NC}"
+if [ -f "scripts/location_bridge.py" ]; then
+    mkdir -p "$RESOURCES_DIR/scripts"
+    cp "scripts/location_bridge.py" "$RESOURCES_DIR/scripts/location_bridge.py"
+    chmod +x "$RESOURCES_DIR/scripts/location_bridge.py"
+    echo -e "${GREEN}✓ Bridge script copied to Resources/scripts/${NC}"
+else
+    echo -e "${YELLOW}⚠ scripts/location_bridge.py not found - persistent-bridge performance mode will not work${NC}"
+fi
+
+# Step 5.7: Copy WiFi pairing helper (used by Settings > WiFi mode pairing flow)
+echo -e "${BLUE}Step 5.7: Copying WiFi pairing helper...${NC}"
+if [ -f "scripts/pair_wifi.py" ]; then
+    mkdir -p "$RESOURCES_DIR/scripts"
+    cp "scripts/pair_wifi.py" "$RESOURCES_DIR/scripts/pair_wifi.py"
+    chmod +x "$RESOURCES_DIR/scripts/pair_wifi.py"
+    echo -e "${GREEN}✓ WiFi pairing helper copied to Resources/scripts/${NC}"
+else
+    echo -e "${YELLOW}⚠ scripts/pair_wifi.py not found - WiFi mode users will need to pair manually via Terminal${NC}"
+fi
+
 # Step 6: Create PkgInfo
 echo -e "${BLUE}Step 6: Creating PkgInfo...${NC}"
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"

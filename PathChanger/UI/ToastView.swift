@@ -26,10 +26,10 @@ enum ToastType {
 
     var color: Color {
         switch self {
-        case .success: return .green
-        case .error: return .red
-        case .warning: return .orange
-        case .info: return .blue
+        case .success: return .pcSecondary
+        case .error: return .pcDanger
+        case .warning: return .pcWarning
+        case .info: return .pcPrimary
         }
     }
 }
@@ -145,39 +145,36 @@ struct ToastView: View {
     @State private var isVisible = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppSpacing.sm) {
             Image(systemName: toast.type.icon)
-                .font(.title3)
+                .font(AppFont.heading)
                 .foregroundColor(toast.type.color)
 
             Text(toast.message)
-                .font(.subheadline.weight(.medium))
+                .font(AppFont.label)
+                .foregroundColor(.pcText)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
-
-            Spacer(minLength: 8)
+            Spacer(minLength: AppSpacing.xs)
 
             Button {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .font(AppFont.heading)
+                    .foregroundColor(.pcTextMuted)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            .ultraThinMaterial,
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .padding(.horizontal, AppSpacing.md)
+        .padding(.vertical, AppSpacing.sm)
+        .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel), in: RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(toast.type.color.opacity(0.3), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous)
+                .strokeBorder(toast.type.color.opacity(AppSurfaceAlpha.selectedRow), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.15), radius: 12, x: 0, y: 4)
+        .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 3)
         .scaleEffect(isVisible ? 1 : 0.8)
         .opacity(isVisible ? 1 : 0)
         .onAppear {
@@ -194,7 +191,7 @@ struct ToastContainerView: View {
     @ObservedObject var manager = ToastManager.shared
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: AppSpacing.sm) {
             ForEach(manager.toasts) { toast in
                 ToastView(toast: toast) {
                     manager.dismiss(toast)
@@ -202,8 +199,8 @@ struct ToastContainerView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .padding(.top, 20)
-        .padding(.horizontal, 20)
+        .padding(.top, AppSpacing.lg)
+        .padding(.horizontal, AppSpacing.lg)
         .frame(maxWidth: 500)
     }
 }

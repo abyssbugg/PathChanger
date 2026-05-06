@@ -572,19 +572,47 @@ class DeviceManager: ObservableObject {
     }
 
     // MARK: Tunnel Status
-    /// Check for both lockdown tunnel (iOS 17.4+) and legacy remote tunneld
+    /// Check whether ANY supported pymobiledevice3 tunnel is currently running.
+    ///
+    /// Detects three modes:
+    /// 1. USB Lockdown: `pymobiledevice3 lockdown start-tunnel` (iOS 17.4+ fast path)
+    /// 2. WiFi: `pymobiledevice3 remote start-tunnel` (true wireless)
+    /// 3. Daemon: `pymobiledevice3 remote tunneld` (background service)
+    ///
+    /// BUG FIX (WiFi-Bug-1B): Previously only USB and Daemon were checked. A running
+    /// WiFi tunnel was invisible to the AppState 5-second poller, which kept clobbering
+    /// AppState.isTunneldRunning back to false within 5s of a successful WiFi start,
+    /// breaking canStartSimulation and lighting up "Tunnel Inactive" in the UI.
     func checkTunneldStatus() async {
+        // BUG FIX (WiFi-Bug-1B follow-up): use the absolute `/usr/bin/pgrep`
+        // path. The previous code passed the relative string "pgrep", but
+        // `runCommand` uses `URL(fileURLWithPath:)` which does NOT resolve via
+        // PATH — it just makes a relative URL anchored to the current working
+        // directory, so `Process.run()` would silently throw and the catch
+        // block flipped isTunneldRunning to false. As a result the original
+        // USB / daemon detection paths were also broken; only TunneldManager's
+        // own `/usr/bin/pgrep`-based check ever returned correct results.
+        let pgrep = "/usr/bin/pgrep"
         do {
             // Check for new lockdown tunnel first (iOS 17.4+ method)
-            let lockdownOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 lockdown start-tunnel"])
+            let lockdownOutput = try await runCommand(pgrep, arguments: ["-f", "pymobiledevice3 lockdown start-tunnel"])
             if !lockdownOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updateTunnelRunning(true)
+                return
+            }
+
+            // Check WiFi tunnel: `pymobiledevice3 remote start-tunnel` (with -t wifi).
+            // The pgrep pattern intentionally omits `-t wifi` so it matches with or without
+            // optional flags after `start-tunnel`.
+            let wifiOutput = try await runCommand(pgrep, arguments: ["-f", "pymobiledevice3 remote start-tunnel"])
+            if !wifiOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateTunnelRunning(true)
                 return
             }
 
             // Fall back to checking legacy tunneld - with small delay to avoid race conditions
             try? await Task.sleep(nanoseconds: 100_000_000)  // 0.1s delay to let process state stabilize
-            let tunneldOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
+            let tunneldOutput = try await runCommand(pgrep, arguments: ["-f", "pymobiledevice3 remote tunneld"])
             let isTunnelRunning = !tunneldOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             updateTunnelRunning(isTunnelRunning)
         } catch {

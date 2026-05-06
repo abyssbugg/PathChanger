@@ -29,6 +29,13 @@ struct SimulationView: View {
     @State private var longitudeInput: String = ""
     @State private var routeType: RouteType = .navigation
     @State private var mapContextAction: MapContextAction?
+    @FocusState private var isSearchFocused: Bool
+    @FocusState private var focusedCoordinateField: CoordinateField?
+
+    private enum CoordinateField: Hashable {
+        case latitude
+        case longitude
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -43,7 +50,7 @@ struct SimulationView: View {
             }
 
             // 3. Floating Action Panel
-            VStack(spacing: AppSpacing.lg) {
+            VStack(spacing: AppSpacing.xl) {
                 // Mode-specific controls
                 modeSpecificControls
 
@@ -54,7 +61,6 @@ struct SimulationView: View {
             .padding(.bottom, AppSpacing.xl)
         }
         .background(Color.pcBackground)
-        .preferredColorScheme(.dark)
         .onChange(of: appState.currentLocation) { _, newLocation in
             if let location = newLocation {
                 withAnimation {
@@ -84,16 +90,16 @@ struct SimulationView: View {
                     Annotation("Location", coordinate: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude)) {
                         ZStack {
                             Circle()
-                                .fill(Color.pcAccent.opacity(0.22))
-                                .frame(width: 60, height: 60)
+                                .fill(Color.pcAccent.opacity(0.14))
+                                .frame(width: 48, height: 48)
                             Circle()
                                 .fill(Color.pcAccent)
-                                .frame(width: 20, height: 20)
+                                .frame(width: 16, height: 16)
                             Circle()
                                 .stroke(Color.white, lineWidth: 3)
-                                .frame(width: 20, height: 20)
+                                .frame(width: 16, height: 16)
                         }
-                        .shadow(color: Color.pcAccent.opacity(0.55), radius: 12)
+                        .shadow(color: Color.black.opacity(0.12), radius: 2)
                     }
                 }
 
@@ -153,7 +159,7 @@ struct SimulationView: View {
 
         // Set the target location
         appState.targetLocation = location
-        appState.targetLocationName = "Map selection"
+        appState.targetLocationName = "Selected location"
         appState.statusMessage = mode == .route
             ? "Selected waypoint candidate. Use Add Waypoint to include it in the route."
             : String(format: "Selected location: %.4f, %.4f. Press Play or Apply to spoof.", coordinate.latitude, coordinate.longitude)
@@ -175,15 +181,14 @@ struct SimulationView: View {
     }
 
     private func mapContextMenu(for action: MapContextAction) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             Text(action.coordinate.formattedShort)
-                .font(AppFont.caption)
+                .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
                 .monospacedDigit()
-
             Button {
                 appState.targetLocation = action.coordinate
-                appState.targetLocationName = "Map selection"
+                appState.targetLocationName = "Selected location"
                 appState.statusMessage = "Selected \(action.coordinate.formattedShort)"
                 withAnimation { mapContextAction = nil }
             } label: {
@@ -217,14 +222,14 @@ struct SimulationView: View {
                 Label("Cancel", systemImage: "xmark")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.pcTextMuted)
             .accessibleButton(
                 label: "Cancel map actions",
                 hint: "Closes the map context menu",
                 identifier: "mapContextCancelButton"
             )
         }
-        .padding(AppSpacing.md)
+        .padding(AppSpacing.lg)
         .appGlassPanel(cornerRadius: AppRadius.md)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Map context menu")
@@ -233,15 +238,17 @@ struct SimulationView: View {
     // MARK: - Top Controls
 
     private var topControls: some View {
-        HStack(spacing: AppSpacing.md) {
-            VStack(alignment: .leading, spacing: AppSpacing.xs) {
+        VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            HStack(spacing: AppSpacing.md) {
                 HStack(spacing: AppSpacing.sm) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(Color.pcTextMuted)
 
                     TextField("Search location or coordinates...", text: $searchService.searchText)
                         .textFieldStyle(.plain)
+                        .font(AppFont.body)
                         .foregroundStyle(Color.pcText)
+                        .focused($isSearchFocused)
                         .onChange(of: searchService.searchText) { _, newValue in
                             showSearchResults = !newValue.isEmpty
                         }
@@ -275,112 +282,128 @@ struct SimulationView: View {
                         )
                     }
                 }
-                .padding(AppSpacing.md)
-                .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.12, shadowOpacity: 0.12)
+                .padding(.horizontal, AppSpacing.md)
+                .frame(minHeight: 36)
+                .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                        .stroke(isSearchFocused ? Color.pcAccent.opacity(0.6) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                )
+                .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
 
-                if showSearchResults && !searchService.searchResults.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(searchService.searchResults.prefix(5)) { result in
-                            Button {
-                                selectSearchResult(result)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(result.name)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color.pcText)
-                                    Text(result.subtitle)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Color.pcTextMuted)
-                                        .lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: AppSpacing.md)
+
+                if let target = appState.targetLocation {
+                    PCStatusChip(title: "Target location", icon: "scope", color: .pcPrimary, detail: target.formattedShort)
+                } else {
+                    PCStatusChip(title: "Select target", icon: "mappin", color: .pcTextMuted, detail: "tap map")
+                }
+
+                Divider()
+                    .frame(height: 28)
+                    .overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
+
+                HStack(spacing: AppSpacing.xxs) {
+                    ForEach(MapStyleType.allCases) { style in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                mapStyle = style
+                            }
+                        } label: {
+                            Text(style.rawValue)
+                                .font(mapStyle == style ? AppFont.label : AppFont.body)
+                                .foregroundStyle(mapStyle == style ? Color.pcText : Color.pcTextMuted)
                                 .padding(.horizontal, AppSpacing.md)
                                 .padding(.vertical, AppSpacing.sm)
-                            }
-                            .buttonStyle(.plain)
-                            .background(Color.clear)
-                            .contentShape(Rectangle())
-                            .accessibilityLabel("Select \(result.name)")
-                            .accessibilityHint("Selects this result as the target location without applying it")
+                                .background(
+                                    RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                                        .fill(mapStyle == style ? Color.pcAccent.opacity(AppSurfaceAlpha.selectedRow) : Color.clear)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .appHoverOverlay(cornerRadius: AppRadius.sm)
+                        .accessibilityLabel("\(style.rawValue) map style")
+                        .accessibilityHint("Changes the map appearance")
+                    }
+                }
+                .padding(AppSpacing.xxs)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("mapStyleSelector")
 
-                            if result.id != searchService.searchResults.prefix(5).last?.id {
-                                Divider()
-                                    .overlay(Color.white.opacity(0.06))
-                                    .padding(.horizontal, AppSpacing.sm)
-                            }
+                Button {
+                    if let location = appState.currentLocation {
+                        withAnimation {
+                            position = .region(MKCoordinateRegion(
+                                center: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
+                                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                            ))
                         }
                     }
-                    .background(Color.pcSurface.opacity(0.92), in: RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous)
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                } label: {
+                    Image(systemName: "location.fill")
+                        .foregroundStyle(appState.currentLocation == nil ? Color.pcTextMuted : Color.pcPrimary)
+                        .frame(width: 32, height: 32)
+                        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                        )
                 }
+                .buttonStyle(.plain)
+                .appHoverOverlay(cornerRadius: AppRadius.sm)
+                .disabled(appState.currentLocation == nil)
+                .accessibleButton(
+                    label: "Center on current location",
+                    hint: "Moves the map to the current simulated location",
+                    identifier: "centerCurrentLocationButton"
+                )
             }
-            .frame(minWidth: 240, idealWidth: 360, maxWidth: 420)
+            .padding(AppSpacing.sm)
+            .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.18, shadowOpacity: 0.12)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("mapToolbar")
 
-            Spacer()
-
-            if let target = appState.targetLocation {
-                PCStatusChip(title: "Target", icon: "scope", color: .pcPrimary, detail: target.formattedShort)
-            } else {
-                PCStatusChip(title: "Select Target", icon: "mappin", color: .pcWarning, detail: "tap map")
-            }
-
-            HStack(spacing: AppSpacing.xxs) {
-                ForEach(MapStyleType.allCases) { style in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            mapStyle = style
-                        }
-                    } label: {
-                        Text(style.rawValue)
-                            .font(.system(size: 13, weight: mapStyle == style ? .semibold : .regular))
-                            .foregroundStyle(mapStyle == style ? Color.white : Color.pcTextMuted)
+            if showSearchResults && !searchService.searchResults.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(searchService.searchResults.prefix(5)) { result in
+                        Button {
+                            selectSearchResult(result)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.name)
+                                    .font(AppFont.label)
+                                    .foregroundStyle(Color.pcText)
+                                Text(result.subtitle)
+                                    .font(AppFont.metadata)
+                                    .foregroundStyle(Color.pcTextMuted)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, AppSpacing.md)
                             .padding(.vertical, AppSpacing.sm)
-                            .background(
-                                RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                                    .fill(mapStyle == style ? Color.pcAccent : Color.clear)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(style.rawValue) map style")
-                    .accessibilityHint("Changes the map appearance")
-                }
-            }
-            .padding(AppSpacing.xxs)
-            .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.12, shadowOpacity: 0.12)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("mapStyleSelector")
+                        }
+                        .buttonStyle(.plain)
+                        .appHoverOverlay(cornerRadius: AppRadius.sm)
+                        .background(Color.clear)
+                        .contentShape(Rectangle())
+                        .accessibilityLabel("Select \(result.name)")
+                        .accessibilityHint("Selects this result as the target location without applying it")
 
-            Button {
-                if let location = appState.currentLocation {
-                    withAnimation {
-                        position = .region(MKCoordinateRegion(
-                            center: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
-                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                        ))
+                        if result.id != searchService.searchResults.prefix(5).last?.id {
+                            Divider()
+                                .overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
+                                .padding(.horizontal, AppSpacing.sm)
+                        }
                     }
                 }
-            } label: {
-                Image(systemName: "location.fill")
-                    .foregroundStyle(appState.currentLocation == nil ? Color.pcTextMuted : Color.pcPrimary)
-                    .padding(AppSpacing.md)
-                    .background(Color.pcSurface.opacity(0.82), in: Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
+                .frame(width: 420, alignment: .leading)
+                .background(Color.pcSurface.opacity(0.98), in: RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
             }
-            .buttonStyle(.plain)
-            .disabled(appState.currentLocation == nil)
-            .accessibleButton(
-                label: "Center on current location",
-                hint: "Moves the map to the current simulated location",
-                identifier: "centerCurrentLocationButton"
-            )
         }
         .padding(AppSpacing.lg)
     }
@@ -405,15 +428,15 @@ struct SimulationView: View {
 
     private var teleportControls: some View {
         FloatingControlPanel(title: "Teleport", icon: "location.fill") {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.lg) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: AppSpacing.xs) {
-                        Text(appState.targetLocationName ?? "Manual Coordinates")
-                            .font(AppFont.subheading)
+                        Text(appState.targetLocationName ?? "Custom Location")
+                            .font(AppFont.title)
                             .foregroundStyle(Color.pcText)
                             .lineLimit(1)
                         Text(appState.targetLocation?.formattedShort ?? "Enter coordinates or tap the map")
-                            .font(AppFont.monoSmall)
+                            .font(AppFont.metadata)
                             .foregroundStyle(Color.pcTextMuted)
                             .lineLimit(1)
                     }
@@ -424,17 +447,19 @@ struct SimulationView: View {
                         .foregroundStyle(Color.pcPrimary)
                 }
 
-                PCFieldShell(label: "Latitude", prefix: "LAT") {
+                PCFieldShell(label: "Latitude", prefix: "Lat", isFocused: focusedCoordinateField == .latitude) {
                     TextField("0.000000", text: $latitudeInput)
                         .textFieldStyle(.plain)
+                        .focused($focusedCoordinateField, equals: .latitude)
                         .accessibilityLabel("Latitude")
                         .accessibilityHint("Enter decimal latitude between -90 and 90")
                         .accessibilityIdentifier(AccessibilityIdentifiers.Location.latitudeField)
                 }
 
-                PCFieldShell(label: "Longitude", prefix: "LNG") {
+                PCFieldShell(label: "Longitude", prefix: "Lng", isFocused: focusedCoordinateField == .longitude) {
                     TextField("0.000000", text: $longitudeInput)
                         .textFieldStyle(.plain)
+                        .focused($focusedCoordinateField, equals: .longitude)
                         .accessibilityLabel("Longitude")
                         .accessibilityHint("Enter decimal longitude between -180 and 180")
                         .accessibilityIdentifier(AccessibilityIdentifiers.Location.longitudeField)
@@ -443,25 +468,34 @@ struct SimulationView: View {
                 Button {
                     teleportToCoordinates()
                 } label: {
-                    Label("Go Teleport", systemImage: "location.north.fill")
-                        .frame(maxWidth: .infinity)
+                    Label("Set Location", systemImage: "location.north.fill")
                 }
                 .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
-                .disabled(latitudeInput.isEmpty || longitudeInput.isEmpty)
+                .frame(maxWidth: 200, alignment: .leading)
+                .disabled(teleportDisabledReason != nil)
                 .accessibleButton(
                     label: AccessibilityLabels.Actions.setLocation,
                     hint: "Applies the entered coordinates to the selected device",
                     identifier: AccessibilityIdentifiers.Location.setLocationButton
                 )
+
+                if let teleportDisabledReason {
+                    Label(teleportDisabledReason, systemImage: "info.circle")
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(minWidth: 320, idealWidth: 400, maxWidth: 440)
         }
+        .frame(maxWidth: 440, alignment: .leading)
     }
 
     // MARK: - Route Controls
 
     private var routeControls: some View {
         FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up") {
-            VStack(alignment: .leading, spacing: AppSpacing.md) {
+            VStack(alignment: .leading, spacing: AppSpacing.lg) {
                 Picker("Route Type", selection: $routeType) {
                     Text("Navigation").tag(RouteType.navigation)
                     Text("Straight").tag(RouteType.straight)
@@ -472,7 +506,7 @@ struct SimulationView: View {
                     Button {
                         appState.addRoutePoint()
                     } label: {
-                        Label("Add Selected", systemImage: "plus.circle")
+                        Label("Add Waypoint", systemImage: "plus.circle")
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     .disabled(appState.targetLocation == nil)
@@ -487,7 +521,7 @@ struct SimulationView: View {
                     } label: {
                         Label("Import GPX", systemImage: "square.and.arrow.down")
                     }
-                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcPrimary))
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .accessibleButton(
                         label: AccessibilityLabels.Actions.importRoute,
                         hint: "Opens a GPX file and loads its route points",
@@ -510,7 +544,7 @@ struct SimulationView: View {
 
                 if appState.currentRoute.isEmpty {
                     Text("Tap the map or search for a place, then add it as a waypoint. Right-click the map for quick actions.")
-                        .font(AppFont.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -519,27 +553,28 @@ struct SimulationView: View {
             }
             .frame(minWidth: 280, idealWidth: 420, maxWidth: 520)
         }
+        .frame(maxWidth: 520, alignment: .leading)
     }
 
     private var routePointList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AppSpacing.sm) {
             HStack {
                 Label("\(appState.currentRoute.count) waypoints", systemImage: "list.number")
-                    .font(AppFont.caption)
+                    .font(AppFont.metadata)
                     .foregroundStyle(Color.pcTextMuted)
 
                 Spacer()
 
                 if appState.isSimulating {
                     Text("\(Int(appState.routeProgress * 100))%")
-                        .font(AppFont.caption)
+                        .font(AppFont.metadata)
                         .foregroundStyle(Color.pcSecondary)
                         .accessibilityIdentifier(AccessibilityIdentifiers.Route.progressIndicator)
                 }
             }
 
             ScrollView {
-                LazyVStack(spacing: 6) {
+                LazyVStack(spacing: AppSpacing.sm) {
                     ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
                         routePointRow(index: index, coordinate: coord)
                     }
@@ -552,13 +587,13 @@ struct SimulationView: View {
     }
 
     private func routePointRow(index: Int, coordinate: LocationCoordinate) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AppSpacing.sm) {
             Text("\(index + 1)")
-                .font(AppFont.caption)
+                .font(AppFont.metadata)
                 .foregroundStyle(.white)
                 .frame(width: 22, height: 22)
                 .background(index == 0 ? Color.pcSecondary : (index == appState.currentRoute.count - 1 ? Color.pcDanger : Color.pcWarning))
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
 
             Text(coordinate.formattedShort)
                 .font(AppFont.monospace)
@@ -594,12 +629,12 @@ struct SimulationView: View {
             .foregroundStyle(Color.pcDanger)
             .accessibilityLabel("Remove waypoint \(index + 1)")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.pcSurfaceHigh.opacity(0.55), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .padding(.horizontal, AppSpacing.sm)
+        .padding(.vertical, AppSpacing.sm)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Waypoint \(index + 1), \(coordinate.formattedShort)")
@@ -612,29 +647,30 @@ struct SimulationView: View {
     private var mainControlPanel: some View {
         HStack(spacing: AppSpacing.xl) {
             // Speed Control
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 Text("Speed: \(appState.simulationSpeed.displayName)")
-                    .font(AppFont.monoSmall)
+                    .font(AppFont.metadata)
                     .foregroundStyle(Color.pcTextMuted)
                     .monospacedDigit()
 
-                HStack(spacing: 8) {
+                HStack(spacing: AppSpacing.sm) {
                     ForEach(SimulationSpeed.allCases, id: \.self) { speed in
                         Button {
                             appState.setSpeed(speed)
                         } label: {
                             Image(systemName: speed.icon)
-                                .font(.caption)
+                                .font(AppFont.metadata)
                                 .frame(width: 32, height: 32)
-                                .background(appState.simulationSpeed == speed ? Color.pcAccent : Color.pcSurfaceHigh.opacity(0.5))
-                                .foregroundStyle(appState.simulationSpeed == speed ? Color.white : Color.pcTextMuted)
-                                .clipShape(Circle())
+                                .background(appState.simulationSpeed == speed ? Color.pcAccent.opacity(AppSurfaceAlpha.hoverRow) : Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow))
+                                .foregroundStyle(appState.simulationSpeed == speed ? Color.pcText : Color.pcTextMuted)
+                                .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
                                 .overlay(
-                                    Circle()
-                                        .stroke(Color.white.opacity(appState.simulationSpeed == speed ? 0.18 : 0.06), lineWidth: 1)
+                                    RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
+                                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
                                 )
                         }
                         .buttonStyle(.plain)
+                        .appHoverOverlay(cornerRadius: AppRadius.sm)
                         .accessibilityLabel("Set speed to \(speed.displayName)")
                         .accessibilityValue(AccessibilityLabels.Values.speed(name: speed.displayName, metersPerSecond: speed.metersPerSecond))
                     }
@@ -645,6 +681,7 @@ struct SimulationView: View {
 
             Divider()
                 .frame(height: 40)
+                .overlay(Color.pcOutline)
 
             // Play/Pause Button
             Button {
@@ -660,14 +697,10 @@ struct SimulationView: View {
                     }
                 }
             } label: {
-                Image(systemName: playButtonIcon)
-                    .font(.title2)
-                    .frame(width: 50, height: 50)
-                    .background(playButtonColor)
-                    .foregroundStyle(.white)
-                    .clipShape(Circle())
+                Label(playButtonTitle, systemImage: playButtonIcon)
+                    .frame(width: 112)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AppCapsuleButtonStyle(accent: playButtonColor, isProminent: true))
             .disabled(!appState.canStartSimulation(for: mode) && !appState.isSimulating)
             .accessibleButton(
                 label: playButtonAccessibilityLabel,
@@ -681,14 +714,9 @@ struct SimulationView: View {
                     await appState.stopSimulation()
                 }
             } label: {
-                Image(systemName: "stop.fill")
-                    .font(.title3)
-                    .frame(width: 40, height: 40)
-                    .background(Color.pcDanger.opacity(appState.isSimulating ? 0.2 : 0.1))
-                    .foregroundStyle(Color.pcDanger)
-                    .clipShape(Circle())
+                Label("Stop", systemImage: "stop.fill")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AppCapsuleButtonStyle(accent: .pcDanger))
             .disabled(!appState.isSimulating)
             .accessibleButton(
                 label: AccessibilityLabels.Actions.stopSimulation,
@@ -698,25 +726,20 @@ struct SimulationView: View {
 
             Divider()
                 .frame(height: 40)
+                .overlay(Color.pcOutline)
 
             // Status
-            VStack(alignment: .leading, spacing: 4) {
-                Text(appState.simulationStatusText)
-                    .font(AppFont.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(Color.pcText)
-                    .accessibilityIdentifier(AccessibilityIdentifiers.Status.statusMessage)
-
-                if let location = appState.currentLocation {
-                    Text(location.formattedShort)
-                        .font(.caption2)
-                        .foregroundStyle(Color.pcTextMuted)
-                        .monospacedDigit()
-                }
-            }
+            PCStatusChip(
+                title: simulationStatusTitle,
+                icon: "circle.fill",
+                color: simulationStatusColor,
+                detail: simulationStatusDetail
+            )
+            .help(appState.simulationStatusText)
+            .accessibilityIdentifier(AccessibilityIdentifiers.Status.statusMessage)
         }
         .padding(AppSpacing.lg)
-        .appGlassPanel(cornerRadius: AppRadius.xxl)
+        .appGlassPanel(cornerRadius: AppRadius.xl)
         .accessibilityElement(children: .contain)
     }
 
@@ -734,6 +757,70 @@ struct SimulationView: View {
             return .pcWarning
         }
         return .pcAccent
+    }
+
+    private var playButtonTitle: String {
+        if appState.isSimulating {
+            return appState.isPaused ? "Resume" : "Pause"
+        }
+        return "Start"
+    }
+
+    private var simulationStatusTitle: String {
+        if appState.isSimulating {
+            return appState.isPaused ? "Paused" : "Active"
+        }
+        return appState.canStartSimulation(for: mode) ? "Ready" : "Waiting"
+    }
+
+    private var simulationStatusColor: Color {
+        if appState.isSimulating {
+            return appState.isPaused ? .pcWarning : .pcSecondary
+        }
+        return appState.canStartSimulation(for: mode) ? .pcPrimary : .pcTextMuted
+    }
+
+    private var simulationStatusDetail: String? {
+        if let location = appState.currentLocation {
+            return location.formattedShort
+        }
+        if !appState.canStartSimulation(for: mode) && !appState.isSimulating {
+            return simulationUnavailableReason
+        }
+        return appState.simulationStatusText
+    }
+
+    private var teleportDisabledReason: String? {
+        if latitudeInput.isEmpty || longitudeInput.isEmpty {
+            return "Enter latitude and longitude"
+        }
+        if appState.selectedDevice == nil {
+            return "Select a device"
+        }
+        if !appState.isTunneldRunning {
+            return "Start tunnel first"
+        }
+        return nil
+    }
+
+    private var simulationUnavailableReason: String? {
+        if !appState.isTunneldRunning {
+            return "Start tunnel"
+        }
+        if appState.selectedDevice == nil {
+            return "Select device"
+        }
+
+        switch mode {
+        case .teleport:
+            return appState.targetLocation == nil ? "Select target" : nil
+        case .route:
+            return appState.currentRoute.count < 2 ? "Add 2 waypoints" : nil
+        case .joystick:
+            return appState.currentLocation == nil && appState.targetLocation == nil ? "Select start" : nil
+        case .settings:
+            return nil
+        }
     }
 
     private func routeMarkerColor(index: Int) -> Color {
@@ -774,8 +861,8 @@ struct SimulationView: View {
 
         Task {
             appState.targetLocation = coordinate
-            appState.targetLocationName = "Manual coordinates"
-            await appState.setLocation(coordinate, source: "Coordinates", name: "Manual coordinates")
+            appState.targetLocationName = "Custom location"
+            await appState.setLocation(coordinate, source: "Coordinates", name: "Custom location")
             withAnimation {
                 appState.statusMessage = "Teleported to \(coordinate.formattedShort)"
             }
@@ -806,7 +893,7 @@ struct SimulationView: View {
         }
 
         appState.statusMessage = mode == .route
-            ? "Selected \(result.name). Use Add Selected to add it to the route."
+            ? "Selected \(result.name). Use Add Waypoint to add it to the route."
             : "Selected \(result.name). Press Play to apply it."
     }
 
@@ -935,7 +1022,6 @@ struct SimulationView_Previews: PreviewProvider {
     static var previews: some View {
         SimulationView(mode: .teleport)
             .environmentObject(AppState())
-            .preferredColorScheme(.dark)
     }
 }
 #endif

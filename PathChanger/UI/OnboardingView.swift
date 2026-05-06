@@ -197,25 +197,25 @@ struct OnboardingView: View {
         VStack(spacing: 8) {
             Image(systemName: viewModel.currentStep.icon)
                 .font(.system(size: 48))
-                .foregroundColor(.blue)
+                .foregroundColor(.pcPrimary)
                 .padding(.top, 30)
 
             Text(viewModel.currentStep.title)
-                .font(.largeTitle)
+                .font(AppFont.title)
                 .fontWeight(.bold)
 
             // Progress indicator
             HStack(spacing: 8) {
                 ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
                     Circle()
-                        .fill(step.rawValue <= viewModel.currentStep.rawValue ? Color.blue : Color.gray.opacity(0.3))
+                        .fill(step.rawValue <= viewModel.currentStep.rawValue ? Color.pcPrimary : Color.pcTextMuted.opacity(0.3))
                         .frame(width: 8, height: 8)
                 }
             }
             .padding(.top, 8)
         }
         .padding(.bottom, 20)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.pcBackground)
     }
 
     @ViewBuilder
@@ -239,6 +239,7 @@ struct OnboardingView: View {
                     viewModel.previousStep()
                 }
                 .keyboardShortcut(.cancelAction)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                 .accessibleButton(
                     label: "Back",
                     hint: "Returns to the previous onboarding step",
@@ -254,7 +255,7 @@ struct OnboardingView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 .accessibleButton(
                     label: "Get started",
                     hint: "Completes onboarding and opens PathChanger",
@@ -267,6 +268,7 @@ struct OnboardingView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(viewModel.isCheckingDependencies)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .accessibleButton(
                         label: "Continue anyway",
                         hint: "Continues onboarding even if dependency checks are incomplete",
@@ -278,6 +280,7 @@ struct OnboardingView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(viewModel.currentStep == .dependencies && viewModel.isCheckingDependencies)
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     .accessibleButton(
                         label: "Next",
                         hint: "Advances to the next onboarding step",
@@ -287,7 +290,7 @@ struct OnboardingView: View {
             }
         }
         .padding()
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.pcBackground)
     }
 
     // MARK: - Step Views
@@ -297,9 +300,9 @@ struct OnboardingView: View {
             Spacer()
 
             Text("Simulate GPS Locations on iOS 17+ Devices")
-                .font(.title2)
+                .font(AppFont.heading)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
+                .foregroundColor(.pcTextMuted)
 
             VStack(alignment: .leading, spacing: 12) {
                 FeatureRow(icon: "location.fill", title: "GPS Simulation", description: "Set custom locations on your iOS device")
@@ -327,27 +330,27 @@ struct OnboardingView: View {
                         if result.allDependenciesMet {
                             HStack {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                    .font(.title2)
+                                    .foregroundColor(.pcSecondary)
+                                    .font(AppFont.heading)
                                 Text("All dependencies are installed!")
-                                    .font(.headline)
+                                    .font(AppFont.heading)
                             }
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.green.opacity(0.1))
-                            .cornerRadius(8)
+                            .background(Color.pcSecondary.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                         } else {
                             HStack {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                    .font(.title2)
+                                    .foregroundColor(.pcWarning)
+                                    .font(AppFont.heading)
                                 Text("Some dependencies are missing")
-                                    .font(.headline)
+                                    .font(AppFont.heading)
                             }
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(8)
+                            .background(Color.pcWarning.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                         }
 
                         // Python 3
@@ -374,13 +377,14 @@ struct OnboardingView: View {
                             Task { await viewModel.checkDependencies() }
                         }
                         .padding(.top)
+                        .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     }
                     .padding()
                 }
             } else {
                 Spacer()
                 Text("Click Next to check dependencies")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.pcTextMuted)
                 Spacer()
             }
         }
@@ -389,7 +393,7 @@ struct OnboardingView: View {
     private var deviceSetupStepView: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Prepare Your iOS Device")
-                .font(.title2)
+                .font(AppFont.heading)
                 .fontWeight(.semibold)
 
             VStack(alignment: .leading, spacing: 16) {
@@ -402,14 +406,14 @@ struct OnboardingView: View {
 
             HStack {
                 Image(systemName: "info.circle")
-                    .foregroundColor(.blue)
+                    .foregroundColor(.pcPrimary)
                 Text("Developer Mode requires an Apple ID and device restart")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(AppFont.metadata)
+                    .foregroundColor(.pcTextMuted)
             }
             .padding()
-            .background(Color.blue.opacity(0.1))
-            .cornerRadius(8)
+            .background(Color.pcPrimary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         }
         .padding(.horizontal, 40)
     }
@@ -420,14 +424,14 @@ struct OnboardingView: View {
 
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80))
-                .foregroundColor(.green)
+                .foregroundColor(.pcSecondary)
 
             Text("You're All Set!")
-                .font(.title)
+                .font(AppFont.title)
                 .fontWeight(.bold)
 
             Text("PathChanger is ready to use")
-                .foregroundColor(.secondary)
+                .foregroundColor(.pcTextMuted)
 
             Spacer()
 
@@ -437,8 +441,8 @@ struct OnboardingView: View {
                 QuickTip(icon: "arrow.triangle.2.circlepath", text: "Import GPX files for route playback")
             }
             .padding()
-            .background(Color.secondary.opacity(0.1))
-            .cornerRadius(12)
+            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
+            .clipShape(RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
 
             Spacer()
         }
@@ -448,13 +452,13 @@ struct OnboardingView: View {
     private var copiedToast: some View {
         HStack {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundColor(.green)
+                .foregroundColor(.pcSecondary)
             Text("Copied to clipboard")
                 .fontWeight(.medium)
         }
         .padding()
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(8)
+        .background(Color.pcSurface)
+        .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .shadow(radius: 4)
     }
 
@@ -482,16 +486,16 @@ struct FeatureRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.title2)
-                .foregroundColor(.blue)
+                .font(AppFont.heading)
+                .foregroundColor(.pcPrimary)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .fontWeight(.semibold)
                 Text(description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(AppFont.metadata)
+                    .foregroundColor(.pcTextMuted)
             }
         }
     }
@@ -509,39 +513,39 @@ struct DependencyCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: installed && valid ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(installed && valid ? .green : .red)
+                    .foregroundColor(installed && valid ? .pcSecondary : .pcDanger)
 
                 Text(title)
-                    .fontWeight(.semibold)
+                    .font(AppFont.label)
 
                 Spacer()
 
                 if let version = version {
                     Text(version)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.metadata)
+                        .foregroundColor(.pcTextMuted)
                 }
             }
 
             if !installed || !valid {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(installed ? "Version too old" : "Not installed")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(AppFont.metadata)
+                        .foregroundColor(.pcTextMuted)
 
                     HStack {
                         Text(installCommand)
-                            .font(.system(.body, design: .monospaced))
+                            .font(AppFont.monospace)
                             .padding(8)
-                            .background(Color.secondary.opacity(0.1))
-                            .cornerRadius(4)
+                            .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
+                            .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
 
                         Button {
                             onCopy(installCommand)
                         } label: {
                             Image(systemName: "doc.on.doc")
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.plain)
                         .accessibleButton(
                             label: "Copy \(title) install command",
                             hint: "Copies the command to the clipboard",
@@ -552,8 +556,8 @@ struct DependencyCard: View {
             }
         }
         .padding()
-        .background(Color.secondary.opacity(0.05))
-        .cornerRadius(8)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.idleRow))
+        .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
     }
 }
 
@@ -566,7 +570,7 @@ struct SetupStep: View {
         HStack(alignment: .top, spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(Color.blue)
+                    .fill(Color.pcPrimary)
                     .frame(width: 32, height: 32)
                 Text("\(number)")
                     .foregroundColor(.white)
@@ -577,8 +581,8 @@ struct SetupStep: View {
                 Text(title)
                     .fontWeight(.semibold)
                 Text(description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(AppFont.metadata)
+                    .foregroundColor(.pcTextMuted)
             }
         }
     }
@@ -591,10 +595,10 @@ struct QuickTip: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .foregroundColor(.blue)
+                .foregroundColor(.pcPrimary)
                 .frame(width: 24)
             Text(text)
-                .font(.callout)
+                .font(AppFont.body)
         }
     }
 }

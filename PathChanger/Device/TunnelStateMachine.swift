@@ -697,8 +697,22 @@ final class TunnelStateMachine: ObservableObject {
         }
     }
 
+    /// Whether the state machine should keep emitting / accepting recovery
+    /// events given the current retry budget.
+    ///
+    /// Production behaviour: gated on the `autoRecoverTunneld` UserDefaults
+    /// flag (the user opts in to automatic restart). In `testModeEnabled`
+    /// builds we bypass the user preference so unit tests can validate the
+    /// recovery transition logic deterministically. See
+    /// `testRunningToErrorOnHealthCheckFailed`,
+    /// `testErrorToStartingOnRecoveryAttempted`, and
+    /// `testCompleteFailureRecoveryLifecycle`.
     private func shouldAttemptRecovery() -> Bool {
-        UserDefaults.standard.bool(forKey: "autoRecoverTunneld") && context.retryCount < context.maxRetries
+        guard context.retryCount < context.maxRetries else { return false }
+        #if DEBUG
+        if testModeEnabled { return true }
+        #endif
+        return UserDefaults.standard.bool(forKey: "autoRecoverTunneld")
     }
 
     private func recoveryDelay() -> TimeInterval {

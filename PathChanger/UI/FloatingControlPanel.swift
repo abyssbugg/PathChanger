@@ -2,7 +2,7 @@
 //  FloatingControlPanel.swift
 //  PathChanger
 //
-//  Reusable glassmorphic container for floating UI controls
+//  Reusable structured container for map controls
 //
 
 import SwiftUI
@@ -19,15 +19,17 @@ struct FloatingControlPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppSpacing.md) {
+        VStack(alignment: .leading, spacing: AppSpacing.lg) {
             if let title = title {
                 HStack(spacing: AppSpacing.sm) {
                     if let icon = icon {
                         Image(systemName: icon)
-                            .foregroundStyle(Color.pcPrimary)
+                            .font(AppFont.label)
+                            .foregroundStyle(Color.pcTextMuted)
                     }
                     Text(title)
-                        .appSectionLabel()
+                        .font(AppFont.title)
+                        .foregroundStyle(Color.pcText)
 
                     Spacer()
                 }
@@ -44,7 +46,7 @@ struct FloatingControlPanel<Content: View>: View {
 struct FloatingControlPanel_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.blue.opacity(0.2).ignoresSafeArea()
+            Color.pcBackground.ignoresSafeArea()
 
             FloatingControlPanel(title: "Teleport", icon: "mappin.and.ellipse") {
                 VStack {
@@ -53,7 +55,7 @@ struct FloatingControlPanel_Previews: PreviewProvider {
                     TextField("Longitude", text: .constant("139.7671"))
                         .textFieldStyle(.roundedBorder)
                     Button("Teleport") {}
-                        .primaryButtonStyle()
+                        .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 }
                 .frame(width: 200)
             }

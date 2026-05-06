@@ -41,7 +41,6 @@ struct PathChangerApp: App {
                     }
             }
         }
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
 
@@ -189,7 +188,14 @@ class AppState: ObservableObject {
     // MARK: Computed Properties
 
     var canStartSimulation: Bool {
-        selectedDevice != nil && isTunneldRunning
+        // BUG FIX (WiFi-Bug-8): Read tunnel state from TunneldManager.shared.isRunning
+        // directly. The previous code read AppState.isTunneldRunning, which is
+        // a debounced @Published mirror that can lag the state machine — and
+        // historically was clobbered to false every 5 seconds by the polling
+        // timer that didn't recognise WiFi tunnels. Reading the state machine
+        // directly gives us a single source of truth for "can we drive the
+        // device right now".
+        return selectedDevice != nil && TunneldManager.shared.isRunning
     }
 
     var simulationStatusText: String {
@@ -401,10 +407,24 @@ class AppState: ObservableObject {
     }
 
     func checkTunneldStatus() async {
-        await deviceManager.checkTunneldStatus()
-        updateTunnelRunning(deviceManager.isTunneldRunning)
+        // BUG FIX (WiFi-Bug-2): tunnel-running truth lives in TunneldManager,
+        // not DeviceManager. The previous code routed through
+        // `deviceManager.checkTunneldStatus()` which (before Bug-1B fix) didn't
+        // know about the WiFi process pattern, and the result kept clobbering
+        // the state-machine-derived value via the 5s timer.
+        //
+        // Now we ask TunneldManager itself two questions:
+        //   1. Does its state machine think a tunnel is up? (`isRunning`)
+        //   2. As a self-heal, does pgrep find any pmd3 tunnel process that the
+        //      state machine missed? (`detectRunningTunnelMode()`)
+        // The OR of those is the single tunnel-truth signal AppState publishes.
+        let stateMachineRunning = TunneldManager.shared.isRunning
+        let externallyDetectedMode = await TunneldManager.shared.detectRunningTunnelMode()
+        let isRunning = stateMachineRunning || externallyDetectedMode != nil
+        updateTunnelRunning(isRunning, force: true)
+
         if UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool == true,
-           !isTunneldRunning && !TunneldManager.shared.isStarting {
+           !isRunning && !TunneldManager.shared.isStarting {
             await TunneldManager.shared.autoStart()
             updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
         }
@@ -431,7 +451,8 @@ class AppState: ObservableObject {
         source: String = "Manual",
         name: String? = nil,
         recordHistory: Bool = true,
-        showToast: Bool = true
+        showToast: Bool = true,
+        performanceMode: Bool = false
     ) async {
         guard let device = selectedDevice else {
             errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
@@ -464,7 +485,7 @@ class AppState: ObservableObject {
         statusMessage = "Injecting location..."
 
         do {
-            try await locationBridge.setLocation(coordinate, for: device)
+            try await locationBridge.setLocation(coordinate, for: device, usePerformanceMode: performanceMode)
             currentLocation = coordinate
             isSimulating = true
             lastError = nil
@@ -658,7 +679,8 @@ class AppState: ObservableObject {
                     source: "Route",
                     name: "Route point \(currentIndex + 1)",
                     recordHistory: currentIndex == 0 || currentIndex == totalPoints - 1,
-                    showToast: false
+                    showToast: false,
+                    performanceMode: true
                 )
 
                 routeProgress = Double(currentIndex + 1) / Double(totalPoints)
@@ -697,7 +719,13 @@ class AppState: ObservableObject {
         isPaused = false
         isSimulating = true
 
-        await setLocation(start, source: "Joystick", name: targetLocationName ?? "Joystick start", recordHistory: true)
+        await setLocation(
+            start,
+            source: "Joystick",
+            name: targetLocationName ?? "Joystick start",
+            recordHistory: true,
+            performanceMode: true
+        )
 
         joystickTask = Task {
             while !Task.isCancelled {
@@ -726,7 +754,14 @@ class AppState: ObservableObject {
                 }
 
                 joystickBaseLocation = next
-                await setLocation(next, source: "Joystick", name: "Joystick movement", recordHistory: false, showToast: false)
+                await setLocation(
+                    next,
+                    source: "Joystick",
+                    name: "Joystick movement",
+                    recordHistory: false,
+                    showToast: false,
+                    performanceMode: true
+                )
 
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
