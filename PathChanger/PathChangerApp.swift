@@ -267,6 +267,7 @@ class AppState: ObservableObject {
     init() {
         self.simulationEngine = SimulationEngine(locationBridge: locationBridge)
         UserDefaults.standard.register(defaults: ["autoStartTunneld": false])
+        AppPreferences.registerUIDefaults()
 
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")

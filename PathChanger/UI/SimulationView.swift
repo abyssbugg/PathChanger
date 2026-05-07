@@ -11,8 +11,22 @@ import MapKit
 import UniformTypeIdentifiers
 import AppKit
 
+/// Visual chrome mode for `SimulationView`.
+///
+/// `.full` is the legacy layout used when SimulationView hosts the entire
+/// window (top toolbar with search + bottom main control panel both visible).
+/// `.shell` is the new layout used inside `MainMapShell`: the shell takes
+/// over search (sidebar) and the primary action (bottom-center pill), so
+/// SimulationView suppresses its top toolbar and main control panel and
+/// floats the mode-specific control panel higher to leave room for the pill.
+enum SimulationViewChrome {
+    case full
+    case shell
+}
+
 struct SimulationView: View {
     let mode: AppMode
+    var chrome: SimulationViewChrome = .full
     @EnvironmentObject var appState: AppState
     @StateObject private var searchService = LocationSearchService()
 
@@ -43,10 +57,14 @@ struct SimulationView: View {
             mapView
                 .ignoresSafeArea()
 
-            // 2. Top Controls (Search & Map Style)
-            VStack {
-                topControls
-                Spacer()
+            // 2. Top Controls (Search & Map Style) — only in full chrome.
+            // In shell chrome the sidebar provides search and the host has its
+            // own toolbars.
+            if chrome == .full {
+                VStack {
+                    topControls
+                    Spacer()
+                }
             }
 
             // 3. Floating Action Panel
@@ -54,13 +72,17 @@ struct SimulationView: View {
                 // Mode-specific controls
                 modeSpecificControls
 
-                // Main control panel
-                mainControlPanel
+                // Main control panel — hidden in shell chrome where the action
+                // pill (PrimaryActionPill) handles play/pause/stop.
+                if chrome == .full {
+                    mainControlPanel
+                }
             }
             .padding(.horizontal, AppSpacing.xl)
-            .padding(.bottom, AppSpacing.xl)
+            // Push higher in shell chrome to clear the bottom action pill.
+            .padding(.bottom, chrome == .shell ? 96 : AppSpacing.xl)
         }
-        .background(Color.pcBackground)
+        .background(chrome == .full ? Color.pcBackground : Color.clear)
         .onChange(of: appState.currentLocation) { _, newLocation in
             if let location = newLocation {
                 withAnimation {

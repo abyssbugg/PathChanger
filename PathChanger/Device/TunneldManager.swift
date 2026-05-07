@@ -28,8 +28,8 @@ import AppKit
 /// |------|--------------|----------|
 /// | Auto | Varies | Best for most users |
 /// | USB | Yes | Fastest, most reliable |
-/// | WiFi | No | True wireless operation |
-/// | Daemon | No | Background service mode |
+/// | WiFi | No | Legacy manual-pairing Wi-Fi for iOS 17/18 |
+/// | Daemon | No | Recommended wireless path for iOS 26+ |
 ///
 /// ## Example
 ///
@@ -53,10 +53,47 @@ enum TunnelMode: String, CaseIterable, Identifiable {
         case .usb:
             return "Fast tunnel via USB (lockdown start-tunnel)"
         case .wifi:
-            return "True WiFi-only (remote start-tunnel -t wifi)"
+            return "Legacy manual-pairing Wi-Fi path for iOS 17/18"
         case .daemon:
-            return "Background daemon (remote tunneld)"
+            return "Recommended wireless mode for iOS 26+"
         }
+    }
+
+    var displayName: String {
+        switch self {
+        case .wifi:
+            return "WiFi Only (Legacy)"
+        default:
+            return rawValue
+        }
+    }
+
+    static func usesDaemonForModernWireless(
+        requested mode: TunnelMode,
+        targetIOSMajorVersion: Int?,
+        targetConnectionType: ConnectionType?
+    ) -> Bool {
+        guard let targetIOSMajorVersion, targetIOSMajorVersion >= 26 else {
+            return false
+        }
+
+        if mode == .wifi {
+            return true
+        }
+
+        return mode == .auto && targetConnectionType == .wifi
+    }
+
+    static func effectiveMode(
+        requested mode: TunnelMode,
+        targetIOSMajorVersion: Int?,
+        targetConnectionType: ConnectionType?
+    ) -> TunnelMode {
+        usesDaemonForModernWireless(
+            requested: mode,
+            targetIOSMajorVersion: targetIOSMajorVersion,
+            targetConnectionType: targetConnectionType
+        ) ? .daemon : mode
     }
 
 
@@ -322,8 +359,8 @@ struct PrivilegedCommandValidator {
 /// |------|-------------|----------|
 /// | Auto | Smart selection based on availability | Most users |
 /// | USB | Fast lockdown tunnel via USB | Development |
-/// | WiFi | True wireless connection | Wireless testing |
-/// | Daemon | Background service | Continuous use |
+/// | WiFi | Legacy manual-pairing Wi-Fi | iOS 17/18 setups |
+/// | Daemon | Background service | iOS 26+ wireless use |
 ///
 /// ## Security Considerations
 ///
@@ -500,6 +537,7 @@ class TunneldManager: ObservableObject {
     /// UDID selected for the next tunnel start, populated from usbmux discovery.
     private var targetTunnelUDID: String?
     private var targetTunnelConnectionType: ConnectionType?
+    private var targetTunnelIOSMajorVersion: Int?
     private var tunnelStartInFlight = false
 
     /// Active process IDs to prevent duplicates (mirrored from state machine context)
@@ -652,12 +690,20 @@ class TunneldManager: ObservableObject {
 
         if preferredMode == .auto {
             let availability = await deviceConnectionAvailability()
+            let useDaemonForModernWireless = TunnelMode.usesDaemonForModernWireless(
+                requested: .auto,
+                targetIOSMajorVersion: targetTunnelIOSMajorVersion,
+                targetConnectionType: targetTunnelConnectionType
+            )
             if let targetUDID = targetTunnelUDID, availability.usbUDID == targetUDID {
                 modesToTry = [.usb]
             } else if let targetUDID = targetTunnelUDID,
                       availability.networkUDID == targetUDID,
                       targetTunnelConnectionType != .wifi {
                 modesToTry = [.usb]
+            } else if useDaemonForModernWireless {
+                statusMessage = "Using Background Daemon for iOS \(targetTunnelIOSMajorVersion ?? 26)+ wireless tunneling."
+                modesToTry = [.daemon]
             } else if let targetUDID = targetTunnelUDID,
                       availability.wifiBrowseUDID == targetUDID || targetTunnelConnectionType == .wifi {
                 targetTunnelUDID = targetUDID
@@ -681,7 +727,19 @@ class TunneldManager: ObservableObject {
         } else {
             // Specific mode requested
             let availability = await deviceConnectionAvailability()
-            switch preferredMode {
+            let requestedMode = preferredMode
+            let effectiveMode = TunnelMode.effectiveMode(
+                requested: requestedMode,
+                targetIOSMajorVersion: targetTunnelIOSMajorVersion,
+                targetConnectionType: targetTunnelConnectionType
+            )
+
+            if requestedMode == .wifi && effectiveMode == .daemon {
+                statusMessage = "Using Background Daemon for iOS \(targetTunnelIOSMajorVersion ?? 26)+ wireless tunneling. WiFi Only requires legacy manual pairing."
+                Logger.info("[Tunnel] Routing WiFi Only request to Background Daemon for iOS \(targetTunnelIOSMajorVersion ?? 26)+ target", category: .device)
+            }
+
+            switch effectiveMode {
             case .wifi:
                 // BUG FIX (WiFi-Bug-3): Never fall back to availability.networkUDID for
                 // WiFi mode. `pmd3 remote start-tunnel -t wifi --udid <X>` filters
@@ -712,7 +770,7 @@ class TunneldManager: ObservableObject {
             case .auto:
                 break
             }
-            modesToTry = [preferredMode]
+            modesToTry = [effectiveMode]
         }
 
         for mode in modesToTry {
@@ -780,6 +838,7 @@ class TunneldManager: ObservableObject {
         guard let device else {
             targetTunnelUDID = nil
             targetTunnelConnectionType = nil
+            targetTunnelIOSMajorVersion = nil
             return
         }
 
@@ -790,6 +849,7 @@ class TunneldManager: ObservableObject {
 
         targetTunnelUDID = device.id
         targetTunnelConnectionType = device.connectionType
+        targetTunnelIOSMajorVersion = device.iosMajorVersion
     }
 
     /// Schedule a stop+start when the user changes the preferred mode and a
@@ -968,12 +1028,19 @@ class TunneldManager: ObservableObject {
     }
 
     private func discoverNetworkUDIDViaRemoteBrowse(preferredUDID: String?) async -> String? {
+        // BUG FIX (WiFi-Bonjour-Timeout): the prior 3-second `remote browse`
+        // window was empirically too short on real networks — a live capture
+        // showed `pmd3 remote browse --timeout 5` returning `{"usb":[],"wifi":[]}`
+        // while `--timeout 15` found the iPhone immediately. Bumping to 8s
+        // gives the responder time to multicast on slow Wi-Fi (and increasing
+        // the outer Swift-side timeout to 12s so the subprocess has headroom
+        // to flush JSON output before we kill it).
         do {
             let output = try await runCommand(python3Path, arguments: [
                 "-m", "pymobiledevice3", "--no-color",
                 "remote", "browse",
-                "--timeout", "3"
-            ], timeout: 5.0)
+                "--timeout", "8"
+            ], timeout: 12.0)
 
             let candidates = extractWiFiUDIDsFromRemoteBrowseOutput(output)
             if let preferredUDID, candidates.contains(preferredUDID) {
@@ -1105,13 +1172,18 @@ class TunneldManager: ObservableObject {
 
         // Mode-aware reattach gate: refuse to silently bind to a tunnel that doesn't
         // match the user's explicit preference.
-        let modeMatches = preferredMode == .auto || preferredMode == runningMode
+        let desiredMode = TunnelMode.effectiveMode(
+            requested: preferredMode,
+            targetIOSMajorVersion: targetTunnelIOSMajorVersion,
+            targetConnectionType: targetTunnelConnectionType
+        )
+        let modeMatches = preferredMode == .auto || desiredMode == runningMode
         if !modeMatches {
             Logger.info(
-                "[Tunnel] Existing \(runningMode.rawValue) tunnel detected but preferredMode is \(preferredMode.rawValue) - stopping it to start fresh in requested mode",
+                "[Tunnel] Existing \(runningMode.rawValue) tunnel detected but preferredMode is \(preferredMode.rawValue) (effective \(desiredMode.rawValue)) - stopping it to start fresh in requested mode",
                 category: .device
             )
-            statusMessage = "Stopping \(runningMode.rawValue) tunnel to switch to \(preferredMode.rawValue)..."
+            statusMessage = "Stopping \(runningMode.rawValue) tunnel to switch to \(desiredMode.rawValue)..."
             stopTunnel()
             try? await Task.sleep(nanoseconds: 500_000_000) // grace for processes to exit
             return false
@@ -1225,20 +1297,41 @@ class TunneldManager: ObservableObject {
             return
         }
 
-        // The most common WiFi-mode failure: pmd3 found no _remotepairing-manual-pairing
-        // Bonjour service. That means the iPhone hasn't been put into wireless-pairing mode
-        // yet. There is no Mac-side workaround; the user must enable it in iOS Settings.
+        // pmd3 9.x has TWO wireless-tunnel paths and they have different OS
+        // requirements:
+        //
+        //   (A) `remote start-tunnel -t wifi`  (Tunnel Mode = WiFi)
+        //       Uses the `_remotepairing-manual-pairing._tcp` Bonjour flow and
+        //       a `~/.pymobiledevice3/remote_<UDID>.plist` record. iOS 17 and
+        //       18 advertise that service when wireless pairing is toggled,
+        //       BUT iOS 26.x stops advertising it and only emits
+        //       `_remotepairing._tcp` (paired) + `_remoted._tcp` (NCM). On
+        //       those builds path (A) cannot complete.
+        //
+        //   (B) `remote tunneld`              (Tunnel Mode = Background Daemon)
+        //       Uses the `_remoted._tcp` channel + Apple's `remoted`
+        //       suspension. Works on iOS 26.x because it reuses the active
+        //       lockdown trust record instead of a separate remote pair record.
+        //
+        // So: when WiFi mode fails, the most likely cause is iOS 26+. We tell
+        // the user about the daemon fallback first, and only mention pair_wifi.py
+        // for iOS 17/18 setups where it still works.
         let wifiPairingGuidance = """
-        Wi-Fi pairing not configured. On the iPhone:
-          1. Make sure it is UNLOCKED and on the SAME Wi-Fi as this Mac.
+        Wi-Fi tunnel could not start.
+
+        On iOS 26 and later, switch the Tunnel Mode picker to "Background
+        Daemon". That mode uses Apple's `_remoted` channel and reuses the
+        existing pair record — no separate Wi-Fi pairing step required.
+
+        On iOS 17 / 18 you can use Wi-Fi mode directly, but the iPhone has to
+        be advertising `_remotepairing-manual-pairing._tcp` first:
+          1. Unlock the iPhone and put it on the SAME Wi-Fi as this Mac.
           2. Settings → Privacy & Security → Developer Mode must be ON.
-          3. Settings → Developer → enable wireless pairing for this Mac
-             (the toggle name varies by iOS version: "Pair Wirelessly",
-             "Wireless Pairing", or "Allow Mac").
-          4. Then run, in Terminal:
+          3. Settings → Developer → toggle "Pair Wirelessly" / "Wireless
+             Pairing" / "Allow Mac" OFF, then back ON.
+          4. While that toggle is fresh (~30s window), in Terminal:
                sudo python3 \(scriptsDirectoryPath)/pair_wifi.py --timeout 30
-             and confirm the pairing prompt on the iPhone.
-          5. Retry Start in Wi-Fi mode.
+          5. Confirm the pairing prompt on the iPhone, then retry Wi-Fi mode.
         """
 
         if mode == .wifi && (

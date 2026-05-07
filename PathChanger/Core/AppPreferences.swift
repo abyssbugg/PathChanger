@@ -37,4 +37,27 @@ final class AppPreferences {
         get { defaults.bool(forKey: "onboardingCompleted") }
         set { defaults.set(newValue, forKey: "onboardingCompleted") }
     }
+
+    // MARK: - Map Shell UI State
+
+    private static let sidebarExpandedKey = "mapShell.sidebarExpanded"
+
+    /// Whether the new map-shell sidebar is expanded. Defaults to `true` for first launch
+    /// (more discoverable on first run; collapses cleanly via ⌘\\ once the user is oriented).
+    var isSidebarExpanded: Bool {
+        get {
+            // `bool(forKey:)` returns false when the key is missing, but for our default-true
+            // semantics we register a default in `init()` below.
+            defaults.bool(forKey: Self.sidebarExpandedKey)
+        }
+        set { defaults.set(newValue, forKey: Self.sidebarExpandedKey) }
+    }
+
+    /// Register UI defaults so a fresh install gets the documented default state.
+    /// Call once at app launch from `PathChangerApp` or `AppState.init`.
+    static func registerUIDefaults() {
+        UserDefaults.standard.register(defaults: [
+            sidebarExpandedKey: true
+        ])
+    }
 }

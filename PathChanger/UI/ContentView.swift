@@ -43,40 +43,22 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedMode: AppMode? = .teleport
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var currentError: ErrorHandler.AppError?
     @State private var showErrorDialog = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Newer iOS compatibility warning banner
+            // Newer iOS compatibility warning banner — kept above the new shell
+            // so it stays visible regardless of sidebar state.
             if let device = appState.selectedDevice, device.hasLocationCompatibilityWarning {
                 IOSCompatibilityWarningBanner(device: device)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView(selectedMode: $selectedMode)
-                    .navigationTitle("Location Changer")
-                    .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 350)
-            } detail: {
-                if let mode = selectedMode {
-                    switch mode {
-                    case .teleport, .route, .joystick:
-                        SimulationView(mode: mode)
-                    case .settings:
-                        SettingsView(showsHeader: false)
-                    }
-                } else {
-                    ContentUnavailableView(
-                        "Select a Mode",
-                        systemImage: "location.slash",
-                        description: Text("Choose a simulation mode from the sidebar")
-                    )
-                }
-            }
-            .navigationSplitViewStyle(.balanced)
+            // New Apple-Maps-style shell: map-dominant background, hybrid
+            // collapsible sidebar, floating top-right device pill, and floating
+            // bottom-center primary action pill.
+            MainMapShell()
         }
         .frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 700)
         // Onboarding sheet

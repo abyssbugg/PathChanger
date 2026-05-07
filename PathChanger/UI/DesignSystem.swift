@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 // MARK: - Colors
 
@@ -22,7 +23,7 @@ extension Color {
     static let modernDarkSurface = Color(hex: 0x1C1C1E)
     static let modernDarkBackground = Color(hex: 0x000000)
 
-    // PathChanger professional palette
+    // PathChanger professional palette (legacy dark-only)
     static let pcBackground = Color(hex: 0x0B1326)
     static let pcSurface = Color(hex: 0x151C2D)
     static let pcSurfaceHigh = Color(hex: 0x1C2435)
@@ -35,6 +36,67 @@ extension Color {
     static let pcText = Color(hex: 0xD8DEEA)
     static let pcTextMuted = Color(hex: 0x8993A8)
     static let pcOutline = Color(hex: 0x343D50)
+
+    // MARK: Dynamic (auto light/dark) tokens used by the new map shell
+
+    /// Build a Color that resolves differently in light vs. dark appearances.
+    /// Uses AppKit's `NSColor` dynamic provider so SwiftUI honors the system theme.
+    static func dynamic(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            switch appearance.bestMatch(from: [.aqua, .darkAqua, .vibrantLight, .vibrantDark]) {
+            case .darkAqua, .vibrantDark: return dark
+            default: return light
+            }
+        }))
+    }
+
+    /// Primary text color that automatically adapts to system appearance.
+    static let pcTextDynamic: Color = .dynamic(
+        light: NSColor(srgbRed: 0.10, green: 0.10, blue: 0.12, alpha: 1.0),
+        dark: NSColor(srgbRed: 0.97, green: 0.97, blue: 0.99, alpha: 1.0)
+    )
+
+    /// Muted/secondary text color that adapts to appearance.
+    static let pcTextMutedDynamic: Color = .dynamic(
+        light: NSColor(srgbRed: 0.45, green: 0.45, blue: 0.50, alpha: 1.0),
+        dark: NSColor(srgbRed: 0.62, green: 0.62, blue: 0.66, alpha: 1.0)
+    )
+
+    /// Subtle outline color that adapts to appearance.
+    static let pcOutlineDynamic: Color = .dynamic(
+        light: NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.06),
+        dark: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.06)
+    )
+
+    /// Tint applied behind glass surfaces (sits over `.regularMaterial`).
+    static let pcSurfaceTintDynamic: Color = .dynamic(
+        light: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.55),
+        dark: NSColor(srgbRed: 0.10, green: 0.105, blue: 0.125, alpha: 0.55)
+    )
+
+    /// System-blue accent. Same in both modes (matches Apple Maps + macOS).
+    static let pcSystemBlue = Color(hex: 0x007AFF)
+
+    /// Indigo used for the device-avatar gradient endpoint.
+    static let pcSystemIndigo = Color(hex: 0x5856D6)
+}
+
+// MARK: - Action gradient + shadow constants
+
+enum AppActionGradient {
+    /// Primary action capsule gradient (matches Figma mockup).
+    static let primary = LinearGradient(
+        colors: [Color(hex: 0x0087FF), Color(hex: 0x0060EA)],
+        startPoint: .top,
+        endPoint: .bottom
+    )
+
+    /// Avatar gradient — system blue → indigo.
+    static let avatar = LinearGradient(
+        colors: [.pcSystemBlue, .pcSystemIndigo],
+        startPoint: .top,
+        endPoint: .bottom
+    )
 }
 
 // MARK: - Typography
@@ -137,6 +199,65 @@ struct AppCapsuleButtonStyle: ButtonStyle {
                     .stroke(accent.opacity(isProminent ? 0.22 : 0.24), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
+    }
+}
+
+/// The bottom-center primary action pill — gradient blue capsule with dual shadow.
+/// Used by `PrimaryActionPill` in the new map shell.
+struct AppCapsuleActionStyle: ButtonStyle {
+    enum Tone {
+        case accent
+        case warning
+        case danger
+
+        var gradient: LinearGradient {
+            switch self {
+            case .accent:
+                return AppActionGradient.primary
+            case .warning:
+                return LinearGradient(
+                    colors: [Color(hex: 0xFFB13C), Color(hex: 0xE0830A)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            case .danger:
+                return LinearGradient(
+                    colors: [Color(hex: 0xFF5E5E), Color(hex: 0xE03434)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+
+        var glowColor: Color {
+            switch self {
+            case .accent: return Color(hex: 0x0060EA).opacity(0.45)
+            case .warning: return Color(hex: 0xE0830A).opacity(0.40)
+            case .danger: return Color(hex: 0xE03434).opacity(0.40)
+            }
+        }
+    }
+
+    var tone: Tone = .accent
+    /// Default 220×56 to match the mockup; callers can override via .frame.
+    var width: CGFloat = 220
+    var height: CGFloat = 56
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .frame(width: width, height: height)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(tone.gradient)
+                    .opacity(configuration.isPressed ? 0.85 : 1.0)
+            )
+            .shadow(color: tone.glowColor, radius: 24, x: 0, y: 8)
+            .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .contentShape(Capsule(style: .continuous))
     }
 }
 

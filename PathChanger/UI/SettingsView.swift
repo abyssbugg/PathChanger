@@ -157,7 +157,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 Picker("Mode", selection: $tunneldManager.preferredMode) {
                     ForEach(TunnelMode.allCases) { mode in
-                        Label(mode.rawValue, systemImage: iconForTunnelMode(mode))
+                        Label(mode.displayName, systemImage: iconForTunnelMode(mode))
                             .tag(mode)
                     }
                 }
@@ -239,8 +239,8 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: AppSpacing.xs) {
                     Label("USB mode: Fastest, requires USB cable", systemImage: "cable.connector")
-                    Label("Wi-Fi mode: True wireless, device must be on same network", systemImage: "wifi")
-                    Label("Daemon mode: Background service, auto-discovers devices", systemImage: "server.rack")
+                    Label("WiFi Only: Legacy manual-pairing path for iOS 17/18", systemImage: "wifi")
+                    Label("Background Daemon: Recommended wireless mode for iOS 26+", systemImage: "server.rack")
                     Label("Requires administrator privileges", systemImage: "lock.shield")
                 }
                 .font(AppFont.metadata)
@@ -249,8 +249,8 @@ struct SettingsView: View {
         }
     }
 
-    /// Wi-Fi pairing card. Visible only when the user is targeting Wi-Fi mode
-    /// (preferredMode == .wifi or .auto). Surfaces:
+    /// Wi-Fi pairing card. Visible only when the user explicitly targets the
+    /// legacy WiFi Only mode. Surfaces:
     ///   1. Whether any iPhone is currently advertising over Bonjour ("Probe").
     ///   2. A "Pair Over Wi-Fi" button that drives `scripts/pair_wifi.py` with
     ///      administrator privileges (30s Bonjour browse + iPhone-side prompt).
@@ -258,12 +258,12 @@ struct SettingsView: View {
     ///      without leaving the app.
     @ViewBuilder
     private var wifiPairingCard: some View {
-        if tunneldManager.preferredMode == .wifi || tunneldManager.preferredMode == .auto {
+        if tunneldManager.preferredMode == .wifi {
             PCSectionCard(
-                title: "Wi-Fi Pairing",
-                subtitle: "Required once per Mac before WiFi-mode tunnels can connect.",
+                title: "Legacy Wi-Fi Pairing",
+                subtitle: "Only needed for WiFi Only on iOS 17/18. For iOS 26+, use Background Daemon.",
                 icon: "wifi.router",
-                badge: "iOS 17+"
+                badge: "Legacy"
             ) {
                 VStack(alignment: .leading, spacing: AppSpacing.md) {
                     bonjourProbeRow
@@ -323,7 +323,7 @@ struct SettingsView: View {
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: AppSpacing.xxs) {
-                Text("Pair this Mac with the iPhone over Wi-Fi")
+                Text("Pair this Mac with the iPhone for legacy WiFi Only")
                     .font(AppFont.body)
                     .foregroundStyle(Color.pcText)
                 Text(pairButtonSubtitle)
@@ -376,6 +376,7 @@ struct SettingsView: View {
 
     private var pairInstructions: some View {
         VStack(alignment: .leading, spacing: AppSpacing.xs) {
+            Label("For iOS 26 and later, choose Background Daemon instead of WiFi Only", systemImage: "server.rack")
             Label("On the iPhone, enable Settings → Privacy & Security → Developer Mode", systemImage: "hammer")
             Label("Settings → Developer → \u{201C}Pair Wirelessly\u{201D} (toggle name varies by iOS version)", systemImage: "wifi.circle")
             Label("iPhone must be UNLOCKED and on the same Wi-Fi as this Mac", systemImage: "lock.open")
@@ -424,7 +425,7 @@ struct SettingsView: View {
         case .success(let count):
             return "Last attempt succeeded (\(count) device(s) paired)."
         case .noDevicesFound:
-            return "Last attempt found no _remotepairing-manual-pairing instances. Enable wireless pairing on the iPhone and retry."
+            return "No manual-pairing service was found. On iOS 26+, use Background Daemon instead."
         case .scriptError(let message):
             return "Last attempt failed: \(message)"
         case .userCancelled:

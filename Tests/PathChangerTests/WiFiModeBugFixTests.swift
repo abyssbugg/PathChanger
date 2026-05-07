@@ -74,6 +74,59 @@ final class TunnelModePatternTests: XCTestCase {
         XCTAssertEqual(TunnelMode.wifi.command, expected)
     }
 
+    func testWiFiDisplayNameMarksLegacyPath() {
+        XCTAssertEqual(TunnelMode.wifi.displayName, "WiFi Only (Legacy)")
+        XCTAssertTrue(TunnelMode.wifi.description.contains("iOS 17/18"))
+    }
+
+    func testDaemonDescriptionMarksIOS26Recommendation() {
+        XCTAssertTrue(TunnelMode.daemon.description.contains("iOS 26+"))
+    }
+
+    func testIOS26WiFiOnlyUsesDaemonEffectiveMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .wifi,
+                targetIOSMajorVersion: 26,
+                targetConnectionType: .wifi
+            ),
+            .daemon
+        )
+    }
+
+    func testIOS18WiFiOnlyKeepsLegacyWiFiMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .wifi,
+                targetIOSMajorVersion: 18,
+                targetConnectionType: .wifi
+            ),
+            .wifi
+        )
+    }
+
+    func testAutoIOS26WirelessTargetUsesDaemonEffectiveMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .auto,
+                targetIOSMajorVersion: 26,
+                targetConnectionType: .wifi
+            ),
+            .daemon
+        )
+    }
+
+    func testAutoIOS26USBTargetKeepsAutoMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .auto,
+                targetIOSMajorVersion: 26,
+                targetConnectionType: .usb
+            ),
+            .auto
+        )
+    }
+
     func testUSBCommandShape() {
         XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel"])
     }
