@@ -287,10 +287,10 @@ enum DeviceConnectionState: Equatable {
 
     var statusText: String {
         switch self {
-        case .disconnected: return "Disconnected"
-        case .connecting: return "Connecting..."
+        case .disconnected: return "Not connected"
+        case .connecting: return "Connecting…"
         case .connected: return "Connected"
-        case .error(let msg): return "Error: \(msg)"
+        case .error(let msg): return "Connection lost: \(msg)"
         }
     }
 
@@ -1232,7 +1232,7 @@ class DeviceManager: ObservableObject {
 
         // For WiFi devices, tunneld must be running
         if device.connectionType == .wifi && !isTunneldRunning {
-            connectionState = .error("tunneld not running")
+            connectionState = .error("Tunnel offline")
             throw DeviceError.tunneldNotRunning
         }
 

@@ -16,6 +16,29 @@
 //  Mode selection is owned here (`@State selectedMode`); the sidebar emits
 //  changes via `@Binding`.
 //
+// MARK: - W1 Authority Declaration (Slice S0 — documentation only)
+//
+// MainMapShell is the SOLE production shell layout authority.
+//
+// Authority rules (frozen — see W1 governance plan):
+//   - This shell is the only production layout. `ContentView` always
+//     instantiates MainMapShell, and MainMapShell always instantiates
+//     `SimulationView(mode: ..., chrome: .shell)`. The `.shell` chrome is
+//     therefore the sole production layout authority.
+//   - The shell hosts exactly three floating canonical surfaces:
+//       (a) the Phase-1 readiness pill (`DeviceTunnelPill`),
+//       (b) the T0 execution pill (`PrimaryActionPill`),
+//       (c) the production sidebar (`CollapsibleSidebar`).
+//     All three are placed by this shell and must not be relocated,
+//     duplicated, or shadowed by any other layout.
+//   - `.full` chrome surfaces in `SimulationView`, and the legacy
+//     `SidebarView`, are compatibility shims not reachable through this
+//     shell. They are deferred to the future `.full` deprecation phase
+//     (W4) and are not active production authorities.
+//
+// W1 Slice S0 is documentation-only. No behavior, layout, state, bindings,
+// or routing are altered by this declaration.
+//
 
 import SwiftUI
 

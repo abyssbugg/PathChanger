@@ -2,7 +2,7 @@
 # Script to build PathChanger.app bundle from Swift Package
 # Supports both ad-hoc signing (development) and Developer ID signing (production)
 
-set -e
+set -euo pipefail
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -11,10 +11,69 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+fail() {
+    echo -e "${RED}✗ $1${NC}" >&2
+    exit 1
+}
+
+warn_or_fail_for_production() {
+    local message="$1"
+    if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+        fail "$message"
+    fi
+    echo -e "${YELLOW}⚠ $message${NC}"
+}
+
+REMOVABLE_FORBIDDEN_XATTR_PATTERN='com\.apple\.(FinderInfo|ResourceFork|fileprovider\.fpfs#P)'
+PROVENANCE_XATTR_PATTERN='com\.apple\.provenance'
+
+sanitize_bundle_metadata() {
+    local path="$1"
+    [ -d "$path" ] || fail "Cannot sanitize missing bundle path: $path"
+
+    dot_clean -m "$path"
+    xattr -cr "$path"
+    xattr -crs "$path"
+    xattr -dr com.apple.FinderInfo "$path" 2>/dev/null || true
+    xattr -dr com.apple.ResourceFork "$path" 2>/dev/null || true
+    xattr -dr com.apple.provenance "$path" 2>/dev/null || true
+    xattr -dr "com.apple.fileprovider.fpfs#P" "$path" 2>/dev/null || true
+    xattr -cr "$path"
+    xattr -crs "$path"
+    find "$path" -name ".DS_Store" -delete 2>/dev/null || true
+    find "$path" -name "._*" -delete 2>/dev/null || true
+}
+
+verify_no_forbidden_xattrs() {
+    local path="$1"
+    local forbidden_output
+    local provenance_output
+    local probe
+
+    forbidden_output="$(xattr -lr "$path" 2>/dev/null | grep -E "$REMOVABLE_FORBIDDEN_XATTR_PATTERN" || true)"
+    if [ -n "$forbidden_output" ]; then
+        echo "$forbidden_output" >&2
+        fail "Forbidden extended attributes remain in $path"
+    fi
+
+    provenance_output="$(xattr -lr "$path" 2>/dev/null | grep -E "$PROVENANCE_XATTR_PATTERN" || true)"
+    if [ -n "$provenance_output" ]; then
+        probe="$(mktemp)"
+        if xattr -p com.apple.provenance "$probe" >/dev/null 2>&1; then
+            rm -f "$probe"
+            echo -e "${YELLOW}⚠ com.apple.provenance is still reported after sanitation; this host attaches it to newly-created files and does not allow script removal${NC}"
+        else
+            rm -f "$probe"
+            echo "$provenance_output" >&2
+            fail "com.apple.provenance remains in $path"
+        fi
+    fi
+}
+
 # Configuration
 APP_NAME="PathChanger"
 APP_BUNDLE_NAME="$APP_NAME.app"
-APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-/tmp/pathchanger-app-build}"
+APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"
 APP_DIR="$APP_BUNDLE_BUILD_ROOT/$APP_BUNDLE_NAME"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -22,6 +81,7 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 ENTITLEMENTS_FILE="Resources/PathChanger.entitlements"
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
+REQUIRE_PRODUCTION_SIGNING="${REQUIRE_PRODUCTION_SIGNING:-0}"
 
 # Check for signing identity argument
 SIGNING_IDENTITY="${1:--}"  # Default to ad-hoc if not specified
@@ -33,11 +93,17 @@ echo ""
 
 # Display signing mode
 if [ "$SIGNING_IDENTITY" = "-" ]; then
+    if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+        fail "Production bundle builds require a Developer ID signing identity"
+    fi
     echo -e "${YELLOW}⚠ Building with AD-HOC signing (development only)${NC}"
     echo -e "${YELLOW}  For production, run: ./build-app-bundle.sh \"Developer ID Application: Your Name\"${NC}"
     echo ""
 else
     echo -e "${GREEN}✓ Building with Developer ID: $SIGNING_IDENTITY${NC}"
+    if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
+        fail "Developer ID signing identity not available in the current keychain: $SIGNING_IDENTITY"
+    fi
     echo ""
 fi
 
@@ -63,7 +129,9 @@ echo -e "${GREEN}✓ Executable copied${NC}"
 
 # Step 3.1: Add rpath for embedded frameworks
 echo -e "${BLUE}Step 3.1: Adding rpath for embedded frameworks...${NC}"
-install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$APP_NAME" 2>/dev/null || true
+if ! otool -l "$MACOS_DIR/$APP_NAME" | grep -q "@executable_path/../Frameworks"; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$APP_NAME"
+fi
 echo -e "${GREEN}✓ Rpath added${NC}"
 
 # Step 3.5: Copy Sparkle framework
@@ -84,6 +152,7 @@ else
         echo -e "${YELLOW}  Looking for alternative locations...${NC}"
         # List what we can find
         find .build -name "*.framework" -type d 2>/dev/null | head -5 || true
+        warn_or_fail_for_production "Sparkle.framework not found; production app bundle cannot be validated"
     fi
 fi
 
@@ -98,7 +167,7 @@ if [ -f "$ENTITLEMENTS_FILE" ]; then
     cp "$ENTITLEMENTS_FILE" "$RESOURCES_DIR/PathChanger.entitlements"
     echo -e "${GREEN}✓ Entitlements copied${NC}"
 else
-    echo -e "${YELLOW}⚠ Entitlements file not found at $ENTITLEMENTS_FILE${NC}"
+    warn_or_fail_for_production "Entitlements file not found at $ENTITLEMENTS_FILE"
 fi
 
 # Step 5.5: Copy app icon
@@ -107,7 +176,7 @@ if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
     echo -e "${GREEN}✓ App icon copied${NC}"
 else
-    echo -e "${YELLOW}⚠ AppIcon.icns not found in Resources${NC}"
+    warn_or_fail_for_production "AppIcon.icns not found in Resources"
 fi
 
 # Step 5.6: Copy persistent location bridge script (required for Multi-Spot/Joystick performance mode)
@@ -118,7 +187,7 @@ if [ -f "scripts/location_bridge.py" ]; then
     chmod +x "$RESOURCES_DIR/scripts/location_bridge.py"
     echo -e "${GREEN}✓ Bridge script copied to Resources/scripts/${NC}"
 else
-    echo -e "${YELLOW}⚠ scripts/location_bridge.py not found - persistent-bridge performance mode will not work${NC}"
+    warn_or_fail_for_production "scripts/location_bridge.py not found - persistent-bridge performance mode will not work"
 fi
 
 # Step 5.7: Copy WiFi pairing helper (used by Settings > WiFi mode pairing flow)
@@ -129,7 +198,7 @@ if [ -f "scripts/pair_wifi.py" ]; then
     chmod +x "$RESOURCES_DIR/scripts/pair_wifi.py"
     echo -e "${GREEN}✓ WiFi pairing helper copied to Resources/scripts/${NC}"
 else
-    echo -e "${YELLOW}⚠ scripts/pair_wifi.py not found - WiFi mode users will need to pair manually via Terminal${NC}"
+    warn_or_fail_for_production "scripts/pair_wifi.py not found - WiFi mode users will need to pair manually via Terminal"
 fi
 
 # Step 6: Create PkgInfo
@@ -139,20 +208,7 @@ echo -e "${GREEN}✓ PkgInfo created${NC}"
 
 # Step 7: Clean extended attributes and resource forks
 echo -e "${BLUE}Step 7: Cleaning extended attributes and resource forks...${NC}"
-# Remove all extended attributes
-xattr -cr "$APP_DIR"
-# Merge/delete AppleDouble files and remove Finder/resource fork metadata that codesign rejects.
-dot_clean -m "$APP_DIR"
-xattr -dr com.apple.FinderInfo "$APP_DIR" 2>/dev/null || true
-xattr -dr com.apple.ResourceFork "$APP_DIR" 2>/dev/null || true
-xattr -dr com.apple.provenance "$APP_DIR" 2>/dev/null || true
-xattr -dr "com.apple.fileprovider.fpfs#P" "$APP_DIR" 2>/dev/null || true
-# dot_clean can leave metadata behind on some macOS versions, so clean once more before signing.
-xattr -cr "$APP_DIR"
-# Remove any .DS_Store files
-find "$APP_DIR" -name ".DS_Store" -delete 2>/dev/null || true
-# Remove any ._* resource fork files
-find "$APP_DIR" -name "._*" -delete 2>/dev/null || true
+sanitize_bundle_metadata "$APP_DIR"
 echo -e "${GREEN}✓ Extended attributes and resource forks cleaned${NC}"
 
 # Step 8: Code sign with entitlements
@@ -180,14 +236,7 @@ if [ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]; then
 fi
 
 # codesign can rewrite framework bundle metadata; clean again before signing the app.
-dot_clean -m "$APP_DIR"
-xattr -dr com.apple.FinderInfo "$APP_DIR" 2>/dev/null || true
-xattr -dr com.apple.ResourceFork "$APP_DIR" 2>/dev/null || true
-xattr -dr com.apple.provenance "$APP_DIR" 2>/dev/null || true
-xattr -dr "com.apple.fileprovider.fpfs#P" "$APP_DIR" 2>/dev/null || true
-xattr -cr "$APP_DIR"
-find "$APP_DIR" -name ".DS_Store" -delete 2>/dev/null || true
-find "$APP_DIR" -name "._*" -delete 2>/dev/null || true
+sanitize_bundle_metadata "$APP_DIR"
 
 if [ -f "$ENTITLEMENTS_FILE" ]; then
     if [ "$SIGNING_IDENTITY" = "-" ]; then
@@ -206,9 +255,18 @@ if [ -f "$ENTITLEMENTS_FILE" ]; then
         echo -e "${GREEN}✓ Code signed with Developer ID and hardened runtime${NC}"
     fi
 else
+    if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+        fail "Production app bundle signing requires $ENTITLEMENTS_FILE"
+    fi
     codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
     echo -e "${GREEN}✓ Code signed (without entitlements)${NC}"
 fi
+
+# Step 8.5: Final metadata sanitation before signature verification
+echo -e "${BLUE}Step 8.5: Final metadata sanitation before verification...${NC}"
+sanitize_bundle_metadata "$APP_DIR"
+verify_no_forbidden_xattrs "$APP_DIR"
+echo -e "${GREEN}✓ Removable release artifact metadata is clean${NC}"
 
 # Step 9: Verify signature
 echo -e "${BLUE}Step 9: Verifying signature...${NC}"
@@ -217,7 +275,16 @@ echo -e "${GREEN}✓ Signature verified${NC}"
 
 # Step 10: Check entitlements
 echo -e "${BLUE}Step 10: Checking entitlements...${NC}"
-codesign -d --entitlements - "$APP_DIR" 2>/dev/null | head -20 || true
+ENTITLEMENTS_OUTPUT="$(mktemp)"
+if ! codesign -d --entitlements - "$APP_DIR" > "$ENTITLEMENTS_OUTPUT" 2>/dev/null; then
+    rm -f "$ENTITLEMENTS_OUTPUT"
+    fail "Could not read code-signing entitlements from $APP_DIR"
+fi
+head -20 "$ENTITLEMENTS_OUTPUT"
+rm -f "$ENTITLEMENTS_OUTPUT"
+if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+    codesign -dv "$APP_DIR" 2>&1 | grep -q "runtime" || fail "Production app bundle is missing hardened runtime"
+fi
 echo -e "${GREEN}✓ Entitlements check complete${NC}"
 
 # Step 11: Summary

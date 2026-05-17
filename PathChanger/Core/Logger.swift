@@ -8,6 +8,52 @@
 import Foundation
 import os.log
 
+private enum LogTextSanitizer {
+    static let maxMessageLength = 4_000
+    static let maxMetadataKeyLength = 64
+    static let maxMetadataValueLength = 512
+
+    static func message(_ value: String) -> String {
+        sanitize(value, maxLength: maxMessageLength)
+    }
+
+    static func metadataKey(_ value: String) -> String {
+        sanitize(value, maxLength: maxMetadataKeyLength)
+    }
+
+    static func metadataValue(_ value: String) -> String {
+        sanitize(value, maxLength: maxMetadataValueLength)
+    }
+
+    private static func sanitize(_ value: String, maxLength: Int) -> String {
+        var sanitized = ""
+        sanitized.reserveCapacity(min(value.count, maxLength))
+
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\n":
+                sanitized += "\\n"
+            case "\r":
+                sanitized += "\\r"
+            case "\t":
+                sanitized += "\\t"
+            default:
+                if CharacterSet.controlCharacters.contains(scalar) {
+                    sanitized += " "
+                } else {
+                    sanitized.unicodeScalars.append(scalar)
+                }
+            }
+
+            if sanitized.count >= maxLength {
+                return String(sanitized.prefix(maxLength)) + "…"
+            }
+        }
+
+        return sanitized
+    }
+}
+
 // MARK: - Log Metadata
 
 /// Structured metadata for log entries
@@ -38,22 +84,24 @@ struct LogMetadata: Codable, Sendable {
     var formatted: String {
         var parts: [String] = []
         if let sessionId = sessionId {
-            parts.append("session=\(sessionId)")
+            parts.append("session=\(LogTextSanitizer.metadataValue(sessionId))")
         }
         if let deviceUDID = deviceUDID {
             // Truncate UDID for privacy in logs
-            let truncated = String(deviceUDID.prefix(8)) + "..."
+            let truncated = LogTextSanitizer.metadataValue(String(deviceUDID.prefix(8)) + "...")
             parts.append("device=\(truncated)")
         }
         if let iosVersion = iosVersion {
-            parts.append("ios=\(iosVersion)")
+            parts.append("ios=\(LogTextSanitizer.metadataValue(iosVersion))")
         }
         if let operationType = operationType {
-            parts.append("op=\(operationType)")
+            parts.append("op=\(LogTextSanitizer.metadataValue(operationType))")
         }
         if let additionalInfo = additionalInfo {
             for (key, value) in additionalInfo.sorted(by: { $0.key < $1.key }) {
-                parts.append("\(key)=\(value)")
+                let safeKey = LogTextSanitizer.metadataKey(key)
+                let safeValue = LogTextSanitizer.metadataValue(value)
+                parts.append("\(safeKey)=\(safeValue)")
             }
         }
         return parts.isEmpty ? "" : "[\(parts.joined(separator: ", "))]"
@@ -76,7 +124,7 @@ struct LogEntry: Codable, Sendable {
         let ts = dateFormatter.string(from: timestamp)
         let meta = metadata?.formatted ?? ""
         let metaStr = meta.isEmpty ? "" : " \(meta)"
-        return "[\(ts)] [\(level.uppercased())] [\(category)]\(metaStr) \(message)"
+        return "[\(ts)] [\(level.uppercased())] [\(category)]\(metaStr) \(LogTextSanitizer.message(message))"
     }
 }
 
@@ -351,7 +399,8 @@ enum Logger {
 
     private static func formatMessage(_ message: String, metadata: LogMetadata) -> String {
         let metaStr = metadata.formatted
-        return metaStr.isEmpty ? message : "\(metaStr) \(message)"
+        let safeMessage = LogTextSanitizer.message(message)
+        return metaStr.isEmpty ? safeMessage : "\(metaStr) \(safeMessage)"
     }
 
     private static func writeToFile(level: String, category: String, message: String, metadata: LogMetadata) {

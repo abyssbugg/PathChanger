@@ -6,7 +6,7 @@
 */
 
 // MARK: - App
-"app.name" = "Location Spoofer";
+"app.name" = "PathChanger";
 "app.version" = "バージョン %@";
 
 // MARK: - Common Actions
@@ -28,13 +28,13 @@
 "action.help" = "ヘルプ";
 
 // MARK: - Onboarding
-"onboarding.welcome.title" = "Location Spooferへようこそ";
+"onboarding.welcome.title" = "PathChangerへようこそ";
 "onboarding.welcome.subtitle" = "iOSデバイスのGPS位置情報をシミュレート";
 "onboarding.step1.title" = "デバイスを接続";
 "onboarding.step1.description" = "iOSデバイスをUSBまたはWiFiで接続してください";
 "onboarding.step2.title" = "開発者モードを有効化";
 "onboarding.step2.description" = "設定 > プライバシーとセキュリティ > 開発者モード";
-"onboarding.step3.title" = "位置情報の偽装を開始";
+"onboarding.step3.title" = "位置のシミュレーションを開始";
 "onboarding.step3.description" = "場所を選択して「位置を設定」をクリック";
 "onboarding.getStarted" = "始める";
 "onboarding.skip" = "スキップ";
@@ -52,7 +52,7 @@
 
 // MARK: - Device List
 "device.connected" = "接続済み";
-"device.disconnected" = "切断";
+"device.disconnected" = "未接続";
 "device.usb" = "USB";
 "device.wifi" = "WiFi";
 "device.unknown" = "不明なデバイス";
@@ -136,9 +136,9 @@
 
 // MARK: - Tunnel
 "tunnel.status" = "トンネル状態";
-"tunnel.connected" = "接続済み";
-"tunnel.disconnected" = "切断";
-"tunnel.connecting" = "接続中...";
+"tunnel.connected" = "トンネル準備完了";
+"tunnel.disconnected" = "トンネルオフライン";
+"tunnel.connecting" = "トンネル起動中…";
 "tunnel.error" = "エラー";
 "tunnel.start" = "トンネル開始";
 "tunnel.stop" = "トンネル停止";
@@ -165,7 +165,7 @@
 "toast.locationSet" = "位置を設定しました";
 "toast.locationCleared" = "位置をクリアしました";
 "toast.deviceConnected" = "デバイス接続: %@";
-"toast.deviceDisconnected" = "デバイス切断: %@";
+"toast.deviceDisconnected" = "デバイス接続が失われました: %@";
 "toast.routeStarted" = "ルートシミュレーションを開始しました";
 "toast.routeStopped" = "ルートシミュレーションを停止しました";
 "toast.settingsSaved" = "設定を保存しました";

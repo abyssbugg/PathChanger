@@ -19,7 +19,6 @@ dev-debug.log
 # Environment and local configuration
 .env
 .env.*
-!.env.example
 
 # Python tooling
 .venv/

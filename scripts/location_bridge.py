@@ -8,10 +8,11 @@ Joystick) get ~10-20 ms per location update instead of ~5-15 s per fresh
 subprocess.
 
 Protocol (JSON over stdin/stdout, one object per line):
-    Request:  {"cmd": "set_location", "lat": 37.78, "lng": -122.40,
+    Request:  {"request_id": "<uuid>", "cmd": "set_location", "lat": 37.78, "lng": -122.40,
                "udid": "<UDID>",
                "rsd_address": "fd8a:8bb8::1", "rsd_port": 12345}
-    Response: {"success": true} or {"success": false, "error": "..."}
+    Response: {"request_id": "<uuid>", "success": true}
+              or {"request_id": "<uuid>", "success": false, "error": "..."}
 
 Commands: set_location, clear_location, ping, quit
 
@@ -208,6 +209,9 @@ class AsyncBridge:
 def _validate_request(request: Any) -> Tuple[bool, str]:
     if not isinstance(request, dict):
         return False, "Request must be a JSON object"
+    request_id = request.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return False, "Missing or invalid 'request_id' field"
     cmd = request.get("cmd")
     if cmd not in ("set_location", "clear_location", "ping", "quit"):
         return False, f"Unknown command: {cmd!r}"
@@ -247,71 +251,92 @@ def _emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def _response_for(request: dict, payload: dict) -> dict:
+    response = dict(payload)
+    request_id = request.get("request_id")
+    if isinstance(request_id, str):
+        response["request_id"] = request_id
+    return response
+
+
 async def _serve(bridge: AsyncBridge) -> None:
     """Read NDJSON requests from stdin and write NDJSON responses to stdout."""
     _emit({"ready": True})
 
     loop = asyncio.get_running_loop()
-    while not _shutdown_requested:
-        line = await loop.run_in_executor(None, sys.stdin.readline)
-        if not line:
-            break  # EOF
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        while not _shutdown_requested:
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if not line:
+                break  # EOF
+            line = line.strip()
+            if not line:
+                continue
 
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as exc:
-            _emit({"success": False, "error": f"Invalid JSON: {exc}"})
-            continue
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as exc:
+                _emit({"success": False, "error": f"Invalid JSON: {exc}"})
+                continue
 
-        valid, msg = _validate_request(request)
-        if not valid:
-            _emit({"success": False, "error": msg})
-            continue
+            valid, msg = _validate_request(request)
+            if not valid:
+                if isinstance(request, dict):
+                    _emit(_response_for(request, {"success": False, "error": msg}))
+                else:
+                    _emit({"success": False, "error": msg})
+                continue
 
-        cmd = request["cmd"]
+            cmd = request["cmd"]
 
-        if cmd == "ping":
-            _emit({"success": True, "message": "pong"})
-            continue
+            if cmd == "ping":
+                _emit(_response_for(request, {"success": True, "message": "pong"}))
+                continue
 
-        if cmd == "quit":
-            _emit({"success": True, "message": "shutting down"})
-            break
+            if cmd == "quit":
+                _emit(_response_for(request, {"success": True, "message": "shutting down"}))
+                break
 
-        if not _lazy_import():
-            _emit({
-                "success": False,
-                "error": f"pymobiledevice3 import failed: {_IMPORT_ERROR}",
-            })
-            continue
+            if not _lazy_import():
+                _emit(_response_for(request, {
+                    "success": False,
+                    "error": f"pymobiledevice3 import failed: {_IMPORT_ERROR}",
+                }))
+                continue
 
-        if cmd == "set_location":
-            result = await bridge.set_location(
-                lat=float(request["lat"]),
-                lng=float(request["lng"]),
-                udid=request["udid"],
-                rsd_address=request.get("rsd_address"),
-                rsd_port=request.get("rsd_port"),
-            )
-            _emit(result)
-            continue
+            if cmd == "set_location":
+                result = await bridge.set_location(
+                    lat=float(request["lat"]),
+                    lng=float(request["lng"]),
+                    udid=request["udid"],
+                    rsd_address=request.get("rsd_address"),
+                    rsd_port=request.get("rsd_port"),
+                )
+                _emit(_response_for(request, result))
+                continue
 
-        if cmd == "clear_location":
-            result = await bridge.clear_location(
-                udid=request["udid"],
-                rsd_address=request.get("rsd_address"),
-                rsd_port=request.get("rsd_port"),
-            )
-            _emit(result)
-            continue
+            if cmd == "clear_location":
+                result = await bridge.clear_location(
+                    udid=request["udid"],
+                    rsd_address=request.get("rsd_address"),
+                    rsd_port=request.get("rsd_port"),
+                )
+                _emit(_response_for(request, result))
+                continue
 
-        # Defense-in-depth: should be unreachable due to validation
-        _emit({"success": False, "error": f"Unhandled command: {cmd}"})
+            # Defense-in-depth: should be unreachable due to validation
+            _emit(_response_for(request, {"success": False, "error": f"Unhandled command: {cmd}"}))
+    finally:
+        await bridge.close_all()
 
-    await bridge.close_all()
+
+def _emit_fatal(exc: BaseException) -> None:
+    message = f"Fatal bridge error: {type(exc).__name__}: {exc}"
+    try:
+        _emit({"fatal": True, "success": False, "error": message})
+    except Exception:
+        pass
+    print(message, file=sys.stderr, flush=True)
 
 
 def main() -> None:
@@ -320,6 +345,9 @@ def main() -> None:
         asyncio.run(_serve(bridge))
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        _emit_fatal(exc)
+        raise
 
 
 if __name__ == "__main__":

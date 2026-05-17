@@ -256,7 +256,7 @@ struct SidebarView: View {
                 .fill(tunneldManager.isRunning ? Color.pcSecondary : Color.pcDanger)
                 .frame(width: 6, height: 6)
 
-            Text(tunneldManager.isRunning ? "Tunnel Active" : "Tunnel Inactive")
+            Text(tunneldManager.isRunning ? "Tunnel ready" : "Tunnel offline")
                 .font(AppFont.metadata)
                 .foregroundStyle(Color.pcTextMuted)
 
@@ -264,7 +264,12 @@ struct SidebarView: View {
 
             if !tunneldManager.isRunning {
                 Button {
-                    Task { await tunneldManager.startTunnel() }
+                    // W1 S2-A deprecation marker:
+                    // SidebarView is not instantiated in production layouts.
+                    // It remains a W4-deferred compatibility shim.
+                    // This harmonization is convergence-only.
+                    // No authority expansion is intended.
+                    Task { await tunneldManager.autoStart() }
                 } label: {
                     Text("Start")
                         .lineLimit(1)

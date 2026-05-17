@@ -163,17 +163,7 @@ class TunnelHealthMonitor: ObservableObject {
 
         // Verify process is still running if we have a PID
         if let pid = tunnelInfo.processId {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/ps")
-            process.arguments = ["-p", String(pid)]
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus == 0
-            } catch {
-                return false
-            }
+            return TunneldManager.shared.isTunnelProcessAlive(pid: pid)
         }
 
         // If no PID, just verify tunnel is marked as running

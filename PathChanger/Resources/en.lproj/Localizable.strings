@@ -6,7 +6,7 @@
 */
 
 // MARK: - App
-"app.name" = "Location Spoofer";
+"app.name" = "PathChanger";
 "app.version" = "Version %@";
 
 // MARK: - Common Actions
@@ -28,13 +28,13 @@
 "action.help" = "Help";
 
 // MARK: - Onboarding
-"onboarding.welcome.title" = "Welcome to Location Spoofer";
+"onboarding.welcome.title" = "Welcome to PathChanger";
 "onboarding.welcome.subtitle" = "Simulate GPS locations on your iOS device";
 "onboarding.step1.title" = "Connect Device";
 "onboarding.step1.description" = "Connect your iOS device via USB or WiFi";
 "onboarding.step2.title" = "Enable Developer Mode";
 "onboarding.step2.description" = "Go to Settings > Privacy & Security > Developer Mode";
-"onboarding.step3.title" = "Start Spoofing";
+"onboarding.step3.title" = "Start Simulating";
 "onboarding.step3.description" = "Select a location and click Set Location";
 "onboarding.getStarted" = "Get Started";
 "onboarding.skip" = "Skip";
@@ -52,7 +52,7 @@
 
 // MARK: - Device List
 "device.connected" = "Connected";
-"device.disconnected" = "Disconnected";
+"device.disconnected" = "Not connected";
 "device.usb" = "USB";
 "device.wifi" = "WiFi";
 "device.unknown" = "Unknown Device";
@@ -136,9 +136,9 @@
 
 // MARK: - Tunnel
 "tunnel.status" = "Tunnel Status";
-"tunnel.connected" = "Connected";
-"tunnel.disconnected" = "Disconnected";
-"tunnel.connecting" = "Connecting...";
+"tunnel.connected" = "Tunnel ready";
+"tunnel.disconnected" = "Tunnel offline";
+"tunnel.connecting" = "Tunnel starting…";
 "tunnel.error" = "Error";
 "tunnel.start" = "Start Tunnel";
 "tunnel.stop" = "Stop Tunnel";
@@ -165,7 +165,7 @@
 "toast.locationSet" = "Location set successfully";
 "toast.locationCleared" = "Location cleared";
 "toast.deviceConnected" = "Device connected: %@";
-"toast.deviceDisconnected" = "Device disconnected: %@";
+"toast.deviceDisconnected" = "Device connection lost: %@";
 "toast.routeStarted" = "Route simulation started";
 "toast.routeStopped" = "Route simulation stopped";
 "toast.settingsSaved" = "Settings saved";

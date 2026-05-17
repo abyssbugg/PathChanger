@@ -256,6 +256,60 @@ final class TunnelStateMachineTests: XCTestCase {
         }
     }
 
+    func testHealthCheckFailureInvalidatesTunnelInfo() {
+        stateMachine.send(.startRequested(mode: .usb))
+        let info = TunnelInfo(rsdAddress: "fe80::1", rsdPort: 50000, mode: .usb, interface: nil, processId: nil)
+        stateMachine.send(.connectionEstablished(info: info))
+
+        let result = stateMachine.send(.healthCheckFailed)
+
+        guard case .success(_, let actions) = result else {
+            XCTFail("Expected success transition")
+            return
+        }
+        XCTAssertNil(stateMachine.currentContext.tunnelInfo)
+        XCTAssertTrue(actions.contains(.invalidateRsdInfo))
+        XCTAssertEqual(stateMachine.currentContext.activeMode, .usb)
+    }
+
+    func testRunningErrorInvalidatesTunnelInfo() {
+        stateMachine.send(.startRequested(mode: .wifi))
+        let info = TunnelInfo(rsdAddress: "fe80::2", rsdPort: 50001, mode: .wifi, interface: nil, processId: nil)
+        stateMachine.send(.connectionEstablished(info: info))
+
+        let result = stateMachine.send(.errorOccurred("transport closed"))
+
+        guard case .success(_, let actions) = result else {
+            XCTFail("Expected success transition")
+            return
+        }
+        XCTAssertNil(stateMachine.currentContext.tunnelInfo)
+        XCTAssertTrue(actions.contains(.invalidateRsdInfo))
+        XCTAssertEqual(stateMachine.currentContext.activeMode, .wifi)
+    }
+
+    func testRecoveryPreservesActiveModeWhileInvalidatingEndpointOwnership() {
+        stateMachine.send(.startRequested(mode: .daemon))
+        let info = TunnelInfo(rsdAddress: "192.168.1.50", rsdPort: 50002, mode: .daemon, interface: nil, processId: nil)
+        stateMachine.send(.connectionEstablished(info: info))
+        stateMachine.send(.healthCheckFailed)
+
+        let result = stateMachine.send(.recoveryAttempted)
+
+        guard case .success(let newState, let actions) = result else {
+            XCTFail("Expected success transition")
+            return
+        }
+        XCTAssertEqual(newState, .starting)
+        XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
+        XCTAssertNil(stateMachine.currentContext.tunnelInfo)
+        XCTAssertTrue(actions.contains(.invalidateRsdInfo))
+        XCTAssertTrue(actions.contains(where: {
+            if case .launchProcess(let mode) = $0 { return mode == .daemon }
+            return false
+        }))
+    }
+
     func testRunningRejectsStartRequest() {
         // Set up running state
         stateMachine.send(.startRequested(mode: .usb))
@@ -445,7 +499,7 @@ final class TunnelStateMachineTests: XCTestCase {
 
     func testCompleteSuccessfulLifecycle() {
         // Start tunnel
-        let startResult = stateMachine.send(.startRequested(mode: .usb))
+        _ = stateMachine.send(.startRequested(mode: .usb))
         XCTAssertEqual(stateMachine.currentState, .starting)
 
         // Process launches

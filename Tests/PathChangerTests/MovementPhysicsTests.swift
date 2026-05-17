@@ -137,6 +137,9 @@ final class MovementPhysicsEngineTests: XCTestCase {
     override func setUp() {
         super.setUp()
         engine = MovementPhysicsEngine(startPosition: startPosition, behavior: .walking)
+        #if DEBUG
+        engine.testDisableRandomPausesAndJitter()
+        #endif
     }
 
     func testInitialization() {
@@ -242,6 +245,28 @@ final class MovementPhysicsEngineTests: XCTestCase {
 
         // Should be closer to target
         XCTAssertLessThan(newDistance, initialDistance)
+    }
+
+    func testMovementTowardTargetIsStableAcrossRepeatedRuns() {
+        let target = LocationCoordinate(latitude: 35.68, longitude: 139.65)
+
+        for _ in 0..<50 {
+            let localEngine = MovementPhysicsEngine(startPosition: startPosition, behavior: .walking)
+            #if DEBUG
+            localEngine.testDisableRandomPausesAndJitter()
+            #endif
+            localEngine.setTarget(target)
+            localEngine.isMoving = true
+
+            let initialDistance = distanceBetween(localEngine.state.position, target)
+
+            for _ in 0..<10 {
+                _ = localEngine.update(deltaTime: 0.1)
+            }
+
+            let newDistance = distanceBetween(localEngine.state.position, target)
+            XCTAssertLessThan(newDistance, initialDistance)
+        }
     }
 
     // Helper function

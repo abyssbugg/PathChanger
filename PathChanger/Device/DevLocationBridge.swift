@@ -33,32 +33,22 @@ enum CommandValidationError: Error, LocalizedError {
     }
 }
 
-// MARK: - Subprocess Command Validator
+// MARK: - Command Structure Validator
 
-/// Defense-in-depth command structure validation for pymobiledevice3 subprocess calls
-/// This provides allowlist validation on top of ArgumentSanitizer's character filtering
-struct SubprocessCommandValidator {
+/// Defense-in-depth command structure validation for pymobiledevice3 subprocess calls.
+///
+/// Provides allowlist validation on top of ArgumentSanitizer's character filtering.
+/// Allowlists are sourced from `SubprocessPolicy` (the single source of truth).
+///
+/// Renamed from `SubprocessCommandValidator` by ADR-006 because the validator
+/// validates command **structure**, not subprocess execution.
+struct CommandStructureValidator {
 
-    /// Allowed pymobiledevice3 subcommands (only commands we actually use)
-    private static let allowedSubcommands: Set<String> = [
-        // Location simulation commands
-        "developer", "dvt", "simulate-location", "set", "clear",
-        // Tunnel management commands
-        "lockdown", "start-tunnel", "tunneld",
-        // Device listing commands
-        "usbmux", "list", "remote", "ls"
-    ]
+    /// Allowed pmd3 subcommands — sourced from SubprocessPolicy.
+    private static var allowedSubcommands: Set<String> { SubprocessPolicy.allowedSubcommands }
 
-    /// Allowed command-line flags (only flags we actually use)
-    private static let allowedFlags: Set<String> = [
-        "-m",           // Python module flag
-        "--tunnel",     // Use tunneld for connection
-        "--udid",       // Target device by UDID
-        "--rsd",        // Remote Service Discovery address
-        "--no-color",   // Disable colored output
-        "--",           // Argument separator
-        "-h", "--help"  // Help flags (safe to allow)
-    ]
+    /// Allowed pmd3 flags — sourced from SubprocessPolicy.
+    private static var allowedFlags: Set<String> { SubprocessPolicy.allowedFlags }
 
     /// The expected module name for pymobiledevice3
     private static let expectedModule = "pymobiledevice3"
@@ -453,6 +443,7 @@ actor DevLocationBridge {
 
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
+        try await assertLiveRsdAvailableIfRequired(for: device)
 
         // Pre-flight check: Ensure device is properly configured
         try await performPreflight(for: device)
@@ -511,6 +502,10 @@ actor DevLocationBridge {
                 stats.recordSuccess(latencyMs: latencyMs)
                 return
             } catch {
+                if LocationBridge.isTunnelInvalidationError(error) {
+                    stats.recordFailure()
+                    throw error
+                }
                 // Fall back to subprocess mode if persistent bridge fails
                 Logger.debug("Persistent bridge failed, falling back to subprocess: \(error)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
             }
@@ -541,14 +536,19 @@ actor DevLocationBridge {
     }
 
     /// Set location using the persistent bridge (high-performance mode)
-    /// This reuses a long-running Python process for significantly reduced latency
+    /// This reuses a long-running Python process for significantly reduced latency.
+    ///
+    /// Calls into `LocationBridge.setLocationViaNDJSON` (the internal NDJSON
+    /// path), NOT the public `LocationBridge.setLocation` facade — the
+    /// facade itself would route back through this executor and cause
+    /// infinite recursion.
     private func setLocationViaPersistentBridge(_ coordinate: LocationCoordinate, for device: Device) async throws {
         // iOS only allows one DVT simulate-location session per device. If a previous
         // call left a `pmd3 simulate-location set` subprocess holding DVT open, the
         // persistent bridge's connection attempt will fail with InvalidServiceError.
         // Free DVT first so the bridge can take over cleanly.
         await terminateActiveLocationProcess(for: device.id)
-        try await PersistentLocationBridge.shared.setLocation(coordinate, for: device)
+        try await LocationBridge.shared.setLocationViaNDJSON(coordinate, for: device)
     }
 
     /// Enable or disable persistent bridge mode
@@ -606,6 +606,7 @@ actor DevLocationBridge {
             await requestQueue.recordProcessed(queuedAt: queuedRequest.timestamp)
 
             do {
+                try await assertLiveRsdAvailableIfRequired(for: queuedRequest.device)
                 // Process the queued request directly (bypass rate limiting since we already waited)
                 let arguments = try await buildLocationArguments(
                     subcommand: "set",
@@ -657,6 +658,8 @@ actor DevLocationBridge {
             try ArgumentSanitizer.validatePort(tunnelInfo.rsdPort)
             args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
             Logger.debug("Using RSD \(tunnelInfo.rsdAddress):\(tunnelInfo.rsdPort) for device \(device.id)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
+        } else if requiresLiveRsdInfo(for: device) {
+            throw LocationInjectionError.tunneldNotRunning
         } else if TunneldManager.shared.isRunning {
             try ArgumentSanitizer.validateDeviceUDID(device.id)
             args.append(contentsOf: ["--tunnel", device.id])
@@ -678,6 +681,7 @@ actor DevLocationBridge {
     func clearLocation(for device: Device) async throws {
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
+        try await assertLiveRsdAvailableIfRequired(for: device)
 
         await terminateActiveLocationProcess(for: device.id)
 
@@ -780,6 +784,25 @@ actor DevLocationBridge {
     }
 
     // MARK: Pre-flight Checks
+
+    private func assertLiveRsdAvailableIfRequired(for device: Device) async throws {
+        guard requiresLiveRsdInfo(for: device) else {
+            return
+        }
+        let rsdInfo = await MainActor.run {
+            TunneldManager.shared.getRsdInfo(for: device.id)
+        }
+        guard rsdInfo != nil else {
+            throw LocationInjectionError.tunneldNotRunning
+        }
+    }
+
+    private nonisolated func requiresLiveRsdInfo(for device: Device) -> Bool {
+        if device.connectionType == .wifi {
+            return true
+        }
+        return (device.iosMajorVersion ?? 0) >= 17
+    }
 
     /// Perform pre-flight checks to ensure device is ready for location injection
     /// - Warns about newer iOS compatibility without blocking attempts
@@ -890,7 +913,7 @@ actor DevLocationBridge {
     }
 
     private func runLocationSetProcess(arguments: [String], device: Device) async throws -> String {
-        try SubprocessCommandValidator.validateCommandStructure(arguments)
+        try CommandStructureValidator.validateCommandStructure(arguments)
 
         let deviceUDID = device.id
         let iosVersion = device.productVersion
@@ -1061,7 +1084,7 @@ actor DevLocationBridge {
     /// - Throws: LocationInjectionError if execution fails or times out
     ///
     /// Security Features:
-    /// - Command structure validation via SubprocessCommandValidator (defense-in-depth)
+    /// - Command structure validation via CommandStructureValidator (defense-in-depth)
     /// - Output size limiting (prevents DoS via excessive output)
     /// - Security audit logging with device iOS version context
     /// - Input validation via ArgumentSanitizer (caller's responsibility)
@@ -1070,7 +1093,7 @@ actor DevLocationBridge {
 
         // Security: Validate command structure against allowlist (defense-in-depth)
         // This catches any injection attempts that bypass other validation layers
-        try SubprocessCommandValidator.validateCommandStructure(arguments)
+        try CommandStructureValidator.validateCommandStructure(arguments)
 
         // Extract device context for enhanced logging
         let deviceUDID = device?.id
@@ -1234,79 +1257,13 @@ actor DevLocationBridge {
     }
 }
 
-// MARK: - Location Bridge Manager
-
-/// High-level manager for location injection with retry and recovery
-@MainActor
-class LocationBridgeManager: ObservableObject {
-    @Published var isInjecting: Bool = false
-    @Published var lastInjectedLocation: LocationCoordinate?
-    @Published var lastError: LocationInjectionError?
-    @Published var injectionStats: InjectionStats = InjectionStats()
-
-    private let bridge = DevLocationBridge()
-    private var retryCount: Int = 0
-    private let maxRetries: Int = 3
-
-    func setLocation(_ coordinate: LocationCoordinate, for device: Device) async {
-        isInjecting = true
-        lastError = nil
-
-        do {
-            try await bridge.setLocation(coordinate, for: device)
-            lastInjectedLocation = coordinate
-            retryCount = 0
-            injectionStats = await bridge.getStats()
-        } catch let error as LocationInjectionError {
-            lastError = error
-
-            // Auto-retry for transient errors
-            if retryCount < maxRetries && shouldRetry(error) {
-                retryCount += 1
-                try? await Task.sleep(nanoseconds: 500_000_000) // 500ms delay
-                await setLocation(coordinate, for: device)
-                return
-            }
-        } catch {
-            lastError = .injectionFailed(error.localizedDescription)
-        }
-
-        isInjecting = false
-    }
-
-    func clearLocation(for device: Device) async {
-        isInjecting = true
-
-        do {
-            try await bridge.clearLocation(for: device)
-            lastInjectedLocation = nil
-            lastError = nil
-        } catch let error as LocationInjectionError {
-            lastError = error
-        } catch {
-            lastError = .clearFailed(error.localizedDescription)
-        }
-
-        isInjecting = false
-    }
-
-    func checkAvailability(for device: Device) async -> Bool {
-        let result = await bridge.checkAvailability(for: device)
-        switch result {
-        case .success:
-            return true
-        case .failure(let error):
-            lastError = error
-            return false
-        }
-    }
-
-    private func shouldRetry(_ error: LocationInjectionError) -> Bool {
-        switch error {
-        case .timeout, .rateLimited:
-            return true
-        default:
-            return false
-        }
-    }
-}
+// MARK: - Location Bridge Manager (deleted in Milestone 2)
+//
+// The former `LocationBridgeManager` class — a high-level wrapper around
+// DevLocationBridge — was DELETED in Milestone 2 of the architectural
+// consolidation. It was an orphan with zero production consumers (its
+// retry/recovery semantics were never wired into the SwiftUI shell).
+//
+// Consumers wanting a retry policy should compose their own around
+// `LocationBridge.shared.setLocation`, which is now the sole public bridge
+// entry point.

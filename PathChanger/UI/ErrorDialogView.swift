@@ -347,7 +347,7 @@ struct ConnectionStatusBanner: View {
             case .disconnected:
                 HStack {
                     Image(systemName: "wifi.slash")
-                    Text("Disconnected")
+                    Text("Connection lost")
                     Spacer()
                     Button("Reconnect") {
                         reliabilityManager.retryNow()
@@ -423,7 +423,7 @@ struct TunneldStatusView: View {
                 .fill(isRunning ? Color.pcSecondary : Color.pcDanger)
                 .frame(width: 8, height: 8)
 
-            Text(isRunning ? "tunneld running" : "tunneld not running")
+            Text(isRunning ? "Tunnel ready" : "Tunnel offline")
                 .font(AppFont.metadata)
 
             if !isRunning {
@@ -448,10 +448,10 @@ struct StartTunneldSheet: View {
                 .font(.system(size: 48))
                 .foregroundColor(.pcPrimary)
 
-            Text("Start tunneld")
+            Text("Start Tunnel")
                 .font(AppFont.heading)
 
-            Text("Location injection on iOS 17+ requires tunneld to be running.")
+            Text("Location injection on iOS 17+ requires the tunnel to be running.")
                 .font(AppFont.body)
                 .foregroundColor(.pcTextMuted)
                 .multilineTextAlignment(.center)

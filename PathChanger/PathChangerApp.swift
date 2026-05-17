@@ -44,12 +44,10 @@ struct PathChangerApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
 
-            // Check for Updates menu item (in App menu after About)
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {
-                    appDelegate.updaterController.checkForUpdates()
-                }
-            }
+            // "Check for Updates…" menu item was removed in Milestone 5
+            // alongside the stale upstream Sparkle SUFeedURL/SUPublicEDKey
+            // pair. Restore this CommandGroup once a current appcast URL
+            // and matching Ed25519 public key are configured in Info.plist.
 
             CommandMenu("Location") {
                 Button("Set Location...") {
@@ -117,51 +115,160 @@ struct PathChangerApp: App {
 /// Global application state with full simulation control
 @MainActor
 class AppState: ObservableObject {
-    // MARK: Device State
-    @Published var selectedDevice: Device?
-    @Published var availableDevices: [Device] = []
-    @Published var isTunneldRunning: Bool = false
-    @Published var connectionStatus: ConnectionStatus = .disconnected
+    // MARK: - Composed Sub-Stores (Milestone 4)
+    //
+    // AppState's state surface is decomposed into six domain sub-stores
+    // (`Models/AppStateStores.swift`). Each `@Published` sub-store
+    // field below is the canonical owner of its state domain. The
+    // legacy property names that used to be individual `@Published`
+    // vars are now computed facade properties that read/write into
+    // these stores, preserving the public surface SwiftUI views bind
+    // to.
+    //
+    // Mutation flow:
+    //   - External code reads/writes via legacy names
+    //     (`selectedDevice`, `targetLocation`, `statusMessage`, …) →
+    //     facade routes to the underlying sub-store field →
+    //     `@Published` publishes the new sub-store value →
+    //     `objectWillChange` fires on AppState.
+    //   - Internal AppState methods may either go through facades or
+    //     write the sub-store directly (`device.selected = X`); both
+    //     produce identical publish semantics.
+    //
+    // Sub-store fields are `private(set)`: external code can read the
+    // whole sub-store (for SwiftUI observation), but cannot mutate it
+    // directly. All mutations go through AppState's facade setters or
+    // explicit public mutation methods, preserving the single-writer
+    // rule (AAD §5.2).
+    @Published private(set) var device: DeviceStore = .empty
+    @Published private(set) var tunnel: TunnelStore = .empty
+    @Published private(set) var simulation: SimulationStore = .empty
+    @Published private(set) var route: RouteStore = .empty
+    @Published private(set) var joystick: JoystickStore = .empty
+    @Published private(set) var ui: UIStore = .empty
 
-    // MARK: Location State
-    @Published var currentLocation: LocationCoordinate?
-    @Published var targetLocation: LocationCoordinate?
-    @Published var targetLocationName: String?
-    @Published var locationHistory: [LocationHistoryEntry] = []
-
-    // MARK: Simulation State
-    @Published var isSimulating: Bool = false
-    @Published var isPaused: Bool = false
-    @Published var simulationSpeed: SimulationSpeed = .walking
-
-    // MARK: Route Playback
-    @Published var currentRoute: [LocationCoordinate] = []
-    @Published var routeProgress: Double = 0
-    @Published var isLoadingRoute: Bool = false
-
-    // MARK: Joystick State
-    @Published var joystickDirection: CGPoint = .zero
-    @Published var joystickSpeed: Double = 5.0
-
-    // MARK: UI State
-    @Published var showLocationInput: Bool = false
+    // MARK: - SwiftUI-Bound Direct @Published Vars
+    //
+    // The following three flags must remain direct `@Published` vars
+    // on AppState (not inside a sub-store) because SwiftUI's
+    // `$appState.X` projected-value binding mechanism only projects
+    // from `@Published` properties of the `ObservableObject` itself —
+    // it does not project through a nested struct field.
+    //
+    // Call sites:
+    //   - `$appState.showRouteImport`     (SimulationView.swift)
+    //   - `$appState.showOnboarding`      (ContentView.swift)
+    //   - `$appState.preferUSBConnection` (SettingsView.swift,
+    //                                      also receives Combine
+    //                                      `assign(to: &$…)` from
+    //                                      `usbFallbackManager`).
     @Published var showRouteImport: Bool = false
     @Published var showOnboarding: Bool = false
-    @Published var lastError: String?
-    @Published var statusMessage: String?
-
-    // MARK: Statistics
-    @Published var injectionStats: InjectionStats = InjectionStats()
-
-    // MARK: Newer iOS Warning State
-    /// Tracks device IDs that have already shown the newer-iOS toast in this session
-    private var shownNewerIOSWarningDeviceIds: Set<String> = []
-
-    // MARK: Reliability State
-    @Published var recoveryState: ConnectionRecoveryState = .disconnected
-    @Published var isUSBConnected: Bool = false
-    @Published var isWiFiAvailable: Bool = false
     @Published var preferUSBConnection: Bool = false
+
+    // MARK: - Facade Properties (Device)
+    var selectedDevice: Device? {
+        get { device.selected }
+        set { device.selected = newValue }
+    }
+    var availableDevices: [Device] {
+        get { device.available }
+        set { device.available = newValue }
+    }
+    var connectionStatus: ConnectionStatus {
+        get { device.connectionStatus }
+        set { device.connectionStatus = newValue }
+    }
+    var isUSBConnected: Bool {
+        get { device.isUSBConnected }
+        set { device.isUSBConnected = newValue }
+    }
+    var isWiFiAvailable: Bool {
+        get { device.isWiFiAvailable }
+        set { device.isWiFiAvailable = newValue }
+    }
+    var recoveryState: ConnectionRecoveryState {
+        get { device.recoveryState }
+        set { device.recoveryState = newValue }
+    }
+
+    // MARK: - Facade Properties (Tunnel)
+    var isTunneldRunning: Bool {
+        get { tunnel.isRunning }
+        set { tunnel.isRunning = newValue }
+    }
+
+    // MARK: - Facade Properties (Simulation)
+    var currentLocation: LocationCoordinate? {
+        get { simulation.currentLocation }
+        set { simulation.currentLocation = newValue }
+    }
+    var targetLocation: LocationCoordinate? {
+        get { simulation.targetLocation }
+        set { simulation.targetLocation = newValue }
+    }
+    var targetLocationName: String? {
+        get { simulation.targetLocationName }
+        set { simulation.targetLocationName = newValue }
+    }
+    var locationHistory: [LocationHistoryEntry] {
+        get { simulation.history }
+        set { simulation.history = newValue }
+    }
+    var isSimulating: Bool {
+        get { simulation.isSimulating }
+        set { simulation.isSimulating = newValue }
+    }
+    var isPaused: Bool {
+        get { simulation.isPaused }
+        set { simulation.isPaused = newValue }
+    }
+    var simulationSpeed: SimulationSpeed {
+        get { simulation.speed }
+        set { simulation.speed = newValue }
+    }
+    var injectionStats: InjectionStats {
+        get { simulation.injectionStats }
+        set { simulation.injectionStats = newValue }
+    }
+
+    // MARK: - Facade Properties (Route)
+    var currentRoute: [LocationCoordinate] {
+        get { route.waypoints }
+        set { route.waypoints = newValue }
+    }
+    var routeProgress: Double {
+        get { route.progress }
+        set { route.progress = newValue }
+    }
+    var isLoadingRoute: Bool {
+        get { route.isLoading }
+        set { route.isLoading = newValue }
+    }
+
+    // MARK: - Facade Properties (Joystick)
+    var joystickDirection: CGPoint {
+        get { joystick.direction }
+        set { joystick.direction = newValue }
+    }
+    var joystickSpeed: Double {
+        get { joystick.speed }
+        set { joystick.speed = newValue }
+    }
+
+    // MARK: - Facade Properties (UI)
+    var showLocationInput: Bool {
+        get { ui.showLocationInput }
+        set { ui.showLocationInput = newValue }
+    }
+    var lastError: String? {
+        get { ui.lastError }
+        set { ui.lastError = newValue }
+    }
+    var statusMessage: String? {
+        get { ui.statusMessage }
+        set { ui.statusMessage = newValue }
+    }
 
     // MARK: Debouncing for UI Stability
     private var lastTunnelStateChange: Date = .distantPast
@@ -178,12 +285,24 @@ class AppState: ObservableObject {
     let tunnelHealthMonitor = TunnelHealthMonitor()
 
     // MARK: Private
-    private let locationBridge = DevLocationBridge()
+    //
+    // Location injection routes through `LocationBridge.shared` — the sole
+    // authoritative bridge after Milestone 2. AppState no longer owns its
+    // own `DevLocationBridge` instance; that actor is now a private
+    // implementation detail of `LocationBridge`.
+    //
+    // Motion progression (route playback timer, joystick tick loop, geographic
+    // offset math) is owned by `SimulationEngine` — the sole simulation
+    // authority after Milestone 3. AppState is the lifecycle/state authority
+    // only: it issues commands to the engine and mirrors engine published
+    // state into its own UI-facing properties. The former `simulationTask`,
+    // `joystickTask`, `joystickBaseLocation`, and `offsetCoordinate` were
+    // deleted in Milestone 3 because they represented simulation-authority
+    // leakage into the state hub.
     private let locationHistoryStore = LocationHistoryStore()
-    private var simulationTask: Task<Void, Never>?
-    private var joystickTask: Task<Void, Never>?
-    private var joystickBaseLocation: LocationCoordinate?
     private var cancellables = Set<AnyCancellable>()
+    private var simulationTransitionTail: Task<Void, Never>?
+    private var simulationTransitionSerial: UInt64 = 0
 
     // MARK: Computed Properties
 
@@ -200,13 +319,21 @@ class AppState: ObservableObject {
 
     var simulationStatusText: String {
         if !isTunneldRunning {
-            return "Tunnel not running"
+            return "Preparing connection…"
         }
         if selectedDevice == nil {
-            return "No device selected"
+            return "Connect an iPhone to begin"
         }
         if isSimulating {
-            return isPaused ? "Paused" : "Simulating..."
+            if isPaused { return "Paused" }
+            // Per-mode active text from the §5 lexicon. Reads existing
+            // engine state via the existing `simulationEngine.currentMode`
+            // mirror; no behavioural change beyond the returned string.
+            switch simulationEngine.currentMode {
+            case .teleport: return "Teleporting…"
+            case .route:    return "Following route"
+            case .joystick: return "Joystick active"
+            }
         }
         return "Ready"
     }
@@ -265,7 +392,7 @@ class AppState: ObservableObject {
     // MARK: Initialization
 
     init() {
-        self.simulationEngine = SimulationEngine(locationBridge: locationBridge)
+        self.simulationEngine = SimulationEngine()
         UserDefaults.standard.register(defaults: ["autoStartTunneld": false])
         AppPreferences.registerUIDefaults()
 
@@ -309,6 +436,70 @@ class AppState: ObservableObject {
         setupReliabilityManager()
         setupErrorHandler()
         setupUSBFallback()
+        setupSimulationEngineMirrors()
+    }
+
+    /// Subscribe to `SimulationEngine` published state so AppState mirrors
+    /// remain in lockstep with the engine’s actual motion progression.
+    ///
+    /// AppState owns lifecycle flags (`isSimulating`, `isPaused`,
+    /// `currentLocation`, `routeProgress`, `statusMessage`); the engine owns
+    /// the underlying motion timer/loop. These subscriptions translate engine
+    /// state transitions into AppState mirror updates. Added in Milestone 3.
+    private func setupSimulationEngineMirrors() {
+        simulationEngine.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] engineState in
+                guard let self = self else { return }
+                switch engineState {
+                case .running:
+                    self.isSimulating = true
+                    self.isPaused = false
+                case .paused:
+                    self.isSimulating = true
+                    self.isPaused = true
+                case .completed:
+                    // Final-waypoint history recording: when a route finishes
+                    // naturally, persist the last waypoint to history. Prior
+                    // to Milestone 3 this was inlined in AppState’s route
+                    // playback loop.
+                    if self.simulationEngine.currentMode == .route,
+                       let last = self.currentRoute.last {
+                        self.locationHistoryStore.record(
+                            coordinate: last,
+                            name: "Route end",
+                            source: "Route"
+                        )
+                        self.locationHistory = self.locationHistoryStore.entries
+                        self.statusMessage = "Route playback complete"
+                    }
+                    self.isSimulating = false
+                    self.isPaused = false
+                case .idle:
+                    self.isSimulating = false
+                    self.isPaused = false
+                case .error(let message):
+                    self.isSimulating = false
+                    self.isPaused = false
+                    self.lastError = message
+                }
+            }
+            .store(in: &cancellables)
+
+        simulationEngine.$currentCoordinate
+            .receive(on: DispatchQueue.main)
+            .compactMap { $0 }
+            .sink { [weak self] coordinate in
+                self?.currentLocation = coordinate
+            }
+            .store(in: &cancellables)
+
+        simulationEngine.$routeProgress
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] progress in
+                self?.routeProgress = progress
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: Manager Setup
@@ -452,12 +643,11 @@ class AppState: ObservableObject {
         source: String = "Manual",
         name: String? = nil,
         recordHistory: Bool = true,
-        showToast: Bool = true,
-        performanceMode: Bool = false
+        showToast: Bool = true
     ) async {
         guard let device = selectedDevice else {
-            errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
-            ToastManager.shared.error("No device selected")
+            errorHandler.handle(message: "Connect an iPhone to begin", type: .device, action: .checkConnection)
+            ToastManager.shared.error("Connect an iPhone to begin")
             return
         }
 
@@ -466,12 +656,12 @@ class AppState: ObservableObject {
             let versionStr = device.iosVersion
 
             // Only show toast if we haven't shown it for this device yet
-            if !shownNewerIOSWarningDeviceIds.contains(device.id) {
+            if !simulation.shownIOSWarningDeviceIds.contains(device.id) {
                 ToastManager.shared.warning(
                     "iOS \(versionStr) detected - attempting location simulation, but newer iOS may need pymobiledevice3 updates.",
                     duration: 5.0
                 )
-                shownNewerIOSWarningDeviceIds.insert(device.id)
+                simulation.shownIOSWarningDeviceIds.insert(device.id)
             }
 
             // Always log the attempt
@@ -483,14 +673,14 @@ class AppState: ObservableObject {
         }
 
         targetLocation = coordinate
-        statusMessage = "Injecting location..."
+        statusMessage = "Teleporting…"
 
         do {
-            try await locationBridge.setLocation(coordinate, for: device, usePerformanceMode: performanceMode)
+            try await LocationBridge.shared.setLocation(coordinate, for: device)
             currentLocation = coordinate
             isSimulating = true
             lastError = nil
-            injectionStats = await locationBridge.getStats()
+            injectionStats = await LocationBridge.shared.getStats()
             errorHandler.clearCurrentError()
             if recordHistory {
                 locationHistoryStore.record(coordinate: coordinate, name: name ?? targetLocationName, source: source)
@@ -499,9 +689,9 @@ class AppState: ObservableObject {
 
             // Show success toast
             let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
-            statusMessage = "Location spoofed to \(locationStr)"
+            statusMessage = "Location set to \(locationStr)"
             if showToast {
-                ToastManager.shared.success("Location spoofed successfully!")
+                ToastManager.shared.success("Location set successfully")
             }
 
         } catch let error as LocationInjectionError {
@@ -521,12 +711,12 @@ class AppState: ObservableObject {
 
     func clearLocation() async {
         guard let device = selectedDevice else {
-            errorHandler.handle(message: "No device selected", type: .device)
+            errorHandler.handle(message: "Connect an iPhone to begin", type: .device)
             return
         }
 
         do {
-            try await locationBridge.clearLocation(for: device)
+            try await LocationBridge.shared.clearLocation(for: device)
             currentLocation = nil
             targetLocation = nil
             targetLocationName = nil
@@ -561,12 +751,19 @@ class AppState: ObservableObject {
     }
 
     func startSimulation(mode: AppMode) async {
+        await runSimulationTransition { [weak self] in
+            guard let self = self else { return }
+            await self.performStartSimulation(mode: mode)
+        }
+    }
+
+    private func performStartSimulation(mode: AppMode) async {
         guard canStartSimulation else { return }
 
         switch mode {
         case .teleport:
             guard let target = targetLocation else {
-                lastError = "No target location selected"
+                lastError = "Pick a location"
                 return
             }
             isPaused = false
@@ -581,26 +778,68 @@ class AppState: ObservableObject {
     }
 
     func pauseSimulation() {
-        isPaused = true
+        guard simulationTransitionTail == nil else { return }
+        // Delegate to the simulation authority. The engine flips its state
+        // machine to .paused which our mirror subscription propagates back
+        // to AppState.isPaused.
+        simulationEngine.pause()
+        if simulationEngine.state == .paused {
+            isPaused = true
+        }
     }
 
     func resumeSimulation() {
-        isPaused = false
+        guard simulationTransitionTail == nil else { return }
+        // Delegate to the simulation authority.
+        simulationEngine.resume()
+        if simulationEngine.state == .running {
+            isPaused = false
+        }
     }
 
     func stopSimulation() async {
-        simulationTask?.cancel()
-        joystickTask?.cancel()
-        simulationTask = nil
-        joystickTask = nil
-        joystickBaseLocation = nil
+        await runSimulationTransition { [weak self] in
+            guard let self = self else { return }
+            await self.performStopSimulation()
+        }
+    }
 
+    private func performStopSimulation() async {
+        // Delegate to the simulation authority. The engine cancels its timer,
+        // stops its mode, and clears the device location.
+        await simulationEngine.stop()
+        resetLocalSimulationStateAfterEngineStop()
+    }
+
+    private func runSimulationTransition(_ operation: @escaping @MainActor () async -> Void) async {
+        let previousTail = simulationTransitionTail
+        simulationTransitionSerial &+= 1
+        let serial = simulationTransitionSerial
+
+        let transitionTask = Task { @MainActor in
+            await previousTail?.value
+            await operation()
+        }
+        simulationTransitionTail = transitionTask
+
+        await transitionTask.value
+
+        if simulationTransitionSerial == serial {
+            simulationTransitionTail = nil
+        }
+    }
+
+    private func resetLocalSimulationStateAfterEngineStop() {
+        currentLocation = nil
+        targetLocation = nil
+        targetLocationName = nil
         isPaused = false
         isSimulating = false
         routeProgress = 0
         joystickDirection = .zero
-
-        await clearLocation()
+        lastError = nil
+        statusMessage = "Location cleared"
+        errorHandler.clearCurrentError()
     }
 
     // MARK: Route Playback
@@ -657,127 +896,106 @@ class AppState: ObservableObject {
             lastError = "Add at least two route points"
             return
         }
-        simulationTask?.cancel()
-        joystickTask?.cancel()
-        joystickTask = nil
+
+        // Fire the iOS-18-compatibility warning toast once for the active
+        // device, preserving the per-session de-duplication behavior that
+        // used to live inside AppState.setLocation’s per-tick path.
+        if let device = selectedDevice {
+            warnIfNewerIOSDeviceOnce(device: device)
+        }
+
+        // Record the start-of-route waypoint in history before handing off to
+        // the engine. Previously this was done inside the per-tick loop with
+        // `recordHistory: index == 0`. The end-of-route waypoint is recorded
+        // by `setupSimulationEngineMirrors` when engine.state transitions to
+        // .completed.
+        if let first = currentRoute.first {
+            locationHistoryStore.record(
+                coordinate: first,
+                name: "Route start",
+                source: "Route"
+            )
+            locationHistory = locationHistoryStore.entries
+        }
+
+        // Hand off motion progression to the simulation authority. The engine
+        // owns the per-tick timer, RouteInterpolator integration, and
+        // LocationBridge calls from here on. AppState only observes.
         isPaused = false
         isSimulating = true
         routeProgress = 0
-
-        simulationTask = Task {
-            let totalPoints = currentRoute.count
-            var currentIndex = 0
-
-            while currentIndex < totalPoints && !Task.isCancelled {
-                if isPaused {
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    continue
-                }
-
-                let coordinate = currentRoute[currentIndex]
-                await setLocation(
-                    coordinate,
-                    source: "Route",
-                    name: "Route point \(currentIndex + 1)",
-                    recordHistory: currentIndex == 0 || currentIndex == totalPoints - 1,
-                    showToast: false,
-                    performanceMode: true
-                )
-
-                routeProgress = Double(currentIndex + 1) / Double(totalPoints)
-                currentIndex += 1
-
-                let interval = simulationSpeed.updateInterval
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-            }
-
-            if !Task.isCancelled {
-                statusMessage = "Route playback complete"
-            }
-        }
+        simulationEngine.speed = simulationSpeed
+        await simulationEngine.startRoute(waypoints: currentRoute)
     }
 
     // MARK: Joystick Mode
 
+    /// Update the user-facing joystick direction binding and forward the
+    /// vector to the simulation authority.
+    ///
+    /// `joystickDirection` remains the SwiftUI-bindable source of truth for
+    /// the joystick control view. The simulation engine consumes the vector
+    /// at its boundary (converting to a compass bearing internally).
     func updateJoystickDirection(_ direction: CGPoint) {
         joystickDirection = direction
+        simulationEngine.updateJoystickDirection(direction)
     }
 
     func startJoystickControl() async {
         guard canStartSimulation else { return }
 
         guard let start = currentLocation ?? targetLocation else {
-            lastError = "Select a starting location before using joystick mode"
+            lastError = "Pick a starting location"
             return
         }
 
-        simulationTask?.cancel()
-        simulationTask = nil
-        joystickTask?.cancel()
+        // Fire the iOS-18-compatibility warning toast once for the active
+        // device (per-session de-duplication preserved from the per-tick path).
+        if let device = selectedDevice {
+            warnIfNewerIOSDeviceOnce(device: device)
+        }
 
-        joystickBaseLocation = start
+        // Persist the starting position to history once. Before Milestone 3
+        // this was the first invocation of the per-tick setLocation loop.
+        locationHistoryStore.record(
+            coordinate: start,
+            name: targetLocationName ?? "Joystick start",
+            source: "Joystick"
+        )
+        locationHistory = locationHistoryStore.entries
+
+        // Hand off motion progression to the simulation authority. The engine
+        // owns the per-tick joystick loop and LocationBridge calls.
         targetLocation = start
         isPaused = false
         isSimulating = true
-
-        await setLocation(
-            start,
-            source: "Joystick",
-            name: targetLocationName ?? "Joystick start",
-            recordHistory: true,
-            performanceMode: true
-        )
-
-        joystickTask = Task {
-            while !Task.isCancelled {
-                if isPaused {
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    continue
-                }
-
-                let direction = joystickDirection
-                let magnitude = min(1.0, max(0.0, sqrt(direction.x * direction.x + direction.y * direction.y)))
-
-                guard magnitude > 0.05, let base = joystickBaseLocation ?? currentLocation else {
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    continue
-                }
-
-                let interval = max(1.0, simulationSpeed.updateInterval)
-                let distanceMeters = simulationSpeed.metersPerSecond * interval * Double(magnitude)
-                let eastMeters = Double(direction.x) * distanceMeters
-                let northMeters = Double(direction.y) * distanceMeters
-                let next = offsetCoordinate(from: base, eastMeters: eastMeters, northMeters: northMeters)
-
-                guard next.isValid else {
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    continue
-                }
-
-                joystickBaseLocation = next
-                await setLocation(
-                    next,
-                    source: "Joystick",
-                    name: "Joystick movement",
-                    recordHistory: false,
-                    showToast: false,
-                    performanceMode: true
-                )
-
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-            }
-        }
+        simulationEngine.speed = simulationSpeed
+        simulationEngine.updateJoystickDirection(joystickDirection)
+        await simulationEngine.startJoystick(at: start)
     }
 
-    private func offsetCoordinate(from coordinate: LocationCoordinate, eastMeters: Double, northMeters: Double) -> LocationCoordinate {
-        let metersPerDegreeLatitude = 111_111.0
-        let latitudeRadians = coordinate.latitude * .pi / 180
-        let metersPerDegreeLongitude = max(1.0, metersPerDegreeLatitude * cos(latitudeRadians))
+    /// Show the iOS-18+ compatibility warning toast at most once per device
+    /// per session.
+    ///
+    /// Extracted in Milestone 3 from the prior per-tick `setLocation` path
+    /// so it can fire exactly once at simulation start instead of every tick.
+    private func warnIfNewerIOSDeviceOnce(device: Device) {
+        guard device.hasLocationCompatibilityWarning else { return }
+        let versionStr = device.iosVersion
 
-        let nextLatitude = coordinate.latitude + (northMeters / metersPerDegreeLatitude)
-        let nextLongitude = coordinate.longitude + (eastMeters / metersPerDegreeLongitude)
+        if !simulation.shownIOSWarningDeviceIds.contains(device.id) {
+            ToastManager.shared.warning(
+                "iOS \(versionStr) detected - attempting location simulation, but newer iOS may need pymobiledevice3 updates.",
+                duration: 5.0
+            )
+            simulation.shownIOSWarningDeviceIds.insert(device.id)
+        }
 
-        return LocationCoordinate(latitude: nextLatitude, longitude: nextLongitude)
+        Logger.info(
+            "Attempting location injection on newer iOS version with compatibility warning: \(versionStr)",
+            category: .device,
+            deviceUDID: device.id
+        )
     }
 
     // MARK: Location History
@@ -824,10 +1042,10 @@ enum ConnectionStatus {
 
     var text: String {
         switch self {
-        case .disconnected: return "Disconnected"
-        case .connecting: return "Connecting..."
+        case .disconnected: return "Not connected"
+        case .connecting: return "Connecting…"
         case .connected: return "Connected"
-        case .error: return "Error"
+        case .error: return "Connection lost"
         }
     }
 }

@@ -304,21 +304,27 @@ final class ConnectionRecoveryStateTests: XCTestCase {
         let state = ConnectionRecoveryState.disconnected
 
         XCTAssertFalse(state.isConnected)
-        XCTAssertEqual(state.displayText, "Disconnected")
+        // Canonical §5.1 device-connection lexicon (W0 vocabulary unification):
+        // "Disconnected" → "Not connected".
+        XCTAssertEqual(state.displayText, "Not connected")
     }
 
     func testReconnectingState() {
         let state = ConnectionRecoveryState.reconnecting(attempt: 2, maxAttempts: 5)
 
         XCTAssertFalse(state.isConnected)
-        XCTAssertEqual(state.displayText, "Reconnecting (2/5)...")
+        // Canonical §5.1 recovery lexicon (W0): "Reconnecting… (attempt/max)" with
+        // typographic ellipsis after "Reconnecting".
+        XCTAssertEqual(state.displayText, "Reconnecting… (2/5)")
     }
 
     func testFailedState() {
         let state = ConnectionRecoveryState.failed(reason: "Network error")
 
         XCTAssertFalse(state.isConnected)
-        XCTAssertEqual(state.displayText, "Failed: Network error")
+        // Canonical §5.1 recovery lexicon (W0): "Failed: <reason>" →
+        // "Couldn’t reconnect: <reason>" (typographic apostrophe).
+        XCTAssertEqual(state.displayText, "Couldn’t reconnect: Network error")
     }
 
     func testSuspendedState() {

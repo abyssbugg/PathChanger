@@ -331,7 +331,7 @@ class MapManager: ObservableObject {
         // Add new marker
         let annotation = LocationAnnotation(
             coordinate: coordinate.clLocationCoordinate2D,
-            title: "Spoofed Location",
+            title: "Simulated Location",
             subtitle: coordinate.formattedString,
             type: .spoofedLocation
         )

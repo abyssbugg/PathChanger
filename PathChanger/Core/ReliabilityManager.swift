@@ -291,9 +291,9 @@ enum ConnectionRecoveryState: Equatable {
     var displayText: String {
         switch self {
         case .connected: return "Connected"
-        case .disconnected: return "Disconnected"
-        case .reconnecting(let attempt, let max): return "Reconnecting (\(attempt)/\(max))..."
-        case .failed(let reason): return "Failed: \(reason)"
+        case .disconnected: return "Not connected"
+        case .reconnecting(let attempt, let max): return "Reconnecting… (\(attempt)/\(max))"
+        case .failed(let reason): return "Couldn’t reconnect: \(reason)"
         case .suspended: return "Suspended"
         }
     }

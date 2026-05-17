@@ -184,7 +184,7 @@ struct SimulationView: View {
         appState.targetLocationName = "Selected location"
         appState.statusMessage = mode == .route
             ? "Selected waypoint candidate. Use Add Waypoint to include it in the route."
-            : String(format: "Selected location: %.4f, %.4f. Press Play or Apply to spoof.", coordinate.latitude, coordinate.longitude)
+            : String(format: "Selected location: %.4f, %.4f. Press Play or Apply to set.", coordinate.latitude, coordinate.longitude)
     }
 
     private func showMapContext(at coordinate: CLLocationCoordinate2D, screenPoint: CGPoint) {
@@ -431,6 +431,9 @@ struct SimulationView: View {
     }
 
     // MARK: - Mode Specific Controls
+    // W1 visual governance: mode-specific panels are subordinate interaction
+    // surfaces. They may prepare targets or context, but PrimaryActionPill
+    // remains the canonical authority for T0 execution.
 
     @ViewBuilder
     private var modeSpecificControls: some View {
@@ -487,22 +490,24 @@ struct SimulationView: View {
                         .accessibilityIdentifier(AccessibilityIdentifiers.Location.longitudeField)
                 }
 
+                // W1 visual governance: this Teleport inspector action is a
+                // subordinate interaction. It applies coordinates as target
+                // context only and must not become an execution authority.
                 Button {
-                    teleportToCoordinates()
+                    applyCoordinatesToTarget()
                 } label: {
-                    Label("Set Location", systemImage: "location.north.fill")
+                    Label("Apply Coordinates", systemImage: "mappin")
                 }
-                .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
+                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                 .frame(maxWidth: 200, alignment: .leading)
-                .disabled(teleportDisabledReason != nil)
+                .disabled(coordinateApplyDisabledReason != nil)
                 .accessibleButton(
-                    label: AccessibilityLabels.Actions.setLocation,
-                    hint: "Applies the entered coordinates to the selected device",
+                    label: "Apply coordinates as target",
+                    hint: "Selects the entered coordinates without applying them to the device",
                     identifier: AccessibilityIdentifiers.Location.setLocationButton
                 )
-
-                if let teleportDisabledReason {
-                    Label(teleportDisabledReason, systemImage: "info.circle")
+                if let coordinateApplyDisabledReason {
+                    Label(coordinateApplyDisabledReason, systemImage: "info.circle")
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -515,6 +520,9 @@ struct SimulationView: View {
 
     // MARK: - Route Controls
 
+    // W1 visual governance: route controls are subordinate-prominent
+    // interactions for route composition/import/clearing only. Execution
+    // remains owned by the canonical PrimaryActionPill.
     private var routeControls: some View {
         FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up") {
             VStack(alignment: .leading, spacing: AppSpacing.lg) {
@@ -812,15 +820,9 @@ struct SimulationView: View {
         return appState.simulationStatusText
     }
 
-    private var teleportDisabledReason: String? {
+    private var coordinateApplyDisabledReason: String? {
         if latitudeInput.isEmpty || longitudeInput.isEmpty {
             return "Enter latitude and longitude"
-        }
-        if appState.selectedDevice == nil {
-            return "Select a device"
-        }
-        if !appState.isTunneldRunning {
-            return "Start tunnel first"
         }
         return nil
     }
@@ -864,7 +866,7 @@ struct SimulationView: View {
 
     // MARK: - Actions
 
-    private func teleportToCoordinates() {
+    private func applyCoordinatesToTarget() {
         guard let lat = Double(latitudeInput),
               let lon = Double(longitudeInput) else {
             withAnimation {
@@ -881,13 +883,10 @@ struct SimulationView: View {
             return
         }
 
-        Task {
+        withAnimation {
             appState.targetLocation = coordinate
             appState.targetLocationName = "Custom location"
-            await appState.setLocation(coordinate, source: "Coordinates", name: "Custom location")
-            withAnimation {
-                appState.statusMessage = "Teleported to \(coordinate.formattedShort)"
-            }
+            appState.statusMessage = String(format: "Selected location: %.4f, %.4f. Press Play or Apply to set.", coordinate.latitude, coordinate.longitude)
         }
     }
 

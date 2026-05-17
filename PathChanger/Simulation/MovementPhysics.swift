@@ -379,6 +379,22 @@ class MovementPhysicsEngine {
         if normalized < 0 { normalized += 360 }
         return normalized
     }
+
+    #if DEBUG
+    func testDisableRandomPausesAndJitter() {
+        physics = MovementPhysicsConfig(
+            maxSpeed: physics.maxSpeed,
+            acceleration: physics.acceleration,
+            deceleration: physics.deceleration,
+            jitter: 0,
+            turnSmoothness: physics.turnSmoothness,
+            stopProbability: 0,
+            pauseDuration: physics.pauseDuration
+        )
+        state.isPaused = false
+        state.pauseRemaining = 0
+    }
+    #endif
 }
 
 // MARK: - Route Recording

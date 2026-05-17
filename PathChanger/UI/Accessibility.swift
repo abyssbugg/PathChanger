@@ -137,13 +137,13 @@ enum AccessibilityLabels {
         static func tunnelConnected(mode: String) -> String {
             "Tunnel connected via \(mode)"
         }
-        static let tunnelDisconnected = "Tunnel disconnected"
-        static let tunnelConnecting = "Tunnel connecting"
+        static let tunnelDisconnected = "Tunnel offline"
+        static let tunnelConnecting = "Tunnel starting…"
         static func deviceConnected(name: String) -> String {
             "\(name), connected"
         }
         static func deviceDisconnected(name: String) -> String {
-            "\(name), disconnected"
+            "\(name), not connected"
         }
         static func simulationRunning(mode: String, speed: String) -> String {
             "Simulation running, \(mode) mode at \(speed) speed"
@@ -411,7 +411,7 @@ class AccessibilityAnnouncer {
     }
 
     func announceDeviceDisconnected(_ deviceName: String) {
-        announce("\(deviceName) disconnected", priority: .high)
+        announce("\(deviceName) connection lost", priority: .high)
     }
 
     func announceSimulationStarted(_ mode: String) {

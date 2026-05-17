@@ -252,32 +252,70 @@ final class UIConstantsTests: XCTestCase {
     }
 }
 
-// MARK: - Security Constants Tests
+// MARK: - Subprocess Policy Tests
+//
+// Renamed from SecurityConstantsTests in Milestone 2 of the architectural
+// consolidation. The former `SecurityConstants` enum was deleted; its
+// responsibilities moved to `SubprocessPolicy`. These tests assert that
+// the consolidated policy still meets the invariants that the security
+// audit relied on.
 
-final class SecurityConstantsTests: XCTestCase {
+final class SubprocessPolicyTests: XCTestCase {
 
     func testAllowedPythonPathsAreAbsolute() {
-        for path in SecurityConstants.allowedPythonPaths {
+        for path in SubprocessPolicy.allowedPythonPaths {
             XCTAssertTrue(path.hasPrefix("/"), "Python path should be absolute: \(path)")
         }
     }
 
     func testAllowedSubcommandsExist() {
-        XCTAssertFalse(SecurityConstants.allowedSubcommands.isEmpty)
-        XCTAssertTrue(SecurityConstants.allowedSubcommands.contains("developer"))
+        XCTAssertFalse(SubprocessPolicy.allowedSubcommands.isEmpty)
+        XCTAssertTrue(SubprocessPolicy.allowedSubcommands.contains("developer"))
     }
 
-    func testDangerousCharactersIncludesShellMetachars() {
-        let dangerous = SecurityConstants.dangerousCharacters
-
-        XCTAssertTrue(";".unicodeScalars.allSatisfy { dangerous.contains($0) })
-        XCTAssertTrue("|".unicodeScalars.allSatisfy { dangerous.contains($0) })
-        XCTAssertTrue("&".unicodeScalars.allSatisfy { dangerous.contains($0) })
-        XCTAssertTrue("$".unicodeScalars.allSatisfy { dangerous.contains($0) })
+    func testAllowedFlagsIncludeCoreModuleFlag() {
+        XCTAssertTrue(SubprocessPolicy.allowedFlags.contains("-m"))
+        XCTAssertTrue(SubprocessPolicy.allowedFlags.contains("--rsd"))
+        XCTAssertTrue(SubprocessPolicy.allowedFlags.contains("--udid"))
     }
 
-    func testMaxSecureOutputSizeIsReasonable() {
-        XCTAssertGreaterThan(SecurityConstants.maxSecureOutputSize, 0)
-        XCTAssertLessThanOrEqual(SecurityConstants.maxSecureOutputSize, 50 * 1024 * 1024)
+    func testForbiddenCharactersIncludesShellMetachars() {
+        let forbidden = SubprocessPolicy.forbiddenCharacters
+
+        XCTAssertTrue(forbidden.contains(";"))
+        XCTAssertTrue(forbidden.contains("|"))
+        XCTAssertTrue(forbidden.contains("&"))
+        XCTAssertTrue(forbidden.contains("$"))
+        XCTAssertTrue(forbidden.contains("`"))
+        XCTAssertTrue(forbidden.contains("\n"))
+        XCTAssertTrue(forbidden.contains("\r"))
+    }
+
+    func testForbiddenCharacterSetMatchesSet() {
+        // The CharacterSet and Set<Character> forms must remain in sync.
+        for character in SubprocessPolicy.forbiddenCharacters {
+            for scalar in character.unicodeScalars {
+                XCTAssertTrue(
+                    SubprocessPolicy.forbiddenCharacterSet.contains(scalar),
+                    "forbiddenCharacterSet should include scalar for '\(character)'"
+                )
+            }
+        }
+    }
+
+    func testMaxSubprocessOutputBytesIsReasonable() {
+        XCTAssertGreaterThan(SubprocessPolicy.maxSubprocessOutputBytes, 0)
+        XCTAssertLessThanOrEqual(SubprocessPolicy.maxSubprocessOutputBytes, 50 * 1024 * 1024)
+    }
+
+    func testContainsForbiddenCharacterPredicate() {
+        XCTAssertTrue(SubprocessPolicy.containsForbiddenCharacter("echo $HOME"))
+        XCTAssertTrue(SubprocessPolicy.containsForbiddenCharacter("foo;bar"))
+        XCTAssertFalse(SubprocessPolicy.containsForbiddenCharacter("plain-text-123"))
+    }
+
+    func testIsAllowedFlagHandlesFlagEqualsValueForm() {
+        XCTAssertTrue(SubprocessPolicy.isAllowedFlag("--rsd=fe80::1"))
+        XCTAssertFalse(SubprocessPolicy.isAllowedFlag("--unknownflag"))
     }
 }

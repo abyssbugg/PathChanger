@@ -381,9 +381,12 @@ final class WCAGComplianceTests: XCTestCase {
     }
 
     func testStatusMessagesAreDescriptive() {
-        // Status messages should provide meaningful information
+        // Status messages should provide meaningful information.
+        // Canonical §5 lexicon (W0 vocabulary unification): the tunnel-not-ready
+        // VoiceOver label was migrated from "Tunnel disconnected" to
+        // "Tunnel offline" to match the canonical tunnel-readiness vocabulary.
         let tunnelStatus = AccessibilityLabels.Status.tunnelDisconnected
-        XCTAssertTrue(tunnelStatus.lowercased().contains("disconnect"))
+        XCTAssertTrue(tunnelStatus.lowercased().contains("offline"))
 
         let simStatus = AccessibilityLabels.Status.simulationPaused
         XCTAssertTrue(simStatus.lowercased().contains("pause"))

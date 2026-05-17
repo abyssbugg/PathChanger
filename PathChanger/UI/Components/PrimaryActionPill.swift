@@ -12,6 +12,30 @@
 //  Reads tunnel truth directly from TunneldManager (matches the bug-fix
 //  discipline used by the WiFi-mode work).
 //
+// MARK: - W1 Authority Declaration (Slice S0 — documentation only)
+//
+// PrimaryActionPill is the SOLE production T0 execution authority.
+//
+// Authority rules (frozen — see W1 governance plan):
+//   - This is the only production UI surface authorized to initiate
+//     simulation execution: teleport apply, route start, joystick start,
+//     and simulation stop.
+//   - When the tunnel is offline it transforms into a workflow-advancement
+//     proxy that invokes `TunneldManager.shared.autoStart()` so the user
+//     can still progress through Device → Location → Simulation from a
+//     single surface; this is the canonical T0 tunnel-required path.
+//   - All other UI surfaces (inspectors, menus, sidebars, map gestures,
+//     history rows, search results) are subordinate. They may set target,
+//     edit route, or stream joystick input, but MUST NOT call
+//     `AppState.startSimulation(...)`, `AppState.stopSimulation()`, or
+//     `AppState.setLocation(...)` as a user-facing execution gesture.
+//   - DeviceTunnelPill is the sibling Phase-1 readiness authority and is
+//     NOT a competing T0 surface — it owns device selection and proactive
+//     tunnel-readiness within its own popover.
+//
+// W1 Slice S0 is documentation-only. No behavior, layout, state, bindings,
+// or routing are altered by this declaration.
+//
 
 import SwiftUI
 

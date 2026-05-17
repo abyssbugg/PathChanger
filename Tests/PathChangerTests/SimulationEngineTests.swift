@@ -434,6 +434,15 @@ final class JoystickModeTests: XCTestCase {
 
 final class SimulationEngineStateTests: XCTestCase {
 
+    private func testDevice() -> Device {
+        Device(
+            id: "00000000-0000000000000000",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone"
+        )
+    }
+
     @MainActor
     func testInitialState() {
         let engine = SimulationEngine()
@@ -480,7 +489,9 @@ final class SimulationEngineStateTests: XCTestCase {
             try await engine.teleport(to: coordinate)
             XCTFail("Should throw error without device")
         } catch {
-            XCTAssertEqual(engine.state, .error("No device selected"))
+            // Canonical §5.1 lexicon (W0 vocabulary unification):
+            // "No device selected" → "Connect an iPhone to begin".
+            XCTAssertEqual(engine.state, .error("Connect an iPhone to begin"))
         }
     }
 
@@ -494,7 +505,8 @@ final class SimulationEngineStateTests: XCTestCase {
 
         await engine.startRoute(waypoints: waypoints)
 
-        XCTAssertEqual(engine.state, .error("No device selected"))
+        // Canonical §5.1 lexicon (W0 vocabulary unification).
+        XCTAssertEqual(engine.state, .error("Connect an iPhone to begin"))
     }
 
     @MainActor
@@ -516,13 +528,13 @@ final class SimulationEngineStateTests: XCTestCase {
     }
 
     @MainActor
-    func testStartJoystickWithoutDeviceFails() {
+    func testStartJoystickWithoutDeviceFails() async {
         let engine = SimulationEngine()
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        await engine.startJoystick(at: location)
 
-        engine.startJoystick(at: location)
-
-        XCTAssertEqual(engine.state, .error("No device selected"))
+        // Canonical §5.1 lexicon (W0 vocabulary unification).
+        XCTAssertEqual(engine.state, .error("Connect an iPhone to begin"))
     }
 
     @MainActor
@@ -537,7 +549,7 @@ final class SimulationEngineStateTests: XCTestCase {
         engine.setDevice(device)
 
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        engine.startJoystick(at: location)
+        await engine.startJoystick(at: location)
 
         XCTAssertEqual(engine.state, .running)
 
@@ -558,7 +570,7 @@ final class SimulationEngineStateTests: XCTestCase {
         engine.setDevice(device)
 
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        engine.startJoystick(at: location)
+        await engine.startJoystick(at: location)
         engine.pause()
 
         XCTAssertEqual(engine.state, .paused)
@@ -578,6 +590,186 @@ final class SimulationEngineStateTests: XCTestCase {
     }
 
     @MainActor
+    func testPauseWhenIdleIsNoOp() {
+        let engine = SimulationEngine()
+
+        engine.pause()
+
+        XCTAssertEqual(engine.state, .idle)
+        XCTAssertFalse(engine.testHasActiveTimer)
+    }
+
+    @MainActor
+    func testStartingRouteAdvancesSessionAndInvalidatesJoystickTimer() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        await engine.startJoystick(at: start)
+        let joystickSessionID = engine.testSimulationSessionID
+
+        XCTAssertEqual(engine.state, .running)
+        XCTAssertEqual(engine.currentMode, .joystick)
+        XCTAssertTrue(engine.testHasActiveTimer)
+
+        await engine.startRoute(waypoints: [
+            start,
+            LocationCoordinate(latitude: 35.01, longitude: 139.0)
+        ])
+
+        XCTAssertEqual(engine.state, .running)
+        XCTAssertEqual(engine.currentMode, .route)
+        XCTAssertGreaterThan(engine.testSimulationSessionID, joystickSessionID)
+        XCTAssertTrue(engine.testHasActiveTimer)
+
+        engine.pause()
+    }
+
+    @MainActor
+    func testStaleTickFromPriorSessionCannotMutateNewRoute() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        await engine.startJoystick(at: start)
+        let staleSessionID = engine.testSimulationSessionID
+
+        await engine.startRoute(waypoints: [
+            start,
+            LocationCoordinate(latitude: 35.01, longitude: 139.0)
+        ])
+        let currentSessionID = engine.testSimulationSessionID
+        let routeProgress = engine.routeProgress
+
+        await engine.testRunTick(sessionID: staleSessionID)
+
+        XCTAssertEqual(engine.testSimulationSessionID, currentSessionID)
+        XCTAssertEqual(engine.state, .running)
+        XCTAssertEqual(engine.currentMode, .route)
+        XCTAssertEqual(engine.routeProgress, routeProgress)
+
+        engine.pause()
+    }
+
+    @MainActor
+    func testJoystickTickStopsAndDoesNotAdvanceOnTunnelInvalidation() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        var sendCount = 0
+        engine.testSetLocationHandler = { _, _ in
+            sendCount += 1
+            throw LocationBridge.LocationBridgeError.tunnelInvalidated("No route to host")
+        }
+        defer {
+            engine.testSetLocationHandler = nil
+        }
+
+        await engine.startJoystick(at: start)
+        let sessionID = engine.testSimulationSessionID
+        engine.setJoystickDirection(degrees: 0)
+        engine.setJoystickMoving(true)
+
+        await engine.testRunTick(sessionID: sessionID)
+
+        XCTAssertEqual(sendCount, 1)
+        if case .error(let message) = engine.state {
+            XCTAssertTrue(message.contains("No route to host"))
+        } else {
+            XCTFail("Expected simulation to enter error after tunnel invalidation")
+        }
+        XCTAssertFalse(engine.testHasActiveTimer)
+        XCTAssertFalse(engine.testHasActiveTick)
+        XCTAssertEqual(engine.currentCoordinate?.latitude, start.latitude)
+        XCTAssertEqual(engine.currentCoordinate?.longitude, start.longitude)
+    }
+
+    @MainActor
+    func testPauseResumeKeepsSessionAndRestartsTimer() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        await engine.startJoystick(at: LocationCoordinate(latitude: 35.0, longitude: 139.0))
+        let runningSessionID = engine.testSimulationSessionID
+
+        engine.pause()
+
+        XCTAssertEqual(engine.state, .paused)
+        XCTAssertEqual(engine.testSimulationSessionID, runningSessionID)
+        XCTAssertFalse(engine.testHasActiveTimer)
+
+        engine.resume()
+
+        XCTAssertEqual(engine.state, .running)
+        XCTAssertEqual(engine.testSimulationSessionID, runningSessionID)
+        XCTAssertTrue(engine.testHasActiveTimer)
+
+        engine.pause()
+    }
+
+    @MainActor
+    func testRapidLifecycleTransitionsInvalidateTimersAndStaleTicks() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        var staleSessionIDs: [UInt64] = []
+
+        for index in 0..<20 {
+            let location = LocationCoordinate(
+                latitude: start.latitude + Double(index) * 0.0001,
+                longitude: start.longitude
+            )
+
+            await engine.startJoystick(at: location)
+            let joystickSessionID = engine.testSimulationSessionID
+
+            XCTAssertEqual(engine.state, .running)
+            XCTAssertEqual(engine.currentMode, .joystick)
+            XCTAssertTrue(engine.testHasActiveTimer)
+
+            engine.pause()
+
+            XCTAssertEqual(engine.state, .paused)
+            XCTAssertFalse(engine.testHasActiveTimer)
+
+            await engine.startRoute(waypoints: [
+                location,
+                LocationCoordinate(latitude: location.latitude + 0.01, longitude: location.longitude)
+            ])
+            let routeSessionID = engine.testSimulationSessionID
+
+            XCTAssertEqual(engine.state, .running)
+            XCTAssertEqual(engine.currentMode, .route)
+            XCTAssertGreaterThan(routeSessionID, joystickSessionID)
+            XCTAssertTrue(engine.testHasActiveTimer)
+
+            await engine.testRunTick(sessionID: joystickSessionID)
+
+            XCTAssertEqual(engine.testSimulationSessionID, routeSessionID)
+            XCTAssertEqual(engine.state, .running)
+            XCTAssertEqual(engine.currentMode, .route)
+
+            staleSessionIDs.append(joystickSessionID)
+            engine.pause()
+        }
+
+        for staleSessionID in staleSessionIDs {
+            await engine.testRunTick(sessionID: staleSessionID)
+        }
+
+        XCTAssertEqual(engine.state, .paused)
+        XCTAssertFalse(engine.testHasActiveTimer)
+        XCTAssertFalse(engine.testHasActiveTick)
+    }
+
+    @MainActor
     func testStopResetsState() async {
         let engine = SimulationEngine()
         let device = Device(
@@ -589,7 +781,7 @@ final class SimulationEngineStateTests: XCTestCase {
         engine.setDevice(device)
 
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        engine.startJoystick(at: location)
+        await engine.startJoystick(at: location)
 
         await engine.stop()
 
@@ -600,7 +792,7 @@ final class SimulationEngineStateTests: XCTestCase {
     }
 
     @MainActor
-    func testSetDevice() {
+    func testSetDevice() async {
         let engine = SimulationEngine()
         let device = Device(
             id: "ABCD1234-5678-90EF-GHIJ-KLMNOPQRSTUV",
@@ -614,13 +806,13 @@ final class SimulationEngineStateTests: XCTestCase {
         // Device is set (we can't access it directly, but we can verify
         // that operations requiring a device work now)
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        engine.startJoystick(at: location)
+        await engine.startJoystick(at: location)
 
         XCTAssertEqual(engine.state, .running)
     }
 
     @MainActor
-    func testJoystickDirectionControl() {
+    func testJoystickDirectionControl() async {
         let engine = SimulationEngine()
         let device = Device(
             id: "00000000-0000000000000000",
@@ -631,7 +823,7 @@ final class SimulationEngineStateTests: XCTestCase {
         engine.setDevice(device)
 
         let location = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        engine.startJoystick(at: location)
+        await engine.startJoystick(at: location)
 
         // These should not crash
         engine.setJoystickDirection(degrees: 45)

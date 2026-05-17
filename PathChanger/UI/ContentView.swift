@@ -108,6 +108,25 @@ struct ContentView: View {
         .withToasts()
     }
 
+    /// Error-dialog recovery action handler.
+    ///
+    /// W1 Authority Declaration (Slice S0 — documentation only; see W1
+    /// governance plan):
+    ///   - The `.startTunneld` recovery case below routes through
+    ///     `TunneldManager.shared.autoStart()` and is a SANCTIONED RECOVERY
+    ///     EXCEPTION, NOT a workflow authority. It exists solely to let the
+    ///     user accept a recovery suggestion offered by an error dialog;
+    ///     it is not a competing Phase-1 or T0 surface.
+    ///   - All other recovery cases (`.retry`, `.openSettings`,
+    ///     `.checkConnection`, `.enableDeveloperMode`) are likewise
+    ///     recovery-only side effects and must not be reused as user-facing
+    ///     primary execution gestures elsewhere in the UI.
+    ///   - `PrimaryActionPill` remains the sole production T0 execution
+    ///     authority; `DeviceTunnelPill` remains the sole production
+    ///     Phase-1 readiness authority.
+    ///
+    /// W1 Slice S0 is documentation-only. No behavior, layout, state,
+    /// bindings, or routing are altered by this declaration.
     private func handleErrorAction(_ action: ErrorHandler.ErrorAction) {
         switch action {
         case .retry:

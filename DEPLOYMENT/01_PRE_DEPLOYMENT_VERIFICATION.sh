@@ -4,6 +4,10 @@
 # Usage: ./01_PRE_DEPLOYMENT_VERIFICATION.sh
 
 set -e
+set -u
+set -o pipefail
+
+REQUIRE_PRODUCTION_SIGNING="${REQUIRE_PRODUCTION_SIGNING:-0}"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -63,8 +67,17 @@ echo ""
 echo "${BLUE}2. Codebase Health Verification${NC}"
 echo "───────────────────────────────────────────────────────"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${0:A}")/.." && pwd)"
 cd "$PROJECT_ROOT"
+
+# Validate release configuration invariants before running heavier checks.
+if scripts/validate-release-config.sh; then
+    echo "${GREEN}✓ PASS${NC}: Release configuration gates valid"
+    PASSED_CHECKS=$((PASSED_CHECKS + 1))
+else
+    echo "${RED}✗ FAIL${NC}: Release configuration gates failed"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
+fi
 
 # Check build success
 if swift build &>/dev/null 2>&1; then
@@ -85,8 +98,12 @@ else
 fi
 
 # Check for compilation warnings/errors
-BUILD_OUTPUT=$(swift build 2>&1 | grep -i "warning\|error" || true)
-if [ -z "$BUILD_OUTPUT" ]; then
+if BUILD_OUTPUT=$(swift build 2>&1); then
+    BUILD_WARNINGS=$(printf "%s\n" "$BUILD_OUTPUT" | awk 'tolower($0) ~ /warning|error/')
+else
+    BUILD_WARNINGS="$BUILD_OUTPUT"
+fi
+if [ -z "$BUILD_WARNINGS" ]; then
     echo "${GREEN}✓ PASS${NC}: No compilation warnings or errors"
     PASSED_CHECKS=$((PASSED_CHECKS + 1))
 else
@@ -104,9 +121,15 @@ echo "────────────────────────�
 # Check essential files
 REQUIRED_FILES=(
     "Package.swift"
-    "PathChanger/Info.plist"
+    "Resources/Info.plist"
     "PathChanger/PathChangerApp.swift"
     "Resources/PathChanger.entitlements"
+    ".github/workflows/ci.yml"
+    ".github/workflows/release.yml"
+    "build-app-bundle.sh"
+    "scripts/validate-release-config.sh"
+    "scripts/location_bridge.py"
+    "scripts/pair_wifi.py"
     "Tests/PathChangerTests/PerformanceTests.swift"
 )
 
@@ -139,12 +162,15 @@ else
     PASSED_CHECKS=$((PASSED_CHECKS + 1))
 fi
 
-# Check for Hardened Runtime entitlements
-if grep -q "com.apple.security.cs.allow-jit\|hardened-runtime\|allow-unsigned-executable-memory" "$ENTITLEMENTS_FILE" 2>/dev/null; then
-    echo "${GREEN}✓ PASS${NC}: Hardened Runtime entitlements present"
+# Validate entitlements plist structure. Hardened runtime itself is enforced at signing time,
+# not by a plist entitlement, so production verification delegates that gate to
+# build-app-bundle.sh and scripts/validate-release-config.sh.
+if plutil -lint "$ENTITLEMENTS_FILE" &>/dev/null; then
+    echo "${GREEN}✓ PASS${NC}: Entitlements plist is valid"
     PASSED_CHECKS=$((PASSED_CHECKS + 1))
 else
-    echo "${YELLOW}⚠ WARNING${NC}: Review Hardened Runtime entitlements in $ENTITLEMENTS_FILE"
+    echo "${RED}✗ FAIL${NC}: Entitlements plist is invalid"
+    FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 
 echo ""
@@ -165,8 +191,13 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
         echo "${GREEN}✓ PASS${NC}: All changes committed"
         PASSED_CHECKS=$((PASSED_CHECKS + 1))
     else
-        echo "${YELLOW}⚠ WARNING${NC}: Uncommitted changes detected:"
-        git status --porcelain | head -10
+        if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+            echo "${RED}✗ FAIL${NC}: Uncommitted changes detected during production verification"
+            FAILED_CHECKS=$((FAILED_CHECKS + 1))
+        else
+            echo "${YELLOW}⚠ WARNING${NC}: Uncommitted changes detected:"
+            git status --porcelain | head -10
+        fi
     fi
     
     # Get last commit info
@@ -192,7 +223,7 @@ if swift build -c release 2>&1 | grep -q "DWARF"; then
 fi
 
 # Check Info.plist structure
-INFO_PLIST="$PROJECT_ROOT/PathChanger/Info.plist"
+INFO_PLIST="$PROJECT_ROOT/Resources/Info.plist"
 if [ -f "$INFO_PLIST" ]; then
     if plutil -lint "$INFO_PLIST" &>/dev/null; then
         echo "${GREEN}✓ PASS${NC}: Info.plist is valid"
@@ -220,9 +251,11 @@ else
     FAILED_CHECKS=$((FAILED_CHECKS + 1))
 fi
 
-# List dependencies
 echo "${BLUE}Dependencies:${NC}"
-swift package describe 2>/dev/null | grep -A 100 "dependencies:" || echo "No external dependencies"
+PACKAGE_DESCRIPTION=$(swift package describe 2>/dev/null)
+if ! printf "%s\n" "$PACKAGE_DESCRIPTION" | grep -A 100 "dependencies:"; then
+    echo "No external dependencies"
+fi
 
 echo ""
 
@@ -233,12 +266,21 @@ echo "${BLUE}8. Code Signing Certificate Readiness${NC}"
 echo "───────────────────────────────────────────────────────"
 
 # List available Developer ID certificates
-DEVELOPER_CERTS=$(security find-identity -v -p codesigning | grep "Developer ID Application" || true)
+if DEVELOPER_CERTS=$(security find-identity -v -p codesigning | grep "Developer ID Application"); then
+    :
+else
+    DEVELOPER_CERTS=""
+fi
 
 if [ -z "$DEVELOPER_CERTS" ]; then
-    echo "${YELLOW}⚠ WARNING${NC}: No Developer ID certificates found"
-    echo "  Action: Import your Developer ID certificate via Keychain"
-    echo "  Location: https://developer.apple.com/account/resources/certificates"
+    if [ "$REQUIRE_PRODUCTION_SIGNING" = "1" ]; then
+        echo "${RED}✗ FAIL${NC}: No Developer ID certificates found for production verification"
+        FAILED_CHECKS=$((FAILED_CHECKS + 1))
+    else
+        echo "${YELLOW}⚠ WARNING${NC}: No Developer ID certificates found"
+        echo "  Action: Import your Developer ID certificate via Keychain"
+        echo "  Location: https://developer.apple.com/account/resources/certificates"
+    fi
 else
     echo "${GREEN}✓ PASS${NC}: Developer ID certificates found:"
     echo "$DEVELOPER_CERTS" | head -3
@@ -259,7 +301,7 @@ if [ -f "$PROJECT_ROOT/Tests/PathChangerTests/PerformanceTests.swift" ]; then
     PASSED_CHECKS=$((PASSED_CHECKS + 1))
     
     # Show test count
-    TEST_COUNT=$(grep -c "func test" "$PROJECT_ROOT/Tests/PathChangerTests/PerformanceTests.swift" || echo "0")
+    TEST_COUNT=$(awk '/func test/ { count++ } END { print count + 0 }' "$PROJECT_ROOT/Tests/PathChangerTests/PerformanceTests.swift")
     echo "  Tests defined: $TEST_COUNT"
 else
     echo "${RED}✗ FAIL${NC}: Performance test suite missing"

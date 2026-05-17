@@ -169,6 +169,11 @@ struct TunnelContext: Equatable {
     mutating func removeProcess(_ pid: Int32) {
         activeProcessIds.remove(pid)
     }
+
+    /// Invalidate endpoint ownership while preserving lifecycle/recovery context.
+    mutating func invalidateTunnelInfo() {
+        tunnelInfo = nil
+    }
 }
 
 // MARK: - State Transition Result
@@ -219,6 +224,9 @@ enum TunnelAction: Equatable, CustomStringConvertible {
     /// Clean up resources
     case cleanupResources
 
+    /// Invalidate cached RSD endpoint ownership without resetting recovery context
+    case invalidateRsdInfo
+
     var description: String {
         switch self {
         case .launchProcess(let mode):
@@ -239,6 +247,8 @@ enum TunnelAction: Equatable, CustomStringConvertible {
             return "notifyStateChange(\(state))"
         case .cleanupResources:
             return "cleanupResources"
+        case .invalidateRsdInfo:
+            return "invalidateRsdInfo"
         }
     }
 }
@@ -590,12 +600,15 @@ final class TunnelStateMachine: ObservableObject {
         case (.running, .healthCheckFailed):
             let message = "Health check failed"
             context.lastError = message
+            context.statusMessage = "Tunnel disconnected"
             context.isRecovering = true
+            context.invalidateTunnelInfo()
             return .success(
                 newState: .error(message),
                 actions: [
                     .logTransition(from: .running, to: .error(message), event: event),
                     .notifyStateChange(state: .error(message)),
+                    .invalidateRsdInfo,
                     .stopHealthMonitor,
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
                 ]
@@ -604,11 +617,13 @@ final class TunnelStateMachine: ObservableObject {
         case (.running, .errorOccurred(let message)):
             context.lastError = message
             context.statusMessage = "Error: \(message)"
+            context.invalidateTunnelInfo()
             return .success(
                 newState: .error(message),
                 actions: [
                     .logTransition(from: .running, to: .error(message), event: event),
                     .notifyStateChange(state: .error(message)),
+                    .invalidateRsdInfo,
                     .stopHealthMonitor,
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
                 ]
@@ -646,12 +661,14 @@ final class TunnelStateMachine: ObservableObject {
             }
             context.retryCount += 1
             context.statusMessage = "Attempting recovery (\(context.retryCount)/\(context.maxRetries))..."
+            context.invalidateTunnelInfo()
             let mode = context.activeMode ?? .auto
             return .success(
                 newState: .starting,
                 actions: [
                     .logTransition(from: .error(""), to: .starting, event: event),
                     .notifyStateChange(state: .starting),
+                    .invalidateRsdInfo,
                     .launchProcess(mode: mode)
                 ]
             )

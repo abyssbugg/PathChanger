@@ -39,8 +39,6 @@ PathChanger uses a consistent, type-safe error handling approach with:
 
 | Error Type | Module | Purpose |
 |-----------|--------|---------|
-| ``CloudSyncError`` | CloudSync | Cloud synchronization failures |
-| ``HealthCheckError`` | HealthCheckServer | Health endpoint errors |
 | ``QueueError`` | RateLimiter | Rate limiting queue errors |
 | ``PythonResolverError`` | PythonPathResolver | Python dependency errors |
 

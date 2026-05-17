@@ -150,7 +150,7 @@ enum TunnelMode: String, CaseIterable, Identifiable {
 /// ```swift
 /// switch tunnelManager.state {
 /// case .idle:
-///     print("Tunnel not running")
+///     print("Tunnel idle")
 /// case .starting:
 ///     print("Connecting...")
 /// case .running:
@@ -226,35 +226,34 @@ enum PrivilegedCommandError: LocalizedError {
 }
 
 /// Security validator for privileged AppleScript commands
-/// Only allows pre-approved pymobiledevice3 operations to prevent command injection
+/// Only allows pre-approved pymobiledevice3 operations to prevent command injection.
+///
+/// Python-path and forbidden-character lists are sourced from `SubprocessPolicy`
+/// (single source of truth). Command-pattern allowlist is kept local because
+/// privileged commands are a narrower whitelist than general pmd3 invocations.
 struct PrivilegedCommandValidator {
 
     // MARK: - Security Constants
 
-    /// Allowed system Python executable paths (prevents path injection attacks)
-    private static let allowedPythonPaths: Set<String> = [
-        "/opt/homebrew/bin/python3",
-        "/opt/homebrew/bin/python3.11",
-        "/opt/homebrew/bin/python3.12",
-        "/opt/homebrew/bin/python3.13",
-        "/usr/local/bin/python3",
-        "/usr/local/bin/python3.11",
-        "/usr/local/bin/python3.12",
-        "/usr/local/bin/python3.13",
-        "/usr/bin/python3"
-    ]
+    /// Allowed system Python executable paths — sourced from SubprocessPolicy.
+    private static var allowedPythonPaths: Set<String> { SubprocessPolicy.allowedPythonPaths }
 
-    /// Allowed pymobiledevice3 command patterns (exact subcommand match required)
+    /// Allowed pymobiledevice3 command patterns (exact subcommand match required).
+    /// This is narrower than `SubprocessPolicy.allowedSubcommands` because only
+    /// these specific compositions are permitted under privileged execution.
     private static let allowedCommandPatterns: [(module: String, subcommands: [String])] = [
         ("lockdown", ["start-tunnel"]),
         ("remote", ["start-tunnel", "-t", "wifi"]),
         ("remote", ["tunneld"])
     ]
 
-    /// Characters that should NEVER appear in privileged commands
-    private static let dangerousCharacters: [Character] = [
-        ";", "|", "`", "$", "(", ")", "{", "}", "<", "\n", "\r"
-    ]
+    /// Characters that should NEVER appear in privileged commands — sourced from the
+    /// narrower `SubprocessPolicy.privilegedCommandForbiddenCharacters` set.
+    ///
+    /// This is intentionally narrower than `SubprocessPolicy.forbiddenCharacters`
+    /// because privileged shell commands legitimately contain `&` (backgrounding)
+    /// and `>` (log redirect) — see SubprocessPolicy doc comment for rationale.
+    private static var dangerousCharacters: Set<Character> { SubprocessPolicy.privilegedCommandForbiddenCharacters }
 
     // MARK: - Validation
 
@@ -539,6 +538,32 @@ class TunneldManager: ObservableObject {
     private var targetTunnelConnectionType: ConnectionType?
     private var targetTunnelIOSMajorVersion: Int?
     private var tunnelStartInFlight = false
+    private var tunnelLifecycleGeneration: UInt64 = 0
+    private var recoveryTask: Task<Void, Never>?
+    private var restartTask: Task<Void, Never>?
+    private var trackedTunnelChildProcessIds: Set<Int32> = []
+    private var lastTunnelModeForCleanup: TunnelMode?
+    private var lastTunnelTargetUDIDForCleanup: String?
+#if DEBUG
+    enum TestKillZeroResult {
+        case allowed
+        case permissionDenied
+        case missing
+    }
+    private var debugProcessCommandOverrides: [Int32: String] = [:]
+    private var debugProcessUIDOverrides: [Int32: uid_t] = [:]
+    private var debugProcessStateOverrides: [Int32: String?] = [:]
+    private var debugKillZeroResultOverrides: [Int32: TestKillZeroResult] = [:]
+    private var debugLiveProcessIdsOverrides: [String: [Int32]] = [:]
+    private var debugLiveProcessIdsSequenceOverrides: [String: [[Int32]]] = [:]
+    private var debugStartupRsdInfoSequence: [TunnelInfo?] = []
+    private var debugUsesStartupRsdInfoSequence = false
+    private var debugStartupTimeoutOverride: TimeInterval?
+    private var debugStartupPollIntervalOverride: TimeInterval?
+    private var debugWrapperReturnTimeoutOverride: TimeInterval?
+    private var debugPrivilegedWrapperRunner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?
+    private var debugSignalHandler: (@MainActor (Int32, Int32) -> Bool)?
+#endif
 
     /// Active process IDs to prevent duplicates (mirrored from state machine context)
     private var activeProcessIds: Set<Int32> {
@@ -550,6 +575,12 @@ class TunneldManager: ObservableObject {
         let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
             .first!.appendingPathComponent("Logs/PathChanger").path
         return "\(logsDir)/tunnel.log"
+    }
+
+    private var startupTraceFilePath: String {
+        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
+            .first!.appendingPathComponent("Logs/PathChanger").path
+        return "\(logsDir)/startup-trace.jsonl"
     }
 
     /// Ensure log directory exists
@@ -611,10 +642,16 @@ class TunneldManager: ObservableObject {
     /// Handle actions emitted by the state machine
     private func handleStateMachineAction(_ action: TunnelAction) async {
         switch action {
-        case .launchProcess:
-            // The actual process launch is still handled by attemptStart
-            // This is just a notification that launch should happen
-            break
+        case .launchProcess(let mode):
+            // Normal UI/auto starts remain caller-owned by startTunnel().
+            // Recovery starts, however, are emitted by the state machine and
+            // must have a real launch owner; otherwise the state could enter
+            // `.starting` without an operational launch path.
+            guard stateMachine.currentContext.isRecovering else {
+                Logger.debug("[Tunnel] Launch action acknowledged for caller-owned start path", category: .device)
+                return
+            }
+            await launchRecoveryTunnel(mode: mode)
 
         case .terminateProcesses:
             killTrackedTunnelProcesses()
@@ -631,10 +668,7 @@ class TunneldManager: ObservableObject {
             healthMonitor.stopMonitoring()
 
         case .scheduleRecovery(let delay):
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                stateMachine.send(.recoveryAttempted)
-            }
+            scheduleRecovery(after: delay)
 
         case .logTransition(let from, let to, let event):
             Logger.info("[Tunnel] State transition: \(from) -> \(to) on \(event)", category: .device)
@@ -644,11 +678,167 @@ class TunneldManager: ObservableObject {
             Logger.debug("[Tunnel] State changed to: \(newState)", category: .device)
 
         case .cleanupResources:
-            tunneldProcess?.terminate()
-            tunneldProcess = nil
-            outputPipe = nil
-            errorPipe = nil
+            cleanupTunnelProcessResources(terminateProcess: true)
+
+        case .invalidateRsdInfo:
+            invalidateRsdInfo(reason: "Tunnel lifecycle invalidated RSD ownership")
         }
+    }
+
+    private func cancelScheduledTunnelWork(cancelScheduledRestart: Bool) {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        if cancelScheduledRestart {
+            restartTask?.cancel()
+            restartTask = nil
+        }
+    }
+
+    private func advanceTunnelLifecycleGeneration(cancelScheduledRestart: Bool = false) -> UInt64 {
+        tunnelLifecycleGeneration &+= 1
+        cancelScheduledTunnelWork(cancelScheduledRestart: cancelScheduledRestart)
+        return tunnelLifecycleGeneration
+    }
+
+    private func isCurrentTunnelLifecycle(_ generation: UInt64) -> Bool {
+        tunnelLifecycleGeneration == generation
+    }
+
+    private var canAcceptRsdInfo: Bool {
+        switch stateMachine.currentState {
+        case .starting, .running:
+            return true
+        case .idle, .stopping, .error:
+            return false
+        }
+    }
+
+    private var canServeRsdInfo: Bool {
+        stateMachine.currentState == .running
+    }
+
+    private var canRecoverRsdInfoFromLog: Bool {
+        switch stateMachine.currentState {
+        case .idle, .starting:
+            return true
+        case .running, .stopping, .error:
+            return false
+        }
+    }
+
+    private func invalidateRsdInfo(reason: String) {
+        if tunnelInfo != nil || !deviceTunnelInfo.isEmpty {
+            Logger.info("[Tunnel] Invalidating RSD info: \(reason)", category: .device)
+        }
+        tunnelInfo = nil
+        deviceTunnelInfo.removeAll()
+    }
+
+    func invalidateActiveTunnelAfterTransportFailure(_ reason: String) {
+        let message = "Tunnel transport failed: \(reason)"
+        lastError = message
+        statusMessage = "Tunnel disconnected"
+        invalidateRsdInfo(reason: message)
+
+        guard stateMachine.currentState.isActive else {
+            return
+        }
+
+        stateMachine.send(.healthCheckFailed)
+        syncStateWithStateMachine()
+    }
+
+    private func scheduleRecovery(after delay: TimeInterval) {
+        recoveryTask?.cancel()
+        guard stateMachine.currentContext.isRecovering,
+              case .error = stateMachine.currentState else {
+            recoveryTask = nil
+            return
+        }
+        let generation = tunnelLifecycleGeneration
+
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            let clampedDelay = max(0, delay)
+            try? await Task.sleep(nanoseconds: UInt64(clampedDelay * 1_000_000_000))
+            guard !Task.isCancelled,
+                  self.isCurrentTunnelLifecycle(generation),
+                  self.stateMachine.currentContext.isRecovering else {
+                return
+            }
+            guard case .error = self.stateMachine.currentState else {
+                return
+            }
+            self.stateMachine.send(.recoveryAttempted)
+        }
+    }
+
+    private func launchRecoveryTunnel(mode: TunnelMode) async {
+        guard !tunnelStartInFlight else {
+            Logger.debug("[Tunnel] Recovery launch ignored because another start is already in flight", category: .device)
+            return
+        }
+        guard case .starting = stateMachine.currentState else {
+            Logger.debug("[Tunnel] Recovery launch ignored because state is no longer starting", category: .device)
+            return
+        }
+
+        let generation = tunnelLifecycleGeneration
+        tunnelStartInFlight = true
+        defer {
+            tunnelStartInFlight = false
+        }
+
+        let success = await attemptStart(mode: mode)
+        guard isCurrentTunnelLifecycle(generation),
+              case .starting = stateMachine.currentState else {
+            if success {
+                killTrackedTunnelProcesses()
+            }
+            return
+        }
+
+        if success, let info = await waitForValidRsdInfo(mode: mode) {
+            guard isCurrentTunnelLifecycle(generation),
+                  case .starting = stateMachine.currentState else {
+                return
+            }
+            stateMachine.send(.connectionEstablished(info: info))
+            return
+        }
+
+        guard isCurrentTunnelLifecycle(generation),
+              case .starting = stateMachine.currentState else {
+            return
+        }
+
+        if success {
+            killTrackedTunnelProcesses()
+        }
+        stateMachine.send(.errorOccurred(lastError ?? "Failed to recover \(mode.rawValue) tunnel"))
+    }
+
+    private func cleanupTunnelProcessResources(terminateProcess: Bool) {
+        monitorTask?.cancel()
+        monitorTask = nil
+        healthMonitor.stopMonitoring()
+
+        if terminateProcess, let process = tunneldProcess, process.isRunning {
+            process.terminate()
+            usleep(200_000)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+
+        try? outputPipe?.fileHandleForReading.close()
+        try? errorPipe?.fileHandleForReading.close()
+
+        tunneldProcess = nil
+        outputPipe = nil
+        errorPipe = nil
+        invalidateRsdInfo(reason: "Tunnel process resources cleaned up")
+        activeMode = nil
     }
 
     // MARK: - Public API
@@ -675,16 +865,17 @@ class TunneldManager: ObservableObject {
         guard !stateMachine.isActive && !stateMachine.isTransitioning else {
             return
         }
+        let generation = advanceTunnelLifecycleGeneration(cancelScheduledRestart: true)
         tunnelStartInFlight = true
         defer {
             tunnelStartInFlight = false
         }
 
         lastError = nil
-
-        if await attachToRunningTunnelIfAvailable() {
+        if await attachToRunningTunnelIfAvailable(generation: generation) {
             return
         }
+        guard isCurrentTunnelLifecycle(generation) else { return }
 
         let modesToTry: [TunnelMode]
 
@@ -772,6 +963,7 @@ class TunneldManager: ObservableObject {
             }
             modesToTry = [effectiveMode]
         }
+        guard isCurrentTunnelLifecycle(generation) else { return }
 
         for mode in modesToTry {
             Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
@@ -780,6 +972,12 @@ class TunneldManager: ObservableObject {
             stateMachine.send(.startRequested(mode: mode))
 
             let success = await attemptStart(mode: mode)
+            guard isCurrentTunnelLifecycle(generation) else {
+                if success {
+                    killTrackedTunnelProcesses()
+                }
+                return
+            }
 
             if success {
                 // BUG FIX (WiFi-Bug-6): Don't fabricate a 127.0.0.1:0 TunnelInfo
@@ -794,8 +992,10 @@ class TunneldManager: ObservableObject {
                 // tear the tunnel down and surface a specific error rather than
                 // pretending we have a working tunnel.
                 if let info = await waitForValidRsdInfo(mode: mode) {
+                    guard isCurrentTunnelLifecycle(generation) else { return }
                     stateMachine.send(.connectionEstablished(info: info))
                 } else {
+                    guard isCurrentTunnelLifecycle(generation) else { return }
                     let message = "Tunnel started but its RSD address could not be parsed from the tunnel log. The pmd3 output format may have changed; check ~/Library/Logs/PathChanger/tunnel.log and retry."
                     Logger.error("[Tunnel] \(message)", category: .device)
                     lastError = message
@@ -806,6 +1006,10 @@ class TunneldManager: ObservableObject {
                     stateMachine.send(.errorOccurred(message))
                     return
                 }
+                return
+            }
+            if case .error = stateMachine.currentState {
+                syncStateWithStateMachine()
                 return
             }
 
@@ -863,31 +1067,49 @@ class TunneldManager: ObservableObject {
 
         Logger.info("[Tunnel] preferredMode changed (\(previousMode.rawValue) -> \(preferredMode.rawValue)) while active - restarting with new mode", category: .device)
         statusMessage = "Switching tunnel to \(preferredMode.rawValue)..."
+        restartTask?.cancel()
+        let generation = tunnelLifecycleGeneration
+        restartTask = Task { @MainActor [weak self] in
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentTunnelLifecycle(generation) else {
+                return
+            }
 
-        Task { @MainActor in
-            stopTunnel()
+            self.stopTunnel(invalidateScheduledRestart: false)
+            let restartGeneration = self.tunnelLifecycleGeneration
             try? await Task.sleep(nanoseconds: 500_000_000) // 500ms grace for processes to exit
-            await startTunnel()
+            guard !Task.isCancelled,
+                  self.isCurrentTunnelLifecycle(restartGeneration) else {
+                return
+            }
+
+            self.restartTask = nil
+            await self.startTunnel()
         }
     }
 
     /// Stop the tunnel
     func stopTunnel() {
+        stopTunnel(invalidateScheduledRestart: true)
+    }
+
+    private func stopTunnel(invalidateScheduledRestart: Bool) {
+        stopTunnel(invalidateScheduledRestart: invalidateScheduledRestart, advanceGeneration: true)
+    }
+
+    private func stopTunnel(invalidateScheduledRestart: Bool, advanceGeneration: Bool) {
+        if advanceGeneration {
+            _ = advanceTunnelLifecycleGeneration(cancelScheduledRestart: invalidateScheduledRestart)
+        } else {
+            cancelScheduledTunnelWork(cancelScheduledRestart: invalidateScheduledRestart)
+        }
         // Send stop event to state machine
         stateMachine.send(.stopRequested)
 
-        monitorTask?.cancel()
-        monitorTask = nil
-
         // Kill tracked tunnel processes (security hardened - PID-based only)
         killTrackedTunnelProcesses()
-
-        tunneldProcess?.terminate()
-        tunneldProcess = nil
-        outputPipe = nil
-        errorPipe = nil
-        tunnelInfo = nil
-        activeMode = nil
+        cleanupTunnelProcessResources(terminateProcess: true)
 
         // Mark process as stopped
         stateMachine.send(.processStopped)
@@ -895,8 +1117,10 @@ class TunneldManager: ObservableObject {
 
     /// Restart tunnel
     func restartTunnel() async {
-        stopTunnel()
+        stopTunnel(invalidateScheduledRestart: true)
+        let generation = tunnelLifecycleGeneration
         try? await Task.sleep(nanoseconds: 500_000_000) // Wait 500ms
+        guard isCurrentTunnelLifecycle(generation) else { return }
         await startTunnel()
     }
 
@@ -910,48 +1134,391 @@ class TunneldManager: ObservableObject {
 
     /// Validate that only a single tunnel instance is running
     /// Prevents race conditions where multiple processes start simultaneously
-    private func validateSingleTunnelInstance(mode: TunnelMode) async -> Bool {
-        do {
-            let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
-            let pids = output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+    private func validateSingleTunnelInstance(mode: TunnelMode, targetUDID: String?) async -> Bool {
+        let pids = await liveTunnelProcessIds(for: mode, targetUDID: targetUDID)
 
-            // Get tracked PIDs from state machine context
-            let trackedPids = stateMachine.currentContext.activeProcessIds
+        // Get tracked PIDs from state machine context
+        let trackedPids = stateMachine.currentContext.activeProcessIds
 
-            // Check if we already know about these PIDs
-            let newPids = pids.filter { !trackedPids.contains($0) }
+        // Check if we already know about these PIDs
+        let lifecyclePids = trackedPids.union(trackedTunnelChildProcessIds)
+        let newPids = pids.filter { !lifecyclePids.contains($0) }
 
-            if newPids.count > 1 {
-                // Multiple NEW processes detected - race condition!
-                Logger.debug("Detected \(newPids.count) tunnel processes for \(mode.rawValue), keeping only first", category: .device)
+        if newPids.count > 1 {
+            // Multiple NEW processes detected - race condition!
+            Logger.debug("Detected \(newPids.count) tunnel child processes for \(mode.rawValue), keeping only first", category: .device)
 
-                // Keep only the first PID, kill the rest
-                for pid in newPids.dropFirst() {
-                    let killProcess = Process()
-                    killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-                    killProcess.arguments = ["-9", String(pid)]
-                    try? killProcess.run()
-                }
-
-                // Track the surviving process via state machine event
-                if let firstPid = newPids.first {
-                    stateMachine.send(.processLaunched(pid: firstPid))
-                }
-
-                return true
-            } else if let pid = newPids.first {
-                // Single new process - track it via state machine
-                stateMachine.send(.processLaunched(pid: pid))
-                return true
-            } else if !pids.isEmpty {
-                // All PIDs are already tracked
-                return true
+            // Keep only the first PID, kill the rest
+            for pid in newPids.dropFirst() {
+                _ = sendSignalToValidatedTunnelProcess(pid: pid, signal: SIGKILL, mode: mode, targetUDID: targetUDID)
             }
 
+            // Track the surviving process via state machine event
+            if let firstPid = newPids.first {
+                trackedTunnelChildProcessIds.insert(firstPid)
+                lastTunnelModeForCleanup = mode
+                lastTunnelTargetUDIDForCleanup = targetUDID
+                stateMachine.send(.processLaunched(pid: firstPid))
+            }
+
+            return true
+        } else if let pid = newPids.first {
+            // Single new process - track it via state machine
+            trackedTunnelChildProcessIds.insert(pid)
+            lastTunnelModeForCleanup = mode
+            lastTunnelTargetUDIDForCleanup = targetUDID
+            stateMachine.send(.processLaunched(pid: pid))
+            return true
+        } else if !pids.isEmpty {
+            // All PIDs are already tracked
+            trackedTunnelChildProcessIds.formUnion(pids)
+            lastTunnelModeForCleanup = mode
+            lastTunnelTargetUDIDForCleanup = targetUDID
+            return true
+        }
+
+        return false
+    }
+
+    private func liveProcessIds(matching pattern: String) async -> [Int32] {
+        liveProcessIdsSync(matching: pattern)
+    }
+
+    private func liveProcessIdsSync(matching pattern: String) -> [Int32] {
+#if DEBUG
+        if var sequence = debugLiveProcessIdsSequenceOverrides[pattern] {
+            let pids = sequence.isEmpty ? [] : sequence.removeFirst()
+            debugLiveProcessIdsSequenceOverrides[pattern] = sequence
+            return Array(Set(pids))
+                .filter { isProcessAliveAndNonZombie(pid: $0) }
+                .sorted()
+        }
+        if let overridePids = debugLiveProcessIdsOverrides[pattern] {
+            return Array(Set(overridePids))
+                .filter { isProcessAliveAndNonZombie(pid: $0) }
+                .sorted()
+        }
+#endif
+        do {
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            process.arguments = ["-f", pattern]
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                return []
+            }
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else {
+                return []
+            }
+            let pids = output
+                .split(whereSeparator: \.isNewline)
+                .compactMap { Int32(String($0).trimmingCharacters(in: .whitespacesAndNewlines)) }
+            return Array(Set(pids))
+                .filter { isProcessAliveAndNonZombie(pid: $0) }
+                .sorted()
+        } catch {
+            return []
+        }
+    }
+
+    private func liveTunnelProcessIds(for mode: TunnelMode, targetUDID: String?) async -> [Int32] {
+        liveTunnelProcessIdsSync(for: mode, targetUDID: targetUDID)
+    }
+
+    private func liveTunnelProcessIdsSync(for mode: TunnelMode, targetUDID: String?) -> [Int32] {
+        liveProcessIdsSync(matching: mode.processPattern)
+            .filter { isValidatedTunnelProcess(pid: $0, mode: mode, targetUDID: targetUDID) }
+            .sorted()
+    }
+
+    private func recordLaunchedTunnelChildren(mode: TunnelMode, targetUDID: String?, beforeLaunchPids: Set<Int32>) {
+        let currentPids = Set(liveTunnelProcessIdsSync(for: mode, targetUDID: targetUDID))
+        let launchedPids = currentPids.subtracting(beforeLaunchPids)
+
+        guard !launchedPids.isEmpty else {
+            Logger.debug("[Tunnel] No new pmd3 tunnel child PID detected after \(mode.rawValue) launch", category: .device)
+            return
+        }
+
+        trackedTunnelChildProcessIds.formUnion(launchedPids)
+        lastTunnelModeForCleanup = mode
+        lastTunnelTargetUDIDForCleanup = targetUDID
+        Logger.info("[Tunnel] Tracking pmd3 tunnel child PID(s): \(launchedPids.sorted().map(String.init).joined(separator: ", "))", category: .device)
+    }
+
+    private func processCommand(pid: Int32) -> String? {
+#if DEBUG
+        if let override = debugProcessCommandOverrides[pid] {
+            return override
+        }
+        if let stateOverrideIndex = debugProcessStateOverrides.index(forKey: pid),
+           debugProcessStateOverrides[stateOverrideIndex].value == nil {
+            return nil
+        }
+#endif
+        let ps = Process()
+        let pipe = Pipe()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-p", String(pid), "-o", "command="]
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+
+        do {
+            try ps.run()
+            ps.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard ps.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        let command = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
+    }
+
+    private func processUID(pid: Int32) -> uid_t? {
+#if DEBUG
+        if let override = debugProcessUIDOverrides[pid] {
+            return override
+        }
+        if let stateOverrideIndex = debugProcessStateOverrides.index(forKey: pid),
+           debugProcessStateOverrides[stateOverrideIndex].value == nil {
+            return nil
+        }
+#endif
+        let ps = Process()
+        let pipe = Pipe()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-p", String(pid), "-o", "uid="]
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+
+        do {
+            try ps.run()
+            ps.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard ps.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8),
+              let uid = uid_t(output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+
+        return uid
+    }
+
+    private func isValidatedTunnelProcess(pid: Int32, mode: TunnelMode, targetUDID: String?) -> Bool {
+        isValidatedTunnelProcess(pid: pid, mode: mode, targetUDID: targetUDID, allowMissingTargetUDID: false)
+    }
+
+    private func isValidatedTunnelProcess(
+        pid: Int32,
+        mode: TunnelMode,
+        targetUDID: String?,
+        allowMissingTargetUDID: Bool
+    ) -> Bool {
+        guard let command = processCommand(pid: pid),
+              Self.isSanctionedTunnelChildCommand(
+                command,
+                mode: mode,
+                targetUDID: targetUDID,
+                requireTargetUDID: !allowMissingTargetUDID
+              ),
+              let uid = processUID(pid: pid) else {
             return false
+        }
+
+        return uid == getuid() || uid == 0
+    }
+
+    private func isValidatedTunnelProcess(pid: Int32, cleanupMode: TunnelMode?, targetUDID: String?) -> Bool {
+        isValidatedTunnelProcess(pid: pid, cleanupMode: cleanupMode, targetUDID: targetUDID, allowMissingTargetUDID: false)
+    }
+
+    private func isValidatedTunnelProcess(
+        pid: Int32,
+        cleanupMode: TunnelMode?,
+        targetUDID: String?,
+        allowMissingTargetUDID: Bool
+    ) -> Bool {
+        let modes = cleanupMode.map { [$0] } ?? [.usb, .wifi, .daemon]
+        return modes.contains {
+            isValidatedTunnelProcess(
+                pid: pid,
+                mode: $0,
+                targetUDID: targetUDID,
+                allowMissingTargetUDID: allowMissingTargetUDID
+            )
+        }
+    }
+
+    nonisolated private static func isSanctionedTunnelChildCommand(_ command: String, mode: TunnelMode, targetUDID: String?) -> Bool {
+        isSanctionedTunnelChildCommand(command, mode: mode, targetUDID: targetUDID, requireTargetUDID: true)
+    }
+
+    nonisolated private static func isSanctionedTunnelChildCommand(
+        _ command: String,
+        mode: TunnelMode,
+        targetUDID: String?,
+        requireTargetUDID: Bool
+    ) -> Bool {
+        guard mode != .auto else {
+            return false
+        }
+
+        let normalized = command
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let executable = normalized.split(separator: " ").first.map(String.init),
+              executable.hasSuffix("python3"),
+              normalized.contains("-m pymobiledevice3") else {
+            return false
+        }
+
+        let modeMatches: Bool
+        switch mode {
+        case .usb:
+            modeMatches = normalized.contains("pymobiledevice3 lockdown start-tunnel")
+        case .wifi:
+            modeMatches = normalized.contains("pymobiledevice3 remote start-tunnel") &&
+                normalized.contains("-t wifi")
+        case .daemon:
+            modeMatches = normalized.contains("pymobiledevice3 remote tunneld")
+        case .auto:
+            modeMatches = false
+        }
+
+        guard modeMatches else {
+            return false
+        }
+
+        if requireTargetUDID, mode != .daemon, let targetUDID {
+            return normalized.contains(targetUDID)
+        }
+
+        return true
+    }
+
+    private func cleanupCandidateProcessIds(mode: TunnelMode?, targetUDID: String?) -> [Int32] {
+        let lifecycleCandidates = stateMachine.currentContext.activeProcessIds.union(trackedTunnelChildProcessIds)
+        var candidates = Set(
+            lifecycleCandidates
+                .filter { isProcessAliveAndNonZombie(pid: $0) }
+                .filter {
+                    isValidatedTunnelProcess(
+                        pid: $0,
+                        cleanupMode: mode,
+                        targetUDID: targetUDID,
+                        allowMissingTargetUDID: true
+                    )
+                }
+        )
+
+        if let mode {
+            candidates.formUnion(liveTunnelProcessIdsSync(for: mode, targetUDID: targetUDID))
+        }
+
+        return candidates
+            .filter { isProcessAliveAndNonZombie(pid: $0) }
+            .filter {
+                isValidatedTunnelProcess(
+                    pid: $0,
+                    cleanupMode: mode,
+                    targetUDID: targetUDID,
+                    allowMissingTargetUDID: lifecycleCandidates.contains($0)
+                )
+            }
+            .sorted()
+    }
+
+    private func sendSignalToValidatedTunnelProcess(
+        pid: Int32,
+        signal: Int32,
+        mode: TunnelMode?,
+        targetUDID: String?,
+        allowMissingTargetUDID: Bool = false
+    ) -> Bool {
+        guard pid > 1,
+              signal == SIGTERM || signal == SIGKILL,
+              isValidatedTunnelProcess(
+                pid: pid,
+                cleanupMode: mode,
+                targetUDID: targetUDID,
+                allowMissingTargetUDID: allowMissingTargetUDID
+              ),
+              let uid = processUID(pid: pid) else {
+            Logger.debug("[SECURITY] Refusing to signal unvalidated tunnel PID \(pid)", category: .security)
+            return false
+        }
+#if DEBUG
+        if let debugSignalHandler {
+            return debugSignalHandler(pid, signal)
+        }
+#endif
+
+        if uid == getuid() {
+            return sendLocalSignal(signal, to: pid)
+        }
+
+        guard uid == 0 else {
+            Logger.debug("[SECURITY] Refusing to signal PID \(pid) owned by UID \(uid)", category: .security)
+            return false
+        }
+
+        return sendPrivilegedSignal(signal, to: pid)
+    }
+
+    private func sendLocalSignal(_ signal: Int32, to pid: Int32) -> Bool {
+        let killProcess = Process()
+        killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
+        killProcess.arguments = ["-\(signal)", String(pid)]
+
+        do {
+            try killProcess.run()
+            killProcess.waitUntilExit()
+            return killProcess.terminationStatus == 0
         } catch {
             return false
         }
+    }
+
+    private func sendPrivilegedSignal(_ signal: Int32, to pid: Int32) -> Bool {
+        let command = "/bin/kill -\(signal) \(pid)"
+        let script = """
+        do shell script "\(command)" with administrator privileges
+        """
+
+        var error: NSDictionary?
+        guard let appleScript = NSAppleScript(source: script) else {
+            return false
+        }
+
+        appleScript.executeAndReturnError(&error)
+        if let error {
+            let errorMessage = error[NSAppleScript.errorMessage] as? String ?? "Unknown privileged kill error"
+            Logger.debug("[SECURITY] Privileged kill failed for PID \(pid): \(errorMessage)", category: .security)
+            return false
+        }
+
+        return true
     }
 
     // MARK: - Private Methods
@@ -1091,13 +1658,9 @@ class TunneldManager: ObservableObject {
     /// Detect which tunnel mode is currently running
     private func detectRunningTunnel() async -> TunnelMode? {
         for mode in [TunnelMode.usb, .wifi, .daemon] {
-            do {
-                let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
-                if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return mode
-                }
-            } catch {
-                continue
+            let pids = await liveTunnelProcessIds(for: mode, targetUDID: targetTunnelUDID)
+            if !pids.isEmpty {
+                return mode
             }
         }
         return nil
@@ -1123,6 +1686,12 @@ class TunneldManager: ObservableObject {
     /// the `--rsd <addr> <port>` line lands). Retry up to ~5 seconds before
     /// giving up, instead of fabricating a 127.0.0.1:0 placeholder.
     private func waitForValidRsdInfo(mode: TunnelMode) async -> TunnelInfo? {
+        if let info = stateMachine.currentContext.tunnelInfo, isUsableTunnelInfo(info) {
+            return info
+        }
+        if let info = tunnelInfo, isUsableTunnelInfo(info) {
+            return info
+        }
         let maxAttempts = 4
         for attempt in 0..<maxAttempts {
             await parseRsdInfo()
@@ -1150,6 +1719,606 @@ class TunneldManager: ObservableObject {
         return nil
     }
 
+    private func startupAcquisitionTimeout(for mode: TunnelMode) -> TimeInterval {
+#if DEBUG
+        if let debugStartupTimeoutOverride {
+            return debugStartupTimeoutOverride
+        }
+#endif
+        switch mode {
+        case .daemon:
+            return 45
+        case .usb, .wifi, .auto:
+            return 30
+        }
+    }
+
+    private var startupAcquisitionPollInterval: TimeInterval {
+#if DEBUG
+        if let debugStartupPollIntervalOverride {
+            return debugStartupPollIntervalOverride
+        }
+#endif
+        return 0.5
+    }
+
+    private var handoffStabilizationTimeout: TimeInterval {
+        0.75
+    }
+
+    private var handoffStabilizationPollInterval: TimeInterval {
+#if DEBUG
+        if let debugStartupPollIntervalOverride {
+            return debugStartupPollIntervalOverride
+        }
+#endif
+        return 0.02
+    }
+
+    private func wrapperReturnTimeout(for mode: TunnelMode) -> TimeInterval {
+#if DEBUG
+        if let debugWrapperReturnTimeoutOverride {
+            return debugWrapperReturnTimeoutOverride
+        }
+#endif
+        return max(15, startupAcquisitionTimeout(for: mode) * 3)
+    }
+
+    private func logStartupTrace(_ event: String, fields: [String: Any] = [:]) {
+        let details = fields
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        let suffix = details.isEmpty ? "" : " \(details)"
+        Logger.info("[Tunnel][Startup] \(event) t=\(Date().timeIntervalSince1970)\(suffix)", category: .device)
+        appendStartupTrace(event, fields: fields)
+    }
+
+    private func appendStartupTrace(_ event: String, fields: [String: Any]) {
+        var payload = fields
+        payload["event"] = event
+        payload["timestamp"] = Date().timeIntervalSince1970
+        payload["state"] = "\(stateMachine.currentState)"
+
+        guard JSONSerialization.isValidJSONObject(startupTraceSanitized(payload)),
+              let data = try? JSONSerialization.data(withJSONObject: startupTraceSanitized(payload), options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        ensureLogDirectoryExists()
+        let traceLine = line + "\n"
+        if FileManager.default.fileExists(atPath: startupTraceFilePath),
+           let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: startupTraceFilePath)) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(traceLine.utf8))
+            try? handle.close()
+        } else {
+            try? traceLine.write(toFile: startupTraceFilePath, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func startupTraceSanitized(_ value: Any) -> Any {
+        if let value = value as? [String: Any] {
+            return value.mapValues { startupTraceSanitized($0) }
+        }
+        if let value = value as? [Any] {
+            return value.map { startupTraceSanitized($0) }
+        }
+        if let value = value as? Set<Int32> {
+            return value.sorted().map(Int.init)
+        }
+        if let value = value as? Int32 {
+            return Int(value)
+        }
+        if let value = value as? UInt64 {
+            return String(value)
+        }
+        if JSONSerialization.isValidJSONObject(["value": value]) {
+            return value
+        }
+        return "\(value)"
+    }
+
+    private func waitForAuthoritativeStartup(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        generation: UInt64,
+        handedOffPid: Int32?
+    ) async -> TunnelInfo? {
+        let timeout = startupAcquisitionTimeout(for: mode)
+        let pollInterval = startupAcquisitionPollInterval
+        let deadline = Date().addingTimeInterval(timeout)
+        var authoritativePid: Int32?
+        var pollCount = 0
+        let waitStartTime = Date().timeIntervalSince1970
+
+        logStartupTrace("authoritative_wait_begin", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "poll": pollCount,
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime,
+            "timeout": timeout,
+            "pollInterval": pollInterval,
+            "beforeLaunchPids": beforeLaunchPids.sorted(),
+            "handedOffPid": handedOffPid as Any
+        ])
+
+        if let handedOffPid {
+            guard let validatedPid = await waitForStableHandedOffTunnelChild(
+                pid: handedOffPid,
+                mode: mode,
+                targetUDID: targetUDID,
+                beforeLaunchPids: beforeLaunchPids,
+                startupDeadline: deadline,
+                waitStartTime: waitStartTime,
+                phase: "handoff"
+            ) else {
+                await finalizeFailedStartupAcquisition(
+                    mode: mode,
+                    targetUDID: targetUDID,
+                    generation: generation,
+                    waitStartTime: waitStartTime,
+                    pollCount: pollCount,
+                    handedOffPid: handedOffPid,
+                    beforeLaunchPids: beforeLaunchPids
+                )
+                return nil
+            }
+
+            authoritativePid = adoptAuthoritativeTunnelChild(
+                pid: validatedPid,
+                mode: mode,
+                targetUDID: targetUDID,
+                phase: "handoff"
+            )
+        }
+
+        if let info = await pollAuthoritativeStartup(
+            mode: mode,
+            targetUDID: targetUDID,
+            beforeLaunchPids: beforeLaunchPids,
+            generation: generation,
+            deadline: deadline,
+            phase: handedOffPid == nil ? "discovery" : "handoff",
+            pollInterval: pollInterval,
+            authoritativePid: &authoritativePid,
+            pollCount: &pollCount
+        ) {
+            logStartupTrace("authoritative_wait_ready", fields: [
+                "mode": mode.rawValue,
+                "phase": handedOffPid == nil ? "discovery" : "handoff",
+                "pid": info.processId ?? -1,
+                "rsdAddress": info.rsdAddress,
+                "rsdPort": info.rsdPort,
+                "poll": pollCount,
+                "elapsed": Date().timeIntervalSince1970 - waitStartTime
+            ])
+            return info
+        }
+
+        guard isCurrentTunnelLifecycle(generation),
+              case .starting = stateMachine.currentState else {
+            logStartupTrace("authoritative_wait_cancelled", fields: [
+                "mode": mode.rawValue,
+                "state": "\(stateMachine.currentState)",
+                "poll": pollCount,
+                "elapsed": Date().timeIntervalSince1970 - waitStartTime
+            ])
+            return nil
+        }
+        logStartupTrace("authoritative_wait_timeout", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "poll": pollCount,
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime,
+            "trackedChildPids": trackedTunnelChildProcessIds.sorted(),
+            "activeProcessIds": stateMachine.currentContext.activeProcessIds.sorted()
+        ])
+
+        await finalizeFailedStartupAcquisition(
+            mode: mode,
+            targetUDID: targetUDID,
+            generation: generation,
+            waitStartTime: waitStartTime,
+            pollCount: pollCount,
+            handedOffPid: handedOffPid,
+            beforeLaunchPids: beforeLaunchPids
+        )
+        return nil
+    }
+
+    private func pollAuthoritativeStartup(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        generation: UInt64,
+        deadline: Date,
+        phase: String,
+        pollInterval: TimeInterval,
+        authoritativePid: inout Int32?,
+        pollCount: inout Int
+    ) async -> TunnelInfo? {
+        while Date() < deadline {
+            guard isCurrentTunnelLifecycle(generation) else {
+                logStartupTrace("authoritative_wait_cancelled_generation_changed", fields: [
+                    "mode": mode.rawValue,
+                    "phase": phase,
+                    "poll": pollCount
+                ])
+                return nil
+            }
+
+            guard case .starting = stateMachine.currentState else {
+                logStartupTrace("authoritative_wait_cancelled_state_changed", fields: [
+                    "mode": mode.rawValue,
+                    "phase": phase,
+                    "state": "\(stateMachine.currentState)",
+                    "poll": pollCount
+                ])
+                return nil
+            }
+
+            pollCount += 1
+            if authoritativePid == nil {
+                authoritativePid = acquireAuthoritativeTunnelChild(
+                    mode: mode,
+                    targetUDID: targetUDID,
+                    beforeLaunchPids: beforeLaunchPids,
+                    pollCount: pollCount,
+                    phase: phase
+                )
+            }
+
+            if let authoritativePid,
+               let info = await startupRsdInfo(mode: mode, authoritativePid: authoritativePid) {
+                let authoritativeInfo = tunnelInfoWithAuthoritativeProcessId(info, pid: authoritativePid)
+                tunnelInfo = authoritativeInfo
+                logStartupTrace("authoritative_poll_ready", fields: [
+                    "mode": mode.rawValue,
+                    "phase": phase,
+                    "pid": authoritativePid,
+                    "rsdAddress": authoritativeInfo.rsdAddress,
+                    "rsdPort": authoritativeInfo.rsdPort,
+                    "poll": pollCount
+                ])
+                return authoritativeInfo
+            }
+
+            try? await Task.sleep(nanoseconds: UInt64(max(0.001, pollInterval) * 1_000_000_000))
+        }
+
+        return nil
+    }
+
+    private func finalizeFailedStartupAcquisition(
+        mode: TunnelMode,
+        targetUDID: String?,
+        generation: UInt64,
+        waitStartTime: TimeInterval,
+        pollCount: Int,
+        handedOffPid: Int32? = nil,
+        beforeLaunchPids: Set<Int32> = []
+    ) async {
+        if let handedOffPid,
+           let cleanupPid = await waitForStableHandedOffTunnelChild(
+            pid: handedOffPid,
+            mode: mode,
+            targetUDID: targetUDID,
+            beforeLaunchPids: beforeLaunchPids,
+            startupDeadline: Date().addingTimeInterval(handoffStabilizationTimeout),
+            waitStartTime: waitStartTime,
+            phase: "cleanup"
+           ) {
+            trackedTunnelChildProcessIds.insert(cleanupPid)
+            lastTunnelModeForCleanup = mode
+            lastTunnelTargetUDIDForCleanup = targetUDID
+            logStartupTrace("startup_failure_cleanup_handoff_candidate_included", fields: [
+                "mode": mode.rawValue,
+                "targetUDID": targetUDID ?? "nil",
+                "pid": cleanupPid,
+                "elapsed": Date().timeIntervalSince1970 - waitStartTime
+            ])
+        }
+        logStartupTrace("startup_failure_cleanup_begin", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "poll": pollCount,
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime,
+            "trackedChildPids": trackedTunnelChildProcessIds.sorted(),
+            "activeProcessIds": stateMachine.currentContext.activeProcessIds.sorted()
+        ])
+        killTrackedTunnelProcesses()
+
+        let remainingCandidates = cleanupCandidateProcessIds(mode: mode, targetUDID: targetUDID)
+        logStartupTrace("startup_failure_cleanup_complete", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "remainingCandidates": remainingCandidates,
+            "trackedChildPids": trackedTunnelChildProcessIds.sorted(),
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime
+        ])
+    }
+
+    private func waitForStableHandedOffTunnelChild(
+        pid: Int32,
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        startupDeadline: Date,
+        waitStartTime: TimeInterval,
+        phase: String
+    ) async -> Int32? {
+        let stabilizationDeadline = min(
+            startupDeadline,
+            Date().addingTimeInterval(handoffStabilizationTimeout)
+        )
+        var attempt = 0
+
+        logStartupTrace("handoff_stabilization_begin", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "pid": pid,
+            "phase": phase,
+            "timeout": handoffStabilizationTimeout,
+            "pollInterval": handoffStabilizationPollInterval,
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime
+        ])
+
+        repeat {
+            attempt += 1
+            if let validatedPid = validateHandedOffTunnelChild(
+                pid: pid,
+                mode: mode,
+                targetUDID: targetUDID,
+                beforeLaunchPids: beforeLaunchPids
+            ) {
+                logStartupTrace("handoff_stabilization_validated", fields: [
+                    "mode": mode.rawValue,
+                    "targetUDID": targetUDID ?? "nil",
+                    "pid": pid,
+                    "phase": phase,
+                    "attempt": attempt,
+                    "elapsed": Date().timeIntervalSince1970 - waitStartTime
+                ])
+                return validatedPid
+            }
+
+            logStartupTrace("handoff_stabilization_retry", fields: [
+                "mode": mode.rawValue,
+                "targetUDID": targetUDID ?? "nil",
+                "pid": pid,
+                "phase": phase,
+                "attempt": attempt,
+                "snapshot": processValidationSnapshot(pid: pid),
+                "elapsed": Date().timeIntervalSince1970 - waitStartTime
+            ])
+
+            guard Date() < stabilizationDeadline else {
+                break
+            }
+
+            try? await Task.sleep(nanoseconds: UInt64(max(0.001, handoffStabilizationPollInterval) * 1_000_000_000))
+        } while Date() < stabilizationDeadline
+
+        logStartupTrace("handoff_stabilization_timeout", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "pid": pid,
+            "phase": phase,
+            "attempts": attempt,
+            "snapshot": processValidationSnapshot(pid: pid),
+            "elapsed": Date().timeIntervalSince1970 - waitStartTime
+        ])
+        return nil
+    }
+
+    private func validateHandedOffTunnelChild(
+        pid: Int32,
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>
+    ) -> Int32? {
+        let snapshot = processValidationSnapshot(pid: pid)
+
+        func reject(_ reason: String) -> Int32? {
+            logStartupTrace("handoff_pid_rejected", fields: [
+                "mode": mode.rawValue,
+                "targetUDID": targetUDID ?? "nil",
+                "pid": pid,
+                "reason": reason,
+                "snapshot": snapshot
+            ])
+            return nil
+        }
+
+        guard pid > 1 else {
+            return reject("pid_not_signalable")
+        }
+        guard !beforeLaunchPids.contains(pid) else {
+            return reject("pid_existed_before_launch")
+        }
+        guard isProcessAliveAndNonZombie(pid: pid) else {
+            return reject("pid_not_live_or_zombie")
+        }
+        guard let command = processCommand(pid: pid) else {
+            return reject("command_unavailable")
+        }
+        guard Self.isSanctionedTunnelChildCommand(
+            command,
+            mode: mode,
+            targetUDID: targetUDID,
+            requireTargetUDID: mode != .daemon
+        ) else {
+            return reject("command_mode_or_udid_mismatch")
+        }
+        guard let uid = processUID(pid: pid) else {
+            return reject("uid_unavailable")
+        }
+        guard uid == getuid() || uid == 0 else {
+            return reject("uid_not_allowed")
+        }
+
+        logStartupTrace("handoff_pid_validated", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "pid": pid,
+            "snapshot": snapshot
+        ])
+        return pid
+    }
+
+    private func processValidationSnapshot(pid: Int32) -> [String: Any] {
+        [
+            "pid": pid,
+            "command": processCommand(pid: pid) ?? "nil",
+            "uid": processUID(pid: pid).map(Int.init) as Any,
+            "state": processState(pid: pid) ?? "nil",
+            "aliveNonZombie": isProcessAliveAndNonZombie(pid: pid)
+        ]
+    }
+
+    private func parseHandedOffPid(from output: String) -> Int32? {
+        for line in output.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  trimmed.allSatisfy({ $0.isNumber }),
+                  let value = Int32(trimmed),
+                  value > 1 else {
+                continue
+            }
+            return value
+        }
+        return nil
+    }
+
+    private func acquireAuthoritativeTunnelChild(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        pollCount: Int,
+        phase: String
+    ) -> Int32? {
+        let livePids = liveTunnelProcessIdsSync(for: mode, targetUDID: targetUDID)
+        let lifecyclePids = stateMachine.currentContext.activeProcessIds.union(trackedTunnelChildProcessIds)
+        let startupPids = livePids.filter {
+            !beforeLaunchPids.contains($0) || lifecyclePids.contains($0)
+        }
+
+        logStartupTrace("child_acquisition_poll", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "phase": phase,
+            "poll": pollCount,
+            "livePids": livePids,
+            "startupPids": startupPids,
+            "trackedPids": trackedTunnelChildProcessIds.sorted(),
+            "statePids": stateMachine.currentContext.activeProcessIds.sorted()
+        ])
+
+        guard let authoritativePid = startupPids.first else {
+            return nil
+        }
+
+        if startupPids.count > 1 {
+            for extraPid in startupPids.dropFirst() {
+                _ = sendSignalToValidatedTunnelProcess(
+                    pid: extraPid,
+                    signal: SIGKILL,
+                    mode: mode,
+                    targetUDID: targetUDID,
+                    allowMissingTargetUDID: lifecyclePids.contains(extraPid)
+                )
+            }
+        }
+
+        return adoptAuthoritativeTunnelChild(
+            pid: authoritativePid,
+            mode: mode,
+            targetUDID: targetUDID,
+            phase: phase
+        )
+    }
+
+    private func adoptAuthoritativeTunnelChild(
+        pid authoritativePid: Int32,
+        mode: TunnelMode,
+        targetUDID: String?,
+        phase: String
+    ) -> Int32 {
+        trackedTunnelChildProcessIds.insert(authoritativePid)
+        lastTunnelModeForCleanup = mode
+        lastTunnelTargetUDIDForCleanup = targetUDID
+
+        if !stateMachine.currentContext.activeProcessIds.contains(authoritativePid) {
+            stateMachine.send(.processLaunched(pid: authoritativePid))
+            syncStateWithStateMachine()
+        }
+
+        logStartupTrace("child_acquired", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "phase": phase,
+            "pid": authoritativePid,
+            "trackedPids": trackedTunnelChildProcessIds.sorted(),
+            "statePids": stateMachine.currentContext.activeProcessIds.sorted()
+        ])
+
+        return authoritativePid
+    }
+
+    private func startupRsdInfo(mode: TunnelMode, authoritativePid: Int32) async -> TunnelInfo? {
+#if DEBUG
+        if debugUsesStartupRsdInfoSequence {
+            guard !debugStartupRsdInfoSequence.isEmpty else {
+                logStartupTrace("rsd_sequence_exhausted", fields: [
+                    "mode": mode.rawValue,
+                    "pid": authoritativePid
+                ])
+                return nil
+            }
+            guard let info = debugStartupRsdInfoSequence.removeFirst() else {
+                logStartupTrace("rsd_not_ready_debug", fields: [
+                    "mode": mode.rawValue,
+                    "pid": authoritativePid
+                ])
+                return nil
+            }
+            let authoritativeInfo = tunnelInfoWithAuthoritativeProcessId(info, pid: authoritativePid)
+            tunnelInfo = authoritativeInfo
+            logStartupTrace("rsd_ready_debug", fields: [
+                "mode": mode.rawValue,
+                "pid": authoritativePid,
+                "rsdAddress": authoritativeInfo.rsdAddress,
+                "rsdPort": authoritativeInfo.rsdPort
+            ])
+            return authoritativeInfo
+        }
+#endif
+        await parseRsdInfo()
+        if let info = stateMachine.currentContext.tunnelInfo, isUsableTunnelInfo(info) {
+            return tunnelInfoWithAuthoritativeProcessId(info, pid: authoritativePid)
+        }
+        if let info = tunnelInfo, isUsableTunnelInfo(info) {
+            return tunnelInfoWithAuthoritativeProcessId(info, pid: authoritativePid)
+        }
+        return nil
+    }
+
+    private func tunnelInfoWithAuthoritativeProcessId(_ info: TunnelInfo, pid: Int32) -> TunnelInfo {
+        guard info.processId != pid else {
+            return info
+        }
+        return TunnelInfo(
+            rsdAddress: info.rsdAddress,
+            rsdPort: info.rsdPort,
+            mode: info.mode,
+            interface: info.interface,
+            processId: pid
+        )
+    }
+
     /// True only when a TunnelInfo can actually be used to talk to the device.
     /// Rejects the legacy 127.0.0.1:0 placeholder and any zero-port info.
     private func isUsableTunnelInfo(_ info: TunnelInfo) -> Bool {
@@ -1165,10 +2334,11 @@ class TunneldManager: ObservableObject {
     /// (or `preferredMode == .auto`). When the user picks a specific mode different from what's
     /// running (e.g. WiFi while a USB tunnel is up), this returns `false` so the caller will
     /// proceed to stop the mismatching tunnel and start fresh in the requested mode.
-    private func attachToRunningTunnelIfAvailable() async -> Bool {
+    private func attachToRunningTunnelIfAvailable(generation: UInt64) async -> Bool {
         guard let runningMode = await detectRunningTunnel() else {
             return false
         }
+        guard isCurrentTunnelLifecycle(generation) else { return true }
 
         // Mode-aware reattach gate: refuse to silently bind to a tunnel that doesn't
         // match the user's explicit preference.
@@ -1184,8 +2354,9 @@ class TunneldManager: ObservableObject {
                 category: .device
             )
             statusMessage = "Stopping \(runningMode.rawValue) tunnel to switch to \(desiredMode.rawValue)..."
-            stopTunnel()
+            stopTunnel(invalidateScheduledRestart: true, advanceGeneration: false)
             try? await Task.sleep(nanoseconds: 500_000_000) // grace for processes to exit
+            guard isCurrentTunnelLifecycle(generation) else { return true }
             return false
         }
 
@@ -1196,6 +2367,7 @@ class TunneldManager: ObservableObject {
             Logger.error(message, category: .device)
             return true
         }
+        guard isCurrentTunnelLifecycle(generation) else { return true }
 
         tunnelInfo = recoveredInfo
         lastError = nil
@@ -1205,24 +2377,164 @@ class TunneldManager: ObservableObject {
         return true
     }
 
+    private func finalizeWrapperReturnTimeout(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        generation: UInt64,
+        timeout: TimeInterval
+    ) {
+        let message = "Privileged \(mode.rawValue) tunnel wrapper did not return a handed-off PID within \(String(format: "%.1f", timeout)) seconds. Startup was failed closed."
+        lastError = message
+        statusMessage = message
+        logStartupTrace("wrapper_return_timeout", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "timeout": timeout,
+            "beforeLaunchPids": beforeLaunchPids.sorted()
+        ])
+
+        cleanupWrapperStalledLaunch(
+            mode: mode,
+            targetUDID: targetUDID,
+            beforeLaunchPids: beforeLaunchPids,
+            generation: generation
+        )
+
+        guard isCurrentTunnelLifecycle(generation),
+              case .starting = stateMachine.currentState else {
+            return
+        }
+        stateMachine.send(.errorOccurred(message))
+        syncStateWithStateMachine()
+    }
+
+    private func cleanupWrapperStalledLaunch(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        generation: UInt64
+    ) {
+        guard isCurrentTunnelLifecycle(generation),
+              case .starting = stateMachine.currentState else {
+            logStartupTrace("wrapper_stall_cleanup_skipped", fields: [
+                "mode": mode.rawValue,
+                "targetUDID": targetUDID ?? "nil",
+                "generationCurrent": isCurrentTunnelLifecycle(generation),
+                "state": "\(stateMachine.currentState)"
+            ])
+            return
+        }
+
+        let candidatePids = Set(liveTunnelProcessIdsSync(for: mode, targetUDID: targetUDID))
+            .subtracting(beforeLaunchPids)
+            .sorted()
+
+        logStartupTrace("wrapper_stall_cleanup_begin", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "beforeLaunchPids": beforeLaunchPids.sorted(),
+            "candidatePids": candidatePids
+        ])
+
+        let remainingPids = terminateLaunchScopedTunnelChildren(
+            candidatePids,
+            mode: mode,
+            targetUDID: targetUDID
+        )
+
+        logStartupTrace("wrapper_stall_cleanup_complete", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": targetUDID ?? "nil",
+            "candidatePids": candidatePids,
+            "remainingCandidates": remainingPids
+        ])
+    }
+
+    private func terminateLaunchScopedTunnelChildren(
+        _ candidatePids: [Int32],
+        mode: TunnelMode,
+        targetUDID: String?
+    ) -> [Int32] {
+        guard !candidatePids.isEmpty else {
+            return []
+        }
+
+        for pid in candidatePids {
+            _ = sendSignalToValidatedTunnelProcess(
+                pid: pid,
+                signal: SIGTERM,
+                mode: mode,
+                targetUDID: targetUDID,
+                allowMissingTargetUDID: false
+            )
+        }
+
+#if DEBUG
+        let gracefulTerminationDelay: useconds_t = debugSignalHandler == nil ? 500_000 : 1_000
+#else
+        let gracefulTerminationDelay: useconds_t = 500_000
+#endif
+        usleep(gracefulTerminationDelay)
+
+        for pid in candidatePids where isProcessRunning(pid: pid) {
+            _ = sendSignalToValidatedTunnelProcess(
+                pid: pid,
+                signal: SIGKILL,
+                mode: mode,
+                targetUDID: targetUDID,
+                allowMissingTargetUDID: false
+            )
+        }
+
+#if DEBUG
+        let verificationDelay: useconds_t = debugSignalHandler == nil ? 200_000 : 1_000
+#else
+        let verificationDelay: useconds_t = 200_000
+#endif
+        usleep(verificationDelay)
+
+        return candidatePids.filter {
+            isProcessRunning(pid: $0) &&
+            isValidatedTunnelProcess(
+                pid: $0,
+                mode: mode,
+                targetUDID: targetUDID
+            )
+        }
+    }
+
     /// Attempt to start tunnel with specific mode
     private func attemptStart(mode: TunnelMode) async -> Bool {
-        let command: String
+        let launchCommand: String
         let udidArgument = targetTunnelUDID.map { " --udid \($0)" } ?? ""
 
         switch mode {
         case .usb:
-            command = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel\(udidArgument) > \(logFilePath) 2>&1 &"
+            launchCommand = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel\(udidArgument) > \(logFilePath) 2>&1 &"
         case .wifi:
-            command = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi --protocol tcp\(udidArgument) > \(logFilePath) 2>&1 &"
+            launchCommand = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi --protocol tcp\(udidArgument) > \(logFilePath) 2>&1 &"
         case .daemon:
-            command = "\(python3Path) -m pymobiledevice3 remote tunneld > \(logFilePath) 2>&1 &"
+            launchCommand = "\(python3Path) -m pymobiledevice3 remote tunneld > \(logFilePath) 2>&1 &"
         case .auto:
             return false // Should not reach here
         }
+        let privilegedCommand = "\(launchCommand) echo $!"
+        let launchTargetUDID = targetTunnelUDID
+        let beforeLaunchPids = Set(liveTunnelProcessIdsSync(for: mode, targetUDID: launchTargetUDID))
+        let generation = tunnelLifecycleGeneration
+        lastTunnelModeForCleanup = mode
+        lastTunnelTargetUDIDForCleanup = launchTargetUDID
+        logStartupTrace("wrapper_launch_prepared", fields: [
+            "mode": mode.rawValue,
+            "targetUDID": launchTargetUDID ?? "nil",
+            "beforeLaunchPids": beforeLaunchPids.sorted()
+        ])
 
-        // SECURITY: Validate command before privileged execution (SEC-001)
-        switch PrivilegedCommandValidator.validate(command: command, pythonPath: python3Path) {
+        // SECURITY: Validate the pmd3 launch command before adding the static
+        // `$!` handoff suffix. The validator intentionally rejects `$`, so the
+        // shell handoff wrapper remains hardcoded and is not user-influenced.
+        switch PrivilegedCommandValidator.validate(command: launchCommand, pythonPath: python3Path) {
         case .success:
             Logger.info("Security validation passed for \(mode.rawValue) tunnel command", category: .security)
         case .failure(let error):
@@ -1232,61 +2544,97 @@ class TunneldManager: ObservableObject {
         }
 
         let script = """
-        do shell script "\(command)" with administrator privileges
+        do shell script "\(privilegedCommand)" with administrator privileges
         """
 
+        let wrapperTimeout = wrapperReturnTimeout(for: mode)
+        let wrapperResult = await executePrivilegedWrapper(script: script, timeout: wrapperTimeout)
+
+        switch wrapperResult {
+        case .returned(let wrapperOutput, let wrapperReturnTime):
+            let handedOffPid = parseHandedOffPid(from: wrapperOutput)
+            logStartupTrace("wrapper_returned", fields: [
+                "mode": mode.rawValue,
+                "targetUDID": launchTargetUDID ?? "nil",
+                "wrapperReturnTime": wrapperReturnTime,
+                "wrapperStdout": wrapperOutput,
+                "handedOffPid": handedOffPid as Any
+            ])
+            if let info = await waitForAuthoritativeStartup(
+                mode: mode,
+                targetUDID: launchTargetUDID,
+                beforeLaunchPids: beforeLaunchPids,
+                generation: generation,
+                handedOffPid: handedOffPid
+            ) {
+                tunnelInfo = info
+                return true
+            }
+
+            await checkLogForErrors(mode: mode)
+            if lastError == nil {
+                lastError = "Failed to acquire authoritative \(mode.rawValue) tunnel child and RSD readiness before timeout."
+            }
+            return false
+
+        case .failed(let message):
+            lastError = message
+            statusMessage = message
+            return false
+
+        case .timedOut:
+            finalizeWrapperReturnTimeout(
+                mode: mode,
+                targetUDID: launchTargetUDID,
+                beforeLaunchPids: beforeLaunchPids,
+                generation: generation,
+                timeout: wrapperTimeout
+            )
+            return false
+        }
+    }
+
+    private func executePrivilegedWrapper(script: String, timeout: TimeInterval) async -> PrivilegedWrapperExecutionResult {
+#if DEBUG
+        let debugRunner = debugPrivilegedWrapperRunner
+#endif
         return await withCheckedContinuation { continuation in
+            let state = PrivilegedWrapperContinuation(continuation: continuation)
+
             DispatchQueue.global().async {
-                var error: NSDictionary?
-                if let appleScript = NSAppleScript(source: script) {
-                    appleScript.executeAndReturnError(&error)
-
-                    if let error = error {
-                        Task { @MainActor in
-                            let errorMessage = error[NSAppleScript.errorMessage] as? String ?? "Unknown error"
-                            if !errorMessage.contains("cancel") {
-                                self.lastError = "Failed to start \(mode.rawValue) tunnel: \(errorMessage)"
-                            } else {
-                                self.lastError = "Administrator access required"
-                            }
-                        }
-                        continuation.resume(returning: false)
-                    } else {
-                        // Wait for tunnel to start using async sleep
-                        let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
-
-                        Task.detached { [weak self] in
-                            try await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
-
-                            guard let self = self else { return }
-
-                            _ = await MainActor.run {
-                                // Validate single instance and track process
-                                Task {
-                                    let validated = await self.validateSingleTunnelInstance(mode: mode)
-
-                                    if validated {
-                                        let running = await self.detectRunningTunnel() == mode
-                                        if !running {
-                                            // Process started but died quickly - check logs
-                                            await self.checkLogForErrors(mode: mode)
-                                        }
-                                        continuation.resume(returning: running)
-                                    } else {
-                                        // No process detected
-                                        await self.checkLogForErrors(mode: mode)
-                                        continuation.resume(returning: false)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Task { @MainActor in
-                        self.lastError = "Failed to create AppleScript"
-                    }
-                    continuation.resume(returning: false)
+#if DEBUG
+                if let debugRunner {
+                    state.resume(debugRunner(script))
+                    return
                 }
+#endif
+                var error: NSDictionary?
+                guard let appleScript = NSAppleScript(source: script) else {
+                    state.resume(.failed(message: "Failed to create AppleScript"))
+                    return
+                }
+
+                let resultDescriptor = appleScript.executeAndReturnError(&error)
+                let wrapperReturnTime = Date().timeIntervalSince1970
+
+                if let error {
+                    let errorMessage = error[NSAppleScript.errorMessage] as? String ?? "Unknown error"
+                    if !errorMessage.contains("cancel") {
+                        state.resume(.failed(message: "Failed to start tunnel: \(errorMessage)"))
+                    } else {
+                        state.resume(.failed(message: "Administrator access required"))
+                    }
+                    return
+                }
+
+                state.resume(.returned(
+                    output: resultDescriptor.stringValue ?? "",
+                    returnTime: wrapperReturnTime
+                ))
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                state.resume(.timedOut)
             }
         }
     }
@@ -1583,12 +2931,20 @@ class TunneldManager: ObservableObject {
 
     /// Parse RSD address and port from tunnel log
     private func parseRsdInfo() async {
+        guard canAcceptRsdInfo else {
+            invalidateRsdInfo(reason: "Ignoring RSD parse outside active startup/running lifecycle")
+            return
+        }
         let mode = activeMode ?? stateMachine.currentContext.activeMode
         guard mode != nil else { return }
 
         do {
             // Give log file time to be written
             try? await Task.sleep(nanoseconds: 500_000_000)
+            guard canAcceptRsdInfo else {
+                invalidateRsdInfo(reason: "Tunnel lifecycle changed before RSD parse completed")
+                return
+            }
 
             let logContent = try String(contentsOfFile: logFilePath, encoding: .utf8)
 
@@ -1616,6 +2972,10 @@ class TunneldManager: ObservableObject {
 
             // Validate parsed values
             if let address = rsdAddress, isValidRsdAddress(address), let port = rsdPort, isValidRsdPort(port) {
+                guard canAcceptRsdInfo else {
+                    invalidateRsdInfo(reason: "Tunnel lifecycle changed before parsed RSD could be published")
+                    return
+                }
                 // Get process ID from state machine context
                 let processId = stateMachine.currentContext.activeProcessIds.first
                 let tunnelMode = mode ?? .auto
@@ -1777,10 +3137,18 @@ class TunneldManager: ObservableObject {
     /// Query the tunneld HTTP API to get RSD info for all connected devices
     /// API returns: {"UDID": [{"tunnel-address": "...", "tunnel-port": ..., "interface": "..."}], ...}
     private func queryTunneldAPI() async {
+        guard canAcceptRsdInfo else {
+            invalidateRsdInfo(reason: "Ignoring tunneld API RSD outside active startup/running lifecycle")
+            return
+        }
         guard let url = URL(string: tunneldAPIEndpoint) else { return }
 
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            guard canAcceptRsdInfo else {
+                invalidateRsdInfo(reason: "Tunnel lifecycle changed before tunneld API RSD could be published")
+                return
+            }
             if let json = try JSONSerialization.jsonObject(with: data) as? [String: [[String: Any]]] {
                 var updatedInfo = deviceTunnelInfo
 
@@ -1825,20 +3193,29 @@ class TunneldManager: ObservableObject {
     /// Get RSD info for a specific device by UDID
     /// Returns nil if no tunnel info is available for this device
     func getRsdInfo(for deviceId: String) -> TunnelInfo? {
-        // First check per-device cache
-        if let info = deviceTunnelInfo[deviceId] {
-            return info
+        guard canServeRsdInfo else {
+            invalidateRsdInfo(reason: "RSD requested while tunnel state is \(stateMachine.currentState)")
+            return nil
         }
-        if tunnelInfo == nil, let recoveredInfo = recoverRsdInfoFromLog() {
-            tunnelInfo = recoveredInfo
+        // First check per-device cache
+        if let info = deviceTunnelInfo[deviceId], isUsableTunnelInfo(info) {
+            return info
         }
 
         // Fall back to legacy single tunnel info
-        return tunnelInfo
+        if let tunnelInfo, isUsableTunnelInfo(tunnelInfo) {
+            return tunnelInfo
+        }
+
+        invalidateRsdInfo(reason: "No usable live RSD exists for device \(deviceId)")
+        return nil
     }
 
     /// Recover RSD info from the tunnel log when an existing lockdown tunnel was detected.
     private func recoverRsdInfoFromLog() -> TunnelInfo? {
+        guard canRecoverRsdInfoFromLog else {
+            return nil
+        }
         guard let logContent = try? String(contentsOfFile: logFilePath, encoding: .utf8) else {
             return nil
         }
@@ -1885,65 +3262,155 @@ class TunneldManager: ObservableObject {
 
     // MARK: - Process Management (Security Hardened)
 
-    /// Kill tracked tunnel processes safely using PIDs only
-    /// Does NOT use pattern matching to avoid affecting other processes
+    /// Kill lifecycle-scoped pmd3 tunnel child processes safely using PID + command validation.
+    /// Does NOT use global killall behavior or terminate non-tunnel pymobiledevice3 commands.
     ///
     /// Security Features:
-    /// - Only terminates PIDs tracked by state machine
-    /// - Verifies process ownership before termination
-    /// - Uses graceful SIGTERM before forced SIGKILL
+    /// - Only terminates state-machine PIDs, lifecycle-discovered child PIDs, or exact mode/UDID matches
+    /// - Verifies command line, owner UID, and tunnel mode before termination
+    /// - Uses graceful SIGTERM, escalates to SIGKILL, then validates termination
     /// - Does NOT kill system services (e.g., usbmuxd)
     private func killTrackedTunnelProcesses() {
-        let trackedPids = stateMachine.currentContext.activeProcessIds
-        Logger.debug("[SECURITY] Terminating \(trackedPids.count) tracked tunnel processes", category: .security)
+        let cleanupMode = stateMachine.currentContext.activeMode ?? activeMode ?? lastTunnelModeForCleanup
+        let cleanupTargetUDID = lastTunnelTargetUDIDForCleanup ?? targetTunnelUDID
+        let lifecycleCandidatePids = stateMachine.currentContext.activeProcessIds.union(trackedTunnelChildProcessIds)
+        let candidatePids = cleanupCandidateProcessIds(mode: cleanupMode, targetUDID: cleanupTargetUDID)
 
-        guard !trackedPids.isEmpty else {
-            Logger.debug("[SECURITY] No tracked processes to terminate", category: .security)
+        Logger.debug("[SECURITY] Terminating \(candidatePids.count) validated tunnel child process(es)", category: .security)
+
+        guard !candidatePids.isEmpty else {
+            trackedTunnelChildProcessIds = trackedTunnelChildProcessIds.filter {
+                isProcessAliveAndNonZombie(pid: $0)
+            }
+            Logger.debug("[SECURITY] No validated tunnel child processes to terminate", category: .security)
             return
         }
 
         // First pass: Send SIGTERM for graceful shutdown
-        for pid in trackedPids {
-            guard isOwnedProcess(pid: pid) else {
-                Logger.debug("[SECURITY] Skipping PID \(pid) - not owned by current user", category: .security)
-                continue
+        for pid in candidatePids {
+            let allowMissingTargetUDID = lifecycleCandidatePids.contains(pid)
+            if sendSignalToValidatedTunnelProcess(
+                pid: pid,
+                signal: SIGTERM,
+                mode: cleanupMode,
+                targetUDID: cleanupTargetUDID,
+                allowMissingTargetUDID: allowMissingTargetUDID
+            ) {
+                Logger.debug("[SECURITY] Sent SIGTERM to validated tunnel PID \(pid)", category: .security)
             }
-
-            let killProcess = Process()
-            killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-            killProcess.arguments = ["-15", String(pid)] // SIGTERM
-            try? killProcess.run()
-            killProcess.waitUntilExit()
-
-            Logger.debug("[SECURITY] Sent SIGTERM to PID \(pid)", category: .security)
         }
 
         // Brief wait for graceful termination
-        usleep(200_000) // 200ms
+#if DEBUG
+        let gracefulTerminationDelay: useconds_t = debugSignalHandler == nil ? 500_000 : 1_000
+#else
+        let gracefulTerminationDelay: useconds_t = 500_000
+#endif
+        usleep(gracefulTerminationDelay)
 
-        // Second pass: Force kill any remaining tracked processes
-        for pid in trackedPids {
-            if isProcessRunning(pid: pid) && isOwnedProcess(pid: pid) {
-                let killProcess = Process()
-                killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-                killProcess.arguments = ["-9", String(pid)] // SIGKILL
-                try? killProcess.run()
-                killProcess.waitUntilExit()
-                Logger.debug("[SECURITY] Sent SIGKILL to PID \(pid)", category: .security)
+        // Second pass: Force kill any remaining validated tunnel children.
+        for pid in candidatePids {
+            let allowMissingTargetUDID = lifecycleCandidatePids.contains(pid)
+            if isProcessRunning(pid: pid),
+               sendSignalToValidatedTunnelProcess(
+                pid: pid,
+                signal: SIGKILL,
+                mode: cleanupMode,
+                targetUDID: cleanupTargetUDID,
+                allowMissingTargetUDID: allowMissingTargetUDID
+               ) {
+                Logger.debug("[SECURITY] Sent SIGKILL to validated tunnel PID \(pid)", category: .security)
             }
+        }
+#if DEBUG
+        let verificationDelay: useconds_t = debugSignalHandler == nil ? 200_000 : 1_000
+#else
+        let verificationDelay: useconds_t = 200_000
+#endif
+        usleep(verificationDelay)
+
+        let remainingPids = candidatePids.filter {
+            isProcessRunning(pid: $0) &&
+            isValidatedTunnelProcess(
+                pid: $0,
+                cleanupMode: cleanupMode,
+                targetUDID: cleanupTargetUDID,
+                allowMissingTargetUDID: lifecycleCandidatePids.contains($0)
+            )
+        }
+
+        if remainingPids.isEmpty {
+            trackedTunnelChildProcessIds.subtract(candidatePids)
+        } else {
+            trackedTunnelChildProcessIds.formUnion(remainingPids)
+            Logger.error("[SECURITY] Tunnel child cleanup verification failed for PID(s): \(remainingPids.map(String.init).joined(separator: ", "))", category: .security)
         }
 
         // Process IDs are cleared by state machine when it transitions to idle
-        Logger.debug("[SECURITY] Process cleanup complete", category: .security)
+        Logger.debug("[SECURITY] Tunnel child process cleanup complete", category: .security)
     }
 
     /// Check if process is owned by current user
     /// Returns false if process doesn't exist or ownership cannot be verified
     private func isOwnedProcess(pid: Int32) -> Bool {
+        processUID(pid: pid) == getuid()
+    }
+
+    /// Check if a process is still running
+    private func isProcessRunning(pid: Int32) -> Bool {
+        isProcessAliveAndNonZombie(pid: pid)
+    }
+
+    func isTunnelProcessAlive(pid: Int32) -> Bool {
+        isProcessAliveAndNonZombie(pid: pid)
+    }
+
+    private func isProcessAliveAndNonZombie(pid: Int32) -> Bool {
+#if DEBUG
+        if let overrideIndex = debugProcessStateOverrides.index(forKey: pid) {
+            let override = debugProcessStateOverrides[overrideIndex].value
+            guard let state = override else { return false }
+            return !Self.isZombieProcessState(state)
+        }
+#endif
+        guard processExistsForValidation(pid: pid) else {
+            return false
+        }
+
+        guard let state = processState(pid: pid) else {
+            return false
+        }
+
+        return !Self.isZombieProcessState(state)
+    }
+
+    private func processExistsForValidation(pid: Int32) -> Bool {
+#if DEBUG
+        if let override = debugKillZeroResultOverrides[pid] {
+            switch override {
+            case .allowed, .permissionDenied:
+                return true
+            case .missing:
+                return false
+            }
+        }
+#endif
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
+    }
+
+    private func processState(pid: Int32) -> String? {
+#if DEBUG
+        if let overrideIndex = debugProcessStateOverrides.index(forKey: pid) {
+            return debugProcessStateOverrides[overrideIndex].value
+        }
+#endif
         let ps = Process()
         let pipe = Pipe()
         ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps.arguments = ["-p", String(pid), "-o", "uid="]
+        ps.arguments = ["-p", String(pid), "-o", "stat="]
         ps.standardOutput = pipe
         ps.standardError = FileHandle.nullDevice
 
@@ -1951,20 +3418,21 @@ class TunneldManager: ObservableObject {
             try ps.run()
             ps.waitUntilExit()
         } catch {
-            return false
+            return nil
+        }
+
+        guard ps.terminationStatus == 0 else {
+            return nil
         }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return false }
-
-        let processUID = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentUID = String(getuid())
-        return processUID == currentUID
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        let state = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return state.isEmpty ? nil : state
     }
 
-    /// Check if a process is still running
-    private func isProcessRunning(pid: Int32) -> Bool {
-        return kill(pid, 0) == 0
+    nonisolated private static func isZombieProcessState(_ state: String) -> Bool {
+        state.uppercased().contains("Z")
     }
 
     /// Monitor tunnel status periodically
@@ -2006,76 +3474,42 @@ class TunneldManager: ObservableObject {
 
     /// Run a command and return output with timeout protection and size limiting
     private func runCommand(_ command: String, arguments: [String], timeout: TimeInterval? = nil) async throws -> String {
-        let effectiveTimeout = timeout ?? AppSettings.shared.commandTimeout
+        let effectiveTimeout = max(0.1, timeout ?? AppSettings.shared.commandTimeout)
 
         return try await withCheckedThrowingContinuation { continuation in
-            var hasResumed = false
-            let resumeLock = NSLock()
+            let execution = TunneldCommandExecutionState(
+                command: command,
+                arguments: arguments,
+                timeout: effectiveTimeout,
+                maxOutputSize: TunneldManager.maxOutputSize,
+                continuation: continuation
+            )
 
-            DispatchQueue.global().async {
-                let process = Process()
-                let pipe = Pipe()
+            execution.pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
 
-                defer {
-                    // Ensure cleanup of file handles and process
-                    try? pipe.fileHandleForReading.close()
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                }
-
-                process.executableURL = URL(fileURLWithPath: command)
-                process.arguments = arguments
-                process.standardOutput = pipe
-                process.standardError = pipe
-
-                // Set environment using centralized configuration
-                process.environment = ProcessEnvironment.configured()
-
-                do {
-                    try process.run()
-
-                    var didTimeout = false
-                    DispatchQueue.global().asyncAfter(deadline: .now() + effectiveTimeout) {
-                        if process.isRunning {
-                            didTimeout = true
-                            process.terminate()
-                        }
-                    }
-
-                    process.waitUntilExit()
-
-                    resumeLock.lock()
-                    defer { resumeLock.unlock() }
-
-                    guard !hasResumed else { return }
-                    hasResumed = true
-
-                    if didTimeout {
-                        continuation.resume(throwing: NSError(domain: "TunneldManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Command timed out after \(effectiveTimeout) seconds"]))
-                        return
-                    }
-
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-                    // Security: Check output size limit (consistent with DevLocationBridge)
-                    if data.count > TunneldManager.maxOutputSize {
-                        Logger.error("[SECURITY] Subprocess output exceeded limit: \(data.count) bytes (max: \(TunneldManager.maxOutputSize))", category: .security)
-                        continuation.resume(throwing: NSError(domain: "TunneldManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "Output exceeded safety limit (\(data.count) bytes)"]))
-                        return
-                    }
-
-                    continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
-                } catch {
-                    resumeLock.lock()
-                    defer { resumeLock.unlock() }
-
-                    guard !hasResumed else { return }
-                    hasResumed = true
-
-                    continuation.resume(throwing: error)
+                if !execution.appendOutput(data) {
+                    Logger.error("[SECURITY] Subprocess output exceeded limit (max: \(execution.maxOutputSize) bytes)", category: .security)
+                    execution.terminateWithGracePeriod()
                 }
             }
+
+            execution.process.terminationHandler = { terminatedProcess in
+                execution.finishAfterTermination(terminatedProcess)
+            }
+
+            let timeoutItem = execution.makeTimeoutWorkItem()
+            execution.installTimeout(timeoutItem)
+
+            do {
+                try execution.process.run()
+            } catch {
+                execution.finish(.failure(error))
+                return
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + effectiveTimeout, execute: timeoutItem)
         }
     }
 
@@ -2084,6 +3518,383 @@ class TunneldManager: ObservableObject {
         return maxOutputSize
     }
 }
+
+enum PrivilegedWrapperExecutionResult: Sendable {
+    case returned(output: String, returnTime: TimeInterval)
+    case failed(message: String)
+    case timedOut
+}
+
+private final class PrivilegedWrapperContinuation: @unchecked Sendable {
+    private let continuation: CheckedContinuation<PrivilegedWrapperExecutionResult, Never>
+    private let lock = NSLock()
+    private var hasResumed = false
+
+    init(continuation: CheckedContinuation<PrivilegedWrapperExecutionResult, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: PrivilegedWrapperExecutionResult) {
+        lock.lock()
+        guard !hasResumed else {
+            lock.unlock()
+            return
+        }
+        hasResumed = true
+        lock.unlock()
+
+        continuation.resume(returning: result)
+    }
+}
+private final class TunneldCommandExecutionState: @unchecked Sendable {
+    let process = Process()
+    let pipe = Pipe()
+    let maxOutputSize: Int
+
+    private let timeout: TimeInterval
+    private let continuation: CheckedContinuation<String, Error>
+    private let lock = NSLock()
+    private var output = Data()
+    private var hasFinished = false
+    private var outputExceededLimit = false
+    private var timeoutWorkItem: DispatchWorkItem?
+
+    init(
+        command: String,
+        arguments: [String],
+        timeout: TimeInterval,
+        maxOutputSize: Int,
+        continuation: CheckedContinuation<String, Error>
+    ) {
+        self.timeout = timeout
+        self.maxOutputSize = maxOutputSize
+        self.continuation = continuation
+
+        process.executableURL = URL(fileURLWithPath: command)
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.environment = ProcessEnvironment.configured()
+    }
+
+    func appendOutput(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return true }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard output.count + data.count <= maxOutputSize else {
+            let remainingCapacity = max(0, maxOutputSize - output.count)
+            if remainingCapacity > 0 {
+                output.append(data.prefix(remainingCapacity))
+            }
+            outputExceededLimit = true
+            return false
+        }
+
+        output.append(data)
+        return true
+    }
+
+    func terminateWithGracePeriod() {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.forceKillIfStillRunning()
+        }
+    }
+
+    func makeTimeoutWorkItem() -> DispatchWorkItem {
+        DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            terminateWithGracePeriod()
+            finish(.failure(NSError(
+                domain: "TunneldManager",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Command timed out after \(timeout) seconds"]
+            )))
+        }
+    }
+
+    func installTimeout(_ timeoutWorkItem: DispatchWorkItem) {
+        lock.lock()
+        self.timeoutWorkItem = timeoutWorkItem
+        lock.unlock()
+    }
+
+    func finishAfterTermination(_ terminatedProcess: Process) {
+        guard !isFinished else { return }
+
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
+        _ = appendOutput(remainingData)
+        let snapshot = outputSnapshot()
+
+        if snapshot.exceededLimit {
+            finish(.failure(NSError(
+                domain: "TunneldManager",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "Output exceeded safety limit (\(maxOutputSize) bytes)"]
+            )))
+            return
+        }
+
+        let text = String(data: snapshot.data, encoding: .utf8) ?? ""
+        guard terminatedProcess.terminationStatus == 0 else {
+            let diagnostic = boundedDiagnostic(from: snapshot.data)
+            finish(.failure(NSError(
+                domain: "TunneldManager",
+                code: Int(terminatedProcess.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "Command exited with status \(terminatedProcess.terminationStatus): \(diagnostic)"]
+            )))
+            return
+        }
+
+        finish(.success(text))
+    }
+
+    func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        guard !hasFinished else {
+            lock.unlock()
+            return
+        }
+        hasFinished = true
+        let pendingTimeout = timeoutWorkItem
+        timeoutWorkItem = nil
+        lock.unlock()
+
+        pendingTimeout?.cancel()
+        pipe.fileHandleForReading.readabilityHandler = nil
+        try? pipe.fileHandleForReading.close()
+
+        switch result {
+        case .success(let value):
+            continuation.resume(returning: value)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasFinished
+    }
+
+    private func forceKillIfStillRunning() {
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
+    private func outputSnapshot() -> (data: Data, exceededLimit: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (output, outputExceededLimit)
+    }
+
+    private func boundedDiagnostic(from data: Data) -> String {
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 4000 {
+            return trimmed
+        }
+        return String(trimmed.suffix(4000))
+    }
+}
+#if DEBUG
+@MainActor
+extension TunneldManager {
+    var testTunnelLifecycleGeneration: UInt64 {
+        tunnelLifecycleGeneration
+    }
+
+    var testHasScheduledRecovery: Bool {
+        recoveryTask != nil
+    }
+
+    var testHasScheduledRestart: Bool {
+        restartTask != nil
+    }
+
+    func testResetTunnelLifecycleForTests() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        restartTask?.cancel()
+        restartTask = nil
+        monitorTask?.cancel()
+        monitorTask = nil
+        healthMonitor.stopMonitoring()
+        cleanupTunnelProcessResources(terminateProcess: true)
+        stateMachine.testModeEnabled = true
+        stateMachine.reset()
+        syncStateWithStateMachine()
+        tunnelStartInFlight = false
+        tunnelLifecycleGeneration &+= 1
+        trackedTunnelChildProcessIds.removeAll()
+        lastTunnelModeForCleanup = nil
+        lastTunnelTargetUDIDForCleanup = nil
+        targetTunnelUDID = nil
+        targetTunnelConnectionType = nil
+        targetTunnelIOSMajorVersion = nil
+        debugProcessCommandOverrides.removeAll()
+        debugProcessUIDOverrides.removeAll()
+        debugProcessStateOverrides.removeAll()
+        debugKillZeroResultOverrides.removeAll()
+        debugLiveProcessIdsOverrides.removeAll()
+        debugLiveProcessIdsSequenceOverrides.removeAll()
+        debugStartupRsdInfoSequence.removeAll()
+        debugUsesStartupRsdInfoSequence = false
+        debugStartupTimeoutOverride = nil
+        debugStartupPollIntervalOverride = nil
+        debugWrapperReturnTimeoutOverride = nil
+        debugPrivilegedWrapperRunner = nil
+        debugSignalHandler = nil
+        preferredMode = .auto
+    }
+
+    @discardableResult
+    func testSendTunnelEvent(_ event: TunnelEvent) -> TransitionResult {
+        stateMachine.testModeEnabled = true
+        let result = stateMachine.send(event)
+        syncStateWithStateMachine()
+        return result
+    }
+
+    func testScheduleRecovery(after delay: TimeInterval) {
+        scheduleRecovery(after: delay)
+    }
+
+    var testTrackedTunnelChildProcessIds: Set<Int32> {
+        trackedTunnelChildProcessIds
+    }
+
+    func testSetTrackedTunnelChildren(_ pids: Set<Int32>, mode: TunnelMode?, targetUDID: String?) {
+        trackedTunnelChildProcessIds = pids
+        lastTunnelModeForCleanup = mode
+        lastTunnelTargetUDIDForCleanup = targetUDID
+    }
+
+    func testSetProcessOverride(pid: Int32, command: String, uid: uid_t = getuid(), state: String? = "S") {
+        debugProcessCommandOverrides[pid] = command
+        debugProcessUIDOverrides[pid] = uid
+        debugProcessStateOverrides.updateValue(state, forKey: pid)
+    }
+
+    func testSetProcessState(pid: Int32, state: String?) {
+        debugProcessStateOverrides.updateValue(state, forKey: pid)
+    }
+
+    func testSetKillZeroResult(pid: Int32, result: TestKillZeroResult) {
+        debugKillZeroResultOverrides[pid] = result
+    }
+
+    func testSetLiveProcessIds(_ pids: [Int32], matching pattern: String) {
+        debugLiveProcessIdsOverrides[pattern] = pids
+    }
+    func testSetLiveProcessIdSequence(_ sequence: [[Int32]], matching pattern: String) {
+        debugLiveProcessIdsSequenceOverrides[pattern] = sequence
+    }
+
+    func testSetStartupRsdInfoSequence(_ sequence: [TunnelInfo?]) {
+        debugStartupRsdInfoSequence = sequence
+        debugUsesStartupRsdInfoSequence = true
+    }
+
+    func testSetStartupTiming(
+        timeout: TimeInterval?,
+        pollInterval: TimeInterval?
+    ) {
+        debugStartupTimeoutOverride = timeout
+        debugStartupPollIntervalOverride = pollInterval
+    }
+
+    func testSetWrapperReturnTimeout(_ timeout: TimeInterval?) {
+        debugWrapperReturnTimeoutOverride = timeout
+    }
+
+    func testSetPrivilegedWrapperRunner(_ runner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?) {
+        debugPrivilegedWrapperRunner = runner
+    }
+
+    func testSetTargetTunnelUDID(_ udid: String?) {
+        targetTunnelUDID = udid
+    }
+
+    func testAttemptStart(mode: TunnelMode) async -> Bool {
+        await attemptStart(mode: mode)
+    }
+
+    func testFinalizeWrapperReturnTimeout(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        timeout: TimeInterval
+    ) {
+        finalizeWrapperReturnTimeout(
+            mode: mode,
+            targetUDID: targetUDID,
+            beforeLaunchPids: beforeLaunchPids,
+            generation: tunnelLifecycleGeneration,
+            timeout: timeout
+        )
+    }
+
+    var testActiveTunnelProcessIds: Set<Int32> {
+        stateMachine.currentContext.activeProcessIds
+    }
+
+    func testWaitForAuthoritativeStartup(
+        mode: TunnelMode,
+        targetUDID: String?,
+        beforeLaunchPids: Set<Int32>,
+        handedOffPid: Int32? = nil
+    ) async -> TunnelInfo? {
+        await waitForAuthoritativeStartup(
+            mode: mode,
+            targetUDID: targetUDID,
+            beforeLaunchPids: beforeLaunchPids,
+            generation: tunnelLifecycleGeneration,
+            handedOffPid: handedOffPid
+        )
+    }
+
+    func testSetSignalHandler(_ handler: (@MainActor (Int32, Int32) -> Bool)?) {
+        debugSignalHandler = handler
+    }
+
+    func testCleanupCandidateProcessIds(mode: TunnelMode?, targetUDID: String?) -> [Int32] {
+        cleanupCandidateProcessIds(mode: mode, targetUDID: targetUDID)
+    }
+
+    func testRecordLaunchedTunnelChildren(mode: TunnelMode, targetUDID: String?, beforeLaunchPids: Set<Int32>) {
+        recordLaunchedTunnelChildren(mode: mode, targetUDID: targetUDID, beforeLaunchPids: beforeLaunchPids)
+    }
+
+    func testRunTrackedTunnelCleanup() {
+        killTrackedTunnelProcesses()
+    }
+
+    nonisolated static func testIsZombieProcessState(_ state: String) -> Bool {
+        isZombieProcessState(state)
+    }
+
+    nonisolated static func testIsSanctionedTunnelChildCommand(
+        _ command: String,
+        mode: TunnelMode,
+        targetUDID: String?,
+        requireTargetUDID: Bool = true
+    ) -> Bool {
+        isSanctionedTunnelChildCommand(
+            command,
+            mode: mode,
+            targetUDID: targetUDID,
+            requireTargetUDID: requireTargetUDID
+        )
+    }
+}
+#endif
 
 // MARK: - App Delegate for Lifecycle Management
 

@@ -55,7 +55,10 @@ class CompanionHostService: NSObject, ObservableObject {
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
 
-    private let serviceType = "locspoof-comp"
+    /// MultipeerConnectivity service type. Renamed from the upstream
+    /// "locspoof-comp" identifier in Milestone 5. Must stay ≤15 characters
+    /// and use only ASCII alphanumerics / hyphens per `MCNearbyServiceAdvertiser`.
+    private let serviceType = "pathchanger-cmp"
 
     // MARK: Status Update Timer
     private var statusUpdateTimer: Timer?

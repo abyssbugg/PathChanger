@@ -32,10 +32,14 @@
 	<string>Copyright © 2024 PathChanger. All rights reserved.</string>
 
 	<!-- Sparkle Auto-Update Configuration -->
-	<key>SUFeedURL</key>
-	<string>https://github.com/abyssbugg/PathChanger/releases/latest/download/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>hFzJgLmFc3okXejhXEkzGK6SLisvE4RRo6d48Ejh1iE=</string>
+	<!--                                                                     -->
+	<!-- The upstream SUFeedURL (abyssbugg/PathChanger/.../appcast.xml) and  -->
+	<!-- SUPublicEDKey were removed in Milestone 5 as stale upstream         -->
+	<!-- identifiers. Auto-updates remain disabled until the new maintainer  -->
+	<!-- publishes an appcast URL and a paired Ed25519 public key. Sparkle   -->
+	<!-- infrastructure (UpdaterController, dependency, build glue) is kept  -->
+	<!-- so re-enabling auto-updates only requires re-adding these two keys  -->
+	<!-- below and restoring the "Check for Updates…" menu item.             -->
 	<key>SUEnableAutomaticChecks</key>
 	<false/>
 </dict>

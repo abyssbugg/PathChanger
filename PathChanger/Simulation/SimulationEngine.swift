@@ -364,9 +364,6 @@ class JoystickMode: SimulationModeProtocol {
 
 // MARK: - Main Simulation Engine
 
-/// Main simulation engine coordinating all modes
-typealias EngineSimulationMode = SimulationModeType
-
 /// The main simulation engine that coordinates location spoofing across multiple modes.
 ///
 /// `SimulationEngine` is the central component for simulating location on iOS devices.
@@ -493,7 +490,7 @@ typealias EngineSimulationMode = SimulationModeType
 class SimulationEngine: ObservableObject {
     // MARK: Published State
     @Published var state: SimulationState = .idle
-    @Published var currentMode: EngineSimulationMode = .teleport
+    @Published var currentMode: SimulationModeType = .teleport
     @Published var speed: SimulationSpeed = .driving
     @Published var currentCoordinate: LocationCoordinate?
     @Published var routeProgress: Double = 0.0
@@ -508,15 +505,20 @@ class SimulationEngine: ObservableObject {
     // MARK: Timer
     private var timer: Timer?
     private var startTime: Date?
+    private var simulationSessionID: UInt64 = 0
+    private var activeTimerSessionID: UInt64?
+    private var activeTickSessionID: UInt64?
+    private var activeTickTask: Task<Void, Never>?
 
     // MARK: Device Bridge
-    private let locationBridge: DevLocationBridge
+    //
+    // SimulationEngine routes all location injection through
+    // `LocationBridge.shared` — the sole authoritative bridge after
+    // Milestone 2. It no longer owns its own DevLocationBridge instance.
     private var targetDevice: Device?
 
     // MARK: Initialization
-    init(locationBridge: DevLocationBridge = DevLocationBridge()) {
-        self.locationBridge = locationBridge
-    }
+    init() {}
 
     // MARK: Device Management
     func setDevice(_ device: Device) {
@@ -525,32 +527,61 @@ class SimulationEngine: ObservableObject {
 
     // MARK: Teleport
     func teleport(to coordinate: LocationCoordinate) async throws {
+        let sessionID = await prepareForNewSimulationSession()
+        guard isCurrentSession(sessionID) else { return }
+
         guard let device = targetDevice else {
-            state = .error("No device selected")
+            if isCurrentSession(sessionID) {
+                state = .error("Connect an iPhone to begin")
+            }
             throw LocationInjectionError.deviceNotFound
         }
 
+        // Mode-dispatch consistency: set `currentMode` so any observer of
+        // engine state (notably AppState’s mirrors after Milestone 3) sees
+        // the correct active mode.
+        currentMode = .teleport
         state = .running
         teleportMode.setTarget(coordinate)
         teleportMode.start()
 
-        try await locationBridge.setLocation(coordinate, for: device)
+        do {
+            try await sendLocation(coordinate, for: device)
+        } catch {
+            if isCurrentSession(sessionID) {
+                teleportMode.stop()
+                state = .error(error.localizedDescription)
+            }
+            throw error
+        }
+
+        guard isCurrentSession(sessionID), state == .running else { return }
         currentCoordinate = coordinate
         state = .completed
     }
 
     // MARK: Route Simulation
     func startRoute(waypoints: [LocationCoordinate]) async {
+        let sessionID = await prepareForNewSimulationSession()
+        guard isCurrentSession(sessionID) else { return }
+
         guard targetDevice != nil else {
-            state = .error("No device selected")
+            if isCurrentSession(sessionID) {
+                state = .error("Connect an iPhone to begin")
+            }
             return
         }
 
         guard waypoints.count >= 2 else {
-            state = .error("Route requires at least 2 waypoints")
+            if isCurrentSession(sessionID) {
+                state = .error("Route requires at least 2 waypoints")
+            }
             return
         }
 
+        // Mode-dispatch consistency: tick() dispatches on currentMode, so it
+        // must reflect the requested mode before the timer starts ticking.
+        currentMode = .route
         routeMode.configure(waypoints: waypoints, speed: speed, loop: loopRoute)
         routeMode.start()
 
@@ -559,16 +590,23 @@ class SimulationEngine: ObservableObject {
         elapsedTime = 0
         routeProgress = 0
 
-        startTimer()
+        startTimer(for: sessionID)
     }
 
     // MARK: Joystick Control
-    func startJoystick(at location: LocationCoordinate) {
+    func startJoystick(at location: LocationCoordinate) async {
+        let sessionID = await prepareForNewSimulationSession()
+        guard isCurrentSession(sessionID) else { return }
+
         guard targetDevice != nil else {
-            state = .error("No device selected")
+            if isCurrentSession(sessionID) {
+                state = .error("Connect an iPhone to begin")
+            }
             return
         }
 
+        // Mode-dispatch consistency: tick() dispatches on currentMode.
+        currentMode = .joystick
         joystickMode.configure(startLocation: location, speed: speed)
         joystickMode.start()
 
@@ -576,7 +614,7 @@ class SimulationEngine: ObservableObject {
         startTime = Date()
         currentCoordinate = location
 
-        startTimer()
+        startTimer(for: sessionID)
     }
 
     func setJoystickDirection(degrees: Double) {
@@ -587,10 +625,38 @@ class SimulationEngine: ObservableObject {
         joystickMode.setMoving(moving)
     }
 
+    /// Vector-direction joystick input.
+    ///
+    /// Accepts a 2D direction vector (x = east component, y = north component;
+    /// units are joystick-stick fraction, magnitude clamped to [0, 1]).
+    /// Internally converts to a compass bearing for the bearing-based
+    /// `JoystickMode`. `isMoving` is enabled when the magnitude exceeds the
+    /// dead-zone threshold (matches the prior AppState semantics).
+    ///
+    /// Added in Milestone 3 to become the **sole** entry point for joystick
+    /// input. AppState now forwards user input here instead of running its
+    /// own joystick motion loop.
+    func updateJoystickDirection(_ direction: CGPoint) {
+        let magnitude = sqrt(direction.x * direction.x + direction.y * direction.y)
+        // Dead-zone threshold preserved from AppState.startJoystickControl.
+        let deadZone: CGFloat = 0.05
+        if magnitude > deadZone {
+            // atan2(x, y) returns 0 for due-north (positive y) and increases
+            // clockwise toward east — i.e. compass bearing.
+            let bearing = atan2(direction.x, direction.y) * 180 / .pi
+            joystickMode.setDirection(degrees: Double(bearing))
+            joystickMode.setMoving(true)
+        } else {
+            joystickMode.setMoving(false)
+        }
+    }
+
     // MARK: Control
     func pause() {
-        timer?.invalidate()
-        timer = nil
+        guard state == .running else { return }
+
+        invalidateTimer()
+        activeTickTask?.cancel()
         state = .paused
 
         switch currentMode {
@@ -617,22 +683,24 @@ class SimulationEngine: ObservableObject {
             break
         }
 
-        startTimer()
+        startTimer(for: simulationSessionID)
     }
 
     func stop() async {
-        timer?.invalidate()
-        timer = nil
+        let (sessionID, previousTickTask) = invalidateCurrentSimulationSession()
+        stopModes()
 
-        teleportMode.stop()
-        routeMode.stop()
-        joystickMode.stop()
+        await previousTickTask?.value
+        guard isCurrentSession(sessionID) else { return }
 
-        // Clear location on device
+        // Clear location on device after any older tick has drained. This
+        // preserves device clear ordering without moving bridge ownership out
+        // of the engine.
         if let device = targetDevice {
-            try? await locationBridge.clearLocation(for: device)
+            try? await LocationBridge.shared.clearLocation(for: device)
         }
 
+        guard isCurrentSession(sessionID) else { return }
         state = .idle
         currentCoordinate = nil
         routeProgress = 0
@@ -640,18 +708,34 @@ class SimulationEngine: ObservableObject {
     }
 
     // MARK: Timer
-    private func startTimer() {
-        timer?.invalidate()
+    private func startTimer(for sessionID: UInt64) {
+        invalidateTimer()
+        activeTimerSessionID = sessionID
         timer = Timer.scheduledTimer(withTimeInterval: speed.updateInterval, repeats: true) { [weak self] _ in
-            guard let strongSelf = self else { return }
-            Task { @MainActor in
-                await strongSelf.tick()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.isCurrentSession(sessionID), self.state == .running else { return }
+                guard self.activeTickTask == nil else { return }
+
+                self.activeTickSessionID = sessionID
+                let tickTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.tick(sessionID: sessionID)
+                }
+                self.activeTickTask = tickTask
             }
         }
     }
 
-    private func tick() async {
-        guard state == .running else { return }
+    private func tick(sessionID: UInt64) async {
+        guard isCurrentSession(sessionID), state == .running, !Task.isCancelled else {
+            clearActiveTickIfCurrent(sessionID: sessionID)
+            return
+        }
+
+        defer {
+            clearActiveTickIfCurrent(sessionID: sessionID)
+        }
 
         // Update elapsed time
         if let start = startTime {
@@ -669,9 +753,9 @@ class SimulationEngine: ObservableObject {
             routeProgress = routeMode.progress
 
             if !routeMode.isActive {
+                guard isCurrentSession(sessionID), state == .running, !Task.isCancelled else { return }
                 state = .completed
-                timer?.invalidate()
-                timer = nil
+                invalidateTimer()
                 return
             }
         case .joystick:
@@ -680,8 +764,97 @@ class SimulationEngine: ObservableObject {
 
         // Send to device
         if let coordinate = nextCoordinate, let device = targetDevice {
+            guard isCurrentSession(sessionID), state == .running, !Task.isCancelled else { return }
+            do {
+                try await sendLocation(coordinate, for: device)
+            } catch {
+                guard isCurrentSession(sessionID), state == .running, !Task.isCancelled else { return }
+                if LocationBridge.isTunnelInvalidationError(error) {
+                    failActiveSimulationAfterTransportFailure(error, sessionID: sessionID)
+                } else {
+                    Logger.error("Location tick failed: \(error.localizedDescription)", category: .device)
+                }
+                return
+            }
+            guard isCurrentSession(sessionID), state == .running, !Task.isCancelled else { return }
             currentCoordinate = coordinate
-            try? await locationBridge.setLocation(coordinate, for: device)
         }
     }
+
+    // MARK: Session Coordination
+
+    private func prepareForNewSimulationSession() async -> UInt64 {
+        let (sessionID, previousTickTask) = invalidateCurrentSimulationSession()
+        stopModes()
+        await previousTickTask?.value
+        return sessionID
+    }
+
+    private func invalidateCurrentSimulationSession() -> (UInt64, Task<Void, Never>?) {
+        invalidateTimer()
+        simulationSessionID &+= 1
+        let previousTickTask = activeTickTask
+        previousTickTask?.cancel()
+        return (simulationSessionID, previousTickTask)
+    }
+
+    private func invalidateTimer() {
+        timer?.invalidate()
+        timer = nil
+        activeTimerSessionID = nil
+    }
+
+    private func stopModes() {
+        teleportMode.stop()
+        routeMode.stop()
+        joystickMode.stop()
+    }
+
+    private func isCurrentSession(_ sessionID: UInt64) -> Bool {
+        simulationSessionID == sessionID
+    }
+
+    private func clearActiveTickIfCurrent(sessionID: UInt64) {
+        guard activeTickSessionID == sessionID else { return }
+        activeTickSessionID = nil
+        activeTickTask = nil
+    }
+
+    private func sendLocation(_ coordinate: LocationCoordinate, for device: Device) async throws {
+        #if DEBUG
+        if let testSetLocationHandler {
+            try await testSetLocationHandler(coordinate, device)
+            return
+        }
+        #endif
+        try await LocationBridge.shared.setLocation(coordinate, for: device)
+    }
+
+    private func failActiveSimulationAfterTransportFailure(_ error: Error, sessionID: UInt64) {
+        guard isCurrentSession(sessionID) else { return }
+        invalidateTimer()
+        activeTickTask?.cancel()
+        stopModes()
+        state = .error(error.localizedDescription)
+    }
+
+    #if DEBUG
+    var testSetLocationHandler: ((LocationCoordinate, Device) async throws -> Void)?
+    var testSimulationSessionID: UInt64 {
+        simulationSessionID
+    }
+
+    var testHasActiveTimer: Bool {
+        timer != nil
+    }
+
+    var testHasActiveTick: Bool {
+        activeTickTask != nil
+    }
+
+    func testRunTick(sessionID: UInt64) async {
+        await tick(sessionID: sessionID)
+    }
+    #endif
+
 }

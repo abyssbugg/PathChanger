@@ -99,15 +99,16 @@ class MultiDeviceCoordinator: ObservableObject {
     let maxConcurrentOperations: Int = 5
 
     // MARK: Private Properties
-
-    private let locationBridge: DevLocationBridge
+    //
+    // MultiDeviceCoordinator routes all location injection through
+    // `LocationBridge.shared` — the sole authoritative bridge after
+    // Milestone 2. It no longer owns its own DevLocationBridge instance.
     private var cancellables = Set<AnyCancellable>()
     private let persistenceKey = "multiDeviceGroups"
 
     // MARK: Initialization
 
-    private init(locationBridge: DevLocationBridge = DevLocationBridge()) {
-        self.locationBridge = locationBridge
+    private init() {
         loadGroups()
     }
 
@@ -243,7 +244,7 @@ class MultiDeviceCoordinator: ObservableObject {
                 for device in chunk {
                     group.addTask {
                         do {
-                            try await self.locationBridge.setLocation(coordinate, for: device)
+                            try await LocationBridge.shared.setLocation(coordinate, for: device)
 
                             // Update device state
                             await MainActor.run {
@@ -308,7 +309,7 @@ class MultiDeviceCoordinator: ObservableObject {
             for device in targetDevices {
                 group.addTask {
                     do {
-                        try await self.locationBridge.clearLocation(for: device)
+                        try await LocationBridge.shared.clearLocation(for: device)
 
                         await MainActor.run {
                             let state = self.getState(for: device.id)

@@ -217,12 +217,10 @@ enum ArgumentSanitizer {
             throw ValidationError.pathTraversalAttempt(argument)
         }
 
-        // Check for command injection attempts
-        let dangerousPatterns = [";", "|", "&", "$", "`", "\n", "\r"]
-        for pattern in dangerousPatterns {
-            if argument.contains(pattern) {
-                throw ValidationError.invalidArgument(argument)
-            }
+        // Check for command injection attempts (sourced from SubprocessPolicy,
+        // the single source of truth for forbidden characters).
+        if SubprocessPolicy.containsForbiddenCharacter(argument) {
+            throw ValidationError.invalidArgument(argument)
         }
 
         // Validate against allowed character set (with exceptions for specific patterns)

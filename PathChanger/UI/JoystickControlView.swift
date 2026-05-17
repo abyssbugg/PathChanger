@@ -66,6 +66,9 @@ struct JoystickControlView: View {
                         )
                         .offset(x: knobPosition.x + dragOffset.width, y: knobPosition.y + dragOffset.height)
                         .gesture(
+                            // W1 visual governance: joystick drag handling is a
+                            // subordinate interaction that streams directional
+                            // context; it is not a canonical T0 execution authority.
                             DragGesture()
                                 .updating($dragOffset) { value, state, _ in
                                     let maxOffset = outerRadius - innerRadius

@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import Darwin
 
 /// Diagnostic result for each check
 struct DiagnosticResult: Identifiable {
@@ -39,6 +40,197 @@ struct DiagnosticResult: Identifiable {
     }
 }
 
+private final class DiagnosticCommandExecutionState: @unchecked Sendable {
+    let process = Process()
+    let pipe = Pipe()
+    let maxOutputSize: Int
+
+    private let timeout: TimeInterval
+    private let continuation: CheckedContinuation<String, Error>
+    private let lock = NSLock()
+    private var output = Data()
+    private var hasFinished = false
+    private var outputExceededLimit = false
+    private var timeoutWorkItem: DispatchWorkItem?
+
+    init(
+        command: String,
+        arguments: [String],
+        timeout: TimeInterval,
+        maxOutputSize: Int,
+        continuation: CheckedContinuation<String, Error>
+    ) {
+        self.timeout = timeout
+        self.maxOutputSize = maxOutputSize
+        self.continuation = continuation
+
+        process.executableURL = URL(fileURLWithPath: command)
+        process.arguments = arguments
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.environment = ProcessEnvironment.configured(preserveExistingPath: true)
+    }
+
+    func appendOutput(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return true }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard output.count + data.count <= maxOutputSize else {
+            let remainingCapacity = max(0, maxOutputSize - output.count)
+            if remainingCapacity > 0 {
+                output.append(data.prefix(remainingCapacity))
+            }
+            outputExceededLimit = true
+            return false
+        }
+
+        output.append(data)
+        return true
+    }
+
+    func terminateWithGracePeriod() {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.forceKillIfStillRunning()
+        }
+    }
+
+    func makeTimeoutWorkItem() -> DispatchWorkItem {
+        DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            terminateWithGracePeriod()
+            finish(.failure(DiagnosticCommandError.timedOut(seconds: timeout)))
+        }
+    }
+
+    func installTimeout(_ timeoutWorkItem: DispatchWorkItem) {
+        lock.lock()
+        self.timeoutWorkItem = timeoutWorkItem
+        lock.unlock()
+    }
+
+    private func cancelTimeoutBeforeTermination() -> Bool {
+        lock.lock()
+        guard !hasFinished else {
+            lock.unlock()
+            return false
+        }
+        let pendingTimeout = timeoutWorkItem
+        timeoutWorkItem = nil
+        lock.unlock()
+
+        pendingTimeout?.cancel()
+        return true
+    }
+
+    func finishAfterTermination(_ terminatedProcess: Process) {
+        guard cancelTimeoutBeforeTermination() else { return }
+
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
+        _ = appendOutput(remainingData)
+        let snapshot = outputSnapshot()
+
+        if snapshot.exceededLimit {
+            finish(.failure(DiagnosticCommandError.outputSizeExceeded(maxBytes: maxOutputSize)))
+            return
+        }
+
+        let text = String(data: snapshot.data, encoding: .utf8) ?? ""
+        guard terminatedProcess.terminationStatus == 0 else {
+            finish(.failure(DiagnosticCommandError.exited(
+                code: terminatedProcess.terminationStatus,
+                output: text
+            )))
+            return
+        }
+
+        finish(.success(text))
+    }
+
+    func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        guard !hasFinished else {
+            lock.unlock()
+            return
+        }
+        hasFinished = true
+        let pendingTimeout = timeoutWorkItem
+        timeoutWorkItem = nil
+        lock.unlock()
+
+        pendingTimeout?.cancel()
+        pipe.fileHandleForReading.readabilityHandler = nil
+        try? pipe.fileHandleForReading.close()
+
+        switch result {
+        case .success(let value):
+            continuation.resume(returning: value)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasFinished
+    }
+
+    private func forceKillIfStillRunning() {
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
+    private func outputSnapshot() -> (data: Data, exceededLimit: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (output, outputExceededLimit)
+    }
+}
+
+/// Errors produced by the Diagnostics view's existing subprocess checks.
+enum DiagnosticCommandError: Error, LocalizedError {
+    case invalidExecutable(String)
+    case invalidArguments(String)
+    case launchFailed(String)
+    case timedOut(seconds: TimeInterval)
+    case outputSizeExceeded(maxBytes: Int)
+    case exited(code: Int32, output: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidExecutable(let path):
+            return "Diagnostic command executable is not allowed: \(path)"
+        case .invalidArguments(let arguments):
+            return "Diagnostic command arguments are not allowed: \(arguments)"
+        case .launchFailed(let reason):
+            return "Diagnostic command failed to launch: \(reason)"
+        case .timedOut(let seconds):
+            return "Diagnostic command timed out after \(String(format: "%.1f", seconds)) seconds"
+        case .outputSizeExceeded(let maxBytes):
+            return "Diagnostic command output exceeded safety limit (\(maxBytes) bytes)"
+        case .exited(let code, let output):
+            let diagnostic = Self.boundedDiagnostic(output)
+            return diagnostic.isEmpty
+                ? "Diagnostic command exited with status \(code)"
+                : "Diagnostic command exited with status \(code): \(diagnostic)"
+        }
+    }
+
+    static func boundedDiagnostic(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 2_000 {
+            return trimmed
+        }
+        return String(trimmed.suffix(2_000))
+    }
+}
+
 /// Diagnostics view for troubleshooting
 struct DiagnosticsView: View {
     @EnvironmentObject var appState: AppState
@@ -51,6 +243,9 @@ struct DiagnosticsView: View {
     @State private var isExportingLogs = false
     @State private var exportedLogURL: URL?
     @State private var showExportSuccess = false
+
+    private static let diagnosticCommandTimeout: TimeInterval = 12.0
+    private static let maxDiagnosticOutputBytes = min(SubprocessPolicy.maxSubprocessOutputBytes, 1_048_576)
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppSpacing.md) {
@@ -127,7 +322,7 @@ struct DiagnosticsView: View {
                     Spacer()
 
                     if failures > 0 {
-                        Text("Fix the issues above to enable location spoofing")
+                        Text("Fix the issues above to enable location simulation")
                             .font(AppFont.metadata)
                             .foregroundColor(.pcTextMuted)
                     }
@@ -174,6 +369,24 @@ struct DiagnosticsView: View {
     func runDiagnostics() async {
         isRunning = true
         results = []
+        Logger.info("[Diagnostics] Starting system diagnostics", category: .general)
+        defer {
+            isRunning = false
+            let failures = results.filter { $0.status == .failure }.count
+            let warnings = results.filter { $0.status == .warning }.count
+            Logger.info(
+                "[Diagnostics] Finished system diagnostics",
+                category: .general,
+                metadata: LogMetadata(
+                    operationType: "diagnostics",
+                    additionalInfo: [
+                        "checks": "\(results.count)",
+                        "failures": "\(failures)",
+                        "warnings": "\(warnings)"
+                    ]
+                )
+            )
+        }
 
         // Check 1: Python3 installation
         results.append(DiagnosticResult(
@@ -219,7 +432,7 @@ struct DiagnosticsView: View {
         results.append(DiagnosticResult(
             name: "Device Selected",
             status: appState.selectedDevice != nil ? .success : .failure,
-            message: appState.selectedDevice != nil ? "Device: \(appState.selectedDevice!.displayName)" : "No device selected",
+            message: appState.selectedDevice != nil ? "Device: \(appState.selectedDevice!.displayName)" : "Connect an iPhone to begin",
             recoveryAction: appState.selectedDevice == nil ? "Select a device from the sidebar" : nil
         ))
 
@@ -248,7 +461,6 @@ struct DiagnosticsView: View {
             results[results.count - 1] = injectionResult
         }
 
-        isRunning = false
     }
 
     func checkPython() async -> DiagnosticResult {
@@ -310,7 +522,7 @@ struct DiagnosticsView: View {
             return DiagnosticResult(
                 name: "Tunnel Status",
                 status: .failure,
-                message: "Tunnel not running - required for iOS 17+",
+                message: "Tunnel offline - required for iOS 17+",
                 recoveryAction: "Go to Settings > Start Tunnel, or run: sudo python3 -m pymobiledevice3 lockdown start-tunnel"
             )
         }
@@ -366,7 +578,7 @@ struct DiagnosticsView: View {
             return DiagnosticResult(
                 name: "Location Injection",
                 status: .failure,
-                message: "No device selected",
+                message: "Connect an iPhone to begin",
                 recoveryAction: "Select a device first"
             )
         }
@@ -490,31 +702,72 @@ struct DiagnosticsView: View {
     }
 
     func runCommand(_ path: String, args: [String]) async throws -> String {
+        try Self.validateDiagnosticCommand(path: path, args: args)
         return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let pipe = Pipe()
+            let execution = DiagnosticCommandExecutionState(
+                command: path,
+                arguments: args,
+                timeout: Self.diagnosticCommandTimeout,
+                maxOutputSize: Self.maxDiagnosticOutputBytes,
+                continuation: continuation
+            )
 
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = args
-            process.standardOutput = pipe
-            process.standardError = pipe
-            process.environment = ProcessEnvironment.configured(preserveExistingPath: true)
+            execution.pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+
+                if !execution.appendOutput(data) {
+                    Logger.error(
+                        "[Diagnostics] Command output exceeded safety limit",
+                        category: .security,
+                        metadata: LogMetadata(
+                            operationType: "diagnostics_command",
+                            additionalInfo: [
+                                "max_bytes": "\(execution.maxOutputSize)"
+                            ]
+                        )
+                    )
+                    execution.terminateWithGracePeriod()
+                }
+            }
+
+            execution.process.terminationHandler = { terminatedProcess in
+                execution.finishAfterTermination(terminatedProcess)
+            }
+
+            let timeoutItem = execution.makeTimeoutWorkItem()
+            execution.installTimeout(timeoutItem)
 
             do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(returning: output)
-                }
+                try execution.process.run()
             } catch {
-                continuation.resume(throwing: error)
+                execution.finish(.failure(DiagnosticCommandError.launchFailed(error.localizedDescription)))
+                return
             }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.diagnosticCommandTimeout, execute: timeoutItem)
+        }
+    }
+
+    static func validateDiagnosticCommand(path: String, args: [String]) throws {
+        guard SubprocessPolicy.isAllowedPythonPath(path),
+              FileManager.default.isExecutableFile(atPath: path) else {
+            throw DiagnosticCommandError.invalidExecutable(path)
+        }
+
+        if args == ["--version"] {
+            return
+        }
+
+        guard args.count >= 2, args[0] == "-m", args[1] == "pymobiledevice3" else {
+            throw DiagnosticCommandError.invalidArguments(args.joined(separator: " "))
+        }
+
+        do {
+            _ = try ArgumentSanitizer.sanitizeSubprocessArgs(args)
+            try CommandStructureValidator.validateCommandStructure(args)
+        } catch {
+            throw DiagnosticCommandError.invalidArguments(error.localizedDescription)
         }
     }
 }

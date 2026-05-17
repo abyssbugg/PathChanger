@@ -71,6 +71,35 @@ final class LogMetadataTests: XCTestCase {
         XCTAssertTrue(formatted.contains("key2=value2"))
     }
 
+    func testMetadataFormattedEscapesMultilineValues() {
+        let metadata = LogMetadata(
+            sessionId: "session\nwith\rcontrols",
+            operationType: "diagnostics\tcheck",
+            additionalInfo: [
+                "multi\nline": "first\nsecond\rthird\tfourth"
+            ]
+        )
+
+        let formatted = metadata.formatted
+
+        XCTAssertFalse(formatted.contains("\n"))
+        XCTAssertFalse(formatted.contains("\r"))
+        XCTAssertFalse(formatted.contains("\t"))
+        XCTAssertTrue(formatted.contains("\\n"))
+        XCTAssertTrue(formatted.contains("\\r"))
+        XCTAssertTrue(formatted.contains("\\t"))
+    }
+
+    func testMetadataFormattedBoundsAdditionalValues() {
+        let longValue = String(repeating: "x", count: 2_000)
+        let metadata = LogMetadata(additionalInfo: ["long": longValue])
+
+        let formatted = metadata.formatted
+
+        XCTAssertLessThan(formatted.count, longValue.count)
+        XCTAssertTrue(formatted.contains("…"))
+    }
+
     func testEmptyMetadataFormattedReturnsEmptyString() {
         let metadata = LogMetadata.empty
 
@@ -123,6 +152,25 @@ final class LogEntryTests: XCTestCase {
         XCTAssertTrue(line.contains("[device]"))
         XCTAssertTrue(line.contains("session=session123"))
         XCTAssertTrue(line.contains("Device connected"))
+    }
+
+    func testLogEntryEscapesMultilineMessage() {
+        let entry = LogEntry(
+            timestamp: Date(),
+            level: "error",
+            category: "general",
+            message: "line1\nline2\rline3\tline4",
+            metadata: nil
+        )
+
+        let line = entry.formattedLine
+
+        XCTAssertFalse(line.contains("\n"))
+        XCTAssertFalse(line.contains("\r"))
+        XCTAssertFalse(line.contains("\t"))
+        XCTAssertTrue(line.contains("\\n"))
+        XCTAssertTrue(line.contains("\\r"))
+        XCTAssertTrue(line.contains("\\t"))
     }
 
     func testLogEntryLevelIsUppercased() {

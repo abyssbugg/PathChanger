@@ -4,7 +4,7 @@ Location simulation toolkit for iOS devices using pymobiledevice3.
 
 ## Overview
 
-PathChanger is a macOS application that enables GPS location spoofing on iOS devices. It provides multiple simulation modes including teleportation, route playback, and joystick-based movement control.
+PathChanger is a macOS application that enables GPS location simulation on iOS devices. It provides multiple simulation modes including teleportation, route playback, and joystick-based movement control.
 
 ### Key Features
 

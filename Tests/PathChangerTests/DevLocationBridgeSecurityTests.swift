@@ -208,32 +208,32 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         XCTAssertTrue(countError.errorDescription!.contains("10"))
     }
 
-    // MARK: - SubprocessCommandValidator Tests
+    // MARK: - CommandStructureValidator Tests
 
     func testValidCommandStructure() {
         // Valid location set command
         let setLocationArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.6762", "139.6503"]
-        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(setLocationArgs))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(setLocationArgs))
 
         // Valid location clear command
         let clearArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "clear", "--udid", "00008030001234567890123456789012345678ab"]
-        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(clearArgs))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(clearArgs))
 
         // Valid DVT list command
         let listArgs = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--tunnel", "00008030001234567890123456789012345678ab"]
-        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(listArgs))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(listArgs))
     }
 
     func testValidCommandWithRSD() {
         // Valid RSD connection command
         let rsdArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--rsd", "fe80::1", "62078", "--", "35.6762", "139.6503"]
-        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(rsdArgs))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(rsdArgs))
     }
 
     func testInvalidSubcommandBlocked() {
         // Attempt to inject unknown subcommand
         let maliciousArgs = ["-m", "pymobiledevice3", "evil", "command"]
-        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(maliciousArgs)) { error in
+        XCTAssertThrowsError(try CommandStructureValidator.validateCommandStructure(maliciousArgs)) { error in
             XCTAssertTrue(error is CommandValidationError)
             if case CommandValidationError.invalidSubcommand(let cmd) = error {
                 XCTAssertEqual(cmd, "evil")
@@ -246,7 +246,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
     func testInvalidFlagBlocked() {
         // Attempt to use unknown flag
         let maliciousArgs = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--execute-malware"]
-        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(maliciousArgs)) { error in
+        XCTAssertThrowsError(try CommandStructureValidator.validateCommandStructure(maliciousArgs)) { error in
             XCTAssertTrue(error is CommandValidationError)
             if case CommandValidationError.invalidFlag(let flag) = error {
                 XCTAssertEqual(flag, "--execute-malware")
@@ -259,48 +259,48 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
     func testInvalidModulePrefixBlocked() {
         // Command must start with -m pymobiledevice3
         let wrongModuleArgs = ["-m", "evil_module", "command"]
-        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(wrongModuleArgs))
+        XCTAssertThrowsError(try CommandStructureValidator.validateCommandStructure(wrongModuleArgs))
 
         // Command missing -m flag
         let noModuleFlagArgs = ["pymobiledevice3", "developer", "dvt", "ls"]
-        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(noModuleFlagArgs))
+        XCTAssertThrowsError(try CommandStructureValidator.validateCommandStructure(noModuleFlagArgs))
     }
 
     func testCommandInjectionViaCoordinatesBlocked() {
         // Even though ArgumentSanitizer would catch this, validator adds defense-in-depth
         // Non-numeric data after -- should be blocked if it's not a valid data type
         let injectionAttempt = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.6762; rm -rf /", "139.6503"]
-        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(injectionAttempt)) { error in
+        XCTAssertThrowsError(try CommandStructureValidator.validateCommandStructure(injectionAttempt)) { error in
             XCTAssertTrue(error is CommandValidationError)
         }
     }
 
     func testValidDataArgumentDetection() {
         // Test coordinate detection
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("35.6762"))
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("-122.6503"))
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("0.0"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("35.6762"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("-122.6503"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("0.0"))
 
         // Test UDID detection
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("00008030001234567890123456789012345678ab"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("00008030001234567890123456789012345678ab"))
 
         // Test IPv6 detection
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("fe80::1"))
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("::1"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("fe80::1"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("::1"))
 
         // Test port detection
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("62078"))
-        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("8080"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("62078"))
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("8080"))
 
         // Test invalid data
-        XCTAssertFalse(SubprocessCommandValidator.isValidDataArgument("malicious"))
-        XCTAssertFalse(SubprocessCommandValidator.isValidDataArgument("rm -rf /"))
+        XCTAssertFalse(CommandStructureValidator.isValidDataArgument("malicious"))
+        XCTAssertFalse(CommandStructureValidator.isValidDataArgument("rm -rf /"))
     }
 
     func testNegativeCoordinatesAllowed() {
         // Negative coordinates must work (they're valid GPS coordinates)
         let negativeCoordArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "-33.8688", "151.2093"]
-        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(negativeCoordArgs))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(negativeCoordArgs))
     }
 
     func testAllAllowedFlagsAreAccepted() {
@@ -315,7 +315,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             } else {
                 args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", flag, "00008030001234567890123456789012345678ab"]
             }
-            XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(args), "Flag \(flag) should be allowed")
+            XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(args), "Flag \(flag) should be allowed")
         }
     }
 
@@ -337,7 +337,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             } else if cmd == "ls" {
                 args.append(contentsOf: ["developer", "dvt", "ls", "--tunnel", "00008030001234567890123456789012345678ab"])
             }
-            XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(args), "Subcommand \(cmd) should be allowed")
+            XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(args), "Subcommand \(cmd) should be allowed")
         }
     }
 }

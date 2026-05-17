@@ -147,6 +147,23 @@ struct SettingsView: View {
         }
     }
 
+    /// Inspector/administrative tunnel control surface.
+    ///
+    /// W1 Authority Declaration (Slice S0 — documentation only; see W1
+    /// governance plan):
+    ///   - This card is an INSPECTOR/ADMIN-ONLY surface. It is NOT a
+    ///     workflow authority and MUST NOT participate in the canonical
+    ///     Device → Location → Simulation progression.
+    ///   - Its Start/Stop controls are administrative overrides for
+    ///     advanced users who explicitly open Settings. They do not own
+    ///     Phase-1 readiness semantics (which belong to `DeviceTunnelPill`)
+    ///     and they do not own T0 execution semantics (which belong to
+    ///     `PrimaryActionPill`).
+    ///   - The Start button dispatches `autoStart()` so surviving UI
+    ///     tunnel-start surfaces share a single transport-start semantic.
+    ///
+    /// W1 Slice S0 is documentation-only. No behavior, layout, state,
+    /// bindings, or routing are altered by this declaration.
     private var tunnelModeCard: some View {
         PCSectionCard(
             title: "Tunnel Mode",
@@ -202,7 +219,7 @@ struct SettingsView: View {
                     } else {
                         Button("Start") {
                             Task {
-                                await tunneldManager.startTunnel()
+                                await tunneldManager.autoStart()
                             }
                         }
                         .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))

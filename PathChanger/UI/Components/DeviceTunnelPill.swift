@@ -11,6 +11,27 @@
 //  the bug-fix discipline established in the WiFi-mode work and avoids the
 //  pre-existing flicker/clobber issues.
 //
+// MARK: - W1 Authority Declaration (Slice S0 — documentation only)
+//
+// DeviceTunnelPill is the SOLE production Phase-1 readiness authority.
+//
+// Authority rules (frozen — see W1 governance plan):
+//   - This pill owns device selection (Phase-1 device readiness) and the
+//     proactive tunnel-readiness controls inside its own popover. Its
+//     popover "Start Tunnel" button is the canonical Phase-1 transport-
+//     start surface and routes through `TunneldManager.shared.autoStart()`.
+//   - This pill is NOT a T0 execution authority. PrimaryActionPill is the
+//     sole T0 surface; DeviceTunnelPill never initiates simulation
+//     execution.
+//   - All other UI surfaces that depict tunnel state outside this pill
+//     (SettingsView admin card, DiagnosticsView, status banners,
+//     CollapsibleSidebar status detail) are inspector-only or read-only.
+//     They may surface tunnel state but MUST NOT define Phase-1 readiness
+//     semantics or compete with this pill for device-selection authority.
+//
+// W1 Slice S0 is documentation-only. No behavior, layout, state, bindings,
+// or routing are altered by this declaration.
+//
 
 import SwiftUI
 import Combine
@@ -103,7 +124,7 @@ struct DeviceTunnelPill: View {
     }
 
     private var deviceName: String {
-        appState.selectedDevice?.displayName ?? "No device selected"
+        appState.selectedDevice?.displayName ?? "Select an iPhone"
     }
 
     private var statusColor: Color {
@@ -115,15 +136,15 @@ struct DeviceTunnelPill: View {
 
     private var statusText: String {
         guard let device = appState.selectedDevice else {
-            return "Select a device"
+            return "Select an iPhone"
         }
         if tunneldManager.isStarting {
             return "Tunnel starting…"
         }
         if tunneldManager.isRunning {
-            return "Tunnel · iOS \(device.iosVersion)"
+            return "Connected · iOS \(device.iosVersion)"
         }
-        return "Tunnel inactive · iOS \(device.iosVersion)"
+        return "Preparing connection… · iOS \(device.iosVersion)"
     }
 
     private var accessibilityLabel: String {
@@ -162,7 +183,7 @@ private struct DevicePopoverContent: View {
                 HStack(spacing: 8) {
                     Image(systemName: "iphone.slash")
                         .foregroundStyle(Color.pcTextMutedDynamic)
-                    Text("No devices found")
+                    Text("No iPhone connected")
                         .font(.system(size: 12))
                         .foregroundStyle(Color.pcTextMutedDynamic)
                 }
@@ -214,7 +235,7 @@ private struct DevicePopoverContent: View {
             HStack(spacing: 8) {
                 Image(systemName: tunneldManager.isRunning ? "checkmark.shield.fill" : "exclamationmark.shield")
                     .foregroundStyle(tunneldManager.isRunning ? Color.green : Color.orange)
-                Text(tunneldManager.isRunning ? "Tunnel active" : "Tunnel inactive")
+                Text(tunneldManager.isRunning ? "Tunnel ready" : "Tunnel offline")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.pcTextMutedDynamic)
                 Spacer()

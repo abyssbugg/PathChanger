@@ -291,43 +291,19 @@ enum AppConstants {
 }
 
 // MARK: - Security Constants
-
-/// Security-related constants (separate for audit clarity)
-enum SecurityConstants {
-
-    /// Allowed Python executable paths
-    static let allowedPythonPaths: Set<String> = [
-        "/opt/homebrew/bin/python3",
-        "/usr/local/bin/python3",
-        "/usr/bin/python3",
-        "/opt/homebrew/bin/python3.11",
-        "/opt/homebrew/bin/python3.12",
-        "/opt/homebrew/bin/python3.13",
-        "/usr/local/bin/python3.11",
-        "/usr/local/bin/python3.12",
-        "/usr/local/bin/python3.13"
-    ]
-
-    /// Allowed pymobiledevice3 subcommands
-    static let allowedSubcommands: Set<String> = [
-        "developer",
-        "usbmux",
-        "remote"
-    ]
-
-    /// Allowed pymobiledevice3 flags
-    static let allowedFlags: Set<String> = [
-        "--rsd",
-        "--udid",
-        "-t",
-        "--tunnel",
-        "--help",
-        "-h"
-    ]
-
-    /// Dangerous characters blocked in arguments
-    static let dangerousCharacters: CharacterSet = CharacterSet(charactersIn: ";|&$`\\\"'<>(){}[]!#")
-
-    /// Maximum output size before truncation (security limit)
-    static let maxSecureOutputSize: Int = 5 * 1024 * 1024 // 5 MB
-}
+//
+// The former `SecurityConstants` enum was DELETED in Milestone 2 of the
+// architectural consolidation. Its responsibilities moved to
+// `Core/SubprocessPolicy.swift`, which is now the single source of truth
+// for Python paths, pmd3 subcommand/flag allowlists, forbidden characters,
+// and subprocess output bounds.
+//
+// Consumers should use:
+//   SubprocessPolicy.allowedPythonPaths
+//   SubprocessPolicy.allowedSubcommands
+//   SubprocessPolicy.allowedFlags
+//   SubprocessPolicy.forbiddenCharacters
+//   SubprocessPolicy.forbiddenCharacterSet
+//   SubprocessPolicy.maxSubprocessOutputBytes
+//
+// See ADR-006 (subprocess policy unification).

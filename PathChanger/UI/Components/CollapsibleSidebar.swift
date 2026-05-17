@@ -173,6 +173,9 @@ struct CollapsibleSidebar: View {
 
     // MARK: - Recents
 
+    // W1 visual governance: recents are contextual interactions for target
+    // selection only. They do not execute location changes or duplicate the
+    // canonical PrimaryActionPill authority.
     private var emptyRecents: some View {
         HStack(spacing: 8) {
             Image(systemName: "clock")
@@ -246,6 +249,9 @@ struct CollapsibleSidebar: View {
 
     // MARK: - Search results dropdown
 
+    // W1 visual governance: search results are contextual interactions that
+    // select target context. Applying that target remains owned by the
+    // canonical PrimaryActionPill.
     private var searchResultsDropdown: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(searchService.searchResults.prefix(5)) { result in

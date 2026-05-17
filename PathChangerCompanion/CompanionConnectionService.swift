@@ -54,7 +54,10 @@ class CompanionConnectionService: NSObject, ObservableObject {
     private var browser: MCNearbyServiceBrowser?
     private var advertiser: MCNearbyServiceAdvertiser?
 
-    private let serviceType = "locspoof-comp" // Max 15 chars, alphanumeric and hyphen
+    /// MultipeerConnectivity service type. Renamed from the upstream
+    /// "locspoof-comp" identifier in Milestone 5. Must stay ≤15 characters
+    /// and use only ASCII alphanumerics / hyphens.
+    private let serviceType = "pathchanger-cmp"
 
     // MARK: Initialization
 

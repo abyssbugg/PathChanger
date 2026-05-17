@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: Build & Test
@@ -42,6 +46,16 @@ jobs:
     - name: Resolve Dependencies
       run: swift package resolve
 
+    - name: Validate Release Configuration
+      run: |
+        chmod +x scripts/validate-release-config.sh
+        scripts/validate-release-config.sh
+
+    - name: Validate W1 Convergence Lock
+      run: |
+        chmod +x scripts/validate-w1-convergence-lock.sh
+        scripts/validate-w1-convergence-lock.sh
+
     - name: Build (Debug)
       run: swift build -c debug
 
@@ -59,7 +73,7 @@ jobs:
         chmod +x build-app-bundle.sh
         ./build-app-bundle.sh
 
-        APP="build/PathChanger.app"
+        APP="${TMPDIR:-/tmp}/pathchanger-app-build/PathChanger.app"
         EXECUTABLE="$APP/Contents/MacOS/PathChanger"
         PLIST="$APP/Contents/Info.plist"
         SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
@@ -80,7 +94,8 @@ jobs:
         xcrun llvm-cov export \
           .build/debug/PathChangerPackageTests.xctest/Contents/MacOS/PathChangerPackageTests \
           -instr-profile=.build/debug/codecov/default.profdata \
-          -format=lcov > coverage.lcov || true
+          -format=lcov > coverage.lcov
+        test -s coverage.lcov
 
   lint:
     name: Swift Lint
@@ -101,15 +116,10 @@ jobs:
         git -C "$GITHUB_WORKSPACE" checkout --force FETCH_HEAD
 
     - name: Install SwiftLint
-      run: brew install swiftlint || true
+      run: brew install swiftlint
 
     - name: Run SwiftLint
-      run: |
-        if command -v swiftlint >/dev/null 2>&1; then
-          swiftlint lint --quiet || true
-        else
-          echo "SwiftLint is unavailable; skipping lint on this runner."
-        fi
+      run: swiftlint lint --quiet
 
   security-scan:
     name: Security Scan

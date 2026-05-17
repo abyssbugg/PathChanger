@@ -6,15 +6,24 @@ on:
 
 env:
   APP_NAME: PathChanger
+  SPARKLE_VERSION: "2.8.1"
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
     name: Build, Package & Release
     runs-on: macos-14
-    
+
     permissions:
       contents: write
-    
+
     steps:
     - name: Checkout
       env:
@@ -31,163 +40,312 @@ jobs:
 
     - name: Toolchain Diagnostics
       run: |
+        set -euo pipefail
         xcodebuild -version
         xcode-select -p
         swift --version
-        
-    - name: Install Dependencies
+        xcrun notarytool --version
+
+    - name: Validate Release Configuration
       run: |
-        brew install create-dmg
-        
+        set -euo pipefail
+        chmod +x scripts/validate-release-config.sh
+        scripts/validate-release-config.sh
+
+    - name: Validate Release Inputs
+      id: version
+      run: |
+        set -euo pipefail
+        [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          echo "Release tag must use vMAJOR.MINOR.PATCH format: $GITHUB_REF_NAME" >&2
+          exit 1
+        }
+
+        VERSION="${GITHUB_REF_NAME#v}"
+        PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+        BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Resources/Info.plist)
+
+        [ "$VERSION" = "$PLIST_VERSION" ] || {
+          echo "Release tag version ($VERSION) does not match Info.plist ($PLIST_VERSION)" >&2
+          exit 1
+        }
+        [[ "$BUILD" =~ ^[0-9]+$ ]] || {
+          echo "CFBundleVersion must be numeric: $BUILD" >&2
+          exit 1
+        }
+
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+        echo "Version: $VERSION, Build: $BUILD"
+
+    - name: Validate Release Secrets
+      env:
+        MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+        MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      run: |
+        set -euo pipefail
+        required=(
+          MACOS_CERTIFICATE_P12_BASE64
+          MACOS_CERTIFICATE_PASSWORD
+          MACOS_DEVELOPER_ID_APPLICATION
+          APPLE_ID
+          APPLE_TEAM_ID
+          APPLE_APP_SPECIFIC_PASSWORD
+          SPARKLE_PRIVATE_KEY
+        )
+        for name in "${required[@]}"; do
+          if [ -z "${!name}" ]; then
+            echo "Required release secret is missing: $name" >&2
+            exit 1
+          fi
+        done
+
+    - name: Import Developer ID Certificate
+      env:
+        MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+        MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+      run: |
+        set -euo pipefail
+        KEYCHAIN_PATH="$RUNNER_TEMP/pathchanger-signing.keychain-db"
+        CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
+        trap 'rm -f "$CERTIFICATE_PATH"' EXIT
+
+        printf "%s" "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+        security list-keychains -d user -s "$KEYCHAIN_PATH"
+        security default-keychain -d user -s "$KEYCHAIN_PATH"
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+        echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+        rm -f "$CERTIFICATE_PATH"
+        trap - EXIT
+
     - name: Setup Sparkle
       run: |
-        # Download Sparkle tools matching the SwiftPM dependency family
-        SPARKLE_VERSION="2.8.1"
+        set -euo pipefail
         curl --fail --location --retry 3 -o sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
         mkdir -p sparkle-tools
         tar -xf sparkle.tar.xz -C sparkle-tools
-        echo "$(pwd)/sparkle-tools/bin" >> $GITHUB_PATH
-        
-    - name: Get Version Info
-      id: version
-      run: |
-        VERSION="${GITHUB_REF_NAME#v}"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        
-        # Extract build number from Info.plist
-        BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Resources/Info.plist)
-        echo "build=$BUILD" >> $GITHUB_OUTPUT
-        
-        echo "Version: $VERSION, Build: $BUILD"
-        
+        test -x "sparkle-tools/bin/sign_update"
+        echo "$(pwd)/sparkle-tools/bin" >> "$GITHUB_PATH"
+
     - name: Resolve Dependencies
       run: swift package resolve
 
     - name: Build Release
       run: swift build -c release
-      
-    - name: Create App Bundle
+
+    - name: Create Signed App Bundle
+      env:
+        MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
       run: |
-        # Use existing build script with ad-hoc signing
+        set -euo pipefail
         chmod +x build-app-bundle.sh
-        ./build-app-bundle.sh
-        
+        APP_BUNDLE_BUILD_ROOT="${RUNNER_TEMP}/pathchanger-app-build"
+        REQUIRE_PRODUCTION_SIGNING=1 BUILD_CONFIGURATION=release APP_BUNDLE_BUILD_ROOT="$APP_BUNDLE_BUILD_ROOT" ./build-app-bundle.sh "$MACOS_DEVELOPER_ID_APPLICATION"
+        echo "APP_BUNDLE_BUILD_ROOT=$APP_BUNDLE_BUILD_ROOT" >> "$GITHUB_ENV"
+
+    - name: Verify Signed App Bundle
+      run: |
+        set -euo pipefail
+        APP="${APP_BUNDLE_BUILD_ROOT}/PathChanger.app"
+        EXECUTABLE="$APP/Contents/MacOS/PathChanger"
+        PLIST="$APP/Contents/Info.plist"
+
+        test -d "$APP"
+        test -x "$EXECUTABLE"
+        test -d "$APP/Contents/Frameworks/Sparkle.framework"
+        test -x "$APP/Contents/Resources/scripts/location_bridge.py"
+        test -x "$APP/Contents/Resources/scripts/pair_wifi.py"
+
+        /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$PLIST" | grep -qx "PathChanger"
+        /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" | grep -qx "PathChanger"
+        /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST" | grep -qx "com.pathchanger.app"
+        /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST" | grep -qx "${{ steps.version.outputs.version }}"
+
+        codesign --verify --deep --strict --verbose=2 "$APP"
+        codesign -dv "$APP" 2>&1 | grep -q "runtime"
+        otool -L "$EXECUTABLE" | grep -q "@rpath/Sparkle.framework"
+
     - name: Create DMG
       run: |
+        set -euo pipefail
         VERSION="${{ steps.version.outputs.version }}"
-        
-        # Create DMG with create-dmg (may fail if icon missing, fallback below)
-        create-dmg \
-          --volname "PathChanger" \
-          --window-pos 200 120 \
-          --window-size 600 400 \
-          --icon-size 100 \
-          --icon "PathChanger.app" 150 185 \
-          --hide-extension "PathChanger.app" \
-          --app-drop-link 450 185 \
-          --no-internet-enable \
-          "build/PathChanger-${VERSION}.dmg" \
-          "build/PathChanger.app" || true
-          
-        # Fallback to simple DMG if create-dmg fails
-        if [ ! -f "build/PathChanger-${VERSION}.dmg" ]; then
-          hdiutil create -volname "PathChanger" \
-            -srcfolder "build/PathChanger.app" \
-            -ov -format UDZO \
-            "build/PathChanger-${VERSION}.dmg"
-        fi
-        
-        echo "DMG created: build/PathChanger-${VERSION}.dmg"
-        ls -la build/*.dmg
+        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+
+        mkdir -p build
+        rm -f "$DMG_PATH"
+        hdiutil create \
+          -volname "PathChanger" \
+          -srcfolder "${APP_BUNDLE_BUILD_ROOT}/PathChanger.app" \
+          -ov \
+          -format UDZO \
+          "$DMG_PATH"
+
+        test -s "$DMG_PATH"
+        xattr -c "$DMG_PATH"
+        hdiutil verify "$DMG_PATH"
+        echo "DMG created: $DMG_PATH"
+        ls -la "$DMG_PATH"
+
+    - name: Notarize and Staple DMG
+      env:
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      run: |
+        set -euo pipefail
+        VERSION="${{ steps.version.outputs.version }}"
+        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+
+        xcrun notarytool submit "$DMG_PATH" \
+          --apple-id "$APPLE_ID" \
+          --team-id "$APPLE_TEAM_ID" \
+          --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+          --wait
+
+        xcrun stapler staple "$DMG_PATH"
+        xcrun stapler validate "$DMG_PATH"
+        hdiutil verify "$DMG_PATH"
 
     - name: Sign DMG with Sparkle
       id: sign
       env:
         SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
       run: |
+        set -euo pipefail
         VERSION="${{ steps.version.outputs.version }}"
         DMG_PATH="build/PathChanger-${VERSION}.dmg"
+        KEY_PATH="$RUNNER_TEMP/sparkle_private_key"
+        trap 'rm -f "$KEY_PATH"' EXIT
 
-        if [ -n "$SPARKLE_PRIVATE_KEY" ]; then
-          # Sign the DMG and capture the signature
-          echo "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle_private_key
-          SIGNATURE=$(./sparkle-tools/bin/sign_update "$DMG_PATH" -f /tmp/sparkle_private_key)
-          rm /tmp/sparkle_private_key
+        umask 077
+        printf "%s" "$SPARKLE_PRIVATE_KEY" > "$KEY_PATH"
+        SIGN_UPDATE_OUTPUT="$(sparkle-tools/bin/sign_update "$DMG_PATH" -f "$KEY_PATH")"
+        rm -f "$KEY_PATH"
+        SIGNATURE="$(SIGN_UPDATE_OUTPUT="$SIGN_UPDATE_OUTPUT" python3 - <<'PY'
+        import os
+        import re
 
-          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
-          echo "Sparkle signature generated"
-        else
-          echo "No SPARKLE_PRIVATE_KEY secret found, skipping signing"
-          echo "signature=" >> $GITHUB_OUTPUT
-        fi
+        output = os.environ["SIGN_UPDATE_OUTPUT"].strip()
+        match = re.search(r'sparkle:edSignature="([^"]+)"', output)
+        print(match.group(1) if match else output)
+        PY
+        )"
+        trap - EXIT
 
-    - name: Generate Appcast
+        [ -n "$SIGNATURE" ] || {
+          echo "Sparkle signature generation returned an empty signature" >&2
+          exit 1
+        }
+        echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+        echo "Sparkle signature generated"
+
+    - name: Generate and Validate Appcast
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ steps.version.outputs.version }}
+        BUILD: ${{ steps.version.outputs.build }}
+        SIGNATURE: ${{ steps.sign.outputs.signature }}
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        BUILD="${{ steps.version.outputs.build }}"
-        DMG_PATH="build/PathChanger-${VERSION}.dmg"
-        DMG_SIZE=$(stat -f%z "$DMG_PATH")
-        SIGNATURE="${{ steps.sign.outputs.signature }}"
+        set -euo pipefail
+        python3 - <<'PY'
+        import datetime
+        import email.utils
+        import html
+        import os
+        import pathlib
+        import subprocess
 
-        # Get release notes from GitHub release body
-        RELEASE_NOTES='${{ github.event.release.body }}'
+        version = os.environ["VERSION"]
+        build = os.environ["BUILD"]
+        signature = os.environ["SIGNATURE"]
+        repository = os.environ["GITHUB_REPOSITORY"]
+        ref_name = os.environ["GITHUB_REF_NAME"]
+        dmg_path = pathlib.Path(f"build/PathChanger-{version}.dmg")
+        size = dmg_path.stat().st_size
+        notes = subprocess.check_output(
+            ["gh", "release", "view", ref_name, "--json", "body", "--jq", ".body"],
+            text=True
+        )
+        notes = notes.replace("]]>", "]]]]><![CDATA[>")
+        pub_date = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
+        url = f"https://github.com/{repository}/releases/download/{ref_name}/PathChanger-{version}.dmg"
 
-        # Build enclosure attributes
-        if [ -n "$SIGNATURE" ]; then
-          ENCLOSURE="url=\"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg\" sparkle:version=\"$BUILD\" sparkle:shortVersionString=\"$VERSION\" length=\"$DMG_SIZE\" type=\"application/octet-stream\" sparkle:edSignature=\"$SIGNATURE\""
-        else
-          ENCLOSURE="url=\"https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg\" sparkle:version=\"$BUILD\" sparkle:shortVersionString=\"$VERSION\" length=\"$DMG_SIZE\" type=\"application/octet-stream\""
-        fi
-
-        # Create appcast.xml
-        cat > build/appcast.xml << EOF
-        <?xml version="1.0" encoding="utf-8"?>
+        appcast = f"""<?xml version="1.0" encoding="utf-8"?>
         <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
           <channel>
             <title>PathChanger Updates</title>
-            <link>https://github.com/${{ github.repository }}</link>
+            <link>https://github.com/{html.escape(repository)}</link>
             <description>Most recent updates to PathChanger</description>
             <language>en</language>
             <item>
-              <title>Version $VERSION</title>
-              <pubDate>$(date -R)</pubDate>
-              <sparkle:version>$BUILD</sparkle:version>
-              <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+              <title>Version {html.escape(version)}</title>
+              <pubDate>{html.escape(pub_date)}</pubDate>
+              <sparkle:version>{html.escape(build)}</sparkle:version>
+              <sparkle:shortVersionString>{html.escape(version)}</sparkle:shortVersionString>
               <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
               <description><![CDATA[
-        $RELEASE_NOTES
+        {notes}
               ]]></description>
-              <enclosure $ENCLOSURE />
+              <enclosure url="{html.escape(url, quote=True)}" sparkle:version="{html.escape(build, quote=True)}" sparkle:shortVersionString="{html.escape(version, quote=True)}" length="{size}" type="application/octet-stream" sparkle:edSignature="{html.escape(signature, quote=True)}" />
             </item>
           </channel>
         </rss>
-        EOF
+        """
+        pathlib.Path("build/appcast.xml").write_text(appcast, encoding="utf-8")
+        PY
 
-        echo "Appcast generated:"
-        cat build/appcast.xml
+        xmllint --noout build/appcast.xml
+        grep -q "sparkle:edSignature=" build/appcast.xml
+        test -s build/appcast.xml
 
     - name: Upload Release Assets
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
         VERSION="${{ steps.version.outputs.version }}"
+        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+        APPCAST_PATH="build/appcast.xml"
+
+        test -s "$DMG_PATH"
+        test -s "$APPCAST_PATH"
         gh release upload "$GITHUB_REF_NAME" \
-          "build/PathChanger-${VERSION}.dmg" \
-          "build/appcast.xml" \
+          "$DMG_PATH" \
+          "$APPCAST_PATH" \
           --clobber
 
     - name: Summary
       run: |
+        set -euo pipefail
         VERSION="${{ steps.version.outputs.version }}"
-        echo "## 🚀 Release $VERSION Published!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Downloads" >> $GITHUB_STEP_SUMMARY
-        echo "- **DMG**: [PathChanger-${VERSION}.dmg](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg)" >> $GITHUB_STEP_SUMMARY
-        echo "- **Appcast**: [appcast.xml](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/appcast.xml)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### User Instructions" >> $GITHUB_STEP_SUMMARY
-        echo "Since this app is not notarized, users will need to:" >> $GITHUB_STEP_SUMMARY
-        echo "1. Download the DMG" >> $GITHUB_STEP_SUMMARY
-        echo "2. Open it and drag PathChanger to Applications" >> $GITHUB_STEP_SUMMARY
-        echo "3. Right-click the app → Open → Click 'Open' in the dialog" >> $GITHUB_STEP_SUMMARY
+        echo "## 🚀 Release $VERSION Published!" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Downloads" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **DMG**: [PathChanger-${VERSION}.dmg](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/PathChanger-${VERSION}.dmg)" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Appcast**: [appcast.xml](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/appcast.xml)" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "### Release Gates" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Developer ID signing: verified" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Hardened runtime: verified" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Notarization and stapling: verified" >> "$GITHUB_STEP_SUMMARY"
+        echo "- Sparkle update signature: generated and embedded" >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Cleanup Signing Keychain
+      if: always()
+      run: |
+        set -euo pipefail
+        if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -f "$SIGNING_KEYCHAIN_PATH" ]; then
+          security delete-keychain "$SIGNING_KEYCHAIN_PATH"
+        fi
