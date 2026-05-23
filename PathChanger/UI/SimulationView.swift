@@ -82,6 +82,7 @@ struct SimulationView: View {
             // Push higher in shell chrome to clear the bottom action pill.
             .padding(.bottom, chrome == .shell ? 96 : AppSpacing.xl)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(chrome == .full ? Color.pcBackground : Color.clear)
         .onChange(of: appState.currentLocation) { _, newLocation in
             if let location = newLocation {

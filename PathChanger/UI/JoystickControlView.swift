@@ -18,20 +18,11 @@ struct JoystickControlView: View {
     var body: some View {
         FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill") {
             // Operational refinement: collapse the redundant heading copy
-            // (panel title already says "Joystick Control"), shorten the
-            // subtitle so it stops wrapping inside the 236pt content width,
-            // tighten vertical chaining (sm vs md) and drop the dead
-            // "Drag to move" caption — the N/S/E/W dial already conveys it.
+            // (panel title already says "Joystick Control"), tighten vertical
+            // chaining (sm vs md) and drop the dead "Drag to move" caption —
+            // the N/S/E/W dial already conveys it. startLocationSummary
+            // provides the empty-state hint when no start point is selected.
             VStack(spacing: AppSpacing.sm) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Drag to move — tap a start point first")
-                        .font(AppFont.metadata)
-                        .foregroundStyle(Color.pcTextMuted)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-
                 startLocationSummary
                 ZStack {
                     Circle()

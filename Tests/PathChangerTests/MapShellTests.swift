@@ -126,7 +126,9 @@ final class MapShellSourceWiringTests: XCTestCase {
         // with Teleport/Joystick for cross-mode consistency).
         XCTAssertTrue(simulationView.contains(".frame(minWidth: 280, idealWidth: 312, maxWidth: 332)"))
         XCTAssertTrue(joystick.contains("joystickStartLocationSummary"))
-        XCTAssertTrue(joystick.contains("tap a start point"))
+        // Dead "tap a start point first" caption dropped — the N/S/E/W dial
+        // already conveys movement, and startLocationSummary provides the
+        // empty-state hint ("No start selected" / "Use sidebar search...").
         // Refined joystick dial (was 58 — reduced to 56 so the joystick fits
         // cleanly inside the refined 312-wide panel without dead space).
         XCTAssertTrue(joystick.contains("private let outerRadius: CGFloat = 56"))
