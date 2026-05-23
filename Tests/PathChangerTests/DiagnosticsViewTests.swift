@@ -59,6 +59,45 @@ final class DiagnosticsViewTests: XCTestCase {
         )
     }
 
+    func testDiagnosticCommandValidationAllowsPyenvVersionPython() throws {
+        let pyenvPython = "\(NSHomeDirectory())/.pyenv/versions/3.12.11/bin/python3"
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: pyenvPython), "pyenv 3.12.11 is not installed on this host")
+
+        XCTAssertNoThrow(
+            try DiagnosticsView.validateDiagnosticCommand(
+                path: pyenvPython,
+                args: ["--version"]
+            )
+        )
+    }
+
+    func testDiagnosticCommandValidationAllowsPyenvPymobiledevice3Checks() throws {
+        let pyenvPython = "\(NSHomeDirectory())/.pyenv/versions/3.12.11/bin/python3"
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: pyenvPython), "pyenv 3.12.11 is not installed on this host")
+
+        XCTAssertNoThrow(
+            try DiagnosticsView.validateDiagnosticCommand(
+                path: pyenvPython,
+                args: ["-m", "pymobiledevice3", "version"]
+            )
+        )
+        XCTAssertNoThrow(
+            try DiagnosticsView.validateDiagnosticCommand(
+                path: pyenvPython,
+                args: ["-m", "pymobiledevice3", "--no-color", "usbmux", "list"]
+            )
+        )
+    }
+
+    func testRunCommandReturnsPyenvPythonVersionOutput() async throws {
+        let pyenvPython = "\(NSHomeDirectory())/.pyenv/versions/3.12.11/bin/python3"
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: pyenvPython), "pyenv 3.12.11 is not installed on this host")
+        let view = DiagnosticsView()
+
+        let output = try await view.runCommand(pyenvPython, args: ["--version"])
+        XCTAssertTrue(output.contains("Python 3.12.11"), output)
+    }
+
     func testDiagnosticCommandValidationAllowsExistingPymobiledevice3Checks() throws {
         let pythonPath = try XCTUnwrap(SubprocessPolicy.allowedPythonPaths.first {
             FileManager.default.isExecutableFile(atPath: $0)

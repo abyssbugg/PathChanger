@@ -134,16 +134,22 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var connectionSummary: some View {
-        if !appState.isTunneldRunning && !appState.isUSBConnected && !appState.isWiFiAvailable {
-            PCStatusChip(title: "No Connection", icon: "exclamationmark.triangle.fill", color: .pcWarning, detail: "connect USB or start tunnel")
-        } else if appState.preferUSBConnection && appState.isUSBConnected {
-            PCStatusChip(title: "Using USB", icon: "checkmark.circle.fill", color: .pcSecondary, detail: "cable connected")
-        } else if appState.selectedDevice?.connectionType == .usb {
-            PCStatusChip(title: "USB", icon: "cable.connector", color: .pcPrimary, detail: appState.isTunneldRunning ? "active tunnel" : "direct")
-        } else if appState.selectedDevice?.connectionType == .wifi {
-            PCStatusChip(title: "Wi-Fi", icon: "wifi", color: .pcPrimary, detail: appState.isTunneldRunning ? "active tunnel" : "available")
-        } else if appState.isTunneldRunning {
-            PCStatusChip(title: "Tunnel Active", icon: "point.3.connected.trianglepath.dotted", color: .pcSecondary)
+        if let summary = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: appState.isTunneldRunning,
+            activeTunnelMode: tunneldManager.presentationActiveMode,
+            tunnelInfoMode: tunneldManager.tunnelInfo?.mode,
+            preferredMode: tunneldManager.preferredMode,
+            selectedConnectionType: appState.selectedDevice?.connectionType,
+            isUSBConnected: appState.isUSBConnected,
+            isWiFiAvailable: appState.isWiFiAvailable,
+            preferUSBConnection: appState.preferUSBConnection
+        ) {
+            PCStatusChip(
+                title: summary.title,
+                icon: summary.icon,
+                color: summary.color,
+                detail: summary.detail
+            )
         }
     }
 
@@ -668,6 +674,181 @@ struct ConnectionStatusBadge: View {
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
                 .stroke(isConnected ? Color.pcSecondary.opacity(AppSurfaceAlpha.hoverRow) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
         )
+    }
+}
+
+struct ConnectionSummaryPresentation: Equatable {
+    enum Tone: Equatable {
+        case primary
+        case secondary
+        case warning
+
+        var color: Color {
+            switch self {
+            case .primary:
+                return .pcPrimary
+            case .secondary:
+                return .pcSecondary
+            case .warning:
+                return .pcWarning
+            }
+        }
+    }
+
+    let title: String
+    let icon: String
+    let tone: Tone
+    let detail: String?
+
+    var color: Color {
+        tone.color
+    }
+
+    static func resolve(
+        isTunnelRunning: Bool,
+        activeTunnelMode: TunnelMode?,
+        tunnelInfoMode: TunnelMode? = nil,
+        preferredMode: TunnelMode = .auto,
+        selectedConnectionType: ConnectionType?,
+        isUSBConnected: Bool,
+        isWiFiAvailable: Bool,
+        preferUSBConnection: Bool
+    ) -> ConnectionSummaryPresentation? {
+        if !isTunnelRunning && !isUSBConnected && !isWiFiAvailable {
+            return ConnectionSummaryPresentation(
+                title: "No Connection",
+                icon: "exclamationmark.triangle.fill",
+                tone: .warning,
+                detail: "connect USB or start tunnel"
+            )
+        }
+
+        if isTunnelRunning {
+            let resolvedMode = presentationMode(
+                activeTunnelMode: activeTunnelMode,
+                tunnelInfoMode: tunnelInfoMode,
+                preferredMode: preferredMode
+            )
+            // Presentation-only guard mirrors `ActiveTransportPresentation`:
+            // when USB is not physically connected, the running tunnel cannot
+            // be cable-backed. Collapse a stale `.usb` active-mode signal to
+            // the wireless presentation so the Settings card stops claiming
+            // "USB Active · cable in use" during real Wi-Fi sessions.
+            let coerceToWireless = (resolvedMode == .usb) && !isUSBConnected
+            switch coerceToWireless ? .wifi : resolvedMode {
+            case .usb:
+                return ConnectionSummaryPresentation(
+                    title: "USB Active",
+                    icon: "cable.connector",
+                    tone: .primary,
+                    detail: "active tunnel · cable in use"
+                )
+            case .wifi:
+                return ConnectionSummaryPresentation(
+                    title: "Wi-Fi Active",
+                    icon: "wifi",
+                    tone: .primary,
+                    detail: wirelessActiveDetail(
+                        base: "active tunnel",
+                        isUSBConnected: isUSBConnected,
+                        preferUSBConnection: preferUSBConnection
+                    )
+                )
+            case .daemon:
+                return ConnectionSummaryPresentation(
+                    title: "Wi-Fi Active",
+                    icon: "wifi",
+                    tone: .primary,
+                    detail: wirelessActiveDetail(
+                        base: "background daemon tunnel",
+                        isUSBConnected: isUSBConnected,
+                        preferUSBConnection: preferUSBConnection
+                    )
+                )
+            case .auto, .none:
+                return ConnectionSummaryPresentation(
+                    title: "Tunnel Active",
+                    icon: "point.3.connected.trianglepath.dotted",
+                    tone: .secondary,
+                    detail: nil
+                )
+            }
+        }
+
+        if selectedConnectionType == .usb {
+            return ConnectionSummaryPresentation(
+                title: "USB Selected",
+                icon: "cable.connector",
+                tone: .primary,
+                detail: "direct connection available"
+            )
+        }
+
+        if selectedConnectionType == .wifi {
+            return ConnectionSummaryPresentation(
+                title: "Wi-Fi Available",
+                icon: "wifi",
+                tone: .primary,
+                detail: "not active"
+            )
+        }
+
+        if preferUSBConnection && isUSBConnected {
+            return ConnectionSummaryPresentation(
+                title: "USB Preferred",
+                icon: "cable.connector",
+                tone: .secondary,
+                detail: "USB available · not active"
+            )
+        }
+
+        if isUSBConnected {
+            return ConnectionSummaryPresentation(
+                title: "USB Available",
+                icon: "cable.connector",
+                tone: .secondary,
+                detail: "not active"
+            )
+        }
+
+        if isWiFiAvailable {
+            return ConnectionSummaryPresentation(
+                title: "Wi-Fi Available",
+                icon: "wifi",
+                tone: .secondary,
+                detail: "not active"
+            )
+        }
+
+        return nil
+    }
+
+    private static func presentationMode(
+        activeTunnelMode: TunnelMode?,
+        tunnelInfoMode: TunnelMode?,
+        preferredMode: TunnelMode
+    ) -> TunnelMode? {
+        if preferredMode == .wifi || preferredMode == .daemon {
+            return preferredMode
+        }
+        if let tunnelInfoMode,
+           tunnelInfoMode != .auto,
+           tunnelInfoMode != activeTunnelMode {
+            return tunnelInfoMode
+        }
+        return activeTunnelMode ?? tunnelInfoMode
+    }
+
+    private static func wirelessActiveDetail(
+        base: String,
+        isUSBConnected: Bool,
+        preferUSBConnection: Bool
+    ) -> String {
+        var segments = [base]
+        if isUSBConnected {
+            segments.append(preferUSBConnection ? "USB available/preferred" : "USB available")
+        }
+        return segments.joined(separator: " · ")
     }
 }
 

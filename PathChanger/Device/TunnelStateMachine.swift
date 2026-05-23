@@ -396,9 +396,22 @@ final class TunnelStateMachine: ObservableObject {
         #endif
 
         if shouldDebounce && now.timeIntervalSince(context.lastStateChangeTime) < debounceInterval {
-            // Allow critical events through debounce
+            // Allow critical events through debounce.
+            //
+            // W1 Slice R1 (responsiveness remediation): `processLaunched` and
+            // `connectionEstablished` are lifecycle events that the
+            // TunneldManager emits during normal tunnel startup. When they
+            // arrive within the 0.3 s debounce window of the prior
+            // `.startRequested` transition the state machine used to drop
+            // them silently, leaving the tunnel in `.starting` without a
+            // tracked PID or a published RSD info — the user-visible
+            // "stuck starting…" symptom identified in the runtime
+            // regression report. They are now exempted, identically to
+            // `stopRequested`, `processStopped`, and the error events.
             let criticalEvents: [TunnelEvent] = [.stopRequested, .processStopped]
-            if !criticalEvents.contains(event) && !isErrorEvent(event) {
+            if !criticalEvents.contains(event)
+                && !isErrorEvent(event)
+                && !isLifecycleEvent(event) {
                 Logger.debug("[StateMachine] Event debounced: \(event)", category: .device)
                 return .ignored
             }
@@ -708,6 +721,21 @@ final class TunnelStateMachine: ObservableObject {
     private func isErrorEvent(_ event: TunnelEvent) -> Bool {
         switch event {
         case .errorOccurred, .healthCheckFailed, .connectionTimeout:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// W1 Slice R1 (responsiveness remediation): canonical lifecycle
+    /// signals that must never be debounced. Dropping `processLaunched`
+    /// would orphan the tracked PID; dropping `connectionEstablished`
+    /// would leave the tunnel visibly stuck in `.starting`. Both are safe
+    /// to bypass the rapid-state-change gate because each can fire at
+    /// most once per lifecycle generation.
+    private func isLifecycleEvent(_ event: TunnelEvent) -> Bool {
+        switch event {
+        case .processLaunched, .connectionEstablished:
             return true
         default:
             return false

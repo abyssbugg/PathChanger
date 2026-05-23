@@ -453,23 +453,30 @@ struct SimulationView: View {
 
     private var teleportControls: some View {
         FloatingControlPanel(title: "Teleport", icon: "location.fill") {
-            VStack(alignment: .leading, spacing: AppSpacing.lg) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: AppSpacing.xs) {
-                        Text(appState.targetLocationName ?? "Custom Location")
-                            .font(AppFont.title)
-                            .foregroundStyle(Color.pcText)
-                            .lineLimit(1)
-                        Text(appState.targetLocation?.formattedShort ?? "Enter coordinates or tap the map")
+            // Operational refinement: tighter inner rhythm (sm vs md), drop
+            // the redundant "Custom Location / Enter coordinates\u2026" empty-
+            // state copy when no target exists (panel title already conveys
+            // it), and consolidate the disabled-state hint inline so the
+            // panel no longer grows a permanent third row at empty state.
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
+                if let target = appState.targetLocation {
+                    HStack(alignment: .center, spacing: AppSpacing.sm) {
+                        Image(systemName: "location.north.fill")
                             .font(AppFont.metadata)
-                            .foregroundStyle(Color.pcTextMuted)
-                            .lineLimit(1)
+                            .foregroundStyle(Color.pcPrimary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(appState.targetLocationName ?? "Custom Location")
+                                .font(AppFont.label)
+                                .foregroundStyle(Color.pcText)
+                                .lineLimit(1)
+                            Text(target.formattedShort)
+                                .font(AppFont.metadata)
+                                .foregroundStyle(Color.pcTextMuted)
+                                .lineLimit(1)
+                                .monospacedDigit()
+                        }
+                        Spacer(minLength: 0)
                     }
-
-                    Spacer()
-
-                    Image(systemName: "location.north.fill")
-                        .foregroundStyle(Color.pcPrimary)
                 }
 
                 PCFieldShell(label: "Latitude", prefix: "Lat", isFocused: focusedCoordinateField == .latitude) {
@@ -493,29 +500,35 @@ struct SimulationView: View {
                 // W1 visual governance: this Teleport inspector action is a
                 // subordinate interaction. It applies coordinates as target
                 // context only and must not become an execution authority.
-                Button {
-                    applyCoordinatesToTarget()
-                } label: {
-                    Label("Apply Coordinates", systemImage: "mappin")
-                }
-                .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
-                .frame(maxWidth: 200, alignment: .leading)
-                .disabled(coordinateApplyDisabledReason != nil)
-                .accessibleButton(
-                    label: "Apply coordinates as target",
-                    hint: "Selects the entered coordinates without applying them to the device",
-                    identifier: AccessibilityIdentifiers.Location.setLocationButton
-                )
-                if let coordinateApplyDisabledReason {
-                    Label(coordinateApplyDisabledReason, systemImage: "info.circle")
-                        .font(AppFont.metadata)
-                        .foregroundStyle(Color.pcTextMuted)
-                        .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: AppSpacing.sm) {
+                    Button {
+                        applyCoordinatesToTarget()
+                    } label: {
+                        Label("Apply", systemImage: "mappin")
+                    }
+                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
+                    .disabled(coordinateApplyDisabledReason != nil)
+                    .help(coordinateApplyDisabledReason ?? "Apply entered coordinates as the target")
+                    .accessibleButton(
+                        label: "Apply coordinates as target",
+                        hint: "Selects the entered coordinates without applying them to the device",
+                        identifier: AccessibilityIdentifiers.Location.setLocationButton
+                    )
+
+                    if let coordinateApplyDisabledReason {
+                        Text(coordinateApplyDisabledReason)
+                            .font(AppFont.metadata)
+                            .foregroundStyle(Color.pcTextMuted)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer(minLength: 0)
                 }
             }
-            .frame(minWidth: 320, idealWidth: 400, maxWidth: 440)
+            .frame(minWidth: 260, idealWidth: 296, maxWidth: 312)
         }
-        .frame(maxWidth: 440, alignment: .leading)
+        .frame(maxWidth: 312, alignment: .leading)
     }
 
     // MARK: - Route Controls
@@ -525,18 +538,28 @@ struct SimulationView: View {
     // remains owned by the canonical PrimaryActionPill.
     private var routeControls: some View {
         FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up") {
-            VStack(alignment: .leading, spacing: AppSpacing.lg) {
+            // Operational refinement: tighten inner rhythm (sm vs md), demote
+            // Import/Clear to icon-only buttons so the prominent Add Waypoint
+            // CTA can fill remaining width without wrapping, and shorten the
+            // empty-state hint so the panel no longer grows a multi-line
+            // tutorial below the action row.
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 Picker("Route Type", selection: $routeType) {
                     Text("Navigation").tag(RouteType.navigation)
                     Text("Straight").tag(RouteType.straight)
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeList)
-                HStack(spacing: AppSpacing.sm) {
+
+                routeTargetSummary
+
+                HStack(spacing: AppSpacing.xs) {
                     Button {
                         appState.addRoutePoint()
                     } label: {
                         Label("Add Waypoint", systemImage: "plus.circle")
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     .disabled(appState.targetLocation == nil)
@@ -549,9 +572,11 @@ struct SimulationView: View {
                     Button {
                         appState.showRouteImport = true
                     } label: {
-                        Label("Import GPX", systemImage: "square.and.arrow.down")
+                        Image(systemName: "square.and.arrow.down")
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
+                    .help("Import GPX")
                     .accessibleButton(
                         label: AccessibilityLabels.Actions.importRoute,
                         hint: "Opens a GPX file and loads its route points",
@@ -561,10 +586,12 @@ struct SimulationView: View {
                     Button {
                         appState.clearRoute()
                     } label: {
-                        Label("Clear", systemImage: "trash")
+                        Image(systemName: "trash")
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcDanger))
                     .disabled(appState.currentRoute.isEmpty)
+                    .help("Clear route")
                     .accessibleButton(
                         label: "Clear route",
                         hint: "Removes all current route waypoints",
@@ -573,19 +600,60 @@ struct SimulationView: View {
                 }
 
                 if appState.currentRoute.isEmpty {
-                    Text("Tap the map or search for a place, then add it as a waypoint. Right-click the map for quick actions.")
+                    Label("Search the sidebar or tap the map to add spots.", systemImage: "info.circle")
+                        .labelStyle(.titleAndIcon)
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     routePointList
                 }
             }
-            .frame(minWidth: 280, idealWidth: 420, maxWidth: 520)
+            .frame(minWidth: 280, idealWidth: 312, maxWidth: 332)
         }
-        .frame(maxWidth: 520, alignment: .leading)
+        .frame(maxWidth: 332, alignment: .leading)
     }
 
+    private var routeTargetSummary: some View {
+        HStack(spacing: AppSpacing.sm) {
+            Image(systemName: "mappin.and.ellipse")
+                .foregroundStyle(appState.targetLocation == nil ? Color.pcTextMuted : Color.pcPrimary)
+
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
+                Text(appState.targetLocationName ?? "No selected spot")
+                    .font(AppFont.label)
+                    .foregroundStyle(Color.pcText)
+                    .lineLimit(1)
+                Text(appState.targetLocation?.formattedShort ?? "Search or tap the map")
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Operational refinement: suppress the "0" chip in empty state so
+            // the summary row stops carrying dead chrome before any waypoint
+            // has been added.
+            if !appState.currentRoute.isEmpty {
+                Text("\(appState.currentRoute.count)")
+                    .font(AppFont.monoSmall)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .padding(.horizontal, AppSpacing.sm)
+                    .frame(height: 22)
+                    .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
+            }
+        }
+        .padding(.horizontal, AppSpacing.sm)
+        .padding(.vertical, AppSpacing.xs)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+        )
+        .accessibilityIdentifier("routeSelectedTargetSummary")
+    }
     private var routePointList: some View {
         VStack(alignment: .leading, spacing: AppSpacing.sm) {
             HStack {
@@ -602,7 +670,6 @@ struct SimulationView: View {
                         .accessibilityIdentifier(AccessibilityIdentifiers.Route.progressIndicator)
                 }
             }
-
             ScrollView {
                 LazyVStack(spacing: AppSpacing.sm) {
                     ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
@@ -610,7 +677,7 @@ struct SimulationView: View {
                     }
                 }
             }
-            .frame(maxHeight: 160)
+            .frame(maxHeight: 132)
             .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeList)
             .accessibilityLabel("Route waypoint list")
         }

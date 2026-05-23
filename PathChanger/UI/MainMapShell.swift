@@ -60,7 +60,8 @@ struct MainMapShell: View {
             if isSidebarExpanded {
                 CollapsibleSidebar(
                     selectedMode: $selectedMode,
-                    isShowingSettings: $isShowingSettings
+                    isShowingSettings: $isShowingSettings,
+                    onCollapse: toggleSidebar
                 )
                 .transition(.move(edge: .leading))
                 .zIndex(1)
@@ -110,9 +111,10 @@ struct MainMapShell: View {
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.85), value: isSidebarExpanded)
         .sheet(isPresented: $isShowingSettings) {
-            SettingsView()
+            SettingsSheetContainer {
+                isShowingSettings = false
+            }
                 .environmentObject(appState)
-                .frame(minWidth: 720, minHeight: 540)
         }
         .onChange(of: isSidebarExpanded) { _, newValue in
             // Persist user preference so the toggle survives across launches.
@@ -124,6 +126,39 @@ struct MainMapShell: View {
         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
             isSidebarExpanded.toggle()
         }
+    }
+}
+
+private struct SettingsSheetContainer: View {
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Settings")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.pcText)
+
+                Spacer()
+
+                Button("Done", action: close)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("mapShellSettingsDoneButton")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Color.pcSurface)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
+                    .frame(height: 1)
+                    .allowsHitTesting(false)
+            }
+
+            SettingsView(showsHeader: false)
+        }
+        .frame(width: 760, height: 620)
+        .background(Color.pcBackground)
     }
 }
 

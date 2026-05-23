@@ -63,13 +63,26 @@ final class ReleaseConfigurationTests: XCTestCase {
     func testBundleScriptHasDeterministicOutputAndProductionGates() throws {
         let bundleScript = try readProjectFile("build-app-bundle.sh")
 
-        XCTAssertTrue(bundleScript.contains("APP_BUNDLE_BUILD_ROOT=\"${APP_BUNDLE_BUILD_ROOT:-build}\""))
+        XCTAssertTrue(bundleScript.contains("APP_BUNDLE_BUILD_ROOT=\"${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}\""))
         XCTAssertTrue(bundleScript.contains("REQUIRE_PRODUCTION_SIGNING=\"${REQUIRE_PRODUCTION_SIGNING:-0}\""))
         XCTAssertTrue(bundleScript.contains("Production bundle builds require a Developer ID signing identity"))
         XCTAssertTrue(bundleScript.contains("Developer ID signing identity not available in the current keychain"))
         XCTAssertTrue(bundleScript.contains("Sparkle.framework not found; production app bundle cannot be validated"))
         XCTAssertTrue(bundleScript.contains("Production app bundle signing requires $ENTITLEMENTS_FILE"))
         XCTAssertTrue(bundleScript.contains("Production app bundle is missing hardened runtime"))
+    }
+
+    func testBuildWrapperSanitizesDistMetadataBeforeValidation() throws {
+        let buildWrapper = try readProjectFile("build.sh")
+
+        XCTAssertTrue(buildWrapper.contains("xattr -dr com.apple.FinderInfo"))
+        XCTAssertTrue(buildWrapper.contains("xattr -dr \"com.apple.fileprovider.fpfs#P\""))
+        XCTAssertTrue(buildWrapper.contains("find \"$bundle\" -print0"))
+        XCTAssertTrue(buildWrapper.contains("xattr -d com.apple.FinderInfo \"$path\""))
+        XCTAssertTrue(buildWrapper.contains("xattr -d \"com.apple.fileprovider.fpfs#P\" \"$path\""))
+        XCTAssertTrue(buildWrapper.contains("DIST_BUILD_ROOT=\"${APP_BUNDLE_DIST_ROOT:-$HOME/Library/Caches/PathChanger/InternalBuild}\""))
+        XCTAssertTrue(buildWrapper.contains("ln -s \"$DIST_BUILD_ROOT/PathChanger.app\" dist/PathChanger.app"))
+        XCTAssertTrue(buildWrapper.contains("dot_clean -m \"$DIST_BUILD_ROOT/PathChanger.app\""))
     }
 
     func testReleaseValidatorChecksConfigurationAndEntitlementRisk() throws {

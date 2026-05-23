@@ -114,24 +114,28 @@ struct PCFieldShell<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppSpacing.xs) {
+        // Operational refinement: tighten caption-to-field gap (xxs vs xs),
+        // slim the input row (28pt vs 32pt) and narrow the prefix slot so the
+        // double-labelling (LATITUDE / Lat …) no longer dominates vertical
+        // rhythm in the Teleport inspector.
+        VStack(alignment: .leading, spacing: AppSpacing.xxs) {
             Text(label)
                 .appSectionLabel()
 
-            HStack(spacing: AppSpacing.sm) {
+            HStack(spacing: AppSpacing.xs) {
                 if let prefix {
                     Text(prefix)
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
-                        .frame(width: 34, alignment: .leading)
+                        .frame(width: 28, alignment: .leading)
                 }
 
                 content
                     .font(AppFont.monospace)
                     .foregroundStyle(Color.pcText)
             }
-            .padding(.horizontal, AppSpacing.md)
-            .frame(minHeight: 32)
+            .padding(.horizontal, AppSpacing.sm)
+            .frame(minHeight: 28)
             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)

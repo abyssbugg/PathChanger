@@ -264,6 +264,17 @@ class RouteMode: SimulationModeProtocol {
         currentCoordinate = interpolatedPoints.first
     }
 
+    func start(atProgress progress: Double) {
+        guard !interpolatedPoints.isEmpty else { return }
+        let clampedProgress = min(max(progress, 0), 0.999)
+        currentIndex = min(
+            max(Int(Double(interpolatedPoints.count) * clampedProgress), 0),
+            interpolatedPoints.count - 1
+        )
+        currentCoordinate = interpolatedPoints[currentIndex]
+        isActive = true
+    }
+
     func stop() {
         isActive = false
         currentIndex = 0
@@ -686,6 +697,65 @@ class SimulationEngine: ObservableObject {
         startTimer(for: simulationSessionID)
     }
 
+    func restoreSessionAfterTransportRecovery(
+        mode: SimulationModeType,
+        coordinate: LocationCoordinate?,
+        routeWaypoints: [LocationCoordinate],
+        routeProgress: Double,
+        joystickDirection: CGPoint,
+        wasPaused: Bool
+    ) {
+        let (sessionID, previousTickTask) = invalidateCurrentSimulationSession()
+        previousTickTask?.cancel()
+        stopModes()
+
+        currentMode = mode
+        startTime = Date()
+        elapsedTime = 0
+
+        switch mode {
+        case .teleport:
+            if let coordinate {
+                teleportMode.setTarget(coordinate)
+                teleportMode.start()
+                currentCoordinate = coordinate
+            }
+            state = wasPaused ? .paused : .completed
+        case .route:
+            guard routeWaypoints.count >= 2 else {
+                state = .error("Route requires at least 2 waypoints")
+                return
+            }
+            routeMode.configure(waypoints: routeWaypoints, speed: speed, loop: loopRoute)
+            routeMode.start(atProgress: routeProgress)
+            currentCoordinate = coordinate ?? routeMode.currentCoordinate
+            self.routeProgress = routeMode.progress
+            if wasPaused {
+                routeMode.pause()
+                state = .paused
+            } else {
+                state = .running
+                startTimer(for: sessionID)
+            }
+        case .joystick:
+            guard let coordinate else {
+                state = .error("Cannot restore joystick session without a coordinate")
+                return
+            }
+            joystickMode.configure(startLocation: coordinate, speed: speed)
+            joystickMode.start()
+            currentCoordinate = coordinate
+            updateJoystickDirection(joystickDirection)
+            if wasPaused {
+                joystickMode.pause()
+                state = .paused
+            } else {
+                state = .running
+                startTimer(for: sessionID)
+            }
+        }
+    }
+
     func stop() async {
         let (sessionID, previousTickTask) = invalidateCurrentSimulationSession()
         stopModes()
@@ -854,6 +924,13 @@ class SimulationEngine: ObservableObject {
 
     func testRunTick(sessionID: UInt64) async {
         await tick(sessionID: sessionID)
+    }
+
+    func testFailActiveSimulationAfterTransportFailure(_ message: String) {
+        failActiveSimulationAfterTransportFailure(
+            LocationBridge.LocationBridgeError.tunnelInvalidated(message),
+            sessionID: simulationSessionID
+        )
     }
     #endif
 

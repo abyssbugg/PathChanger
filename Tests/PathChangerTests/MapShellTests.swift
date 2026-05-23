@@ -63,6 +63,76 @@ final class MapShellPreferencesTests: XCTestCase {
     }
 }
 
+// MARK: - Source wiring
+
+final class MapShellSourceWiringTests: XCTestCase {
+    private var projectRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func readProjectFile(_ relativePath: String) throws -> String {
+        let url = projectRoot.appendingPathComponent(relativePath)
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testExpandedSidebarHasVisibleCollapseAffordance() throws {
+        let sidebar = try readProjectFile("PathChanger/UI/Components/CollapsibleSidebar.swift")
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+
+        XCTAssertTrue(sidebar.contains("var onCollapse: () -> Void"))
+        XCTAssertTrue(sidebar.contains("mapShellSidebarCollapseButton"))
+        XCTAssertTrue(sidebar.contains("Hide sidebar"))
+        XCTAssertTrue(shell.contains("onCollapse: toggleSidebar"))
+        XCTAssertTrue(shell.contains("SidebarToggleButton"))
+    }
+
+    func testMapShellSettingsSheetHasExplicitDismissalAndDeterministicSize() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+
+        XCTAssertTrue(shell.contains("SettingsSheetContainer"))
+        XCTAssertTrue(shell.contains("mapShellSettingsDoneButton"))
+        XCTAssertTrue(shell.contains("SettingsView(showsHeader: false)"))
+        XCTAssertTrue(shell.contains(".frame(width: 760, height: 620)"))
+    }
+
+    func testSidebarSearchIsModeAwareForRouteAndJoystick() throws {
+        let sidebar = try readProjectFile("PathChanger/UI/Components/CollapsibleSidebar.swift")
+
+        XCTAssertTrue(sidebar.contains("switch selectedMode"))
+        XCTAssertTrue(sidebar.contains("case .route:"))
+        XCTAssertTrue(sidebar.contains("appState.addRoutePoint(coordinate)"))
+        XCTAssertTrue(sidebar.contains("select(coordinate: entry.coordinate, name: entry.displayName, source: .recent)"))
+        XCTAssertTrue(sidebar.contains("case .joystick:"))
+        XCTAssertTrue(sidebar.contains("as joystick start"))
+    }
+
+    func testModePanelsExposeCompactStateSummaries() throws {
+        // Lock-down: each mode panel must keep its named summary surface and
+        // a single short empty-state hint. Width and joystick-radius asserts
+        // are kept tight so accidental regressions to the pre-refinement
+        // (bulky) sizes will fail this test.
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+        let joystick = try readProjectFile("PathChanger/UI/JoystickControlView.swift")
+
+        XCTAssertTrue(simulationView.contains("routeSelectedTargetSummary"))
+        XCTAssertTrue(simulationView.contains("Search the sidebar or tap the map to add spots."))
+        // Refined Teleport panel width (was 260/304/328 — surgically tightened
+        // to drop unused inspector slack).
+        XCTAssertTrue(simulationView.contains(".frame(minWidth: 260, idealWidth: 296, maxWidth: 312)"))
+        // Refined Multi-Spot panel width (was 260/332/380 — brought in to align
+        // with Teleport/Joystick for cross-mode consistency).
+        XCTAssertTrue(simulationView.contains(".frame(minWidth: 280, idealWidth: 312, maxWidth: 332)"))
+        XCTAssertTrue(joystick.contains("joystickStartLocationSummary"))
+        XCTAssertTrue(joystick.contains("tap a start point"))
+        // Refined joystick dial (was 58 — reduced to 56 so the joystick fits
+        // cleanly inside the refined 312-wide panel without dead space).
+        XCTAssertTrue(joystick.contains("private let outerRadius: CGFloat = 56"))
+    }
+}
+
 // MARK: - Design tokens
 
 final class MapShellDesignTokenTests: XCTestCase {

@@ -689,6 +689,67 @@ final class SimulationEngineStateTests: XCTestCase {
     }
 
     @MainActor
+    func testRestoreJoystickSessionAfterTransportRecoveryCanResumeRunning() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        await engine.startJoystick(at: start)
+        engine.updateJoystickDirection(CGPoint(x: 0, y: 1))
+        let originalSessionID = engine.testSimulationSessionID
+
+        engine.testFailActiveSimulationAfterTransportFailure("No route to host")
+        XCTAssertFalse(engine.testHasActiveTimer)
+        if case .error = engine.state {
+            XCTAssertTrue(true)
+        } else {
+            XCTFail("Expected error state before recovery restoration")
+        }
+
+        engine.restoreSessionAfterTransportRecovery(
+            mode: .joystick,
+            coordinate: start,
+            routeWaypoints: [],
+            routeProgress: 0,
+            joystickDirection: CGPoint(x: 0, y: 1),
+            wasPaused: false
+        )
+
+        XCTAssertGreaterThan(engine.testSimulationSessionID, originalSessionID)
+        XCTAssertEqual(engine.state, .running)
+        XCTAssertEqual(engine.currentMode, .joystick)
+        XCTAssertTrue(engine.testHasActiveTimer)
+        XCTAssertEqual(engine.currentCoordinate?.latitude, start.latitude)
+        XCTAssertEqual(engine.currentCoordinate?.longitude, start.longitude)
+
+        engine.pause()
+    }
+
+    @MainActor
+    func testRestoreJoystickSessionAfterTransportRecoveryPreservesPausedState() async {
+        let engine = SimulationEngine()
+        engine.speed = .walking
+        engine.setDevice(testDevice())
+
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        engine.restoreSessionAfterTransportRecovery(
+            mode: .joystick,
+            coordinate: start,
+            routeWaypoints: [],
+            routeProgress: 0,
+            joystickDirection: CGPoint(x: 0, y: 1),
+            wasPaused: true
+        )
+
+        XCTAssertEqual(engine.state, .paused)
+        XCTAssertEqual(engine.currentMode, .joystick)
+        XCTAssertFalse(engine.testHasActiveTimer)
+        XCTAssertEqual(engine.currentCoordinate?.latitude, start.latitude)
+        XCTAssertEqual(engine.currentCoordinate?.longitude, start.longitude)
+    }
+
+    @MainActor
     func testPauseResumeKeepsSessionAndRestartsTimer() async {
         let engine = SimulationEngine()
         engine.speed = .walking

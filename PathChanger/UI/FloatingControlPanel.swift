@@ -19,7 +19,9 @@ struct FloatingControlPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppSpacing.lg) {
+        // Operational refinement: tighter rhythm (md/md) instead of (lg/lg)
+        // so mode panels feel denser without redesigning the container.
+        VStack(alignment: .leading, spacing: AppSpacing.md) {
             if let title = title {
                 HStack(spacing: AppSpacing.sm) {
                     if let icon = icon {
@@ -28,7 +30,7 @@ struct FloatingControlPanel<Content: View>: View {
                             .foregroundStyle(Color.pcTextMuted)
                     }
                     Text(title)
-                        .font(AppFont.title)
+                        .font(AppFont.heading)
                         .foregroundStyle(Color.pcText)
 
                     Spacer()
@@ -37,7 +39,7 @@ struct FloatingControlPanel<Content: View>: View {
 
             content
         }
-        .padding(AppSpacing.lg)
+        .padding(AppSpacing.md)
         .appGlassPanel(cornerRadius: AppRadius.xl)
     }
 }

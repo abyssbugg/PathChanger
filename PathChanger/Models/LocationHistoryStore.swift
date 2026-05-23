@@ -45,11 +45,34 @@ final class LocationHistoryStore {
 
     init(maxEntries: Int = 50) {
         self.maxEntries = maxEntries
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        storageURL = documentsPath.appendingPathComponent("PathChanger/location-history.json")
+        // Slice F2 (UX remediation): persist location history inside
+        // `~/Library/Application Support/PathChanger/` instead of
+        // `~/Documents/PathChanger/`. The previous Documents-based path
+        // triggered repeated macOS TCC folder-access prompts on every
+        // launch for non-sandboxed/ad-hoc-signed builds. Application
+        // Support is the canonical macOS location for app-managed user
+        // data and is not TCC-protected.
+        let appSupportPath = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        storageURL = appSupportPath.appendingPathComponent("PathChanger/location-history.json")
 
         let directory = storageURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // Slice F2 (UX remediation) — one-shot migration:
+        // If the legacy Documents-based file exists and the new Application
+        // Support file does not yet exist, copy the legacy file to the new
+        // location. The marker makes even a missing legacy file deterministic:
+        // the app will not repeatedly probe Documents on every launch just
+        // because `location-history.json` never existed there. We deliberately
+        // leave the legacy file in place as a non-destructive rollback fallback.
+        let legacyDocumentsPath = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+        try? LegacyDocumentsMigration.migrateFileIfNeeded(
+            legacyURL: legacyDocumentsPath.appendingPathComponent("PathChanger/location-history.json"),
+            destinationURL: storageURL,
+            markerURL: directory.appendingPathComponent(".location-history-documents-migration-complete")
+        )
 
         load()
     }

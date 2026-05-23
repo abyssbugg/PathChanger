@@ -1015,6 +1015,50 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertFalse(manager.testTrackedTunnelChildProcessIds.contains(discoveryOnlyPid))
         XCTAssertFalse(manager.testActiveTunnelProcessIds.contains(discoveryOnlyPid))
     }
+
+    func testNormalAttachRemainsFailClosedWhenExistingTunnelHasNoRecoverableRsd() async throws {
+        let stalePid: Int32 = 6801
+        var signals: [(pid: Int32, signal: Int32)] = []
+
+        manager.testSetTargetTunnelUDID(testUDID)
+        manager.testSetProcessOverride(pid: stalePid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
+        manager.testSetLiveProcessIds([stalePid], matching: TunnelMode.usb.processPattern)
+        manager.testSetSignalHandler { pid, signal in
+            signals.append((pid, signal))
+            return true
+        }
+
+        let attached = await manager.testAttachToRunningTunnelIfAvailable(replaceStaleOnMissingRsd: false)
+
+        XCTAssertTrue(attached)
+        XCTAssertTrue(manager.lastError?.contains("could not read its RSD address") == true)
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertTrue(manager.isTunnelProcessAlive(pid: stalePid))
+    }
+
+    func testRecoveryAttachCleansStaleTunnelWhenRsdCannotBeRecovered() async throws {
+        let stalePid: Int32 = 6802
+        var signals: [(pid: Int32, signal: Int32)] = []
+
+        manager.testSetTargetTunnelUDID(testUDID)
+        manager.testSetProcessOverride(pid: stalePid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
+        manager.testSetLiveProcessIds([stalePid], matching: TunnelMode.usb.processPattern)
+        manager.testSetSignalHandler { [weak manager] pid, signal in
+            signals.append((pid, signal))
+            if signal == SIGKILL {
+                manager?.testSetProcessState(pid: pid, state: nil)
+            }
+            return true
+        }
+
+        let attached = await manager.testAttachToRunningTunnelIfAvailable(replaceStaleOnMissingRsd: true)
+
+        XCTAssertFalse(attached)
+        XCTAssertEqual(signals.map(\.pid), [stalePid, stalePid])
+        XCTAssertEqual(signals.map(\.signal), [SIGTERM, SIGKILL])
+        XCTAssertFalse(manager.isTunnelProcessAlive(pid: stalePid))
+        XCTAssertNil(manager.lastError)
+    }
 #endif
 
     // MARK: - Tunnel State Tests
@@ -1217,6 +1261,10 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/opt/homebrew/bin/python3"))
         XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/usr/local/bin/python3"))
         XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/usr/bin/python3"))
+        let pyenvPython = "\(NSHomeDirectory())/.pyenv/versions/3.12.11/bin/python3"
+        if FileManager.default.isExecutableFile(atPath: pyenvPython) {
+            XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed(pyenvPython))
+        }
         XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed("/tmp/python3"))
         XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed(""))
         XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed("/opt/homebrew/bin/python"))

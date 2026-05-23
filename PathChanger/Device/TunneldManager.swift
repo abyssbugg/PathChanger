@@ -59,6 +59,7 @@ enum TunnelMode: String, CaseIterable, Identifiable {
         }
     }
 
+
     var displayName: String {
         switch self {
         case .wifi:
@@ -235,9 +236,6 @@ struct PrivilegedCommandValidator {
 
     // MARK: - Security Constants
 
-    /// Allowed system Python executable paths — sourced from SubprocessPolicy.
-    private static var allowedPythonPaths: Set<String> { SubprocessPolicy.allowedPythonPaths }
-
     /// Allowed pymobiledevice3 command patterns (exact subcommand match required).
     /// This is narrower than `SubprocessPolicy.allowedSubcommands` because only
     /// these specific compositions are permitted under privileged execution.
@@ -300,18 +298,7 @@ struct PrivilegedCommandValidator {
 
     /// Quick check if a Python path is in the allowlist
     static func isPythonPathAllowed(_ path: String) -> Bool {
-        if allowedPythonPaths.contains(path) {
-            return true
-        }
-        let pyenvShimsPath = "\(NSHomeDirectory())/.pyenv/shims/python3"
-        if path == pyenvShimsPath && FileManager.default.isExecutableFile(atPath: path) {
-            return true
-        }
-
-        let pyenvVersionsPrefix = "\(NSHomeDirectory())/.pyenv/versions/"
-        return path.hasPrefix(pyenvVersionsPrefix) &&
-               path.hasSuffix("/bin/python3") &&
-               FileManager.default.isExecutableFile(atPath: path)
+        SubprocessPolicy.isAllowedPythonPath(path)
     }
 }
 
@@ -509,6 +496,25 @@ class TunneldManager: ObservableObject {
     /// Active tunnel mode (actual running mode)
     @Published var activeMode: TunnelMode?
 
+    /// Presentation-only active transport mode for UI surfaces.
+    ///
+    /// Runtime ownership still lives in the state machine and active process
+    /// tracking. This helper only prevents stale `.usb` presentation from
+    /// overriding a running explicit wireless session while the tunnel remains
+    /// healthy.
+    var presentationActiveMode: TunnelMode? {
+        guard isRunning else { return nil }
+        if preferredMode == .wifi || preferredMode == .daemon {
+            return preferredMode
+        }
+        if let infoMode = tunnelInfo?.mode,
+           infoMode != .auto,
+           infoMode != activeMode {
+            return infoMode
+        }
+        return activeMode ?? tunnelInfo?.mode
+    }
+
     /// RSD connection info for device communication (legacy - first device)
     @Published var tunnelInfo: TunnelInfo?
 
@@ -561,6 +567,8 @@ class TunneldManager: ObservableObject {
     private var debugStartupTimeoutOverride: TimeInterval?
     private var debugStartupPollIntervalOverride: TimeInterval?
     private var debugWrapperReturnTimeoutOverride: TimeInterval?
+    private var debugRecoveredRsdInfoFromLogOverride: TunnelInfo?
+    private var debugRecoveredRsdInfoFromLogOverrideEnabled = false
     private var debugPrivilegedWrapperRunner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?
     private var debugSignalHandler: (@MainActor (Int32, Int32) -> Bool)?
 #endif
@@ -719,9 +727,9 @@ class TunneldManager: ObservableObject {
 
     private var canRecoverRsdInfoFromLog: Bool {
         switch stateMachine.currentState {
-        case .idle, .starting:
+        case .idle, .starting, .error:
             return true
-        case .running, .stopping, .error:
+        case .running, .stopping:
             return false
         }
     }
@@ -857,6 +865,10 @@ class TunneldManager: ObservableObject {
 
     /// Start tunnel with preferred mode (with auto-fallback)
     func startTunnel() async {
+        await startTunnel(replaceStaleOnMissingRsd: false)
+    }
+
+    private func startTunnel(replaceStaleOnMissingRsd: Bool) async {
         guard !tunnelStartInFlight else {
             Logger.debug("Ignoring duplicate tunnel start request while another start is in progress", category: .device)
             return
@@ -872,7 +884,10 @@ class TunneldManager: ObservableObject {
         }
 
         lastError = nil
-        if await attachToRunningTunnelIfAvailable(generation: generation) {
+        if await attachToRunningTunnelIfAvailable(
+            generation: generation,
+            replaceStaleOnMissingRsd: replaceStaleOnMissingRsd
+        ) {
             return
         }
         guard isCurrentTunnelLifecycle(generation) else { return }
@@ -1027,7 +1042,7 @@ class TunneldManager: ObservableObject {
     func startTunnel(mode: TunnelMode) async {
         let previousMode = preferredMode
         preferredMode = mode
-        await startTunnel()
+        await startTunnel(replaceStaleOnMissingRsd: false)
 
         // Direct access via state machine
         let running = stateMachine.isActive
@@ -1054,6 +1069,38 @@ class TunneldManager: ObservableObject {
         targetTunnelUDID = device.id
         targetTunnelConnectionType = device.connectionType
         targetTunnelIOSMajorVersion = device.iosMajorVersion
+    }
+
+    func recoverFromTransientTransportFailure(reason: String) async -> Bool {
+        guard !tunnelStartInFlight else {
+            Logger.debug("[Tunnel] Transient recovery skipped because a tunnel start is already in flight", category: .device)
+            return false
+        }
+
+        let maxAttempts = 3
+        let baseDelaySeconds: TimeInterval = 0.75
+        var attempt = 0
+
+        while attempt < maxAttempts {
+            attempt += 1
+            statusMessage = "Recovering tunnel connection… (attempt \(attempt)/\(maxAttempts))"
+            Logger.info("[Tunnel] Starting bounded transient recovery attempt \(attempt)/\(maxAttempts): \(reason)", category: .device)
+
+            await startTunnel(replaceStaleOnMissingRsd: true)
+            if isRunning {
+                lastError = nil
+                statusMessage = "Tunnel recovered"
+                return true
+            }
+
+            guard attempt < maxAttempts else { break }
+            let delay = baseDelaySeconds * pow(2.0, Double(attempt - 1))
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
+
+        statusMessage = "Tunnel recovery failed"
+        Logger.error("[Tunnel] Transient recovery exhausted after \(maxAttempts) attempt(s): \(reason)", category: .device)
+        return false
     }
 
     /// Schedule a stop+start when the user changes the preferred mode and a
@@ -2334,7 +2381,10 @@ class TunneldManager: ObservableObject {
     /// (or `preferredMode == .auto`). When the user picks a specific mode different from what's
     /// running (e.g. WiFi while a USB tunnel is up), this returns `false` so the caller will
     /// proceed to stop the mismatching tunnel and start fresh in the requested mode.
-    private func attachToRunningTunnelIfAvailable(generation: UInt64) async -> Bool {
+    private func attachToRunningTunnelIfAvailable(
+        generation: UInt64,
+        replaceStaleOnMissingRsd: Bool = false
+    ) async -> Bool {
         guard let runningMode = await detectRunningTunnel() else {
             return false
         }
@@ -2361,6 +2411,17 @@ class TunneldManager: ObservableObject {
         }
 
         guard let recoveredInfo = recoverRsdInfoFromLog() else {
+            if replaceStaleOnMissingRsd {
+                let stalePids = liveTunnelProcessIdsSync(for: runningMode, targetUDID: targetTunnelUDID)
+                trackedTunnelChildProcessIds.formUnion(stalePids)
+                lastTunnelModeForCleanup = runningMode
+                lastTunnelTargetUDIDForCleanup = targetTunnelUDID
+                Logger.info("[Tunnel] Recovery replacing stale \(runningMode.rawValue) tunnel without recoverable RSD info", category: .device)
+                killTrackedTunnelProcesses()
+                lastError = nil
+                statusMessage = "Cleaned stale tunnel; retrying…"
+                return false
+            }
             let message = "A tunnel process is already running, but PathChanger could not read its RSD address. Stop the existing tunnel and start it again."
             lastError = message
             statusMessage = message
@@ -3216,6 +3277,14 @@ class TunneldManager: ObservableObject {
         guard canRecoverRsdInfoFromLog else {
             return nil
         }
+#if DEBUG
+        if debugRecoveredRsdInfoFromLogOverrideEnabled {
+            return debugRecoveredRsdInfoFromLogOverride
+        }
+        if !debugLiveProcessIdsOverrides.isEmpty || !debugLiveProcessIdsSequenceOverrides.isEmpty {
+            return nil
+        }
+#endif
         guard let logContent = try? String(contentsOfFile: logFilePath, encoding: .utf8) else {
             return nil
         }
@@ -3749,6 +3818,8 @@ extension TunneldManager {
         debugStartupTimeoutOverride = nil
         debugStartupPollIntervalOverride = nil
         debugWrapperReturnTimeoutOverride = nil
+        debugRecoveredRsdInfoFromLogOverride = nil
+        debugRecoveredRsdInfoFromLogOverrideEnabled = false
         debugPrivilegedWrapperRunner = nil
         debugSignalHandler = nil
         preferredMode = .auto
@@ -3814,6 +3885,11 @@ extension TunneldManager {
         debugWrapperReturnTimeoutOverride = timeout
     }
 
+    func testSetRecoveredRsdInfoFromLog(_ info: TunnelInfo?) {
+        debugRecoveredRsdInfoFromLogOverride = info
+        debugRecoveredRsdInfoFromLogOverrideEnabled = true
+    }
+
     func testSetPrivilegedWrapperRunner(_ runner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?) {
         debugPrivilegedWrapperRunner = runner
     }
@@ -3824,6 +3900,14 @@ extension TunneldManager {
 
     func testAttemptStart(mode: TunnelMode) async -> Bool {
         await attemptStart(mode: mode)
+    }
+
+    func testAttachToRunningTunnelIfAvailable(replaceStaleOnMissingRsd: Bool) async -> Bool {
+        let generation = tunnelLifecycleGeneration
+        return await attachToRunningTunnelIfAvailable(
+            generation: generation,
+            replaceStaleOnMissingRsd: replaceStaleOnMissingRsd
+        )
     }
 
     func testFinalizeWrapperReturnTimeout(

@@ -273,7 +273,16 @@ class AppState: ObservableObject {
     // MARK: Debouncing for UI Stability
     private var lastTunnelStateChange: Date = .distantPast
     private var lastUSBStateChange: Date = .distantPast
-    private let stateDebounceInterval: TimeInterval = 2.5  // Increased from 0.5 to reduce flickering
+    // W1 Slice R1 (responsiveness remediation): tightened from the previous
+    // 2.5 s anti-flicker default to 0.4 s. The runtime regression report
+    // identified the 2.5 s value as the single largest contributor to UI
+    // tunnel-state lag without a corresponding correctness benefit: the
+    // TunnelStateMachine already provides its own 0.3 s anti-flicker gate
+    // and `force: true` mirror updates bypass this debounce on every
+    // canonical state-machine transition. 0.4 s preserves anti-flicker for
+    // legacy non-forced callers (e.g. `checkTunneldStatus` background poll)
+    // while restoring perceived responsiveness.
+    private let stateDebounceInterval: TimeInterval = 0.4
 
     // MARK: Shared Managers
     let deviceManager = DeviceManager()
@@ -303,6 +312,27 @@ class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var simulationTransitionTail: Task<Void, Never>?
     private var simulationTransitionSerial: UInt64 = 0
+    private var resumableSessionSnapshot: ResumableSessionSnapshot?
+    private var transientRecoveryTask: Task<Void, Never>?
+    private var transientRecoverySerial: UInt64 = 0
+#if DEBUG
+    private var debugTransientRecoveryHandler: ((String) async -> Bool)?
+    private var debugSkipDeviceRefreshDuringTransientRecovery = false
+#endif
+
+    private struct ResumableSessionSnapshot {
+        let device: Device
+        let mode: SimulationModeType
+        let coordinate: LocationCoordinate?
+        let targetLocation: LocationCoordinate?
+        let targetLocationName: String?
+        let routeWaypoints: [LocationCoordinate]
+        let routeProgress: Double
+        let joystickDirection: CGPoint
+        let wasPaused: Bool
+        let wasSimulating: Bool
+        let speed: SimulationSpeed
+    }
 
     // MARK: Computed Properties
 
@@ -455,9 +485,11 @@ class AppState: ObservableObject {
                 case .running:
                     self.isSimulating = true
                     self.isPaused = false
+                    self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
                 case .paused:
                     self.isSimulating = true
                     self.isPaused = true
+                    self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
                 case .completed:
                     // Final-waypoint history recording: when a route finishes
                     // naturally, persist the last waypoint to history. Prior
@@ -479,9 +511,13 @@ class AppState: ObservableObject {
                     self.isSimulating = false
                     self.isPaused = false
                 case .error(let message):
-                    self.isSimulating = false
-                    self.isPaused = false
-                    self.lastError = message
+                    if LocationBridge.isRecoverableTransportDisruption(message) {
+                        self.beginTransientTransportRecovery(reason: message)
+                    } else {
+                        self.isSimulating = false
+                        self.isPaused = false
+                        self.lastError = message
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -490,14 +526,20 @@ class AppState: ObservableObject {
             .receive(on: DispatchQueue.main)
             .compactMap { $0 }
             .sink { [weak self] coordinate in
-                self?.currentLocation = coordinate
+                guard let self else { return }
+                self.currentLocation = coordinate
+                self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
             }
             .store(in: &cancellables)
 
         simulationEngine.$routeProgress
             .receive(on: DispatchQueue.main)
             .sink { [weak self] progress in
-                self?.routeProgress = progress
+                guard let self else { return }
+                self.routeProgress = progress
+                if self.simulationEngine.currentMode == .route {
+                    self.captureResumableSessionSnapshot(mode: .route)
+                }
             }
             .store(in: &cancellables)
     }
@@ -523,6 +565,15 @@ class AppState: ObservableObject {
                 self?.lastError = reason
                 self?.connectionStatus = .error
             }
+        }
+    }
+
+    private func cancelTransientTransportRecovery(clearSnapshot: Bool) {
+        transientRecoverySerial &+= 1
+        transientRecoveryTask?.cancel()
+        transientRecoveryTask = nil
+        if clearSnapshot {
+            resumableSessionSnapshot = nil
         }
     }
 
@@ -629,6 +680,9 @@ class AppState: ObservableObject {
     }
 
     func selectDevice(_ device: Device) {
+        if selectedDevice?.id != device.id {
+            cancelTransientTransportRecovery(clearSnapshot: true)
+        }
         selectedDevice = device
         simulationEngine.setDevice(device)
         TunneldManager.shared.setTargetDevice(device)
@@ -680,6 +734,7 @@ class AppState: ObservableObject {
             currentLocation = coordinate
             isSimulating = true
             lastError = nil
+            captureResumableSessionSnapshot(mode: .teleport)
             injectionStats = await LocationBridge.shared.getStats()
             errorHandler.clearCurrentError()
             if recordHistory {
@@ -695,17 +750,27 @@ class AppState: ObservableObject {
             }
 
         } catch let error as LocationInjectionError {
-            errorHandler.handle(error, context: "Location injection")
-            isSimulating = false
-            ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            if LocationBridge.isTunnelInvalidationError(error),
+               LocationBridge.isRecoverableTransportDisruption(error.localizedDescription) {
+                beginTransientTransportRecovery(reason: error.localizedDescription)
+            } else {
+                errorHandler.handle(error, context: "Location injection")
+                isSimulating = false
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
 
             if case .deviceNotFound = error {
                 reliabilityManager.connectionLost()
             }
         } catch {
-            errorHandler.handle(error, context: "Location injection")
-            isSimulating = false
-            ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            if LocationBridge.isTunnelInvalidationError(error),
+               LocationBridge.isRecoverableTransportDisruption(error.localizedDescription) {
+                beginTransientTransportRecovery(reason: error.localizedDescription)
+            } else {
+                errorHandler.handle(error, context: "Location injection")
+                isSimulating = false
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -714,6 +779,7 @@ class AppState: ObservableObject {
             errorHandler.handle(message: "Connect an iPhone to begin", type: .device)
             return
         }
+        cancelTransientTransportRecovery(clearSnapshot: true)
 
         do {
             try await LocationBridge.shared.clearLocation(for: device)
@@ -805,6 +871,7 @@ class AppState: ObservableObject {
     }
 
     private func performStopSimulation() async {
+        cancelTransientTransportRecovery(clearSnapshot: true)
         // Delegate to the simulation authority. The engine cancels its timer,
         // stops its mode, and clears the device location.
         await simulationEngine.stop()
@@ -830,6 +897,7 @@ class AppState: ObservableObject {
     }
 
     private func resetLocalSimulationStateAfterEngineStop() {
+        cancelTransientTransportRecovery(clearSnapshot: true)
         currentLocation = nil
         targetLocation = nil
         targetLocationName = nil
@@ -926,6 +994,7 @@ class AppState: ObservableObject {
         routeProgress = 0
         simulationEngine.speed = simulationSpeed
         await simulationEngine.startRoute(waypoints: currentRoute)
+        captureResumableSessionSnapshot(mode: .route)
     }
 
     // MARK: Joystick Mode
@@ -972,6 +1041,153 @@ class AppState: ObservableObject {
         simulationEngine.speed = simulationSpeed
         simulationEngine.updateJoystickDirection(joystickDirection)
         await simulationEngine.startJoystick(at: start)
+        captureResumableSessionSnapshot(mode: .joystick)
+    }
+
+    private func captureResumableSessionSnapshot(mode: SimulationModeType) {
+        guard let device = selectedDevice else {
+            resumableSessionSnapshot = nil
+            return
+        }
+
+        let coordinate = currentLocation ?? targetLocation
+        guard coordinate != nil || mode == .route else {
+            resumableSessionSnapshot = nil
+            return
+        }
+
+        if mode == .route, currentRoute.count < 2 {
+            return
+        }
+
+        resumableSessionSnapshot = ResumableSessionSnapshot(
+            device: device,
+            mode: mode,
+            coordinate: coordinate,
+            targetLocation: targetLocation,
+            targetLocationName: targetLocationName,
+            routeWaypoints: currentRoute,
+            routeProgress: routeProgress,
+            joystickDirection: joystickDirection,
+            wasPaused: isPaused || simulationEngine.state == .paused,
+            wasSimulating: isSimulating || simulationEngine.state.isActive,
+            speed: simulationSpeed
+        )
+    }
+
+    private func beginTransientTransportRecovery(reason: String) {
+        guard transientRecoveryTask == nil else {
+            return
+        }
+        guard let snapshot = resumableSessionSnapshot,
+              selectedDevice?.id == snapshot.device.id else {
+            lastError = reason
+            isSimulating = false
+            isPaused = false
+            return
+        }
+
+        transientRecoverySerial &+= 1
+        let serial = transientRecoverySerial
+        isSimulating = snapshot.wasSimulating
+        isPaused = snapshot.wasPaused
+        lastError = nil
+        statusMessage = "Recovering tunnel connection…"
+
+        transientRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let recovered = await self.recoverTunnelForTransientFailure(reason: reason)
+            guard self.transientRecoverySerial == serial else { return }
+            if recovered {
+#if DEBUG
+                if !self.debugSkipDeviceRefreshDuringTransientRecovery {
+                    await self.refreshDevices()
+                }
+#else
+                await self.refreshDevices()
+#endif
+            }
+            guard self.transientRecoverySerial == serial else { return }
+
+            if recovered,
+               self.selectedDevice?.id == snapshot.device.id {
+                await self.restoreResumableSession(snapshot)
+            } else {
+                self.isSimulating = false
+                self.isPaused = false
+                self.lastError = reason
+                self.statusMessage = "Tunnel recovery failed"
+            }
+
+            if self.transientRecoverySerial == serial {
+                self.transientRecoveryTask = nil
+            }
+        }
+    }
+
+    private func recoverTunnelForTransientFailure(reason: String) async -> Bool {
+#if DEBUG
+        if let debugTransientRecoveryHandler {
+            return await debugTransientRecoveryHandler(reason)
+        }
+#endif
+        return await TunneldManager.shared.recoverFromTransientTransportFailure(reason: reason)
+    }
+
+    private func restoreResumableSession(_ snapshot: ResumableSessionSnapshot) async {
+        guard selectedDevice?.id == snapshot.device.id else {
+            lastError = "Recovered tunnel, but the selected device changed before session restoration."
+            isSimulating = false
+            isPaused = false
+            return
+        }
+
+        simulationSpeed = snapshot.speed
+        simulationEngine.speed = snapshot.speed
+        targetLocation = snapshot.targetLocation
+        targetLocationName = snapshot.targetLocationName
+        currentRoute = snapshot.routeWaypoints
+        joystickDirection = snapshot.joystickDirection
+
+        switch snapshot.mode {
+        case .teleport:
+            guard let coordinate = snapshot.coordinate else {
+                isSimulating = false
+                isPaused = false
+                return
+            }
+            do {
+                try await LocationBridge.shared.setLocation(coordinate, for: snapshot.device)
+                currentLocation = coordinate
+                targetLocation = coordinate
+                isSimulating = true
+                isPaused = false
+                lastError = nil
+                statusMessage = "Location restored after tunnel recovery"
+                captureResumableSessionSnapshot(mode: .teleport)
+            } catch {
+                isSimulating = false
+                isPaused = false
+                lastError = error.localizedDescription
+                statusMessage = "Tunnel recovered, but location restoration failed"
+            }
+        case .route, .joystick:
+            simulationEngine.restoreSessionAfterTransportRecovery(
+                mode: snapshot.mode,
+                coordinate: snapshot.coordinate,
+                routeWaypoints: snapshot.routeWaypoints,
+                routeProgress: snapshot.routeProgress,
+                joystickDirection: snapshot.joystickDirection,
+                wasPaused: snapshot.wasPaused
+            )
+            isSimulating = true
+            isPaused = snapshot.wasPaused
+            lastError = nil
+            statusMessage = snapshot.wasPaused
+                ? "Session restored after tunnel recovery (paused)"
+                : "Session resumed after tunnel recovery"
+            captureResumableSessionSnapshot(mode: snapshot.mode)
+        }
     }
 
     /// Show the iOS-18+ compatibility warning toast at most once per device
@@ -1022,6 +1238,31 @@ class AppState: ObservableObject {
         simulationSpeed = speed
     }
 }
+
+#if DEBUG
+@MainActor
+extension AppState {
+    func testSetTransientRecoveryHandler(_ handler: @escaping (String) async -> Bool) {
+        debugTransientRecoveryHandler = handler
+    }
+
+    func testSetSkipsDeviceRefreshDuringTransientRecovery(_ skip: Bool) {
+        debugSkipDeviceRefreshDuringTransientRecovery = skip
+    }
+
+    func testCaptureResumableSessionSnapshot(mode: SimulationModeType) {
+        captureResumableSessionSnapshot(mode: mode)
+    }
+
+    func testBeginTransientTransportRecovery(reason: String) {
+        beginTransientTransportRecovery(reason: reason)
+    }
+
+    var testHasTransientRecoveryTask: Bool {
+        transientRecoveryTask != nil
+    }
+}
+#endif
 
 // MARK: - Connection Status
 

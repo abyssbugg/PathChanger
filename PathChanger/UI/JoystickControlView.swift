@@ -12,24 +12,27 @@ struct JoystickControlView: View {
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
 
-    private let outerRadius: CGFloat = 76
-    private let innerRadius: CGFloat = 24
+    private let outerRadius: CGFloat = 56
+    private let innerRadius: CGFloat = 18
 
     var body: some View {
         FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill") {
-            VStack(spacing: AppSpacing.md) {
-                HStack {
-                    VStack(alignment: .leading, spacing: AppSpacing.xs) {
-                        Text("Manual movement")
-                            .font(AppFont.title)
-                            .foregroundStyle(Color.pcText)
-                        Text("Drag the control pad to stream direction updates")
-                            .font(AppFont.metadata)
-                            .foregroundStyle(Color.pcTextMuted)
-                    }
-
-                    Spacer()
+            // Operational refinement: collapse the redundant heading copy
+            // (panel title already says "Joystick Control"), shorten the
+            // subtitle so it stops wrapping inside the 236pt content width,
+            // tighten vertical chaining (sm vs md) and drop the dead
+            // "Drag to move" caption — the N/S/E/W dial already conveys it.
+            VStack(spacing: AppSpacing.sm) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Drag to move — tap a start point first")
+                        .font(AppFont.metadata)
+                        .foregroundStyle(Color.pcTextMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
                 }
+
+                startLocationSummary
                 ZStack {
                     Circle()
                         .fill(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow))
@@ -97,14 +100,43 @@ struct JoystickControlView: View {
                         )
                 }
                 .frame(width: outerRadius * 2, height: outerRadius * 2)
-
-                Text("Drag to move")
-                    .font(AppFont.monoSmall)
-                    .foregroundStyle(Color.pcTextMuted)
+                .frame(maxWidth: .infinity)
             }
-            .frame(width: 288)
+            // Operational refinement: standardize panel width to align with
+            // Teleport/Multi-Spot (312–332). The joystick dial now centers
+            // horizontally inside the panel without dead horizontal padding.
+            .frame(minWidth: 280, idealWidth: 296, maxWidth: 312)
         }
-        .frame(maxWidth: 360, alignment: .leading)
+        .frame(maxWidth: 312, alignment: .leading)
+    }
+
+    private var startLocationSummary: some View {
+        let start = appState.currentLocation ?? appState.targetLocation
+        return HStack(spacing: AppSpacing.sm) {
+            Image(systemName: "scope")
+                .foregroundStyle(start == nil ? Color.pcTextMuted : Color.pcPrimary)
+
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
+                Text(appState.targetLocationName ?? "No start selected")
+                    .font(AppFont.label)
+                    .foregroundStyle(Color.pcText)
+                    .lineLimit(1)
+                Text(start?.formattedShort ?? "Use sidebar search or tap the map")
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, AppSpacing.sm)
+        .padding(.vertical, AppSpacing.xs)
+        .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+        )
+        .accessibilityIdentifier("joystickStartLocationSummary")
     }
 }
 

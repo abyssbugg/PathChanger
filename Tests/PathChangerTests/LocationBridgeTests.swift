@@ -455,6 +455,44 @@ final class LocationBridgeEdgeCaseTests: XCTestCase {
         XCTAssertEqual(error.errorDescription, "Bridge request timed out")
     }
 
+    func testVPNLikeTransportMessagesAreRecoverableDisruptions() {
+        let recoverableMessages = [
+            "OSError: [Errno 65] No route to host",
+            "Network is unreachable while writing to DVT",
+            "BrokenPipeError: broken pipe",
+            "Connection reset by peer",
+            "Connection refused",
+            "Unable to connect to Tunneld",
+            "Tunnel transport failed: set_location failed for Test iPhone: Bridge request timed out",
+            "No valid live RSD exists for Test iPhone"
+        ]
+
+        for message in recoverableMessages {
+            XCTAssertTrue(
+                LocationBridge.isRecoverableTransportDisruption(message),
+                "Expected recoverable transport disruption for: \(message)"
+            )
+        }
+    }
+
+    func testTerminalFailuresAreNotRecoverableTransportDisruptions() {
+        let terminalMessages = [
+            "Security violation: Unknown subcommand 'rm'",
+            "Refusing to run pair_wifi.py: resolved path is unsafe",
+            "DeveloperModeError: Developer Mode disabled",
+            "PairingError: device is not paired",
+            "Python3 not found in PATH",
+            "Invalid response from bridge: { invalid json }"
+        ]
+
+        for message in terminalMessages {
+            XCTAssertFalse(
+                LocationBridge.isRecoverableTransportDisruption(message),
+                "Expected terminal failure to remain non-recoverable: \(message)"
+            )
+        }
+    }
+
     @MainActor
     func testConcurrentRequestSafety() async throws {
         let bridge = LocationBridge.shared

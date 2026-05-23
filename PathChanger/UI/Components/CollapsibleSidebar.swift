@@ -22,17 +22,22 @@ struct CollapsibleSidebar: View {
     @Binding var selectedMode: AppMode
     @Binding var isShowingSettings: Bool
     @EnvironmentObject var appState: AppState
+    var onCollapse: () -> Void = {}
 
     @StateObject private var searchService = LocationSearchService()
     @State private var showSearchResults = false
     @FocusState private var isSearchFocused: Bool
+    private enum SelectionSource {
+        case search
+        case recent
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Traffic-light gutter so the sidebar's content sits below the
             // window controls. The native traffic lights are drawn by the
             // window itself; we just reserve space.
-            Color.clear.frame(height: 56)
+            topGutter
 
             VStack(alignment: .leading, spacing: 14) {
                 searchField
@@ -60,15 +65,23 @@ struct CollapsibleSidebar: View {
         .frame(width: 240)
         .frame(maxHeight: .infinity)
         .background(.regularMaterial)
+        // Slice F1 (UX remediation): both decorative overlay rectangles must be
+        // hit-test-transparent. A `Rectangle().fill(...)` overlay without
+        // `.allowsHitTesting(false)` absorbs every tap, silently blocking the
+        // mode picker, recent locations, settings cog, and search field that
+        // live BELOW these overlays. Visual appearance, glass styling, layout,
+        // and accessibility semantics are unchanged.
         .overlay(
             Rectangle()
                 .fill(Color.pcSurfaceTintDynamic)
+                .allowsHitTesting(false)
         )
         .overlay(
             Rectangle()
                 .fill(Color.pcOutlineDynamic)
                 .frame(width: 1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+                .allowsHitTesting(false)
         )
         .overlay(alignment: .top) {
             // Search results dropdown — anchored just below the search field
@@ -80,6 +93,32 @@ struct CollapsibleSidebar: View {
             }
         }
         .accessibilityIdentifier("mapShellSidebar")
+    }
+
+    // MARK: - Top gutter
+
+    private var topGutter: some View {
+        HStack {
+            Spacer()
+            Button(action: onCollapse) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.pcTextMutedDynamic)
+                    .frame(width: 32, height: 32)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.pcOutlineDynamic, lineWidth: 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Hide sidebar")
+            .accessibilityHint("Collapses the navigation sidebar")
+            .accessibilityIdentifier("mapShellSidebarCollapseButton")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 56)
     }
 
     // MARK: - Search field
@@ -202,7 +241,7 @@ struct CollapsibleSidebar: View {
 
     private func recentRow(_ entry: LocationHistoryEntry) -> some View {
         Button {
-            appState.selectHistoryEntry(entry)
+            select(coordinate: entry.coordinate, name: entry.displayName, source: .recent)
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.displayName)
@@ -291,9 +330,26 @@ struct CollapsibleSidebar: View {
     }
 
     private func select(searchResult result: LocationSearchResult) {
-        appState.targetLocation = result.coordinate
-        appState.targetLocationName = result.name
-        appState.statusMessage = "Selected \(result.name). Press the action pill to apply."
+        select(coordinate: result.coordinate, name: result.name, source: .search)
+    }
+
+    private func select(coordinate: LocationCoordinate, name: String, source: SelectionSource) {
+        appState.targetLocation = coordinate
+        appState.targetLocationName = name
+
+        switch selectedMode {
+        case .route:
+            appState.addRoutePoint(coordinate)
+            appState.targetLocationName = name
+            let nextAction = source == .search ? "Search again for the next spot." : "Select another recent or search for the next spot."
+            appState.statusMessage = "Added \(name) as waypoint \(appState.currentRoute.count). \(nextAction)"
+        case .joystick:
+            appState.statusMessage = "Selected \(name) as joystick start. Press the action pill to begin."
+        case .teleport:
+            appState.statusMessage = "Selected \(name). Press the action pill to apply."
+        case .settings:
+            appState.statusMessage = "Selected \(name)."
+        }
         searchService.clearSearch()
         showSearchResults = false
         isSearchFocused = false

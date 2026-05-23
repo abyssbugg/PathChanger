@@ -142,13 +142,101 @@ struct DeviceTunnelPill: View {
             return "Tunnel starting…"
         }
         if tunneldManager.isRunning {
-            return "Connected · iOS \(device.iosVersion)"
+            return "\(transportPresentation.title) · iOS \(device.iosVersion)"
         }
-        return "Preparing connection… · iOS \(device.iosVersion)"
+        return "\(transportPresentation.title) · iOS \(device.iosVersion)"
     }
 
     private var accessibilityLabel: String {
         "\(deviceName), \(statusText). Tap to switch devices."
+    }
+
+    private var transportPresentation: ActiveTransportPresentation {
+        ActiveTransportPresentation.resolve(
+            isTunnelRunning: tunneldManager.isRunning,
+            activeTunnelMode: tunneldManager.presentationActiveMode,
+            tunnelInfoMode: tunneldManager.tunnelInfo?.mode,
+            preferredMode: tunneldManager.preferredMode,
+            selectedConnectionType: appState.selectedDevice?.connectionType,
+            isUSBConnected: appState.isUSBConnected,
+            isWiFiAvailable: appState.isWiFiAvailable,
+            preferUSBConnection: appState.preferUSBConnection
+        )
+    }
+}
+
+struct ActiveTransportPresentation: Equatable {
+    let title: String
+    let icon: String
+    let isActive: Bool
+
+    static func resolve(
+        isTunnelRunning: Bool,
+        activeTunnelMode: TunnelMode?,
+        tunnelInfoMode: TunnelMode? = nil,
+        preferredMode: TunnelMode = .auto,
+        selectedConnectionType: ConnectionType?,
+        isUSBConnected: Bool,
+        isWiFiAvailable: Bool,
+        preferUSBConnection: Bool
+    ) -> ActiveTransportPresentation {
+        if isTunnelRunning {
+            let resolvedMode = presentationMode(
+                activeTunnelMode: activeTunnelMode,
+                tunnelInfoMode: tunnelInfoMode,
+                preferredMode: preferredMode
+            )
+            // Presentation-only guard: if USB is not physically connected,
+            // the running tunnel cannot be cable-backed. A stale `.usb`
+            // active mode would otherwise mis-report "USB Active" during an
+            // actual Wi-Fi session (e.g. after the cable was unplugged and
+            // recovery converged on Wi-Fi). Collapse to the wireless
+            // presentation. Runtime ownership is not modified.
+            if resolvedMode == .usb && !isUSBConnected {
+                return ActiveTransportPresentation(title: "Wi-Fi Active", icon: "wifi", isActive: true)
+            }
+            switch resolvedMode {
+            case .usb:
+                return ActiveTransportPresentation(title: "USB Active", icon: "cable.connector", isActive: true)
+            case .wifi, .daemon:
+                return ActiveTransportPresentation(title: "Wi-Fi Active", icon: "wifi", isActive: true)
+            case .auto, .none:
+                return ActiveTransportPresentation(title: "Tunnel Active", icon: "point.3.connected.trianglepath.dotted", isActive: true)
+            }
+        }
+
+        if selectedConnectionType == .usb {
+            return ActiveTransportPresentation(title: "USB Selected", icon: "cable.connector", isActive: false)
+        }
+        if selectedConnectionType == .wifi {
+            return ActiveTransportPresentation(title: "Wi-Fi Selected", icon: "wifi", isActive: false)
+        }
+        if preferUSBConnection && isUSBConnected {
+            return ActiveTransportPresentation(title: "USB Preferred", icon: "cable.connector", isActive: false)
+        }
+        if isUSBConnected {
+            return ActiveTransportPresentation(title: "USB Available", icon: "cable.connector", isActive: false)
+        }
+        if isWiFiAvailable {
+            return ActiveTransportPresentation(title: "Wi-Fi Available", icon: "wifi", isActive: false)
+        }
+        return ActiveTransportPresentation(title: "No Connection", icon: "iphone.slash", isActive: false)
+    }
+
+    private static func presentationMode(
+        activeTunnelMode: TunnelMode?,
+        tunnelInfoMode: TunnelMode?,
+        preferredMode: TunnelMode
+    ) -> TunnelMode? {
+        if preferredMode == .wifi || preferredMode == .daemon {
+            return preferredMode
+        }
+        if let tunnelInfoMode,
+           tunnelInfoMode != .auto,
+           tunnelInfoMode != activeTunnelMode {
+            return tunnelInfoMode
+        }
+        return activeTunnelMode ?? tunnelInfoMode
     }
 }
 
@@ -233,9 +321,9 @@ private struct DevicePopoverContent: View {
             Divider()
 
             HStack(spacing: 8) {
-                Image(systemName: tunneldManager.isRunning ? "checkmark.shield.fill" : "exclamationmark.shield")
+                Image(systemName: transportPresentation.icon)
                     .foregroundStyle(tunneldManager.isRunning ? Color.green : Color.orange)
-                Text(tunneldManager.isRunning ? "Tunnel ready" : "Tunnel offline")
+                Text(tunneldManager.isRunning ? transportPresentation.title : "Tunnel offline · \(transportPresentation.title)")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.pcTextMutedDynamic)
                 Spacer()
@@ -253,6 +341,19 @@ private struct DevicePopoverContent: View {
             }
         }
         .padding(14)
+    }
+
+    private var transportPresentation: ActiveTransportPresentation {
+        ActiveTransportPresentation.resolve(
+            isTunnelRunning: tunneldManager.isRunning,
+            activeTunnelMode: tunneldManager.presentationActiveMode,
+            tunnelInfoMode: tunneldManager.tunnelInfo?.mode,
+            preferredMode: tunneldManager.preferredMode,
+            selectedConnectionType: appState.selectedDevice?.connectionType,
+            isUSBConnected: appState.isUSBConnected,
+            isWiFiAvailable: appState.isWiFiAvailable,
+            preferUSBConnection: appState.preferUSBConnection
+        )
     }
 }
 

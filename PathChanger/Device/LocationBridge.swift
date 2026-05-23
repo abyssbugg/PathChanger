@@ -212,6 +212,26 @@ final class LocationBridge: ObservableObject {
         }
     }
 
+    nonisolated static func isRecoverableTransportDisruption(_ message: String) -> Bool {
+        guard isTunnelTransportFailureMessage(message) else {
+            return false
+        }
+
+        let lowercased = message.lowercased()
+        let terminalMarkers = [
+            "security violation",
+            "resolved path is unsafe",
+            "developermodeerror",
+            "developer mode disabled",
+            "pairingerror",
+            "not paired",
+            "python3 not found",
+            "invalid response from bridge",
+            "unknown subcommand"
+        ]
+        return !terminalMarkers.contains { lowercased.contains($0) }
+    }
+
     nonisolated private static func isTunnelTransportFailureMessage(_ message: String) -> Bool {
         let lowercased = message.lowercased()
         let markers = [
@@ -225,6 +245,7 @@ final class LocationBridge: ObservableObject {
             "network is unreachable",
             "unable to connect to tunneld",
             "tunnel is not running",
+            "no valid live rsd exists",
             "bridge request timed out",
             "timed out",
             "timeout"

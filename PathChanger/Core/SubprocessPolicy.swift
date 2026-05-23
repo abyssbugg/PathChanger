@@ -32,9 +32,9 @@ public enum SubprocessPolicy {
     /// The only Python 3 executable paths the app will execute.
     ///
     /// User-writable bin directories (e.g. `~/.local/bin`) are intentionally
-    /// excluded. Pyenv shim/version paths are resolved dynamically by
-    /// `PythonPathResolver` and validated against this set at the point of
-    /// execution.
+    /// excluded. Pyenv version-managed interpreters are validated separately in
+    /// `isAllowedPythonPath(_:)` so legitimate `~/.pyenv/versions/*/bin/python3`
+    /// runtimes work without allowing arbitrary user-home executables.
     public static let allowedPythonPaths: Set<String> = [
         "/opt/homebrew/bin/python3",
         "/opt/homebrew/bin/python3.11",
@@ -155,7 +155,38 @@ public enum SubprocessPolicy {
 
     /// Check whether a Python path is approved for execution.
     public static func isAllowedPythonPath(_ path: String) -> Bool {
-        allowedPythonPaths.contains(path)
+        if allowedPythonPaths.contains(path) {
+            return true
+        }
+
+        return isAllowedPyenvVersionPythonPath(path)
+    }
+
+    private static func isAllowedPyenvVersionPythonPath(_ path: String) -> Bool {
+        guard !path.isEmpty,
+              !containsForbiddenCharacter(path),
+              FileManager.default.isExecutableFile(atPath: path) else {
+            return false
+        }
+
+        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard standardizedPath == path else {
+            return false
+        }
+
+        let prefix = "\(NSHomeDirectory())/.pyenv/versions/"
+        guard path.hasPrefix(prefix),
+              path.hasSuffix("/bin/python3") else {
+            return false
+        }
+
+        let versionName = path
+            .dropFirst(prefix.count)
+            .dropLast("/bin/python3".count)
+
+        return !versionName.isEmpty &&
+               !versionName.contains("/") &&
+               !versionName.contains("..")
     }
 
     /// Check whether a pmd3 subcommand is in the allowlist.
