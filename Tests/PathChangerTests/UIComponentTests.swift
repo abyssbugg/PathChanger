@@ -108,6 +108,40 @@ final class ToastManagerTests: XCTestCase {
     }
 }
 
+// MARK: - Device Auto Refresh Preferences Tests
+
+final class DeviceAutoRefreshPreferencesTests: XCTestCase {
+
+    func testRegisteredDefaultsMatchDeviceManagerRuntimeDefaults() {
+        XCTAssertEqual(DeviceAutoRefreshPreferences.defaultEnabled, true)
+        XCTAssertEqual(DeviceAutoRefreshPreferences.defaultInterval, 120.0)
+        XCTAssertTrue(DeviceAutoRefreshPreferences.allowedIntervals.contains(120.0))
+    }
+
+    func testIntervalRejectsUnsupportedSettingsValuesAndFallsBackToRuntimeDefault() {
+        let suiteName = "PathChanger.DeviceAutoRefreshPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(5.0, forKey: DeviceAutoRefreshPreferences.intervalKey)
+
+        XCTAssertEqual(
+            DeviceAutoRefreshPreferences.interval(from: defaults),
+            DeviceAutoRefreshPreferences.defaultInterval
+        )
+    }
+
+    func testIntervalAcceptsSupportedSettingsValues() {
+        let suiteName = "PathChanger.DeviceAutoRefreshPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(300.0, forKey: DeviceAutoRefreshPreferences.intervalKey)
+
+        XCTAssertEqual(DeviceAutoRefreshPreferences.interval(from: defaults), 300.0)
+    }
+}
+
 // MARK: - Toast Model Tests
 
 final class ToastModelTests: XCTestCase {
@@ -388,5 +422,63 @@ final class AppSettingsTests: XCTestCase {
         // Should be reset to defaults
         XCTAssertEqual(settings.commandTimeout, AppConstants.Timeout.defaultCommandTimeout)
         XCTAssertEqual(settings.tunnelTimeout, AppConstants.Timeout.defaultTunnelTimeout)
+    }
+
+    func testCommandTimeoutSetterClampsInMemoryAndDefaults() {
+        let suiteName = "PathChanger.AppSettingsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        settings.commandTimeout = -1
+
+        XCTAssertEqual(settings.commandTimeout, AppConstants.Timeout.commandTimeoutMin)
+        XCTAssertEqual(defaults.double(forKey: "commandTimeout"), AppConstants.Timeout.commandTimeoutMin)
+    }
+
+    func testTunnelTimeoutSetterClampsInMemoryAndDefaults() {
+        let suiteName = "PathChanger.AppSettingsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+        settings.tunnelTimeout = 999
+
+        XCTAssertEqual(settings.tunnelTimeout, AppConstants.Timeout.tunnelTimeoutMax)
+        XCTAssertEqual(defaults.double(forKey: "tunnelTimeout"), AppConstants.Timeout.tunnelTimeoutMax)
+    }
+
+    func testRateLimitSettingsClampInMemoryAndDefaults() {
+        let suiteName = "PathChanger.AppSettingsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettings(defaults: defaults)
+
+        settings.rateLimitCapacity = -10
+        XCTAssertEqual(settings.rateLimitCapacity, AppConstants.RateLimiting.minCapacity)
+        XCTAssertEqual(defaults.integer(forKey: "rateLimitCapacity"), AppConstants.RateLimiting.minCapacity)
+
+        settings.rateLimitRefillRate = 999
+        XCTAssertEqual(settings.rateLimitRefillRate, AppConstants.RateLimiting.maxRefillRate)
+        XCTAssertEqual(defaults.double(forKey: "rateLimitRefillRate"), AppConstants.RateLimiting.maxRefillRate)
+    }
+
+    func testInitializerClampsPersistedOutOfRangeValues() {
+        let suiteName = "PathChanger.AppSettingsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(999, forKey: "commandTimeout")
+        defaults.set(-1, forKey: "tunnelTimeout")
+        defaults.set(999, forKey: "rateLimitCapacity")
+        defaults.set(-1, forKey: "rateLimitRefillRate")
+
+        let settings = AppSettings(defaults: defaults)
+
+        XCTAssertEqual(settings.commandTimeout, AppConstants.Timeout.commandTimeoutMax)
+        XCTAssertEqual(settings.tunnelTimeout, AppConstants.Timeout.tunnelTimeoutMin)
+        XCTAssertEqual(settings.rateLimitCapacity, AppConstants.RateLimiting.maxCapacity)
+        XCTAssertEqual(settings.rateLimitRefillRate, AppConstants.RateLimiting.minRefillRate)
     }
 }

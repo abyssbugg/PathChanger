@@ -318,6 +318,95 @@ final class FileLoggerTests: XCTestCase {
     }
 }
 
+// MARK: - Log Redaction Tests
+
+final class LogRedactionTests: XCTestCase {
+
+    func testLogRedactorMasksDeviceIdentifiersCoordinatesAndHomePaths() {
+        let raw = "device=00008030-001234567890ABCD legacy=00008030001234567890123456789012345678ab lat=37.3317 lon=-122.0307 file=/Users/alice/Library/Logs/PathChanger/private.log"
+
+        let redacted = LogRedactor.redact(raw)
+
+        XCTAssertFalse(redacted.contains("00008030-001234567890ABCD"))
+        XCTAssertFalse(redacted.contains("00008030001234567890123456789012345678ab"))
+        XCTAssertFalse(redacted.contains("37.3317"))
+        XCTAssertFalse(redacted.contains("-122.0307"))
+        XCTAssertFalse(redacted.contains("/Users/alice"))
+        XCTAssertTrue(redacted.contains("[REDACTED"))
+    }
+
+    func testLogEntryFormattedLineRedactsSensitiveMessageAndMetadataValues() {
+        let entry = LogEntry(
+            timestamp: Date(),
+            level: "info",
+            category: "device",
+            message: "Setting 37.3317,-122.0307 on 00008030-001234567890ABCD",
+            metadata: LogMetadata(
+                sessionId: "session-1",
+                deviceUDID: "00008030-001234567890ABCD",
+                operationType: "diagnostics",
+                additionalInfo: [
+                    "path": "/Users/alice/Library/Logs/PathChanger/private.log",
+                    "latitude": "37.3317",
+                    "longitude": "-122.0307"
+                ]
+            )
+        )
+
+        let line = entry.formattedLine
+
+        XCTAssertFalse(line.contains("00008030-001234567890ABCD"))
+        XCTAssertFalse(line.contains("37.3317"))
+        XCTAssertFalse(line.contains("-122.0307"))
+        XCTAssertFalse(line.contains("/Users/alice"))
+        XCTAssertTrue(line.contains("[REDACTED"))
+    }
+
+    func testFileLoggerExportWritesRedactedLogCopies() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PathChanger-LoggerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let rawLog = tempRoot.appendingPathComponent("PathChanger-test.log")
+        try "[2026-06-11T00:00:00Z] [INFO] [device] device=00008030-001234567890ABCD lat=37.3317 lon=-122.0307 path=/Users/alice/private\n"
+            .write(to: rawLog, atomically: true, encoding: .utf8)
+
+        let logger = FileLogger(logDirectory: tempRoot)
+        let exportedArchive = await logger.exportLogs()
+        let archive = try XCTUnwrap(exportedArchive)
+
+        let unzipDir = tempRoot.appendingPathComponent("unzipped", isDirectory: true)
+        try FileManager.default.createDirectory(at: unzipDir, withIntermediateDirectories: true)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", archive.path, unzipDir.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let exportedText = try collectTextFiles(under: unzipDir, extension: "log")
+
+        XCTAssertFalse(exportedText.contains("00008030-001234567890ABCD"))
+        XCTAssertFalse(exportedText.contains("37.3317"))
+        XCTAssertFalse(exportedText.contains("-122.0307"))
+        XCTAssertFalse(exportedText.contains("/Users/alice"))
+        XCTAssertTrue(exportedText.contains("[REDACTED"))
+    }
+
+    private func collectTextFiles(under directory: URL, extension pathExtension: String) throws -> String {
+        let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+        var collected = ""
+        while let file = enumerator?.nextObject() as? URL {
+            guard file.pathExtension == pathExtension else { continue }
+            collected += try String(contentsOf: file, encoding: .utf8)
+            collected += "\n"
+        }
+        return collected
+    }
+}
+
 // MARK: - Logger Integration Tests
 
 final class LoggerIntegrationTests: XCTestCase {

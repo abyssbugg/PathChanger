@@ -178,9 +178,11 @@ final class KeyboardShortcutTests: XCTestCase {
         XCTAssertTrue(KeyboardShortcuts.stopSimulation.modifiers.contains(.command))
     }
 
-    func testNavigationShortcutsUseMultipleModifiers() {
+    func testNavigationSidebarShortcutUsesCommandBackslashOnly() {
         XCTAssertTrue(KeyboardShortcuts.showSidebar.modifiers.contains(.command))
-        XCTAssertTrue(KeyboardShortcuts.showSidebar.modifiers.contains(.shift))
+        XCTAssertFalse(KeyboardShortcuts.showSidebar.modifiers.contains(.shift))
+        XCTAssertFalse(KeyboardShortcuts.showSidebar.modifiers.contains(.option))
+        XCTAssertFalse(KeyboardShortcuts.showSidebar.modifiers.contains(.control))
     }
 
     func testSpeedControlShortcutsUseMultipleModifiers() {

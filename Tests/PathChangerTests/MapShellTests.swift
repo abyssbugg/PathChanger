@@ -95,7 +95,24 @@ final class MapShellSourceWiringTests: XCTestCase {
         XCTAssertTrue(shell.contains("SettingsSheetContainer"))
         XCTAssertTrue(shell.contains("mapShellSettingsDoneButton"))
         XCTAssertTrue(shell.contains("SettingsView(showsHeader: false)"))
-        XCTAssertTrue(shell.contains(".frame(width: 760, height: 620)"))
+        XCTAssertTrue(shell.contains(".frame(width: DS.Metrics.settingsContentMaxWidth, height: DS.Metrics.settingsSheetHeight)"))
+    }
+
+    func testMainWindowLifecycleIsRecoverableAfterDeviceRefresh() throws {
+        let app = try readProjectFile("PathChanger/PathChangerApp.swift")
+        let delegate = try readProjectFile("PathChanger/AppDelegate.swift")
+
+        XCTAssertTrue(app.contains("WindowGroup(id: \"main\")"))
+        XCTAssertTrue(app.contains("@Environment(\\.openWindow)"))
+        XCTAssertTrue(app.contains("@Environment(\\.scenePhase)"))
+        XCTAssertTrue(app.contains("openWindow(id: \"main\")"))
+        XCTAssertTrue(app.contains("main_window_lifecycle"))
+
+        XCTAssertTrue(delegate.contains("applicationShouldHandleReopen"))
+        XCTAssertTrue(delegate.contains("makeKeyAndOrderFront"))
+        XCTAssertTrue(delegate.contains("applicationShouldTerminateAfterLastWindowClosed"))
+        XCTAssertTrue(delegate.contains("return false"))
+        XCTAssertTrue(delegate.contains("window_lifecycle"))
     }
 
     func testSidebarSearchIsModeAwareForRouteAndJoystick() throws {
@@ -103,10 +120,81 @@ final class MapShellSourceWiringTests: XCTestCase {
 
         XCTAssertTrue(sidebar.contains("switch selectedMode"))
         XCTAssertTrue(sidebar.contains("case .route:"))
-        XCTAssertTrue(sidebar.contains("appState.addRoutePoint(coordinate)"))
-        XCTAssertTrue(sidebar.contains("select(coordinate: entry.coordinate, name: entry.displayName, source: .recent)"))
+        XCTAssertTrue(sidebar.contains("Selected \\(name) as route spot. Use Add Waypoint to include it in the route."))
+        XCTAssertTrue(sidebar.contains("select(coordinate: entry.coordinate, name: entry.displayName)"))
+        XCTAssertFalse(sidebar.contains("appState.addRoutePoint(coordinate)"))
+        XCTAssertFalse(sidebar.contains("source: .recent"))
         XCTAssertTrue(sidebar.contains("case .joystick:"))
         XCTAssertTrue(sidebar.contains("as joystick start"))
+    }
+    func testSidebarShortcutWiringUsesCommandBackslashEverywhere() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+        let accessibility = try readProjectFile("PathChanger/UI/Accessibility.swift")
+        let readme = try readProjectFile("README.md")
+
+        XCTAssertTrue(shell.contains(".keyboardShortcut(\"\\\\\", modifiers: .command)"))
+        XCTAssertTrue(accessibility.contains("static let showSidebar = KeyboardShortcut(\"\\\\\", modifiers: .command)"))
+        XCTAssertTrue(readme.contains("| `⌘\\` | Toggle sidebar |"))
+        XCTAssertFalse(accessibility.contains("KeyboardShortcut(\"s\", modifiers: [.command, .shift])"))
+        XCTAssertFalse(readme.contains("| `⌘⇧S` | Toggle sidebar |"))
+    }
+
+    func testAuthorityCopyNamesCanonicalShellReadinessAndExecutionOwners() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+        let primary = try readProjectFile("PathChanger/UI/Components/PrimaryActionPill.swift")
+        let device = try readProjectFile("PathChanger/UI/Components/DeviceTunnelPill.swift")
+        let content = try readProjectFile("PathChanger/UI/ContentView.swift")
+
+        XCTAssertTrue(shell.contains("MainMapShell is the single production shell layout authority."))
+        XCTAssertTrue(primary.contains("PrimaryActionPill is the SOLE production T0 execution authority."))
+        XCTAssertTrue(device.contains("DeviceTunnelPill is the SOLE production Phase-1 readiness authority."))
+        XCTAssertTrue(content.contains("PrimaryActionPill remains the sole production T0 execution"))
+        XCTAssertTrue(content.contains("DeviceTunnelPill remains the sole production"))
+    }
+
+    func testPrimaryActionPillUsesModeSpecificDeviceMutationLabels() throws {
+        let primary = try readProjectFile("PathChanger/UI/Components/PrimaryActionPill.swift")
+
+        XCTAssertTrue(primary.contains("ready(label: \"Apply to Device\""))
+        XCTAssertTrue(primary.contains("ready(label: \"Start Route\""))
+        XCTAssertTrue(primary.contains("ready(label: \"Start Joystick\""))
+        XCTAssertTrue(primary.contains("Applies the selected target to the device"))
+        XCTAssertFalse(primary.contains("return \"Set Location\""))
+    }
+
+    func testSimulationPanelCopyDistinguishesTargetFromDeviceMutation() throws {
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+
+        XCTAssertTrue(simulationView.contains("Label(\"Set Target\", systemImage: \"mappin\")"))
+        XCTAssertTrue(simulationView.contains("Selected target: %.4f, %.4f. Use the primary action pill to apply it to the device."))
+        XCTAssertTrue(simulationView.contains("Selected \\(result.name) as target. Use the primary action pill to apply it to the device."))
+        XCTAssertTrue(simulationView.contains("Select a spot first"))
+        XCTAssertTrue(simulationView.contains("Enter valid decimal coordinates"))
+        XCTAssertTrue(simulationView.contains("Latitude must be -90...90; longitude -180...180"))
+        XCTAssertFalse(simulationView.contains("Press Play or Apply to set."))
+        XCTAssertFalse(simulationView.contains("Press Play to apply it."))
+    }
+
+    func testRouteWaypointRowsUseIndexedAccessibilityIdentifiers() throws {
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+        let accessibility = try readProjectFile("PathChanger/UI/Accessibility.swift")
+
+        XCTAssertTrue(accessibility.contains("static func routeRow(index: Int) -> String"))
+        XCTAssertTrue(simulationView.contains(".accessibilityIdentifier(AccessibilityIdentifiers.Route.routeRow(index: index))"))
+        XCTAssertFalse(simulationView.contains(".accessibilityIdentifier(AccessibilityIdentifiers.Route.routeRow)"))
+    }
+
+    func testW1ConvergenceValidatorTargetsLiveSidebarComponent() throws {
+        let validator = try readProjectFile("scripts/validate-w1-convergence-lock.sh")
+
+        XCTAssertTrue(
+            validator.contains("PathChanger/UI/Components/CollapsibleSidebar.swift"),
+            "W1 validation must inspect the live production sidebar component used by MainMapShell."
+        )
+        XCTAssertFalse(
+            validator.contains("PathChanger/UI/SidebarView.swift"),
+            "W1 validation must not target the deleted legacy SidebarView path."
+        )
     }
 
     func testModePanelsExposeCompactStateSummaries() throws {
@@ -118,20 +206,64 @@ final class MapShellSourceWiringTests: XCTestCase {
         let joystick = try readProjectFile("PathChanger/UI/JoystickControlView.swift")
 
         XCTAssertTrue(simulationView.contains("routeSelectedTargetSummary"))
-        XCTAssertTrue(simulationView.contains("Search the sidebar or tap the map to add spots."))
-        // Refined Teleport panel width (was 260/304/328 — surgically tightened
-        // to drop unused inspector slack).
-        XCTAssertTrue(simulationView.contains(".frame(minWidth: 260, idealWidth: 296, maxWidth: 312)"))
-        // Refined Multi-Spot panel width (was 260/332/380 — brought in to align
-        // with Teleport/Joystick for cross-mode consistency).
-        XCTAssertTrue(simulationView.contains(".frame(minWidth: 280, idealWidth: 312, maxWidth: 332)"))
+        XCTAssertTrue(simulationView.contains("Select a spot, then Add Waypoint."))
+        // Refined Teleport panel width is now tokenized in DS metrics.
+        XCTAssertTrue(simulationView.contains("minWidth: DS.Metrics.mapTeleportPanelMinWidth"))
+        XCTAssertTrue(simulationView.contains("idealWidth: DS.Metrics.mapTeleportPanelIdealWidth"))
+        XCTAssertTrue(simulationView.contains("maxWidth: DS.Metrics.mapTeleportPanelMaxWidth"))
+        // Refined Multi-Spot panel width is now tokenized in DS metrics.
+        XCTAssertTrue(simulationView.contains("minWidth: DS.Metrics.mapRoutePanelMinWidth"))
+        XCTAssertTrue(simulationView.contains("idealWidth: DS.Metrics.mapRoutePanelIdealWidth"))
+        XCTAssertTrue(simulationView.contains("maxWidth: DS.Metrics.mapRoutePanelMaxWidth"))
         XCTAssertTrue(joystick.contains("joystickStartLocationSummary"))
         // Dead "tap a start point first" caption dropped — the N/S/E/W dial
         // already conveys movement, and startLocationSummary provides the
         // empty-state hint ("No start selected" / "Use sidebar search...").
-        // Refined joystick dial (was 58 — reduced to 56 so the joystick fits
-        // cleanly inside the refined 312-wide panel without dead space).
-        XCTAssertTrue(joystick.contains("private let outerRadius: CGFloat = 56"))
+        // Refined joystick dial size is tokenized in DS metrics.
+        XCTAssertTrue(joystick.contains("private let outerRadius: CGFloat = DS.Metrics.joystickOuterRadius"))
+    }
+
+    func testP0RouteTypeControlIsNotShownUntilFunctional() throws {
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+
+        XCTAssertTrue(simulationView.contains("Route Type control is intentionally hidden until it is wired to route playback behavior."))
+        XCTAssertFalse(simulationView.contains("@State private var routeType"))
+        XCTAssertFalse(simulationView.contains("Picker(\"Route Type\""))
+        XCTAssertFalse(simulationView.contains("enum RouteType"))
+    }
+
+    func testP0MultiSpotUsesSelectThenAddWaypointModelEverywhere() throws {
+        let sidebar = try readProjectFile("PathChanger/UI/Components/CollapsibleSidebar.swift")
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+
+        XCTAssertTrue(sidebar.contains("Selected \\(name) as route spot. Use Add Waypoint to include it in the route."))
+        XCTAssertFalse(sidebar.contains("case .route:\n            appState.addRoutePoint(coordinate)"))
+        XCTAssertTrue(simulationView.contains("Label(\"Set Route Spot\", systemImage: \"mappin\")"))
+        XCTAssertFalse(simulationView.contains("appState.addRoutePoint(action.coordinate)"))
+        XCTAssertFalse(simulationView.contains("mapContextAddWaypointButton"))
+    }
+
+    func testP0ModePanelsExposeCompactStateStrips() throws {
+        let simulationView = try readProjectFile("PathChanger/UI/SimulationView.swift")
+        let joystick = try readProjectFile("PathChanger/UI/JoystickControlView.swift")
+        let panel = try readProjectFile("PathChanger/UI/FloatingControlPanel.swift")
+
+        XCTAssertTrue(panel.contains("struct PanelStateStrip"))
+        XCTAssertTrue(simulationView.contains("teleportPanelStateStrip"))
+        XCTAssertTrue(simulationView.contains("routePanelStateStrip"))
+        XCTAssertTrue(joystick.contains("joystickPanelStateStrip"))
+        XCTAssertTrue(simulationView.contains("Target selected · Not applied"))
+        XCTAssertTrue(simulationView.contains("Ready to start"))
+        XCTAssertTrue(joystick.contains("Not live"))
+    }
+
+    func testP0JoystickPreStartStateIsVisiblyNonLive() throws {
+        let joystick = try readProjectFile("PathChanger/UI/JoystickControlView.swift")
+
+        XCTAssertTrue(joystick.contains("private var joystickIsLive: Bool"))
+        XCTAssertTrue(joystick.contains("Start Joystick to send movement to the device."))
+        XCTAssertTrue(joystick.contains(".allowsHitTesting(joystickIsLive)"))
+        XCTAssertTrue(joystick.contains("Preview only"))
     }
 }
 

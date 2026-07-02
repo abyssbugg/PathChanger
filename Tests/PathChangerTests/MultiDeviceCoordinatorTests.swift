@@ -295,6 +295,43 @@ final class MultiDeviceCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(states.count, 2)
     }
+
+    func testStartSynchronizedRouteWithWaypointsMarksUnavailable() async {
+        coordinator.selectSingle(deviceId: "device-1")
+
+        let devices = [Device(id: "device-1", displayName: "Test Device", connectionType: .usb)]
+        let waypoints = [LocationCoordinate(latitude: 35.6762, longitude: 139.6503)]
+
+        await coordinator.startSynchronizedRoute(
+            waypoints: waypoints,
+            speed: .driving,
+            devices: devices
+        )
+
+        let state = coordinator.getState(for: "device-1")
+        XCTAssertEqual(state.simulationMode, .route)
+        XCTAssertEqual(state.speed, .driving)
+        XCTAssertFalse(state.isActive)
+        XCTAssertEqual(state.routeProgress, 0)
+        XCTAssertNotNil(state.lastUpdateTime)
+        XCTAssertEqual(state.error, "Synchronized multi-device route playback is currently unavailable.")
+    }
+
+    func testStartSynchronizedRouteWithoutWaypointsSetsError() async {
+        coordinator.selectSingle(deviceId: "device-1")
+
+        let devices = [Device(id: "device-1", displayName: "Test Device", connectionType: .usb)]
+
+        await coordinator.startSynchronizedRoute(
+            waypoints: [],
+            speed: .driving,
+            devices: devices
+        )
+
+        let state = coordinator.getState(for: "device-1")
+        XCTAssertEqual(state.error, "No waypoints provided for synchronized route.")
+        XCTAssertFalse(state.isActive)
+    }
 }
 
 // MARK: - Batch Operation Result Tests

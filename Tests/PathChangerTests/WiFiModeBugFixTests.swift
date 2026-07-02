@@ -42,7 +42,6 @@ final class TunnelModePatternTests: XCTestCase {
             "pymobiledevice3 remote start-tunnel"
         )
     }
-
     func testUSBProcessPattern() {
         XCTAssertEqual(
             TunnelMode.usb.processPattern,
@@ -104,7 +103,16 @@ final class TunnelModePatternTests: XCTestCase {
             .wifi
         )
     }
-
+    func testIOS27WiFiOnlyUsesDaemonEffectiveMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .wifi,
+                targetIOSMajorVersion: 27,
+                targetConnectionType: .wifi
+            ),
+            .daemon
+        )
+    }
     func testAutoIOS26WirelessTargetUsesDaemonEffectiveMode() {
         XCTAssertEqual(
             TunnelMode.effectiveMode(
@@ -115,7 +123,16 @@ final class TunnelModePatternTests: XCTestCase {
             .daemon
         )
     }
-
+    func testAutoIOS27WirelessTargetUsesDaemonEffectiveMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .auto,
+                targetIOSMajorVersion: 27,
+                targetConnectionType: .wifi
+            ),
+            .daemon
+        )
+    }
     func testAutoIOS26USBTargetKeepsAutoMode() {
         XCTAssertEqual(
             TunnelMode.effectiveMode(
@@ -125,6 +142,31 @@ final class TunnelModePatternTests: XCTestCase {
             ),
             .auto
         )
+    }
+
+    func testAutoIOS27USBTargetKeepsAutoMode() {
+        XCTAssertEqual(
+            TunnelMode.effectiveMode(
+                requested: .auto,
+                targetIOSMajorVersion: 27,
+                targetConnectionType: .usb
+            ),
+            .auto
+        )
+    }
+
+    func testAutoModernDevicePrefersPersistentDaemon() {
+        // Stability fix: on iOS 26+, the auto path should back the connection
+        // with the persistent `remote tunneld` daemon (survives device
+        // sleep/drop and avoids repeated admin prompts) regardless of whether
+        // the device is currently on USB or wireless.
+        XCTAssertTrue(TunnelMode.prefersPersistentDaemon(forAutoTargetIOSMajorVersion: 26))
+        XCTAssertTrue(TunnelMode.prefersPersistentDaemon(forAutoTargetIOSMajorVersion: 27))
+    }
+
+    func testAutoLegacyDeviceDoesNotPreferPersistentDaemon() {
+        XCTAssertFalse(TunnelMode.prefersPersistentDaemon(forAutoTargetIOSMajorVersion: 18))
+        XCTAssertFalse(TunnelMode.prefersPersistentDaemon(forAutoTargetIOSMajorVersion: nil))
     }
 
     func testUSBCommandShape() {
@@ -181,6 +223,14 @@ final class PrivilegedCommandValidatorWiFiTests: XCTestCase {
         let result = PrivilegedCommandValidator.validate(command: cmd, pythonPath: pythonPath)
         if case .failure(let error) = result {
             XCTFail("USB command must validate: \(error)")
+        }
+    }
+
+    func testAcceptsUSBScriptModeCommand() {
+        let cmd = "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel --script-mode --udid 00008130-000C5144019A001C > /tmp/x.log 2>&1 &"
+        let result = PrivilegedCommandValidator.validate(command: cmd, pythonPath: pythonPath)
+        if case .failure(let error) = result {
+            XCTFail("USB script-mode command must validate: \(error)")
         }
     }
 

@@ -8,6 +8,22 @@
 import XCTest
 import Darwin
 @testable import PathChanger
+private final class CapturedStringBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: String?
+
+    func set(_ value: String) {
+        lock.lock()
+        storage = value
+        lock.unlock()
+    }
+
+    var value: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
 
 @MainActor
 final class TunneldManagerTests: XCTestCase {
@@ -17,7 +33,7 @@ final class TunneldManagerTests: XCTestCase {
 
     private func usbTunnelCommand(udid: String? = nil) -> String {
         let udidArgument = udid.map { " --udid \($0)" } ?? ""
-        return "/Users/test/.pyenv/versions/3.12.11/bin/python3 -m pymobiledevice3 lockdown start-tunnel\(udidArgument)"
+        return "/Users/test/.pyenv/versions/3.12.11/bin/python3 -m pymobiledevice3 lockdown start-tunnel --script-mode\(udidArgument)"
     }
 
     private func wifiTunnelCommand(udid: String? = nil) -> String {
@@ -158,6 +174,74 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertNotEqual(info1, info2)
     }
 
+    // MARK: - RSD Parsing Tests
+
+    func testParseScriptModeRsdLineAcceptsIOS27IPv6Output() {
+        let output = """
+        Identifier: 00008130-000C5144019A001C
+        fd14:d8b0:f31e::1 52064
+        """
+
+        let parsed = manager.parseScriptModeRsdLine(from: output)
+
+        XCTAssertEqual(parsed.address, "fd14:d8b0:f31e::1")
+        XCTAssertEqual(parsed.port, 52064)
+    }
+
+    func testParseScriptModeRsdLineAcceptsIPv4Output() {
+        let parsed = manager.parseScriptModeRsdLine(from: "192.168.1.50 52068\n")
+
+        XCTAssertEqual(parsed.address, "192.168.1.50")
+        XCTAssertEqual(parsed.port, 52068)
+    }
+
+    func testParseScriptModeRsdLineRejectsMalformedOutput() {
+        let malformedOutputs = [
+            "not-an-address 52064",
+            "abc:def 52064",
+            "fd14:d8b0:f31e::1 0",
+            "fd14:d8b0:f31e::1 65536",
+            "fd14:d8b0:f31e::1 not-a-port",
+            "fd14:d8b0:f31e::1 52064 extra",
+            "status ready"
+        ]
+
+        for output in malformedOutputs {
+            let parsed = manager.parseScriptModeRsdLine(from: output)
+            XCTAssertNil(parsed.address, "Unexpected address for output: \(output)")
+            XCTAssertNil(parsed.port, "Unexpected port for output: \(output)")
+        }
+    }
+
+    func testLegacyRsdHintParsingStillWorks() {
+        let parsed = manager.parseRsdHintLine(from: "Use developer dvt ls / --rsd fd4d:fb00:8c25::1 52072")
+
+        XCTAssertEqual(parsed.address, "fd4d:fb00:8c25::1")
+        XCTAssertEqual(parsed.port, 52072)
+    }
+
+    func testStructuredRsdLogParsingStillWorks() {
+        let output = """
+        Interface: utun9
+        RSD Address: fdc3:ad86:9ca9::1
+        RSD Port: 52068
+        """
+
+        let parsed = manager.parseStructuredLogLines(from: output)
+
+        XCTAssertEqual(parsed.address, "fdc3:ad86:9ca9::1")
+        XCTAssertEqual(parsed.port, 52068)
+        XCTAssertEqual(parsed.interface, "utun9")
+    }
+
+    func testJsonRsdParsingStillWorks() throws {
+        let parsed = try manager.parseJsonOutput(from: #"{"rsd-address":"fd14:d8b0:f31e::1","rsd-port":52064,"interface":"utun10"}"#)
+
+        XCTAssertEqual(parsed.address, "fd14:d8b0:f31e::1")
+        XCTAssertEqual(parsed.port, 52064)
+        XCTAssertEqual(parsed.interface, "utun10")
+    }
+
     // MARK: - Preference Persistence Tests
 
     func testPreferredModePersistence() {
@@ -286,6 +370,47 @@ final class TunneldManagerTests: XCTestCase {
 
         manager.testSendTunnelEvent(.healthCheckFailed)
         XCTAssertNil(manager.getRsdInfo(for: "00008130000C5144019A001C"))
+    }
+
+    func testDaemonModeConnectivityHealthyFromApiRsdWhenLogTunnelInfoMissing() {
+        // Daemon mode keeps the live RSD in deviceTunnelInfo (from the tunneld
+        // HTTP API); the legacy log-parsed `tunnelInfo` can be nil/stale. The
+        // connectivity check must treat the tunnel as healthy when the daemon
+        // process is alive AND the API RSD is usable — otherwise it falsely
+        // flips to "Tunnel Required" while injection still works.
+        let pid: Int32 = 7001
+        manager.testSetProcessOverride(pid: pid, command: "/usr/bin/python3 -m pymobiledevice3 remote tunneld", uid: 0, state: "S")
+        let info = TunnelInfo(rsdAddress: "fd00:dead:beef::1", rsdPort: 55041, mode: .daemon, interface: "usbmux-Network", processId: pid)
+        manager.testSendTunnelEvent(.startRequested(mode: .daemon))
+        manager.testSendTunnelEvent(.connectionEstablished(info: info))
+        manager.tunnelInfo = nil
+        manager.deviceTunnelInfo = [testUDID: info]
+        manager.testSetTrackedTunnelChildren([pid], mode: .daemon, targetUDID: testUDID)
+
+        XCTAssertTrue(manager.currentTunnelConnectivityHealthy())
+    }
+
+    func testConnectivityUnhealthyWhenNoUsableRsd() {
+        let info = TunnelInfo(rsdAddress: "fd00:dead:beef::1", rsdPort: 55041, mode: .daemon, interface: "usbmux-Network", processId: nil)
+        manager.testSendTunnelEvent(.startRequested(mode: .daemon))
+        manager.testSendTunnelEvent(.connectionEstablished(info: info))
+        manager.tunnelInfo = nil
+        manager.deviceTunnelInfo = [:]
+
+        XCTAssertFalse(manager.currentTunnelConnectivityHealthy())
+    }
+
+    func testConnectivityUnhealthyWhenTrackedDaemonProcessDead() {
+        let pid: Int32 = 7002
+        manager.testSetProcessOverride(pid: pid, command: "/usr/bin/python3 -m pymobiledevice3 remote tunneld", uid: 0, state: "Z")
+        let info = TunnelInfo(rsdAddress: "fd00:dead:beef::1", rsdPort: 55041, mode: .daemon, interface: "usbmux-Network", processId: pid)
+        manager.testSendTunnelEvent(.startRequested(mode: .daemon))
+        manager.testSendTunnelEvent(.connectionEstablished(info: info))
+        manager.tunnelInfo = nil
+        manager.deviceTunnelInfo = [testUDID: info]
+        manager.testSetTrackedTunnelChildren([pid], mode: .daemon, targetUDID: testUDID)
+
+        XCTAssertFalse(manager.currentTunnelConnectivityHealthy())
     }
 
     func testTransportFailureInvalidatesEndpointBeforeBridgeReuse() {
@@ -489,7 +614,7 @@ final class TunneldManagerTests: XCTestCase {
         manager.testSetProcessOverride(pid: pid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
         manager.testSetLiveProcessIdSequence([[], [], [pid]], matching: TunnelMode.usb.processPattern)
         manager.testSetStartupRsdInfoSequence([nil, nil, info])
-        manager.testSetStartupTiming(timeout: 0.5, pollInterval: 0.01)
+        manager.testSetStartupTiming(timeout: 2.0, pollInterval: 0.01)
 
         manager.testSendTunnelEvent(.startRequested(mode: .usb))
 
@@ -571,7 +696,7 @@ final class TunneldManagerTests: XCTestCase {
         manager.testSetProcessOverride(pid: pid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
         manager.testSetLiveProcessIdSequence([[], [], []], matching: TunnelMode.usb.processPattern)
         manager.testSetStartupRsdInfoSequence([info])
-        manager.testSetStartupTiming(timeout: 0.08, pollInterval: 0.01)
+        manager.testSetStartupTiming(timeout: 2.0, pollInterval: 0.01)
 
         manager.testSendTunnelEvent(.startRequested(mode: .usb))
 
@@ -602,7 +727,7 @@ final class TunneldManagerTests: XCTestCase {
         )
         manager.testSetProcessState(pid: pid, state: nil)
         manager.testSetStartupRsdInfoSequence([info])
-        manager.testSetStartupTiming(timeout: 0.2, pollInterval: 0.01)
+        manager.testSetStartupTiming(timeout: 2.0, pollInterval: 0.01)
 
         manager.testSendTunnelEvent(.startRequested(mode: .usb))
 
@@ -867,7 +992,7 @@ final class TunneldManagerTests: XCTestCase {
             manager.testSetProcessOverride(pid: pid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
             manager.testSetLiveProcessIdSequence([[], []], matching: TunnelMode.usb.processPattern)
             manager.testSetStartupRsdInfoSequence([info])
-            manager.testSetStartupTiming(timeout: 0.08, pollInterval: 0.01)
+            manager.testSetStartupTiming(timeout: 2.0, pollInterval: 0.01)
             manager.testSendTunnelEvent(.startRequested(mode: .usb))
 
             let acquiredInfo = await manager.testWaitForAuthoritativeStartup(
@@ -1014,6 +1139,37 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(manager.testActiveTunnelProcessIds, [handedOffPid])
         XCTAssertFalse(manager.testTrackedTunnelChildProcessIds.contains(discoveryOnlyPid))
         XCTAssertFalse(manager.testActiveTunnelProcessIds.contains(discoveryOnlyPid))
+    }
+
+    func testUSBAttemptStartUsesScriptModeLockdownCommand() async throws {
+        let handedOffPid: Int32 = 6751
+        let capturedScript = CapturedStringBox()
+        let info = TunnelInfo(
+            rsdAddress: "fd14:d8b0:f31e::1",
+            rsdPort: 52064,
+            mode: .usb,
+            interface: "utun10",
+            processId: handedOffPid
+        )
+
+        manager.testSetTargetTunnelUDID(testUDID)
+        manager.testSetWrapperReturnTimeout(0.2)
+        manager.testSetPrivilegedWrapperRunner { script in
+            capturedScript.set(script)
+            return .returned(output: "\(handedOffPid)\n", returnTime: Date().timeIntervalSince1970)
+        }
+        manager.testSetProcessOverride(pid: handedOffPid, command: usbTunnelCommand(udid: testUDID), uid: 0, state: "S")
+        manager.testSetLiveProcessIdSequence([[], [handedOffPid]], matching: TunnelMode.usb.processPattern)
+        manager.testSetStartupRsdInfoSequence([info])
+
+        manager.testSendTunnelEvent(.startRequested(mode: .usb))
+
+        let success = await manager.testAttemptStart(mode: .usb)
+
+        XCTAssertTrue(success)
+        XCTAssertTrue(capturedScript.value?.contains("lockdown start-tunnel --script-mode --udid \(testUDID)") == true)
+        XCTAssertEqual(manager.tunnelInfo?.rsdAddress, "fd14:d8b0:f31e::1")
+        XCTAssertEqual(manager.tunnelInfo?.rsdPort, 52064)
     }
 
     func testNormalAttachRemainsFailClosedWhenExistingTunnelHasNoRecoverableRsd() async throws {

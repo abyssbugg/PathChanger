@@ -12,27 +12,98 @@ import XCTest
 
 final class ConnectionSummaryPresentationTests: XCTestCase {
 
-    func testWiFiActiveWinsOverUSBPreferenceAndAvailability() {
-        let presentation = ConnectionSummaryPresentation.resolve(
+    // MARK: Active tunnel — Connected (green) vs Active (grey)
+
+    func testWiFiDaemonHealthyIsConnectedGreen() {
+        let p = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
-            activeTunnelMode: .wifi,
+            activeTunnelMode: .daemon,
+            selectedConnectionType: .wifi,
+            isUSBConnected: false,
+            isWiFiAvailable: true,
+            isConnectionHealthy: true,
+            preferUSBConnection: false
+        )
+
+        XCTAssertEqual(p?.title, "Wi-Fi Connected")
+        XCTAssertEqual(p?.icon, "wifi")
+        XCTAssertEqual(p?.tone, .connected)
+        XCTAssertTrue(p?.detail?.contains("background daemon tunnel") == true)
+        XCTAssertTrue(p?.detail?.contains("Wi-Fi available") == true)
+        XCTAssertFalse(p?.detail?.localizedCaseInsensitiveContains("USB") == true)
+    }
+
+    func testWiFiDaemonNotHealthyIsActiveGrey() {
+        let p = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: true,
+            activeTunnelMode: .daemon,
+            selectedConnectionType: .wifi,
+            isUSBConnected: false,
+            isWiFiAvailable: true,
+            isConnectionHealthy: false,
+            preferUSBConnection: false
+        )
+
+        XCTAssertEqual(p?.title, "Wi-Fi Active")
+        XCTAssertEqual(p?.tone, .active)
+        XCTAssertTrue(p?.detail?.contains("background daemon tunnel") == true)
+    }
+
+    func testBothAvailableDetailShowsUSBPlusWiFi() {
+        let p = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: true,
+            activeTunnelMode: .daemon,
             selectedConnectionType: .usb,
             isUSBConnected: true,
             isWiFiAvailable: true,
+            isConnectionHealthy: true,
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(presentation?.title, "Wi-Fi Active")
-        XCTAssertEqual(presentation?.icon, "wifi")
-        XCTAssertEqual(presentation?.tone, .primary)
-        XCTAssertTrue(presentation?.detail?.contains("active tunnel") == true)
-        XCTAssertTrue(presentation?.detail?.contains("USB available") == true)
-        XCTAssertFalse(presentation?.title.contains("USB") == true)
-        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("cable") == true)
+        XCTAssertEqual(p?.title, "Wi-Fi Connected")
+        XCTAssertEqual(p?.tone, .connected)
+        XCTAssertTrue(p?.detail?.contains("USB + Wi-Fi available") == true)
     }
 
-    func testPreferredWiFiOverridesStaleUSBActiveModeInSettingsSummary() {
-        let presentation = ConnectionSummaryPresentation.resolve(
+    func testUSBHealthyIsConnectedWithLockdownDetail() {
+        let p = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: true,
+            activeTunnelMode: .usb,
+            selectedConnectionType: .usb,
+            isUSBConnected: true,
+            isWiFiAvailable: false,
+            isConnectionHealthy: true,
+            preferUSBConnection: true
+        )
+
+        XCTAssertEqual(p?.title, "USB Connected")
+        XCTAssertEqual(p?.icon, "cable.connector")
+        XCTAssertEqual(p?.tone, .connected)
+        XCTAssertTrue(p?.detail?.contains("lockdown tunnel") == true)
+        XCTAssertTrue(p?.detail?.contains("USB available") == true)
+    }
+
+    /// Regression: cable pulled but activeMode still `.usb` — must collapse to
+    /// Wi-Fi and never claim USB.
+    func testStaleUSBActiveModeCollapsesToWiFiWhenCableUnplugged() {
+        let p = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: true,
+            activeTunnelMode: .usb,
+            selectedConnectionType: .wifi,
+            isUSBConnected: false,
+            isWiFiAvailable: true,
+            isConnectionHealthy: true,
+            preferUSBConnection: false
+        )
+
+        XCTAssertEqual(p?.title, "Wi-Fi Connected")
+        XCTAssertEqual(p?.icon, "wifi")
+        XCTAssertFalse(p?.title.contains("USB") == true)
+        XCTAssertFalse(p?.detail?.localizedCaseInsensitiveContains("USB") == true)
+    }
+
+    func testPreferredWiFiOverridesStaleUSBActiveMode() {
+        let p = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .usb,
             tunnelInfoMode: .wifi,
@@ -40,134 +111,65 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             selectedConnectionType: .usb,
             isUSBConnected: true,
             isWiFiAvailable: true,
+            isConnectionHealthy: true,
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(presentation?.title, "Wi-Fi Active")
-        XCTAssertEqual(presentation?.icon, "wifi")
-        XCTAssertTrue(presentation?.detail?.contains("USB available") == true)
-        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("cable in use") == true)
+        XCTAssertEqual(p?.title, "Wi-Fi Connected")
+        XCTAssertEqual(p?.icon, "wifi")
     }
 
-    func testDaemonActiveIsPresentedAsWirelessOwnership() {
-        let presentation = ConnectionSummaryPresentation.resolve(
-            isTunnelRunning: true,
-            activeTunnelMode: .daemon,
-            selectedConnectionType: .usb,
-            isUSBConnected: true,
-            isWiFiAvailable: true,
-            preferUSBConnection: true
-        )
+    // MARK: No tunnel — Not Connected (red) / No Connection (warning)
 
-        XCTAssertEqual(presentation?.title, "Wi-Fi Active")
-        XCTAssertEqual(presentation?.icon, "wifi")
-        XCTAssertEqual(presentation?.tone, .primary)
-        XCTAssertTrue(presentation?.detail?.contains("background daemon tunnel") == true)
-        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("using cable") == true)
-    }
-
-    func testUSBActiveShowsCableInUse() {
-        let presentation = ConnectionSummaryPresentation.resolve(
-            isTunnelRunning: true,
-            activeTunnelMode: .usb,
+    func testWiFiAvailableNoTunnelIsNotConnectedRed() {
+        let p = ConnectionSummaryPresentation.resolve(
+            isTunnelRunning: false,
+            activeTunnelMode: nil,
             selectedConnectionType: .wifi,
-            isUSBConnected: true,
+            isUSBConnected: false,
             isWiFiAvailable: true,
+            isConnectionHealthy: false,
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(presentation?.title, "USB Active")
-        XCTAssertEqual(presentation?.icon, "cable.connector")
-        XCTAssertEqual(presentation?.tone, .primary)
-        XCTAssertEqual(presentation?.detail, "active tunnel · cable in use")
+        XCTAssertEqual(p?.title, "Wi-Fi Not Connected")
+        XCTAssertEqual(p?.icon, "wifi")
+        XCTAssertEqual(p?.tone, .notConnected)
+        XCTAssertEqual(p?.detail, "Wi-Fi available")
     }
 
-    func testUnknownActiveTunnelDoesNotFallBackToStaleSelectedUSB() {
-        let presentation = ConnectionSummaryPresentation.resolve(
-            isTunnelRunning: true,
-            activeTunnelMode: nil,
-            selectedConnectionType: .usb,
-            isUSBConnected: true,
-            isWiFiAvailable: true,
-            preferUSBConnection: true
-        )
-
-        XCTAssertEqual(presentation?.title, "Tunnel Active")
-        XCTAssertEqual(presentation?.icon, "point.3.connected.trianglepath.dotted")
-        XCTAssertEqual(presentation?.tone, .secondary)
-        XCTAssertFalse(presentation?.title.contains("USB") == true)
-    }
-
-    func testUSBPreferredWithoutActiveTunnelIsNotPresentedAsActive() {
-        let presentation = ConnectionSummaryPresentation.resolve(
+    func testUSBAvailableNoTunnelIsNotConnectedRed() {
+        let p = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: false,
             activeTunnelMode: nil,
             selectedConnectionType: nil,
             isUSBConnected: true,
-            isWiFiAvailable: true,
+            isWiFiAvailable: false,
+            isConnectionHealthy: false,
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(presentation?.title, "USB Preferred")
-        XCTAssertEqual(presentation?.icon, "cable.connector")
-        XCTAssertEqual(presentation?.tone, .secondary)
-        XCTAssertEqual(presentation?.detail, "USB available · not active")
+        XCTAssertEqual(p?.title, "USB Not Connected")
+        XCTAssertEqual(p?.icon, "cable.connector")
+        XCTAssertEqual(p?.tone, .notConnected)
+        XCTAssertEqual(p?.detail, "USB available")
     }
 
-    func testNoConnectionRemainsExplicit() {
-        let presentation = ConnectionSummaryPresentation.resolve(
+    func testNoConnectionWhenNothingAvailable() {
+        let p = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: false,
             activeTunnelMode: nil,
             selectedConnectionType: nil,
             isUSBConnected: false,
             isWiFiAvailable: false,
+            isConnectionHealthy: false,
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(presentation?.title, "No Connection")
-        XCTAssertEqual(presentation?.icon, "exclamationmark.triangle.fill")
-        XCTAssertEqual(presentation?.tone, .warning)
-        XCTAssertEqual(presentation?.detail, "connect USB or start tunnel")
-    }
-
-    /// Regression: when the cable has been pulled (or the session started
-    /// over Wi-Fi) but `activeMode` still reports `.usb`, the Settings
-    /// summary must NOT claim "USB Active · cable in use". Physical USB
-    /// disconnect collapses the presentation to Wi-Fi.
-    func testStaleUSBActiveModeCollapsesToWiFiWhenCableUnplugged() {
-        let presentation = ConnectionSummaryPresentation.resolve(
-            isTunnelRunning: true,
-            activeTunnelMode: .usb,
-            selectedConnectionType: .wifi,
-            isUSBConnected: false,
-            isWiFiAvailable: true,
-            preferUSBConnection: false
-        )
-
-        XCTAssertEqual(presentation?.title, "Wi-Fi Active")
-        XCTAssertEqual(presentation?.icon, "wifi")
-        XCTAssertEqual(presentation?.tone, .primary)
-        XCTAssertFalse(presentation?.title.contains("USB") == true)
-        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("cable") == true)
-    }
-
-    /// Regression: USB-active presentation remains correct when the cable IS
-    /// physically connected, even if other inputs would otherwise prefer
-    /// wireless. The guard must not over-trigger.
-    func testUSBActivePresentationPreservedWhenCablePhysicallyConnected() {
-        let presentation = ConnectionSummaryPresentation.resolve(
-            isTunnelRunning: true,
-            activeTunnelMode: .usb,
-            selectedConnectionType: .usb,
-            isUSBConnected: true,
-            isWiFiAvailable: false,
-            preferUSBConnection: true
-        )
-
-        XCTAssertEqual(presentation?.title, "USB Active")
-        XCTAssertEqual(presentation?.icon, "cable.connector")
-        XCTAssertEqual(presentation?.tone, .primary)
-        XCTAssertEqual(presentation?.detail, "active tunnel · cable in use")
+        XCTAssertEqual(p?.title, "No Connection")
+        XCTAssertEqual(p?.icon, "exclamationmark.triangle.fill")
+        XCTAssertEqual(p?.tone, .warning)
+        XCTAssertEqual(p?.detail, "connect USB or start tunnel")
     }
 }
 

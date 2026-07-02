@@ -180,9 +180,21 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertFalse(ProcessEnvironment.pythonPathString.isEmpty)
     }
 
-    func testPythonPathStringContainsUserSitePackages() {
+    func testPythonPathStringExcludesUserSitePackagesByDefault() {
         let pythonPath = ProcessEnvironment.pythonPathString
-        XCTAssertTrue(pythonPath.contains("Library/Python"), "Should include user site-packages")
+        XCTAssertFalse(pythonPath.contains("Library/Python"), "Default trusted PYTHONPATH should exclude user site-packages")
+    }
+
+    func testConfiguredPythonPathsCanExplicitlyIncludeUserSitePackages() {
+        let pythonPaths = ProcessEnvironment.configuredPythonPaths(includeUserSitePackages: true)
+        let joined = pythonPaths.joined(separator: ":")
+        XCTAssertTrue(joined.contains("Library/Python"), "Explicit opt-in should include user site-packages")
+    }
+
+    func testConfiguredEnvironmentExcludesUserSitePackagesWithoutOptIn() {
+        let env = ProcessEnvironment.configured(includeUserSitePackages: false)
+        let pythonPath = env["PYTHONPATH"] ?? ""
+        XCTAssertFalse(pythonPath.contains("Library/Python"), "Configured environment should exclude user site-packages unless explicitly enabled")
     }
 
     func testPythonPathStringContainsHomebrewSitePackages() {

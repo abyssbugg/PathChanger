@@ -4,6 +4,91 @@ import XCTest
 @MainActor
 final class DiagnosticsViewTests: XCTestCase {
 
+    func testLocationCapabilityProbeUsesNonMutatingDVTListForDirectUDID() throws {
+        let device = Device(
+            id: "00008030001234567890123456789012345678ab",
+            displayName: "Test iPhone",
+            connectionType: .usb,
+            productVersion: "17.6"
+        )
+
+        let args = DiagnosticsView.locationCapabilityProbeArguments(
+            for: device,
+            tunnelInfo: nil,
+            isTunnelRunning: false
+        )
+
+        XCTAssertEqual(args, [
+            "-m", "pymobiledevice3",
+            "developer", "dvt", "ls",
+            "--udid", device.id,
+            "/"
+        ])
+        XCTAssertFalse(args.contains("simulate-location"))
+        XCTAssertFalse(args.contains("set"))
+        XCTAssertFalse(args.contains("0.0"))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(args))
+    }
+
+    func testLocationCapabilityProbeUsesNonMutatingDVTListForRSDTunnel() throws {
+        let device = Device(
+            id: "00008030001234567890123456789012345678ab",
+            displayName: "Test iPhone",
+            connectionType: .wifi,
+            productVersion: "17.6"
+        )
+        let tunnelInfo = TunnelInfo(
+            rsdAddress: "fe80::1",
+            rsdPort: 62078,
+            mode: .wifi,
+            interface: nil,
+            processId: nil
+        )
+
+        let args = DiagnosticsView.locationCapabilityProbeArguments(
+            for: device,
+            tunnelInfo: tunnelInfo,
+            isTunnelRunning: true
+        )
+
+        XCTAssertEqual(args, [
+            "-m", "pymobiledevice3",
+            "developer", "dvt", "ls",
+            "--rsd", "fe80::1", "62078",
+            "/"
+        ])
+        XCTAssertFalse(args.contains("simulate-location"))
+        XCTAssertFalse(args.contains("set"))
+        XCTAssertFalse(args.contains("0.0"))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(args))
+    }
+
+    func testLocationCapabilityProbeUsesNonMutatingDVTListForTunnelDeviceSelector() throws {
+        let device = Device(
+            id: "00008030001234567890123456789012345678ab",
+            displayName: "Test iPhone",
+            connectionType: .wifi,
+            productVersion: "17.6"
+        )
+
+        let args = DiagnosticsView.locationCapabilityProbeArguments(
+            for: device,
+            tunnelInfo: nil,
+            isTunnelRunning: true
+        )
+
+        XCTAssertEqual(args, [
+            "-m", "pymobiledevice3",
+            "developer", "dvt", "ls",
+            "--tunnel", device.id,
+            "/"
+        ])
+        XCTAssertFalse(args.contains("simulate-location"))
+        XCTAssertFalse(args.contains("set"))
+        XCTAssertFalse(args.contains("0.0"))
+        XCTAssertNoThrow(try CommandStructureValidator.validateCommandStructure(args))
+    }
+
     func testDiagnosticCommandErrorDescriptionsAreMeaningful() {
         let errors: [DiagnosticCommandError] = [
             .invalidExecutable("/tmp/python"),

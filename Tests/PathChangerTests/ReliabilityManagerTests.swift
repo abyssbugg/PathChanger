@@ -355,7 +355,10 @@ final class ReliabilityStatsTests: XCTestCase {
             failuresInWindow: 5,
             persistentFailureDetected: false,
             connectionUptime: 120.5,
-            reconnectionAttempts: 3
+            reconnectionAttempts: 3,
+            recoverySuccessRate: 0.95,
+            recoverySLOThreshold: 0.90,
+            recoverySLOPassed: true
         )
 
         let summary = stats.summary
@@ -366,6 +369,8 @@ final class ReliabilityStatsTests: XCTestCase {
         XCTAssertTrue(summary.contains("Persistent Failure: false"))
         XCTAssertTrue(summary.contains("Connection Uptime:"))
         XCTAssertTrue(summary.contains("Reconnection Attempts: 3"))
+        XCTAssertTrue(summary.contains("Recovery Success Rate:"))
+        XCTAssertTrue(summary.contains("Recovery SLO"))
     }
 }
 

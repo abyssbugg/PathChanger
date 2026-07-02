@@ -297,6 +297,10 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         XCTAssertFalse(CommandStructureValidator.isValidDataArgument("rm -rf /"))
     }
 
+    func testValidDataArgumentAcceptsIPv4RSDAddress() {
+        XCTAssertTrue(CommandStructureValidator.isValidDataArgument("192.168.1.50"))
+    }
+
     func testNegativeCoordinatesAllowed() {
         // Negative coordinates must work (they're valid GPS coordinates)
         let negativeCoordArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "-33.8688", "151.2093"]
