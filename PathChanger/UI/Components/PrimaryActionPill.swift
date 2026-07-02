@@ -54,6 +54,7 @@ struct PrimaryActionPill: View {
         .buttonStyle(
             PrimaryActionPillStyle(
                 visualState: visualState,
+                accent: DS.ModeAccent.forMode(mode),
                 isHovered: isHovered,
                 isDisabled: isInteractionDisabled
             )
@@ -267,6 +268,9 @@ private struct PrimaryActionPillStyle: ButtonStyle {
     }
 
     let visualState: VisualState
+    /// Per-mode accent (mockup `[data-mode]` --accent): Teleport violet,
+    /// Multi-Spot sky, Joystick orange. Drives the ready-state gradient + glow.
+    let accent: DS.ModeAccent
     let isHovered: Bool
     let isDisabled: Bool
 
@@ -280,7 +284,8 @@ private struct PrimaryActionPillStyle: ButtonStyle {
             .frame(width: DS.Metrics.primaryPillWidth, height: DS.Metrics.primaryPillHeight)
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
-                    .fill(backgroundColor(isPressed: isPressed))
+                    .fill(backgroundFill(isPressed: isPressed))
+                    .brightness(visualState == .accent && isHovered && !isPressed ? 0.05 : 0)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
@@ -288,7 +293,7 @@ private struct PrimaryActionPillStyle: ButtonStyle {
             )
             .scaleEffect(scaleValue)
             .shadow(
-                color: isDisabled ? .clear : .black.opacity(DS.Opacity.hoverRow),
+                color: glowColor,
                 radius: isDisabled ? DS.Metrics.zero : DS.Metrics.primaryPillShadowRadius,
                 x: DS.Metrics.zero,
                 y: isDisabled ? DS.Metrics.zero : DS.Metrics.primaryPillShadowYOffset
@@ -297,20 +302,26 @@ private struct PrimaryActionPillStyle: ButtonStyle {
             .animation(DS.Animation.fast, value: isHovered)
     }
 
-    private func backgroundColor(isPressed: Bool) -> Color {
+    private var glowColor: Color {
         if isDisabled {
-            return DS.Color.inactive
+            return .clear
+        }
+        // Mockup btn-primary: accent-colored glow instead of plain black.
+        return visualState == .accent ? accent.glow : .black.opacity(DS.Opacity.hoverRow)
+    }
+
+    private func backgroundFill(isPressed: Bool) -> AnyShapeStyle {
+        if isDisabled {
+            return AnyShapeStyle(DS.Color.inactive)
         }
         switch visualState {
         case .accent:
-            if isPressed {
-                return DS.Color.accentPressed
-            }
-            return isHovered ? DS.Color.accentHover : DS.Color.accent
+            // Mockup btn-primary gradient (base -> base2), dimmed while pressed.
+            return AnyShapeStyle(accent.gradient.opacity(isPressed ? 0.9 : 1.0))
         case .warning:
-            return DS.Color.warning
+            return AnyShapeStyle(DS.Color.warning)
         case .inactive:
-            return DS.Color.inactive
+            return AnyShapeStyle(DS.Color.inactive)
         }
     }
 

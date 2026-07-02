@@ -15,7 +15,7 @@ struct JoystickControlView: View {
     private let innerRadius: CGFloat = DS.Metrics.joystickInnerRadius
 
     var body: some View {
-        FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill") {
+        FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill", accent: DS.ModeAccent.joystick.base) {
             // Operational refinement: collapse the redundant heading copy
             // (panel title already says "Joystick Control"), tighten vertical
             // chaining (sm vs md) and drop the dead "Drag to move" caption —

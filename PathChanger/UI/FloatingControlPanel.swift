@@ -10,11 +10,15 @@ import SwiftUI
 struct FloatingControlPanel<Content: View>: View {
     let title: String?
     let icon: String?
+    /// Optional per-mode accent (mockup `.card-head .ci` icon chip).
+    /// Nil keeps the legacy neutral header styling.
+    let accent: Color?
     let content: Content
 
-    init(title: String? = nil, icon: String? = nil, @ViewBuilder content: () -> Content) {
+    init(title: String? = nil, icon: String? = nil, accent: Color? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.icon = icon
+        self.accent = accent
         self.content = content()
     }
 
@@ -25,9 +29,25 @@ struct FloatingControlPanel<Content: View>: View {
             if let title = title {
                 HStack(spacing: AppSpacing.sm) {
                     if let icon = icon {
-                        Image(systemName: icon)
-                            .font(AppFont.label)
-                            .foregroundStyle(Color.pcTextMuted)
+                        if let accent {
+                            // Mockup card-head icon chip: accent-tinted rounded square.
+                            Image(systemName: icon)
+                                .font(AppFont.label)
+                                .foregroundStyle(accent)
+                                .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                                        .fill(accent.opacity(DS.Opacity.statusTint))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                                        .stroke(accent.opacity(DS.Opacity.statusBorder), lineWidth: DS.Metrics.strokeWidth)
+                                )
+                        } else {
+                            Image(systemName: icon)
+                                .font(AppFont.label)
+                                .foregroundStyle(Color.pcTextMuted)
+                        }
                     }
                     Text(title)
                         .font(AppFont.heading)
@@ -40,7 +60,7 @@ struct FloatingControlPanel<Content: View>: View {
             content
         }
         .padding(AppSpacing.md)
-        .appGlassPanel(cornerRadius: AppRadius.xl)
+        .dsGlassSurface(cornerRadius: AppRadius.xl)
     }
 }
 

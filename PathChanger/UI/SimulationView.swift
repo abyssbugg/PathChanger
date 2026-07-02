@@ -429,7 +429,7 @@ struct SimulationView: View {
     // MARK: - Teleport Controls
 
     private var teleportControls: some View {
-        FloatingControlPanel(title: "Teleport", icon: "location.fill") {
+        FloatingControlPanel(title: "Teleport", icon: "location.fill", accent: DS.ModeAccent.teleport.base) {
             // Operational refinement: tighter inner rhythm (sm vs md), drop
             // the redundant "Custom Location / Enter coordinates\u2026" empty-
             // state copy when no target exists (panel title already conveys
@@ -520,7 +520,7 @@ struct SimulationView: View {
     // remains owned by the canonical PrimaryActionPill.
     // Route Type control is intentionally hidden until it is wired to route playback behavior.
     private var routeControls: some View {
-        FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up") {
+        FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up", accent: DS.ModeAccent.multiSpot.base) {
             // Operational refinement: tighten inner rhythm (sm vs md), demote
             // Import/Clear to icon-only buttons so the prominent Add Waypoint
             // CTA can fill remaining width without wrapping, and shorten the
