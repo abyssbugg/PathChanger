@@ -12,14 +12,17 @@
 //  selectDevice / refreshDevices) so behavior is identical to DeviceTunnelPill's
 //  selection surface.
 //
-//  Scope: device selection only. Tunnel/transport status stays owned by
-//  DeviceTunnelPill; this component deliberately does not duplicate it.
+//  Scope: device selection. The selector and menu are tunnel-aware — they
+//  reflect live TunneldManager + ActiveTransportPresentation state via the
+//  shared ConnectionPillState resolver — but they do NOT own readiness:
+//  DeviceTunnelPill remains the SOLE production Phase-1 readiness authority.
 //
 
 import SwiftUI
 
 struct DeviceDropdown: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tunneldManager: TunneldManager
 
     @State private var isPresented = false
     @State private var isHovered = false
@@ -29,6 +32,10 @@ struct DeviceDropdown: View {
             isPresented.toggle()
         } label: {
             HStack(spacing: DS.Spacing.xs) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: DS.Metrics.connPillDotSize, height: DS.Metrics.connPillDotSize)
+
                 Text(selectorLabel)
                     .font(DS.Typography.labelSecondary)
                     .foregroundStyle(DS.Color.foregroundPrimary)
@@ -49,6 +56,7 @@ struct DeviceDropdown: View {
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             DeviceDropdownMenu(isPresented: $isPresented)
                 .environmentObject(appState)
+                .environmentObject(tunneldManager)
         }
         .accessibilityIdentifier("deviceDropdown")
         .accessibilityLabel(accessibilityLabel)
@@ -61,8 +69,39 @@ struct DeviceDropdown: View {
         return "\(device.displayName) · iOS \(device.iosVersion)"
     }
 
+    /// Live connection state, derived from the same truth sources as the
+    /// ConnectionPill so the two surfaces never disagree.
+    private var connectionState: ConnectionPillState {
+        ConnectionPillState.resolve(
+            isStarting: tunneldManager.isStarting,
+            isRunning: tunneldManager.isRunning,
+            transportIcon: transportPresentation.icon
+        )
+    }
+
+    private var statusColor: Color {
+        switch connectionState {
+        case .disconnected: return DS.Color.inactive
+        case .connecting:   return DS.Color.mockupAmber
+        case .usbActive, .wifiActive: return DS.Color.mockupEmerald
+        }
+    }
+
+    private var transportPresentation: ActiveTransportPresentation {
+        ActiveTransportPresentation.resolve(
+            isTunnelRunning: tunneldManager.isRunning,
+            activeTunnelMode: tunneldManager.presentationActiveMode,
+            tunnelInfoMode: tunneldManager.tunnelInfo?.mode,
+            preferredMode: tunneldManager.preferredMode,
+            selectedConnectionType: appState.selectedDevice?.connectionType,
+            isUSBConnected: appState.isUSBConnected,
+            isWiFiAvailable: appState.isWiFiAvailable,
+            preferUSBConnection: appState.preferUSBConnection
+        )
+    }
+
     private var accessibilityLabel: String {
-        "\(selectorLabel). Tap to switch devices."
+        "\(selectorLabel), \(connectionState.title). Tap to switch devices."
     }
 }
 
@@ -105,6 +144,7 @@ private struct DeviceSelectorButtonStyle: ButtonStyle {
 
 private struct DeviceDropdownMenu: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tunneldManager: TunneldManager
     @Binding var isPresented: Bool
 
     @State private var isRefreshing = false
@@ -126,9 +166,57 @@ private struct DeviceDropdownMenu: View {
                     }
                 }
             }
+
+            Divider()
+                .padding(.vertical, DS.Spacing.xxs)
+
+            tunnelFooter
         }
         .padding(DS.Metrics.deviceDropdownMenuPadding)
         .frame(minWidth: DS.Metrics.deviceDropdownMenuMinWidth, alignment: .leading)
+    }
+
+    /// Live tunnel/transport footer (mockup `.conn-pill` title · sub), driven
+    /// by the same resolver as ConnectionPill so surfaces never disagree.
+    private var tunnelFooter: some View {
+        let state = ConnectionPillState.resolve(
+            isStarting: tunneldManager.isStarting,
+            isRunning: tunneldManager.isRunning,
+            transportIcon: ActiveTransportPresentation.resolve(
+                isTunnelRunning: tunneldManager.isRunning,
+                activeTunnelMode: tunneldManager.presentationActiveMode,
+                tunnelInfoMode: tunneldManager.tunnelInfo?.mode,
+                preferredMode: tunneldManager.preferredMode,
+                selectedConnectionType: appState.selectedDevice?.connectionType,
+                isUSBConnected: appState.isUSBConnected,
+                isWiFiAvailable: appState.isWiFiAvailable,
+                preferUSBConnection: appState.preferUSBConnection
+            ).icon
+        )
+        let tint: Color = {
+            switch state {
+            case .disconnected: return DS.Color.inactive
+            case .connecting:   return DS.Color.mockupAmber
+            case .usbActive, .wifiActive: return DS.Color.mockupEmerald
+            }
+        }()
+
+        return HStack(spacing: DS.Spacing.xs) {
+            Image(systemName: state.systemImage)
+                .font(DS.Typography.caption)
+                .foregroundStyle(tint)
+            Text(state.title)
+                .font(DS.Typography.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+            Spacer(minLength: DS.Spacing.xs)
+            Text(state.subtitle)
+                .font(DS.Typography.monoSmall)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+        }
+        .padding(.horizontal, DS.Spacing.xs)
+        .padding(.vertical, DS.Spacing.xxs)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Tunnel status: \(state.title), \(state.subtitle)")
     }
 
     private var header: some View {
@@ -252,6 +340,7 @@ struct DeviceDropdown_Previews: PreviewProvider {
             DS.Color.backgroundSecondary
             DeviceDropdown()
                 .environmentObject(AppState())
+                .environmentObject(TunneldManager.shared)
         }
         .frame(width: DS.Metrics.devicePillWidth + DS.Spacing.xl, height: DS.Metrics.devicePillHeight + DS.Spacing.xxl)
     }
