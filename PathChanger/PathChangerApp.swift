@@ -62,6 +62,10 @@ struct PathChangerApp: App {
                     }
             }
         }
+        // Mockup-parity window chrome: the shell draws its own topbar row, so
+        // the system title bar is hidden and the native traffic lights overlay
+        // the shell's topbar (which reserves leading space for them).
+        .windowStyle(.hiddenTitleBar)
         .onChange(of: scenePhase) { _, newPhase in
             Logger.info(
                 "main_window_lifecycle scenePhase=\(String(describing: newPhase))",

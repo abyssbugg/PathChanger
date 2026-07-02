@@ -86,7 +86,8 @@ final class MapShellSourceWiringTests: XCTestCase {
         XCTAssertTrue(sidebar.contains("mapShellSidebarCollapseButton"))
         XCTAssertTrue(sidebar.contains("Hide sidebar"))
         XCTAssertTrue(shell.contains("onCollapse: toggleSidebar"))
-        XCTAssertTrue(shell.contains("SidebarToggleButton"))
+        // Redesigned shell hosts the visible toggle in its topbar.
+        XCTAssertTrue(shell.contains("mapShellSidebarToggle"))
     }
 
     func testMapShellSettingsSheetHasExplicitDismissalAndDeterministicSize() throws {
@@ -160,13 +161,30 @@ final class MapShellSourceWiringTests: XCTestCase {
     func testTopBarMountsRedesignClusterAndRetiresLegacyPill() throws {
         let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
 
-        // The governed swap mounts the mockup top-bar trio on a glass surface
-        // and must not remount the superseded DeviceTunnelPill.
+        // The redesigned shell renders a fixed mockup topbar (brand block +
+        // connection pill + device dropdown + theme toggle) and must not
+        // remount the superseded DeviceTunnelPill.
+        XCTAssertTrue(shell.contains("private var topBar"))
         XCTAssertTrue(shell.contains("ConnectionPill()"))
         XCTAssertTrue(shell.contains("DeviceDropdown()"))
         XCTAssertTrue(shell.contains("ThemeToggle()"))
-        XCTAssertTrue(shell.contains(".dsGlassSurface(cornerRadius: DS.Radius.pill)"))
         XCTAssertFalse(shell.contains("DeviceTunnelPill()"))
+    }
+
+    func testShellRendersMockupFourRegionLayout() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+        let panel = try readProjectFile("PathChanger/UI/Components/ModeControlPanel.swift")
+
+        // Topbar / (rail | embedded map | mode panel) / footer.
+        XCTAssertTrue(shell.contains("SimulationView(mode: selectedMode, embedded: true)"))
+        XCTAssertTrue(shell.contains("ModeControlPanel(selectedMode: $selectedMode)"))
+        XCTAssertTrue(shell.contains("TelemetryBar()"))
+        // Panel docks the execution authority full-width and owns the tabs.
+        XCTAssertTrue(panel.contains("PrimaryActionPill(mode: selectedMode, fullWidth: true)"))
+        XCTAssertTrue(panel.contains("modeTabStrip"))
+        XCTAssertTrue(panel.contains("SOLE production T0 execution"))
+        XCTAssertFalse(panel.contains("startSimulation("))
+        XCTAssertFalse(panel.contains("stopSimulation("))
     }
 
     func testLibraryFlyoutIsMountedAndSubordinate() throws {

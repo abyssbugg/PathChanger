@@ -31,78 +31,42 @@ struct MainMapShell: View {
     @State private var activeLibrary: LibraryKind?
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            // Bottom layer: map + mode-specific floating panels (in shell chrome).
-            SimulationView(mode: selectedMode)
-                .ignoresSafeArea()
+        ZStack {
+            // Mockup window structure: topbar / (rail | map | control panel) / footer.
+            VStack(spacing: 0) {
+                topBar
+                hairline
 
-            // Sidebar (slides in from the leading edge when expanded).
-            if isSidebarExpanded {
-                CollapsibleSidebar(
-                    selectedMode: $selectedMode,
-                    isShowingSettings: $isShowingSettings,
-                    onCollapse: toggleSidebar,
-                    onOpenLibrary: openLibrary
-                )
-                .transition(.move(edge: .leading))
-                .zIndex(1)
-            }
+                HStack(spacing: 0) {
+                    if isSidebarExpanded {
+                        CollapsibleSidebar(
+                            selectedMode: $selectedMode,
+                            isShowingSettings: $isShowingSettings,
+                            onCollapse: toggleSidebar,
+                            onOpenLibrary: openLibrary
+                        )
+                        .transition(.move(edge: .leading))
 
-            // Sidebar toggle button (only shown when collapsed).
-            if !isSidebarExpanded {
-                SidebarToggleButton {
-                    toggleSidebar()
-                }
-                .padding(.leading, DS.Metrics.shellSidebarToggleLeadingInset)
-                .padding(.top, DS.Metrics.shellSidebarToggleTopInset)
-                .zIndex(2)
-            }
-
-            // Top-right control cluster (mockup topbar port): live connection
-            // state, device selector, and theme toggle on a glass surface.
-            // ConnectionPill is the production Phase-1 readiness surface;
-            // DeviceDropdown owns device selection; ThemeToggle owns appearance.
-            VStack {
-                HStack {
-                    Spacer()
-                    HStack(spacing: DS.Spacing.xs) {
-                        ConnectionPill()
-                        DeviceDropdown()
-                        ThemeToggle()
+                        verticalHairline
                     }
-                    .padding(DS.Spacing.xs)
-                    .dsGlassSurface(cornerRadius: DS.Radius.pill)
-                    .padding(.top, DS.Metrics.shellFloatingInset)
-                    .padding(.trailing, DS.Metrics.shellFloatingInset)
-                }
-                Spacer()
-            }
-            .zIndex(3)
 
-            // Bottom-center primary action pill, with the display-only
-            // telemetry strip (mockup .telemetry-bar port) bottom-leading.
-            VStack {
-                Spacer()
-                ZStack(alignment: .bottom) {
-                    HStack {
-                        TelemetryBar()
-                            .padding(.leading, DS.Metrics.shellFloatingInset)
-                            .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
-                        Spacer()
-                    }
-                    HStack {
-                        Spacer()
-                        PrimaryActionPill(mode: selectedMode)
-                            .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
-                        Spacer()
-                    }
-                }
-            }
-            .zIndex(4)
+                    // Center: the REAL MapKit map, bounded to this region.
+                    SimulationView(mode: selectedMode, embedded: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Library flyout (mockup .flyout port): slides over the map,
-            // dismisses on scrim tap / X / Escape. Selection is subordinate
-            // (target-only) — see selectLibraryPlace.
+                    verticalHairline
+                    ModeControlPanel(selectedMode: $selectedMode)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                hairline
+                TelemetryBar()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(DS.Color.backgroundPrimary)
+            .animation(DS.Animation.slow, value: isSidebarExpanded)
+
+            // Library flyout overlay (mockup .flyout): scrim tap / X / Escape.
             if let kind = activeLibrary {
                 LibraryFlyout(
                     kind: kind,
@@ -123,7 +87,6 @@ struct MainMapShell: View {
             .opacity(0)
             .accessibilityHidden(true)
         }
-        .animation(DS.Animation.slow, value: isSidebarExpanded)
         .sheet(isPresented: $isShowingSettings) {
             SettingsSheetContainer {
                 isShowingSettings = false
@@ -134,6 +97,83 @@ struct MainMapShell: View {
             // Persist user preference so the toggle survives across launches.
             AppPreferences.shared.isSidebarExpanded = newValue
         }
+    }
+
+    // MARK: - Top bar (mockup .topbar)
+
+    private var topBar: some View {
+        HStack(spacing: DS.Spacing.sm) {
+            brandBlock
+            sidebarToggle
+
+            Spacer(minLength: DS.Spacing.sm)
+
+            HStack(spacing: DS.Spacing.xs) {
+                ConnectionPill()
+                DeviceDropdown()
+            }
+
+            Spacer(minLength: DS.Spacing.sm)
+
+            ThemeToggle()
+        }
+        // Leading inset clears the native traffic-light controls (hidden title bar).
+        .padding(.leading, DS.Metrics.sidebarTopGutterHeight + DS.Spacing.md)
+        .padding(.trailing, DS.Spacing.sm)
+        .frame(height: DS.Metrics.sidebarTopGutterHeight)
+        .frame(maxWidth: .infinity)
+        .background(DS.Color.backgroundSecondary)
+    }
+
+    private var brandBlock: some View {
+        HStack(spacing: DS.Spacing.xs) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                    .fill(DS.ModeAccent.teleport.gradient)
+                    .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: DS.Metrics.iconButtonIconSize - 2, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Text("PathChanger")
+                    .font(DS.Typography.subheadline)
+                    .foregroundStyle(DS.Color.foregroundPrimary)
+                Text("v1.0.0")
+                    .font(DS.Typography.monoSmall)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("PathChanger version 1.0.0")
+    }
+
+    private var sidebarToggle: some View {
+        Button(action: toggleSidebar) {
+            Image(systemName: "sidebar.leading")
+                .font(.system(size: DS.Metrics.iconButtonIconSize, weight: .regular))
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSidebarExpanded ? "Hide sidebar" : "Show sidebar")
+        .accessibilityIdentifier("mapShellSidebarToggle")
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(DS.Color.foregroundTertiary.opacity(DS.Opacity.divider))
+            .frame(height: DS.Metrics.strokeWidth)
+            .allowsHitTesting(false)
+    }
+
+    private var verticalHairline: some View {
+        Rectangle()
+            .fill(DS.Color.foregroundTertiary.opacity(DS.Opacity.divider))
+            .frame(width: DS.Metrics.strokeWidth)
+            .frame(maxHeight: .infinity)
+            .allowsHitTesting(false)
     }
 
     private func toggleSidebar() {

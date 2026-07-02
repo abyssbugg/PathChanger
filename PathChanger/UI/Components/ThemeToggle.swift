@@ -81,6 +81,13 @@ struct ThemeToggle: View {
         .onHover { hovering in
             withAnimation(DS.Animation.fast) { isHovered = hovering }
         }
+        .onAppear {
+            // Re-sync after AppTheme.applySaved() has run at launch — the
+            // @State initial value can be computed before the override lands.
+            DispatchQueue.main.async {
+                isDarkActive = ThemeToggle.isEffectivelyDark()
+            }
+        }
         .accessibilityIdentifier("themeToggle")
         .accessibilityLabel(isDarkActive ? "Switch to light theme" : "Switch to dark theme")
     }

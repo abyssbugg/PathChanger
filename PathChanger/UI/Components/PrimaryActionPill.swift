@@ -41,6 +41,9 @@ import SwiftUI
 
 struct PrimaryActionPill: View {
     let mode: AppMode
+    /// When true the pill fills its container width (mockup right-panel dock)
+    /// instead of the fixed floating-capsule width.
+    var fullWidth: Bool = false
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @State private var isHovered = false
@@ -56,7 +59,8 @@ struct PrimaryActionPill: View {
                 visualState: visualState,
                 accent: DS.ModeAccent.forMode(mode),
                 isHovered: isHovered,
-                isDisabled: isInteractionDisabled
+                isDisabled: isInteractionDisabled,
+                fullWidth: fullWidth
             )
         )
         .disabled(isInteractionDisabled)
@@ -273,6 +277,7 @@ private struct PrimaryActionPillStyle: ButtonStyle {
     let accent: DS.ModeAccent
     let isHovered: Bool
     let isDisabled: Bool
+    var fullWidth: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
         let isPressed = configuration.isPressed && !isDisabled
@@ -281,7 +286,8 @@ private struct PrimaryActionPillStyle: ButtonStyle {
         return configuration.label
             .font(DS.Typography.headline)
             .foregroundStyle(DS.Color.foregroundPrimary)
-            .frame(width: DS.Metrics.primaryPillWidth, height: DS.Metrics.primaryPillHeight)
+            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .frame(width: fullWidth ? nil : DS.Metrics.primaryPillWidth, height: DS.Metrics.primaryPillHeight)
             .background(
                 RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
                     .fill(backgroundFill(isPressed: isPressed))

@@ -48,7 +48,8 @@ struct TelemetryBar: View {
         }
         .padding(.horizontal, DS.Spacing.sm)
         .padding(.vertical, DS.Spacing.xs)
-        .dsGlassSurface(cornerRadius: DS.Radius.pill)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.Color.backgroundSecondary)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("telemetryBar")
     }

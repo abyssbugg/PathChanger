@@ -22,80 +22,169 @@ struct CollapsibleSidebar: View {
 
 
     var body: some View {
-        VStack(spacing: DS.Metrics.zero) {
-            topGutter
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            searchField
+                .padding(.top, DS.Spacing.sm)
 
-            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-                searchField
-                modePicker
+            Text("LIBRARY")
+                .font(DS.Typography.labelCaps)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .tracking(DS.Metrics.shortcutLabelTracking)
+                .padding(.top, DS.Spacing.xs)
 
-                Text("RECENT LOCATIONS")
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-                    .textCase(.uppercase)
-                    .padding(.top, DS.Spacing.xs)
+            navItem(
+                title: "History",
+                subtitle: "Recent locations",
+                icon: "clock.arrow.circlepath",
+                identifier: "mapShellHistoryButton",
+                accessibility: "Open history"
+            ) { onOpenLibrary(.history) }
 
-                if appState.locationHistory.isEmpty {
-                    emptyRecents
-                } else {
-                    recentsList
-                }
+            navItem(
+                title: "Favorites",
+                subtitle: "Saved places",
+                icon: "star",
+                identifier: "mapShellFavoritesButton",
+                accessibility: "Open favorites"
+            ) { onOpenLibrary(.favorites) }
 
-                Spacer(minLength: DS.Metrics.zero)
-                footer
+            navItem(
+                title: "Settings",
+                subtitle: "App & preferences",
+                icon: "gearshape",
+                identifier: "mapShellSettingsButton",
+                accessibility: "Settings"
+            ) { isShowingSettings = true }
+
+            Text("RECENT LOCATIONS")
+                .font(DS.Typography.labelCaps)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .tracking(DS.Metrics.shortcutLabelTracking)
+                .padding(.top, DS.Spacing.xs)
+
+            if appState.locationHistory.isEmpty {
+                emptyRecents
+            } else {
+                recentsList
             }
-            .padding(.horizontal, DS.Spacing.sm)
-            .padding(.bottom, DS.Spacing.sm)
+
+            Spacer(minLength: DS.Metrics.zero)
+
+            sessionCard
+
+            Text("PATHCHANGER · BUILD 1.0.0")
+                .font(DS.Typography.monoSmall)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.bottom, DS.Spacing.xs)
         }
+        .padding(.horizontal, DS.Spacing.sm)
         .frame(width: DS.Metrics.sidebarWidth)
         .frame(maxHeight: .infinity)
         .background(DS.Color.backgroundSecondary)
-        .overlay(
-            Rectangle()
-                .fill(DS.Color.backgroundElevated.opacity(DS.Opacity.panel))
-                .allowsHitTesting(false)
-        )
-        .overlay(
-            Rectangle()
-                .fill(DS.Color.foregroundTertiary)
-                .frame(width: DS.Metrics.strokeWidth)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .allowsHitTesting(false)
-        )
         .overlay(alignment: .top) {
             if showSearchResults && !searchService.searchResults.isEmpty {
                 searchResultsDropdown
-                    .padding(.top, DS.Metrics.sidebarSearchDropdownTopInset)
+                    .padding(.top, DS.Metrics.sidebarControlHeight + DS.Spacing.md)
                     .padding(.horizontal, DS.Spacing.sm)
             }
         }
         .accessibilityIdentifier("mapShellSidebar")
     }
 
-    // MARK: - Top gutter
+    // MARK: - Collapse affordance
+    //
+    // The shell topbar hosts the visible sidebar toggle in the redesigned
+    // layout; the rail keeps its own collapse affordance for accessibility
+    // and the ⌘\ shortcut path.
 
-    private var topGutter: some View {
-        HStack {
-            Spacer()
-            Button(action: onCollapse) {
-                Image(systemName: "sidebar.leading")
+    private var collapseButton: some View {
+        Button(action: onCollapse) {
+            Image(systemName: "sidebar.leading")
+                .font(DS.Typography.labelPrimary)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .frame(width: DS.Metrics.sidebarCollapseButtonSize, height: DS.Metrics.sidebarCollapseButtonSize)
+                .contentShape(RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Hide sidebar")
+        .accessibilityHint("Collapses the navigation sidebar")
+        .accessibilityIdentifier("mapShellSidebarCollapseButton")
+    }
+
+    // MARK: - Library nav items (mockup .nav-item)
+
+    private func navItem(
+        title: String,
+        subtitle: String,
+        icon: String,
+        identifier: String,
+        accessibility: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: DS.Spacing.xs) {
+                Image(systemName: icon)
                     .font(DS.Typography.labelPrimary)
                     .foregroundStyle(DS.Color.foregroundSecondary)
-                    .frame(width: DS.Metrics.sidebarCollapseButtonSize, height: DS.Metrics.sidebarCollapseButtonSize)
-                    .background(DS.Color.backgroundElevated, in: RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous)
-                            .stroke(DS.Color.foregroundTertiary, lineWidth: DS.Metrics.strokeWidth)
+                    .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                            .fill(DS.Color.backgroundElevated)
                     )
-                    .contentShape(RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(DS.Typography.labelPrimary)
+                        .foregroundStyle(DS.Color.foregroundPrimary)
+                    Text(subtitle)
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Color.foregroundTertiary)
+                }
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Hide sidebar")
-            .accessibilityHint("Collapses the navigation sidebar")
-            .accessibilityIdentifier("mapShellSidebarCollapseButton")
+            .padding(DS.Spacing.xxs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
         }
-        .padding(.horizontal, DS.Spacing.sm)
-        .frame(height: DS.Metrics.sidebarTopGutterHeight)
+        .buttonStyle(.plain)
+        .appHoverOverlay(cornerRadius: DS.Radius.chip)
+        .accessibilityLabel(accessibility)
+        .accessibilityIdentifier(identifier)
+    }
+
+    // MARK: - Session card (mockup .session-card)
+
+    private var sessionCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
+            HStack(spacing: DS.Spacing.xs) {
+                Circle()
+                    .fill(appState.isSimulating ? DS.Color.mockupEmerald : DS.Color.inactive)
+                    .frame(width: DS.Metrics.statusChipDotSize, height: DS.Metrics.statusChipDotSize)
+                Text(appState.isSimulating ? (appState.statusMessage ?? "Spoofing Active") : "Standby")
+                    .font(DS.Typography.caption.weight(.semibold))
+                    .foregroundStyle(DS.Color.foregroundPrimary)
+                    .lineLimit(1)
+                collapseButton
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            Text(TelemetryBar.coordinateText(appState.currentLocation ?? appState.targetLocation))
+                .font(DS.Typography.monoSmall)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .lineLimit(1)
+        }
+        .padding(DS.Spacing.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                .fill(DS.Color.backgroundElevated.opacity(DS.Opacity.selectedRow))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                .stroke(DS.Color.foregroundTertiary.opacity(DS.Opacity.divider), lineWidth: DS.Metrics.strokeWidth)
+        )
+        .accessibilityIdentifier("sidebarSessionCard")
     }
 
     // MARK: - Search field
@@ -151,44 +240,11 @@ struct CollapsibleSidebar: View {
         )
     }
 
-    // MARK: - Mode picker
-
-    private var modePicker: some View {
-        HStack(spacing: DS.Spacing.xxs) {
-            ForEach([AppMode.teleport, .route, .joystick], id: \.self) { mode in
-                modeSegment(mode)
-            }
-        }
-        .padding(DS.Spacing.xxs)
-        .frame(height: DS.Metrics.sidebarControlHeight)
-        .background(
-            RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
-                .fill(DS.Color.backgroundElevated.opacity(DS.Opacity.idleRow))
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(AccessibilityIdentifiers.Simulation.modeSelector)
-    }
-
-    private func modeSegment(_ mode: AppMode) -> some View {
-        let isSelected = selectedMode == mode
-        return Button {
-            selectedMode = mode
-        } label: {
-            Text(mode.rawValue)
-                .font(isSelected ? DS.Typography.labelPrimary : DS.Typography.labelSecondary)
-                .foregroundStyle(isSelected ? DS.Color.foregroundPrimary : DS.Color.foregroundSecondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
-                        .fill(isSelected ? DS.Color.accent.opacity(DS.Opacity.selectionTint) : Color.clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(mode.rawValue) mode")
-    }
-
     // MARK: - Recents
+    //
+    // Mode selection moved to the right control panel's tab strip
+    // (ModeControlPanel, mockup .tabs); the sidebar keeps `selectedMode`
+    // only for its mode-aware selection semantics in `select(coordinate:)`.
 
     private var emptyRecents: some View {
         HStack(spacing: DS.Spacing.xs) {
@@ -243,51 +299,6 @@ struct CollapsibleSidebar: View {
         .accessibilityIdentifier(AccessibilityIdentifiers.History.historyRow)
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            // Library nav items (mockup sidebar History / Favorites parity).
-            Button {
-                onOpenLibrary(.history)
-            } label: {
-                Label("History", systemImage: "clock.arrow.circlepath")
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open history")
-            .accessibilityIdentifier("mapShellHistoryButton")
-
-            Button {
-                onOpenLibrary(.favorites)
-            } label: {
-                Label("Favorites", systemImage: "star")
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open favorites")
-            .accessibilityIdentifier("mapShellFavoritesButton")
-
-            Spacer(minLength: DS.Spacing.xxs)
-
-            Button {
-                isShowingSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .font(DS.Typography.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("mapShellSettingsButton")
-        }
-        .padding(.top, DS.Spacing.xs)
-    }
 
     // MARK: - Search results dropdown
 

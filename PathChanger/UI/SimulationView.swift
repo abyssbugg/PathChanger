@@ -13,6 +13,10 @@ import AppKit
 
 struct SimulationView: View {
     let mode: AppMode
+    /// When true, render the map only (no floating mode panels, no safe-area
+    /// bleed) so the map can sit inside a bounded shell region. The mode
+    /// panels move to the shell's right control panel in the redesigned shell.
+    var embedded: Bool = false
     @EnvironmentObject var appState: AppState
     @StateObject private var searchService = LocationSearchService()
 
@@ -38,17 +42,25 @@ struct SimulationView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // 1. Full Screen Map
-            mapView
-                .ignoresSafeArea()
-
-            // 3. Floating Action Panel
-            VStack(spacing: AppSpacing.xl) {
-                // Mode-specific controls
-                modeSpecificControls
+            // 1. Map — full-bleed when standalone, bounded when embedded.
+            if embedded {
+                mapView
+            } else {
+                mapView
+                    .ignoresSafeArea()
             }
-            .padding(.horizontal, AppSpacing.xl)
-            .padding(.bottom, DS.Spacing.xl * DS.Metrics.two)
+
+            // 3. Floating Action Panel — only in the legacy standalone layout.
+            // In the redesigned shell the mode panels live in the right
+            // control panel, so they are suppressed when embedded.
+            if !embedded {
+                VStack(spacing: AppSpacing.xl) {
+                    // Mode-specific controls
+                    modeSpecificControls
+                }
+                .padding(.horizontal, AppSpacing.xl)
+                .padding(.bottom, DS.Spacing.xl * DS.Metrics.two)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
