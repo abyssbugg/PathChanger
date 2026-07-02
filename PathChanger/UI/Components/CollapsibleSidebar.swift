@@ -12,6 +12,9 @@ struct CollapsibleSidebar: View {
     @Binding var isShowingSettings: Bool
     @EnvironmentObject var appState: AppState
     var onCollapse: () -> Void = {}
+    /// Opens the Library flyout (mockup nav-item parity). Subordinate
+    /// navigation only — the flyout itself performs target-only selection.
+    var onOpenLibrary: (LibraryKind) -> Void = { _ in }
 
     @StateObject private var searchService = LocationSearchService()
     @State private var showSearchResults = false
@@ -243,7 +246,34 @@ struct CollapsibleSidebar: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: DS.Spacing.xs) {
+        HStack(spacing: DS.Spacing.sm) {
+            // Library nav items (mockup sidebar History / Favorites parity).
+            Button {
+                onOpenLibrary(.history)
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath")
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open history")
+            .accessibilityIdentifier("mapShellHistoryButton")
+
+            Button {
+                onOpenLibrary(.favorites)
+            } label: {
+                Label("Favorites", systemImage: "star")
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open favorites")
+            .accessibilityIdentifier("mapShellFavoritesButton")
+
+            Spacer(minLength: DS.Spacing.xxs)
+
             Button {
                 isShowingSettings = true
             } label: {

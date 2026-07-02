@@ -28,6 +28,7 @@ struct MainMapShell: View {
     @State private var selectedMode: AppMode = .teleport
     @State private var isSidebarExpanded: Bool = AppPreferences.shared.isSidebarExpanded
     @State private var isShowingSettings: Bool = false
+    @State private var activeLibrary: LibraryKind?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -40,7 +41,8 @@ struct MainMapShell: View {
                 CollapsibleSidebar(
                     selectedMode: $selectedMode,
                     isShowingSettings: $isShowingSettings,
-                    onCollapse: toggleSidebar
+                    onCollapse: toggleSidebar,
+                    onOpenLibrary: openLibrary
                 )
                 .transition(.move(edge: .leading))
                 .zIndex(1)
@@ -98,6 +100,21 @@ struct MainMapShell: View {
             }
             .zIndex(4)
 
+            // Library flyout (mockup .flyout port): slides over the map,
+            // dismisses on scrim tap / X / Escape. Selection is subordinate
+            // (target-only) — see selectLibraryPlace.
+            if let kind = activeLibrary {
+                LibraryFlyout(
+                    kind: kind,
+                    isPresented: Binding(
+                        get: { activeLibrary != nil },
+                        set: { if !$0 { activeLibrary = nil } }
+                    ),
+                    onSelect: selectLibraryPlace
+                )
+                .zIndex(10)
+            }
+
             // Hidden button to host the ⌘\ keyboard shortcut.
             Button(action: toggleSidebar) {
                 Color.clear.frame(width: DS.Metrics.shellHiddenShortcutSize, height: DS.Metrics.shellHiddenShortcutSize)
@@ -122,6 +139,30 @@ struct MainMapShell: View {
     private func toggleSidebar() {
         withAnimation(DS.Animation.slow) {
             isSidebarExpanded.toggle()
+        }
+    }
+
+    private func openLibrary(_ kind: LibraryKind) {
+        withAnimation(DS.Animation.slow) {
+            activeLibrary = kind
+        }
+    }
+
+    /// Subordinate library selection: sets the target only, mirroring the
+    /// sidebar's mode-aware context selection. Execution stays with
+    /// PrimaryActionPill (SOLE production T0 execution authority).
+    private func selectLibraryPlace(coordinate: LocationCoordinate, name: String) {
+        appState.targetLocation = coordinate
+        appState.targetLocationName = name
+        switch selectedMode {
+        case .route:
+            appState.statusMessage = "Selected \(name) as route spot. Use Add Waypoint to include it in the route."
+        case .joystick:
+            appState.statusMessage = "Selected \(name) as joystick start. Press the action pill to begin."
+        case .teleport:
+            appState.statusMessage = "Selected \(name). Press the action pill to apply."
+        case .settings:
+            appState.statusMessage = "Selected \(name)."
         }
     }
 }

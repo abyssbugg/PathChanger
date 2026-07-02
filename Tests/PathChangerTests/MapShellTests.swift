@@ -169,6 +169,31 @@ final class MapShellSourceWiringTests: XCTestCase {
         XCTAssertFalse(shell.contains("DeviceTunnelPill()"))
     }
 
+    func testLibraryFlyoutIsMountedAndSubordinate() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+        let flyout = try readProjectFile("PathChanger/UI/Components/LibraryFlyout.swift")
+        let sidebar = try readProjectFile("PathChanger/UI/Components/CollapsibleSidebar.swift")
+
+        // Mounted from the shell, opened via sidebar Library nav items.
+        XCTAssertTrue(shell.contains("LibraryFlyout("))
+        XCTAssertTrue(shell.contains("selectLibraryPlace"))
+        XCTAssertTrue(sidebar.contains("mapShellHistoryButton"))
+        XCTAssertTrue(sidebar.contains("mapShellFavoritesButton"))
+
+        // Subordinate guarantee: the flyout must never grow execution
+        // gestures — selection is target-only.
+        XCTAssertFalse(flyout.contains("startSimulation("))
+        XCTAssertFalse(flyout.contains("stopSimulation("))
+        XCTAssertFalse(flyout.contains("setLocation("))
+        XCTAssertTrue(flyout.contains("SOLE production T0 execution"))
+
+        // Interaction parity with the mockup flyout: scrim dismiss, close
+        // button, Escape.
+        XCTAssertTrue(flyout.contains("onTapGesture { close() }"))
+        XCTAssertTrue(flyout.contains("libraryFlyoutClose"))
+        XCTAssertTrue(flyout.contains(".keyboardShortcut(.cancelAction)"))
+    }
+
     func testTelemetryBarIsMountedAndDisplayOnly() throws {
         let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
         let telemetry = try readProjectFile("PathChanger/UI/Components/TelemetryBar.swift")
