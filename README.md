@@ -14,8 +14,6 @@ PathChanger is a macOS application for simulating GPS locations on iOS 17+ devic
 
 PathChanger is a clean renamed recovery derived from `abyssbugg/LocationSpoofer` at commit `e8aa39f20a4b0e078245282967b8c9c791350f10`. See `NOTICE.md` for attribution and license provenance.
 
-![PathChanger Screenshot](https://via.placeholder.com/800x500?text=PathChanger+App+Screenshot)
-
 ---
 
 ## ✨ Features
@@ -39,22 +37,26 @@ PathChanger is a clean renamed recovery derived from `abyssbugg/LocationSpoofer`
 # Clone the repository
 git clone <new-pathchanger-repository-url>
 cd PathChanger
+# Build a durable app bundle at dist/PathChanger.app
+./build.sh
 
-# Build the app bundle
-./build-app-bundle.sh
+# Install to the canonical Applications target
+./install.sh
 
-# Install to Applications
-cp -R build/PathChanger.app /Applications/
-
-# Launch
+# Launch the newly installed app
 open /Applications/PathChanger.app
 ```
+`install.sh` installs `dist/PathChanger.app` to `/Applications/PathChanger.app`.
 
 ### Option 2: Download Pre-Built App
 
-1. Download `PathChanger.dmg` from the new PathChanger repository releases page when available.
-2. Open the DMG and drag PathChanger to Applications
-3. Launch from Applications or Spotlight
+1. Download the latest `PathChanger-<version>-macOS.zip` and `PathChanger-<version>-macOS.sha256` from Releases.
+2. Verify integrity locally:
+   ```bash
+   shasum -a 256 -c PathChanger-<version>-macOS.sha256
+   ```
+3. Unzip and move `PathChanger.app` into `/Applications/PathChanger.app`.
+4. Launch from Applications or Spotlight.
 
 ---
 
@@ -84,7 +86,7 @@ pymobiledevice3 version  # Should be >= 6.1.5
    - Device will reboot - confirm "Turn On Developer Mode"
 
 2. **Launch PathChanger:**
-   - Open PathChanger.app from Applications
+   - Open `PathChanger.app` from Applications
    - Grant permissions if prompted
 
 3. **Complete Onboarding:**
@@ -141,9 +143,7 @@ Follow a pre-defined path from GPX files:
 4. Click **Start Route**
 5. Route plays back with natural movement
 
-**Sample GPX Files:**
-- Located in `Resources/sample_routes/`
-- Import your own from Strava, Google Maps, etc.
+Import GPX routes exported from Strava, Google Maps, or other route tools.
 
 ### Joystick Mode
 
@@ -182,15 +182,8 @@ PathChanger supports extensive keyboard shortcuts for efficient operation:
 
 | Shortcut | Action |
 |----------|--------|
-| `⌘⇧S` | Toggle sidebar |
+| `⌘\` | Toggle sidebar |
 | `⌘,` | Open settings |
-
-### Speed Control
-
-| Shortcut | Action |
-|----------|--------|
-| `⌘⌥↑` | Increase simulation speed |
-| `⌘⌥↓` | Decrease simulation speed |
 
 > **Tip:** A complete shortcuts reference is also available in Settings → Keyboard Shortcuts.
 
@@ -238,13 +231,13 @@ The XCTest suite requires full Xcode. Apple Command Line Tools alone do not prov
 GitHub Actions runs the same test suite on a macOS runner with Xcode installed, so CI is the recommended XCTest source of truth when developing locally with Command Line Tools only.
 
 **Test Suites:**
-- `ArgumentSanitizerTests` - Input validation (15 tests)
-- `GPXParserTests` - Route parsing (9 tests)
-- `LocationCoordinateTests` - Coordinate validation (13 tests)
-- `PythonPathResolverTests` - Dependency detection (6 tests)
-- `RateLimiterTests` - Token bucket algorithm (6 tests)
-- `RouteInterpolatorTests` - Route interpolation (17 tests)
-- `TunneldManagerTests` - Tunnel lifecycle (16 tests)
+- `ArgumentSanitizerTests` - Input validation
+- `GPXParserTests` - Route parsing
+- `LocationCoordinateTests` - Coordinate validation
+- `PythonPathResolverTests` - Dependency detection
+- `RateLimiterTests` - Token bucket algorithm
+- `RouteInterpolatorTests` - Route interpolation
+- `TunneldManagerTests` - Tunnel lifecycle
 
 ### User Acceptance Testing
 Hardware-dependent workflows require a Mac with full Xcode, Python, `pymobiledevice3`, and a trusted iOS 17 device with Developer Mode enabled.
@@ -265,9 +258,11 @@ swift build
 
 # Build release version
 swift build -c release
+# Create and sanitize app bundle in dist/
+./build.sh
 
-# Create app bundle
-./build-app-bundle.sh
+# Optional: install as side-by-side app (default)
+./install.sh
 ```
 
 ### Project Structure
@@ -284,9 +279,11 @@ PathChanger/
 │   └── PathChangerApp.swift
 ├── Tests/                     # XCTest suite
 ├── Resources/                 # App resources
-│   ├── Info.plist
-│   └── sample_routes/
-├── build-app-bundle.sh        # App bundler script
+│   └── Info.plist
+├── build.sh                   # Canonical app build entrypoint (writes dist/PathChanger.app)
+├── install.sh                 # Installer for /Applications/PathChanger.app
+├── build-app-bundle.sh        # Lower-level app bundler invoked by build.sh
+├── dist/                      # Durable build artifacts (gitignored)
 └── Package.swift              # Swift Package manifest
 ```
 
@@ -413,7 +410,7 @@ System Settings → Privacy & Security → Full Disk Access → Enable for PathC
 PathChanger is optimized for iOS 17.0-17.6. **iOS 18+ devices may experience location injection failures** due to Apple's changes to the DVT (Developer Tools) service.
 
 **Symptoms:**
-- Diagnostics show "ready to inject location"
+- Diagnostics show the DVT/developer service is reachable, but actual location injection can still fail on affected iOS builds
 - Location injection appears to succeed but device location doesn't change
 - No clear error messages in logs
 
@@ -469,8 +466,10 @@ Filter: com.pathchanger
 
 Or check tunnel logs:
 ```bash
-tail -f /tmp/pathchanger_tunnel.log
+tail -f ~/Library/Logs/PathChanger/tunnel.log
 ```
+
+Run Diagnostics performs non-mutating readiness checks by default; it does not set a test coordinate on the device. Use the simulation controls to verify device location changes.
 
 ---
 
@@ -487,8 +486,8 @@ The following items are planned or deferred work and should be implemented only 
 
 **Priority 2: CI/CD Integration** (Est: 15h)
 - GitHub Actions pipeline
-- Automated testing & code signing
-- DMG packaging & releases
+- Automated testing and release validation
+- ZIP + SHA256 packaging for GitHub releases
 
 **Priority 3: Advanced Route Simulation** (Est: 160h)
 - Physics-based movement (acceleration, friction)

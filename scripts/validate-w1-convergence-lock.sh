@@ -2,10 +2,12 @@
 # Validate W1 freeze-lock authority convergence using lightweight static checks.
 #
 # Gates:
-#   A. No UI calls to TunneldManager.startTunnel().
-#   B. No new UI simulation execution callers outside the canonical authority.
-#   C. No new UI teleport execution callers outside documented W4 exceptions.
-#   D. No non-canonical "Set Location" T0 labels.
+#   A. No shell-surface calls to TunneldManager.startTunnel().
+#   B. SimulationView is shell-only (no legacy `.full` chrome pathway).
+#   C. SimulationView has no direct simulation execution callers.
+#   D. CollapsibleSidebar has no execution-adjacent callers.
+#   E. Shell surfaces expose no non-canonical "Set Location" labels.
+#   F. Policy script contains no legacy governance markers.
 
 set -euo pipefail
 
@@ -23,7 +25,7 @@ pass() {
     echo "✓ $1"
 }
 
-matches_without_allowed() {
+matches_in_scope() {
     local pattern="$1"
     shift
     local paths=("$@")
@@ -44,47 +46,68 @@ check_gate() {
     fi
 }
 
+require_paths() {
+    local missing=0
+    for path in "$@"; do
+        if [ ! -f "$path" ]; then
+            fail "Required validation target is missing: $path"
+            missing=1
+        fi
+    done
+    return "$missing"
+}
+
 echo "Validating W1 convergence lock..."
 
-# Gate A — forbidden tunnel-start callers.
-# Allowed: TunneldManager internals only. UI must route through autoStart().
-gate_a_matches="$(matches_without_allowed 'tunneldManager[[:space:]]*\.[[:space:]]*startTunnel[[:space:]]*\(' PathChanger/UI)"
+shell_paths=(
+    PathChanger/UI/MainMapShell.swift
+    PathChanger/UI/SimulationView.swift
+    PathChanger/UI/Components/CollapsibleSidebar.swift
+)
+
+require_paths "${shell_paths[@]}" || true
+
+# Gate A — forbidden direct tunnel-start callers in shell surfaces.
+gate_a_matches="$(matches_in_scope 'tunneldManager[[:space:]]*\.[[:space:]]*startTunnel[[:space:]]*\(' "${shell_paths[@]}")"
 check_gate \
-    "Gate A passed: no UI tunneldManager.startTunnel callers" \
-    "Gate A failed: UI source must not call tunneldManager.startTunnel(" \
+    "Gate A passed: no shell-surface tunneldManager.startTunnel callers" \
+    "Gate A failed: shell surfaces must not call tunneldManager.startTunnel(" \
     "$gate_a_matches"
 
-# Gate B — forbidden simulation-execution callers.
-# Allowed canonical T0 authority: PrimaryActionPill.swift.
-# Documented W4-deferred compatibility exception: SimulationView.swift legacy
-# .full chrome main control panel until W4 removes the compatibility surface.
-gate_b_matches="$(matches_without_allowed 'appState[[:space:]]*\.[[:space:]]*(startSimulation|stopSimulation)[[:space:]]*\(' PathChanger/UI \
-    | grep -v '^PathChanger/UI/Components/PrimaryActionPill.swift:' \
-    | grep -v '^PathChanger/UI/SimulationView.swift:' || true)"
+# Gate B — no legacy SimulationView full-chrome pathway markers.
+gate_b_matches="$(matches_in_scope '(case[[:space:]]+full|chrome[[:space:]]*:[[:space:]]*SimulationViewChrome[[:space:]]*=[[:space:]]*\.full|chrome[[:space:]]*==[[:space:]]*\.full|SimulationViewChrome[[:space:]]*\.[[:space:]]*full)' PathChanger/UI/SimulationView.swift)"
 check_gate \
-    "Gate B passed: no new UI simulation execution callers" \
-    "Gate B failed: UI simulation execution must remain in PrimaryActionPill or documented W4 legacy full-chrome exception" \
+    "Gate B passed: SimulationView has no legacy full-chrome pathway markers" \
+    "Gate B failed: SimulationView must not encode legacy full-chrome pathway markers" \
     "$gate_b_matches"
 
-# Gate C — forbidden teleport execution callers.
-# Allowed canonical execution path: AppState/startSimulation internals, not UI.
-# Documented W4-deferred compatibility exception: SidebarView.swift history Apply
-# remains until W4 compatibility-surface deletion.
-gate_c_matches="$(matches_without_allowed 'appState[[:space:]]*\.[[:space:]]*setLocation[[:space:]]*\(' PathChanger/UI \
-    | grep -v '^PathChanger/UI/SidebarView.swift:' || true)"
+# Gate C — no direct simulation execution callers from SimulationView.
+gate_c_matches="$(matches_in_scope 'appState[[:space:]]*\.[[:space:]]*(startSimulation|stopSimulation|pauseSimulation|resumeSimulation)[[:space:]]*\(' PathChanger/UI/SimulationView.swift)"
 check_gate \
-    "Gate C passed: no UI setLocation callers outside documented W4 exception" \
-    "Gate C failed: UI setLocation callers must not appear outside the documented W4 SidebarView exception" \
+    "Gate C passed: SimulationView has no direct simulation execution callers" \
+    "Gate C failed: SimulationView must not call AppState simulation execution APIs directly" \
     "$gate_c_matches"
 
-# Gate D — forbidden visual-authority regressions.
-# Allowed canonical rendered T0 label authority: PrimaryActionPill.swift.
-gate_d_matches="$(matches_without_allowed '"Set Location"' PathChanger/UI \
-    | grep -v '^PathChanger/UI/Components/PrimaryActionPill.swift:' || true)"
+# Gate D — CollapsibleSidebar must remain execution-adjacent-action free.
+gate_d_matches="$(matches_in_scope '(appState[[:space:]]*\.[[:space:]]*setLocation[[:space:]]*\(|tunneldManager[[:space:]]*\.[[:space:]]*(autoStart|startTunnel)[[:space:]]*\()' PathChanger/UI/Components/CollapsibleSidebar.swift)"
 check_gate \
-    "Gate D passed: no non-canonical UI \"Set Location\" labels" \
-    "Gate D failed: non-canonical UI \"Set Location\" label detected outside PrimaryActionPill" \
+    "Gate D passed: CollapsibleSidebar has no execution-adjacent callers" \
+    "Gate D failed: CollapsibleSidebar must not call AppState.setLocation or tunnel start actions" \
     "$gate_d_matches"
+
+# Gate E — no non-canonical "Set Location" label in shell surfaces.
+gate_e_matches="$(matches_in_scope '"Set Location"' "${shell_paths[@]}")"
+check_gate \
+    "Gate E passed: no shell-surface \"Set Location\" labels" \
+    "Gate E failed: shell surfaces must not render \"Set Location\" authority labels" \
+    "$gate_e_matches"
+
+# Gate F — no legacy governance markers in this policy script.
+gate_f_matches="$(grep -InE 'allow[[:space:]]*list|white[[:space:]]*list' scripts/validate-w1-convergence-lock.sh || true)"
+check_gate \
+    "Gate F passed: policy script has no legacy governance markers" \
+    "Gate F failed: legacy governance markers remain in convergence lock script" \
+    "$gate_f_matches"
 
 if [ "$failures" -ne 0 ]; then
     echo "W1 convergence-lock validation failed with $failures violation(s)." >&2

@@ -26,13 +26,13 @@ plist_value() {
 }
 
 require_file "Package.swift"
-require_file "Package.resolved"
 require_file "Resources/Info.plist"
 require_file "Resources/PathChanger.entitlements"
 require_file ".github/workflows/ci.yml"
 require_file ".github/workflows/release.yml"
 require_file ".github/workflows/release-validation.yml"
 require_file "build-app-bundle.sh"
+require_file "DEPLOYMENT/README.md"
 
 plutil -lint Resources/Info.plist >/dev/null
 plutil -lint Resources/PathChanger.entitlements >/dev/null
@@ -73,34 +73,23 @@ done
 rm -f /tmp/pathchanger-entitlement-check
 pass "Distribution entitlements exclude debug/high-risk code-signing permissions"
 
-SPARKLE_RESOLVED_VERSION="$(python3 - <<'PY'
-import json
-with open("Package.resolved", encoding="utf-8") as fh:
-    data = json.load(fh)
-for pin in data.get("pins", []):
-    if pin.get("identity") == "sparkle":
-        print(pin.get("state", {}).get("version", ""))
-        break
-PY
-)"
-[ -n "$SPARKLE_RESOLVED_VERSION" ] || fail "Sparkle pin missing from Package.resolved"
-grep -Eq "SPARKLE_VERSION(:[[:space:]]*|=)\"?$SPARKLE_RESOLVED_VERSION\"?" .github/workflows/release.yml || \
-    fail "Release workflow Sparkle tool version must match Package.resolved ($SPARKLE_RESOLVED_VERSION)"
-pass "Sparkle release tooling matches Package.resolved ($SPARKLE_RESOLVED_VERSION)"
-
-grep -q "REQUIRE_PRODUCTION_SIGNING=1" .github/workflows/release.yml || \
-    fail "Release workflow must require production signing in build-app-bundle.sh"
-grep -q "MACOS_CERTIFICATE_P12_BASE64" .github/workflows/release.yml || \
-    fail "Release workflow must import a Developer ID certificate"
-grep -q "xcrun notarytool submit" .github/workflows/release.yml || \
-    fail "Release workflow must submit the DMG for notarization"
-grep -q "xcrun stapler staple" .github/workflows/release.yml || \
-    fail "Release workflow must staple notarization tickets"
-grep -q "xcrun stapler validate" .github/workflows/release.yml || \
-    fail "Release workflow must validate stapled tickets"
-grep -q "SPARKLE_PRIVATE_KEY" .github/workflows/release.yml || \
-    fail "Release workflow must require Sparkle signing"
-pass "Release workflow enforces signing, notarization, stapling, and Sparkle signing"
+if grep -qi "sparkle" Package.swift; then
+    fail "Package.swift must not include Sparkle dependencies while updater wiring is disabled"
+fi
+if grep -qi "sparkle" build-app-bundle.sh .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/release-validation.yml; then
+    fail "Build and workflow configuration must not include Sparkle wiring in clean-disable mode"
+fi
+pass "Sparkle updater path is cleanly disabled with no package/workflow/build-script wiring"
+grep -q "build-app-bundle.sh" .github/workflows/release.yml || \
+    fail "Release workflow must build an app bundle"
+grep -q "PathChanger-\${VERSION}-macOS.zip" .github/workflows/release.yml || \
+    fail "Release workflow must produce GitHub zip artifacts"
+grep -q "PathChanger-\${VERSION}-macOS.sha256" .github/workflows/release.yml || \
+    fail "Release workflow must produce SHA-256 checksum artifacts"
+if grep -q "REQUIRE_PRODUCTION_SIGNING=1\\|MACOS_CERTIFICATE_P12_BASE64\\|xcrun notarytool\\|xcrun stapler" .github/workflows/release.yml; then
+    fail "Release workflow must not require Apple Developer signing/notarization for GitHub-direct distribution"
+fi
+pass "Release workflow uses ad-hoc GitHub-direct packaging without Apple-signing gates"
 
 grep -q "workflow_dispatch:" .github/workflows/release-validation.yml || \
     fail "Release validation workflow must be manually dispatchable"
@@ -109,19 +98,88 @@ grep -q "contents: read" .github/workflows/release-validation.yml || \
 if grep -q "gh release upload\|release upload" .github/workflows/release-validation.yml; then
     fail "Release validation workflow must not upload production release assets"
 fi
-grep -q "xcrun notarytool submit" .github/workflows/release-validation.yml || \
-    fail "Release validation workflow must submit artifacts for notarization"
-grep -q "spctl --assess" .github/workflows/release-validation.yml || \
-    fail "Release validation workflow must run Gatekeeper assessment"
-grep -Fq "com\.apple\.(FinderInfo|ResourceFork|provenance|fileprovider\.fpfs#P)" .github/workflows/release-validation.yml || \
-    fail "Release validation workflow must fail on provenance xattr contamination in CI"
-pass "Release validation workflow is dispatchable, non-publishing, and notarization-gated"
+grep -q "PathChanger-\${VERSION}-macOS.zip" .github/workflows/release-validation.yml || \
+    fail "Release validation workflow must verify zip packaging"
+grep -q "shasum -a 256 -c" .github/workflows/release-validation.yml || \
+    fail "Release validation workflow must verify SHA-256 checksums"
+if grep -q "xcrun notarytool\\|xcrun stapler\\|MACOS_CERTIFICATE_P12_BASE64\\|APPLE_TEAM_ID" .github/workflows/release-validation.yml; then
+    fail "Release validation workflow must not require Apple Developer notarization/signing secrets"
+fi
+pass "Release validation workflow is dispatchable, non-publishing, and GitHub-direct distribution aligned"
+
+for legacy_doc in \
+    DEPLOYMENT/02_CODE_SIGNING_PROCEDURES.md \
+    DEPLOYMENT/03_SECURITY_VERIFICATION_CHECKLIST.md \
+    DEPLOYMENT/04_PERFORMANCE_BASELINE.md \
+    DEPLOYMENT/05_UAT_SIGN_OFF.md
+do
+    [ ! -f "$legacy_doc" ] || fail "Contradictory legacy deployment document must be removed: $legacy_doc"
+done
+pass "Contradictory legacy deployment documents were removed"
+
+grep -q "PathChanger Authoritative Release Process (GitHub Direct)" DEPLOYMENT/README.md || \
+    fail "DEPLOYMENT/README.md must explicitly declare authoritative GitHub-direct release process"
+
+if grep -nE "notariz|notarytool|stapler|\\.dmg|hdiutil create|/Users/" README.md DEPLOYMENT/README.md; then
+    fail "Top-level release documents must not contain deprecated release paths, DMG/notarization flows, or machine-specific paths"
+fi
+pass "Top-level release documents contain no deprecated release process references"
+
+if grep -n "via.placeholder.com" README.md; then
+    fail "README must not contain placeholder screenshot asset references"
+fi
+pass "README contains no placeholder screenshot references"
+
+if grep -n "PathChanger-New.app" README.md; then
+    fail "Documentation must not advertise PathChanger-New.app"
+fi
+if grep -n -- "--install-main" README.md; then
+    fail "Documentation must not advertise removed installer flags"
+fi
+pass "Install documentation matches canonical /Applications/PathChanger.app target"
+
+if grep -nE '⌘⇧S|⌘⌥↑|⌘⌥↓' README.md PathChanger/UI/SettingsView.swift; then
+    fail "Documentation and Settings must not advertise unsupported shortcut commands"
+fi
+pass "Shortcut documentation matches implemented commands"
+
+if grep -nE '\([0-9]+/[0-9]+ tests passing\)|\([0-9]+ tests\)' README.md CONTRIBUTING.md; then
+    fail "Documentation must not hard-code XCTest counts"
+fi
+pass "Documentation avoids hard-coded XCTest counts"
+
+if [ ! -d Resources/sample_routes ] && grep -n "Resources/sample_routes/" README.md; then
+    fail "README must not claim bundled sample GPX routes unless assets exist"
+fi
+pass "README sample route claims match bundled assets"
+
+if grep -nE '/tmp/pathchanger_tunnel\.log|tunneld\.log' README.md DEPLOYMENT/TUNNEL_MODES.md; then
+    fail "Tunnel log documentation must match ~/Library/Logs/PathChanger/tunnel.log"
+fi
+grep -q "~/Library/Logs/PathChanger/tunnel.log" README.md || \
+    fail "README must document ~/Library/Logs/PathChanger/tunnel.log"
+grep -q "~/Library/Logs/PathChanger/tunnel.log" DEPLOYMENT/TUNNEL_MODES.md || \
+    fail "Tunnel mode docs must document ~/Library/Logs/PathChanger/tunnel.log"
+pass "Tunnel log documentation matches runtime path"
+
+if grep -nE 'xcrun notarytool|xcrun stapler|Notarize:|Staple:' build-app-bundle.sh; then
+    fail "Build scripts must not advertise notarization/stapling for GitHub-direct distribution"
+fi
+pass "Build scripts avoid notarization/stapling guidance for GitHub-direct distribution"
+
+if grep -nE '03_SECURITY_VERIFICATION_CHECKLIST\.md|04_PERFORMANCE_BASELINE\.md' DEPLOYMENT/TUNNEL_MODES.md; then
+    fail "Deployment docs must not link removed legacy release documents"
+fi
+pass "Deployment docs do not link removed legacy release documents"
 
 grep -q 'APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"' build-app-bundle.sh || \
     fail "App bundle script must default outside the workspace to avoid file-provider metadata contamination"
-grep -q "Production bundle builds require a Developer ID signing identity" build-app-bundle.sh || \
-    fail "App bundle script must reject ad-hoc signing for production builds"
-pass "App bundle script has deterministic output and production signing gate"
+grep -q 'DIST_BUILD_ROOT="${APP_BUNDLE_DIST_ROOT:-$(pwd)/dist}"' build.sh || \
+    fail "build.sh must default dist output inside the repository for durable local artifacts"
+if grep -q 'ln -s "\$DIST_BUILD_ROOT/PathChanger.app" dist/PathChanger.app' build.sh; then
+    fail "build.sh must not leave dist/PathChanger.app as a cache-backed symlink"
+fi
+pass "Build scripts produce deterministic app bundle output and durable dist artifacts"
 
 if grep -n "|| true" .github/workflows/ci.yml .github/workflows/release.yml; then
     fail "CI/release workflows must not contain tolerated failures"

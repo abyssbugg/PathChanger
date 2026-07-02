@@ -122,7 +122,7 @@ PathChanger supports four tunnel modes for connecting to iOS devices. This guide
 
 **Troubleshooting:**
 - Check `ps aux | grep tunneld` for running process
-- View logs at `~/Library/Logs/PathChanger/tunneld.log`
+- View logs at `~/Library/Logs/PathChanger/tunnel.log`
 - Kill orphan processes: `pkill -f pymobiledevice3`
 
 ---
@@ -218,5 +218,3 @@ PathChanger supports four tunnel modes for connecting to iOS devices. This guide
 ## See Also
 
 - [Troubleshooting Guide](../README.md#troubleshooting)
-- [Security Verification](03_SECURITY_VERIFICATION_CHECKLIST.md)
-- [Performance Baseline](04_PERFORMANCE_BASELINE.md)

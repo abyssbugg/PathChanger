@@ -76,18 +76,15 @@ jobs:
         APP="${TMPDIR:-/tmp}/pathchanger-app-build/PathChanger.app"
         EXECUTABLE="$APP/Contents/MacOS/PathChanger"
         PLIST="$APP/Contents/Info.plist"
-        SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 
         test -d "$APP"
         test -x "$EXECUTABLE"
-        test -d "$SPARKLE"
 
         /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$PLIST" | grep -qx "PathChanger"
         /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" | grep -qx "PathChanger"
         /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST" | grep -qx "com.pathchanger.app"
 
         codesign --verify --verbose "$APP"
-        otool -L "$EXECUTABLE" | grep -q "@rpath/Sparkle.framework"
 
     - name: Generate Coverage Report
       run: |
@@ -175,6 +172,8 @@ jobs:
 
     - name: Build DocC Documentation
       run: |
-        mkdir -p .build/docc-output
-        printf "%s\n" "DocC generation is disabled in CI until an accessible DocC toolchain is configured." > .build/docc-output/README.txt
-        printf "%s\n" "This job validates the documentation stage without invoking DocC generation." >> .build/docc-output/README.txt
+        DERIVED_DATA_PATH="${RUNNER_TEMP}/pathchanger-docc-derived-data"
+        xcodebuild -scheme PathChanger -destination "platform=macOS" -derivedDataPath "$DERIVED_DATA_PATH" docbuild
+        DOC_ARCHIVE_PATH="$(find "$DERIVED_DATA_PATH" -name "*.doccarchive" -type d -print -quit)"
+        test -n "$DOC_ARCHIVE_PATH"
+        test -d "$DOC_ARCHIVE_PATH"

@@ -10,7 +10,6 @@ on:
 
 env:
   APP_NAME: PathChanger
-  SPARKLE_VERSION: "2.8.1"
 
 defaults:
   run:
@@ -49,7 +48,6 @@ jobs:
         xcodebuild -version
         xcode-select -p
         swift --version
-        xcrun notarytool --version
 
     - name: Validate Release Configuration
       run: |
@@ -86,200 +84,49 @@ jobs:
         echo "build=$BUILD" >> "$GITHUB_OUTPUT"
         echo "Version: $VERSION, Build: $BUILD"
 
-    - name: Validate Release Secrets
-      env:
-        MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-        MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-        MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
-        APPLE_ID: ${{ secrets.APPLE_ID }}
-        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-      run: |
-        set -euo pipefail
-        required=(
-          MACOS_CERTIFICATE_P12_BASE64
-          MACOS_CERTIFICATE_PASSWORD
-          MACOS_DEVELOPER_ID_APPLICATION
-          APPLE_ID
-          APPLE_TEAM_ID
-          APPLE_APP_SPECIFIC_PASSWORD
-          SPARKLE_PRIVATE_KEY
-        )
-        for name in "${required[@]}"; do
-          if [ -z "${!name}" ]; then
-            echo "Required release validation secret is missing: $name" >&2
-            exit 1
-          fi
-        done
-
-    - name: Import Developer ID Certificate
-      env:
-        MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-        MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-        KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
-      run: |
-        set -euo pipefail
-        KEYCHAIN_PATH="$RUNNER_TEMP/pathchanger-signing.keychain-db"
-        CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
-        trap 'rm -f "$CERTIFICATE_PATH"' EXIT
-
-        printf "%s" "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-        security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-        security list-keychains -d user -s "$KEYCHAIN_PATH"
-        security default-keychain -d user -s "$KEYCHAIN_PATH"
-        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-        security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-
-        echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-        rm -f "$CERTIFICATE_PATH"
-        trap - EXIT
-
-    - name: Setup Sparkle
-      run: |
-        set -euo pipefail
-        curl --fail --location --retry 3 -o sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
-        mkdir -p sparkle-tools
-        tar -xf sparkle.tar.xz -C sparkle-tools
-        test -x "sparkle-tools/bin/sign_update"
-
     - name: Build Release
       run: |
         set -euo pipefail
         swift package resolve
         swift build -c release
 
-    - name: Create Signed App Bundle
-      env:
-        MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+    - name: Create App Bundle (Ad-Hoc)
       run: |
         set -euo pipefail
         chmod +x build-app-bundle.sh
         APP_BUNDLE_BUILD_ROOT="${RUNNER_TEMP}/pathchanger-app-build"
-        REQUIRE_PRODUCTION_SIGNING=1 BUILD_CONFIGURATION=release APP_BUNDLE_BUILD_ROOT="$APP_BUNDLE_BUILD_ROOT" ./build-app-bundle.sh "$MACOS_DEVELOPER_ID_APPLICATION"
+        BUILD_CONFIGURATION=release APP_BUNDLE_BUILD_ROOT="$APP_BUNDLE_BUILD_ROOT" ./build-app-bundle.sh
         echo "APP_BUNDLE_BUILD_ROOT=$APP_BUNDLE_BUILD_ROOT" >> "$GITHUB_ENV"
 
     - name: Verify App Bundle Hygiene
       run: |
         set -euo pipefail
         APP="${APP_BUNDLE_BUILD_ROOT}/PathChanger.app"
-        SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
         EXECUTABLE="$APP/Contents/MacOS/PathChanger"
 
         test -d "$APP"
-        test -d "$SPARKLE"
         test -x "$EXECUTABLE"
         codesign --verify --deep --strict --verbose=2 "$APP"
-        codesign --verify --deep --strict --verbose=2 "$SPARKLE"
-        codesign -dv "$APP" 2>&1 | grep -q "runtime"
-        otool -L "$EXECUTABLE" | grep -q "@rpath/Sparkle.framework"
 
-        if xattr -lr "$APP" 2>/dev/null | grep -E 'com\.apple\.(FinderInfo|ResourceFork|provenance|fileprovider\.fpfs#P)'; then
+        if xattr -lr "$APP" 2>/dev/null | grep -E 'com\.apple\.(FinderInfo|ResourceFork|fileprovider\.fpfs#P)'; then
           echo "Forbidden extended attributes remain in CI app bundle" >&2
           exit 1
         fi
 
-    - name: Create DMG
+    - name: Create Zip + SHA256
       run: |
         set -euo pipefail
         VERSION="${{ steps.version.outputs.version }}"
-        DMG_PATH="build/PathChanger-${VERSION}.dmg"
+        ZIP_PATH="build/PathChanger-${VERSION}-macOS.zip"
+        CHECKSUM_PATH="build/PathChanger-${VERSION}-macOS.sha256"
 
         mkdir -p build
-        rm -f "$DMG_PATH"
-        hdiutil create \
-          -volname "PathChanger" \
-          -srcfolder "${APP_BUNDLE_BUILD_ROOT}/PathChanger.app" \
-          -ov \
-          -format UDZO \
-          "$DMG_PATH"
-
-        test -s "$DMG_PATH"
-        xattr -c "$DMG_PATH"
-        hdiutil verify "$DMG_PATH"
-        if xattr -l "$DMG_PATH" 2>/dev/null | grep -E 'com\.apple\.(FinderInfo|ResourceFork|provenance|fileprovider\.fpfs#P)'; then
-          echo "Forbidden extended attributes remain on CI DMG" >&2
-          exit 1
-        fi
-
-    - name: Notarize and Staple DMG
-      env:
-        APPLE_ID: ${{ secrets.APPLE_ID }}
-        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      run: |
-        set -euo pipefail
-        VERSION="${{ steps.version.outputs.version }}"
-        DMG_PATH="build/PathChanger-${VERSION}.dmg"
-
-        xcrun notarytool submit "$DMG_PATH" \
-          --apple-id "$APPLE_ID" \
-          --team-id "$APPLE_TEAM_ID" \
-          --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-          --wait
-
-        xcrun stapler staple "$DMG_PATH"
-        xcrun stapler validate "$DMG_PATH"
-        hdiutil verify "$DMG_PATH"
-
-    - name: Validate Gatekeeper and Stapled Contents
-      run: |
-        set -euo pipefail
-        VERSION="${{ steps.version.outputs.version }}"
-        DMG_PATH="build/PathChanger-${VERSION}.dmg"
-        MOUNT_DIR="$RUNNER_TEMP/pathchanger-dmg-mount"
-        APP_IN_DMG="$MOUNT_DIR/PathChanger.app"
-
-        mkdir -p "$MOUNT_DIR"
-        hdiutil attach -readonly -nobrowse "$DMG_PATH" -mountpoint "$MOUNT_DIR"
-        trap 'hdiutil detach "$MOUNT_DIR"' EXIT
-
-        test -d "$APP_IN_DMG"
-        codesign --verify --deep --strict --verbose=2 "$APP_IN_DMG"
-        codesign --verify --deep --strict --verbose=2 "$APP_IN_DMG/Contents/Frameworks/Sparkle.framework"
-        spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
-        spctl --assess --type execute --verbose=4 "$APP_IN_DMG"
-        xcrun stapler validate "$DMG_PATH"
-
-        if xattr -lr "$APP_IN_DMG" 2>/dev/null | grep -E 'com\.apple\.(FinderInfo|ResourceFork|provenance|fileprovider\.fpfs#P)'; then
-          echo "Forbidden extended attributes remain inside stapled CI DMG" >&2
-          exit 1
-        fi
-
-    - name: Validate Sparkle Signature
-      id: sign
-      env:
-        SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-      run: |
-        set -euo pipefail
-        VERSION="${{ steps.version.outputs.version }}"
-        DMG_PATH="build/PathChanger-${VERSION}.dmg"
-        KEY_PATH="$RUNNER_TEMP/sparkle_private_key"
-        trap 'rm -f "$KEY_PATH"' EXIT
-
-        umask 077
-        printf "%s" "$SPARKLE_PRIVATE_KEY" > "$KEY_PATH"
-        SIGN_UPDATE_OUTPUT="$(sparkle-tools/bin/sign_update "$DMG_PATH" -f "$KEY_PATH")"
-        rm -f "$KEY_PATH"
-        SIGNATURE="$(SIGN_UPDATE_OUTPUT="$SIGN_UPDATE_OUTPUT" python3 - <<'PY'
-        import os
-        import re
-
-        output = os.environ["SIGN_UPDATE_OUTPUT"].strip()
-        match = re.search(r'sparkle:edSignature="([^"]+)"', output)
-        print(match.group(1) if match else output)
-        PY
-        )"
-        trap - EXIT
-
-        [ -n "$SIGNATURE" ] || {
-          echo "Sparkle signature generation returned an empty signature" >&2
-          exit 1
-        }
-        echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+        rm -f "$ZIP_PATH" "$CHECKSUM_PATH"
+        ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE_BUILD_ROOT}/PathChanger.app" "$ZIP_PATH"
+        test -s "$ZIP_PATH"
+        shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
+        test -s "$CHECKSUM_PATH"
+        shasum -a 256 -c "$CHECKSUM_PATH"
 
     - name: Summarize Validation
       run: |
@@ -287,18 +134,7 @@ jobs:
         VERSION="${{ steps.version.outputs.version }}"
         echo "## Release Validation $VERSION" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
-        echo "- App bundle signing: verified" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Sparkle nested bundle signing: verified" >> "$GITHUB_STEP_SUMMARY"
+        echo "- App bundle creation (ad-hoc): verified" >> "$GITHUB_STEP_SUMMARY"
         echo "- Forbidden xattrs: absent in CI artifacts" >> "$GITHUB_STEP_SUMMARY"
-        echo "- DMG notarization: verified" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Stapling: verified" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Gatekeeper assessment: verified" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Sparkle update signature: generated" >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Cleanup Signing Keychain
-      if: always()
-      run: |
-        set -euo pipefail
-        if [ -n "${SIGNING_KEYCHAIN_PATH:-}" ] && [ -f "$SIGNING_KEYCHAIN_PATH" ]; then
-          security delete-keychain "$SIGNING_KEYCHAIN_PATH"
-        fi
+        echo "- GitHub zip packaging: verified" >> "$GITHUB_STEP_SUMMARY"
+        echo "- SHA-256 generation/verification: verified" >> "$GITHUB_STEP_SUMMARY"

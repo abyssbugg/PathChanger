@@ -40,7 +40,7 @@ All PRs trigger automated checks (`.github/workflows/ci.yml`):
 ## Testing Requirements
 
 ### Standards
-- **100% test pass rate** (82/82 tests passing)
+- **100% test pass rate**
 - **>70% code coverage** maintained
 - Add tests for new features/bug fixes
 

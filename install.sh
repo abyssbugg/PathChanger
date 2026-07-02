@@ -1,78 +1,56 @@
 #!/bin/bash
 #
 # PathChanger Installation Script
-# Builds and installs to /Applications (SINGLE copy - no duplicates in Spotlight)
+# Installs exactly one canonical app bundle at:
+#   /Applications/PathChanger.app
+# and removes all prior /Applications/PathChanger*.app bundles first.
+#
+# Usage:
+#   ./install.sh
 #
 
-set -e
+set -euo pipefail
 
 echo "=================================="
 echo "PathChanger Installer"
 echo "=================================="
 
-# Get script directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Step 1: Clean existing PathChanger app bundles to prevent Spotlight duplicates
+TARGET_APP="/Applications/PathChanger.app"
+
 echo ""
-echo "[1/4] Cleaning up all existing copies..."
+echo "[1/3] Building latest version into dist/..."
+./build.sh > /dev/null 2>&1
 
-# Remove from /Applications
-if [ -d "/Applications/PathChanger.app" ]; then
-    rm -rf "/Applications/PathChanger.app"
-    echo "      Removed: /Applications/PathChanger.app"
-fi
-
-# Remove from project build folder
-if [ -d "$SCRIPT_DIR/build/PathChanger.app" ]; then
-    rm -rf "$SCRIPT_DIR/build/PathChanger.app"
-    echo "      Removed: build/PathChanger.app"
-fi
-
-# Remove from project dist folder
-if [ -d "$SCRIPT_DIR/dist/PathChanger.app" ]; then
-    rm -rf "$SCRIPT_DIR/dist/PathChanger.app"
-    echo "      Removed: dist/PathChanger.app"
-fi
-
-
-echo "      Cleanup complete!"
-
-# Step 2: Build the app
-echo ""
-echo "[2/4] Building latest version..."
-./build-app-bundle.sh > /dev/null 2>&1
-
-if [ ! -d "build/PathChanger.app" ]; then
-    echo "ERROR: Build failed!"
+if [ ! -d "$SCRIPT_DIR/dist/PathChanger.app" ]; then
+    echo "ERROR: Build failed - dist/PathChanger.app not found"
     exit 1
 fi
+echo "      Build successful."
 
-echo "      Build successful!"
-
-# Step 3: Install to /Applications (MOVE, not copy - ensures single instance)
 echo ""
-echo "[3/4] Installing to /Applications..."
-mv "build/PathChanger.app" "/Applications/"
-echo "      Installed!"
-
-# Step 4: Verify single instance
-echo ""
-echo "[4/4] Verifying single installation..."
-APP_COUNT=$(find /Applications "$SCRIPT_DIR" -name "PathChanger.app" -type d 2>/dev/null | wc -l | tr -d ' ')
-if [ "$APP_COUNT" -eq "1" ]; then
-    echo "      ✓ Only ONE PathChanger.app exists"
-else
-    echo "      ⚠ Warning: Found $APP_COUNT copies (may need manual cleanup)"
+echo "[2/3] Removing prior PathChanger installations from /Applications ..."
+PRIOR_APPS=$(find /Applications -maxdepth 1 -type d -name "PathChanger*.app" -print)
+if [ -n "$PRIOR_APPS" ]; then
+    while IFS= read -r app; do
+        [ -n "$app" ] || continue
+        rm -rf "$app"
+    done <<< "$PRIOR_APPS"
 fi
+echo "      Cleanup complete."
+
+echo ""
+echo "[3/3] Installing to $TARGET_APP ..."
+cp -R "$SCRIPT_DIR/dist/PathChanger.app" "$TARGET_APP"
+echo "      Installed."
 
 echo ""
 echo "=================================="
-echo "SUCCESS! PathChanger installed."
+echo "Install complete."
 echo "=================================="
 echo ""
-echo "Open from Spotlight: Cmd+Space → 'PathChanger'"
-echo ""
-echo "To update: ./install.sh"
+echo "Installed app: $TARGET_APP"
+echo "Launch: open \"$TARGET_APP\""
 echo ""

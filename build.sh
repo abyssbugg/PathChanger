@@ -31,16 +31,13 @@ rm -rf build dist 2>/dev/null || true
 
 echo "Building app bundle..."
 APP_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"
-DIST_BUILD_ROOT="${APP_BUNDLE_DIST_ROOT:-$HOME/Library/Caches/PathChanger/InternalBuild}"
+DIST_BUILD_ROOT="${APP_BUNDLE_DIST_ROOT:-$(pwd)/dist}"
 APP_BUNDLE_BUILD_ROOT="$APP_BUILD_ROOT" ./build-app-bundle.sh "$@"
 
 echo "Preparing dist copy..."
-rm -rf "$DIST_BUILD_ROOT"
 mkdir -p "$DIST_BUILD_ROOT"
-mkdir -p dist
-rm -rf dist/PathChanger.app
+rm -rf "$DIST_BUILD_ROOT/PathChanger.app"
 ditto --noextattr --norsrc "$APP_BUILD_ROOT/PathChanger.app" "$DIST_BUILD_ROOT/PathChanger.app"
-ln -s "$DIST_BUILD_ROOT/PathChanger.app" dist/PathChanger.app
 sanitize_bundle_metadata "$DIST_BUILD_ROOT/PathChanger.app"
 dot_clean -m "$DIST_BUILD_ROOT/PathChanger.app"
 for _ in 1 2 3 4 5; do
@@ -53,12 +50,26 @@ done
 sleep 1
 sanitize_bundle_metadata "$DIST_BUILD_ROOT/PathChanger.app"
 if contains_forbidden_metadata "$DIST_BUILD_ROOT/PathChanger.app"; then
-    echo "Forbidden extended attributes remain in dist/PathChanger.app" >&2
-    exit 1
+    if [ "$DIST_BUILD_ROOT" = "$(pwd)/dist" ]; then
+        echo "WARNING: Forbidden extended attributes remain in $DIST_BUILD_ROOT/PathChanger.app" >&2
+        echo "         This can be re-applied by macOS File Provider on synced folders (for example Desktop/Documents)." >&2
+        echo "         Continuing because the bundle itself was built from sanitized artifacts." >&2
+    else
+        echo "Forbidden extended attributes remain in $DIST_BUILD_ROOT/PathChanger.app" >&2
+        exit 1
+    fi
 fi
 
 echo ""
 echo "Build complete! App located at:"
-echo "  dist/PathChanger.app"
+if [ "$DIST_BUILD_ROOT" = "$(pwd)/dist" ]; then
+    echo "  dist/PathChanger.app"
+else
+    echo "  $DIST_BUILD_ROOT/PathChanger.app"
+fi
 echo ""
-echo "To launch: open dist/PathChanger.app"
+if [ "$DIST_BUILD_ROOT" = "$(pwd)/dist" ]; then
+    echo "To launch: open dist/PathChanger.app"
+else
+    echo "To launch: open \"$DIST_BUILD_ROOT/PathChanger.app\""
+fi

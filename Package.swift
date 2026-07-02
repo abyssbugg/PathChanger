@@ -13,14 +13,13 @@ let package = Package(
         .executable(name: "PathChanger", targets: ["PathChanger"])
     ],
     dependencies: [
-        // Sparkle for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+        .package(path: "SharedCompanionProtocol")
     ],
     targets: [
         .executableTarget(
             name: "PathChanger",
             dependencies: [
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "SharedCompanionProtocol", package: "SharedCompanionProtocol")
             ],
             path: "PathChanger",
             exclude: ["Info.plist"],
