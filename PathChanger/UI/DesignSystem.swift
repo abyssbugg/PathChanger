@@ -47,6 +47,71 @@ struct DS {
         )
         static let shadow: SwiftUI.Color = .black
         static let markerStroke: SwiftUI.Color = .white
+
+        // Mockup-aligned semantic accents (geospoofer-pro.html palette)
+        // These are the exact hex values from the mockup's `:root` CSS variables,
+        // provided as a discrete namespace so SwiftUI controls can match the
+        // HTML spec 1:1 without disturbing the legacy semantic tokens above.
+        static let mockupEmerald: SwiftUI.Color = SwiftUI.Color(hex: 0x34D399)
+        static let mockupAmber: SwiftUI.Color   = SwiftUI.Color(hex: 0xFBBF24)
+        static let mockupRed: SwiftUI.Color     = SwiftUI.Color(hex: 0xF87171)
+        static let mockupSky: SwiftUI.Color     = SwiftUI.Color(hex: 0x38BDF8)
+        static let mockupViolet: SwiftUI.Color  = SwiftUI.Color(hex: 0x7C6CF6)
+    }
+
+    // MARK: - Per-mode accent system
+    // Mirrors the mockup's `[data-mode]` CSS custom properties 1:1.
+    // Teleport = violet, Multi-Spot = sky, Joystick = orange.
+    // Each mode carries: base, base2 (gradient stop), soft tint, glow, line, line-strong.
+    struct ModeAccent {
+        let base: SwiftUI.Color
+        let base2: SwiftUI.Color
+        let soft: SwiftUI.Color      // ~14% opacity tint background
+        let glow: SwiftUI.Color      // ~45% opacity for shadows/halos
+        let line: SwiftUI.Color      // ~30% opacity for subtle borders
+        let lineStrong: SwiftUI.Color // ~50% opacity for active borders
+
+        /// Linear gradient from base to base2 (top -> bottom), matching the mockup's button gradients.
+        var gradient: LinearGradient {
+            LinearGradient(colors: [base, base2], startPoint: .top, endPoint: .bottom)
+        }
+
+        static let teleport = ModeAccent(
+            base: SwiftUI.Color(hex: 0x7C6CF6),
+            base2: SwiftUI.Color(hex: 0x635BFF),
+            soft: SwiftUI.Color(hex: 0x7C6CF6, alpha: 0.14),
+            glow: SwiftUI.Color(hex: 0x7C6CF6, alpha: 0.45),
+            line: SwiftUI.Color(hex: 0x7C6CF6, alpha: 0.30),
+            lineStrong: SwiftUI.Color(hex: 0x7C6CF6, alpha: 0.50)
+        )
+
+        static let multiSpot = ModeAccent(
+            base: SwiftUI.Color(hex: 0x38BDF8),
+            base2: SwiftUI.Color(hex: 0x0EA5E9),
+            soft: SwiftUI.Color(hex: 0x38BDF8, alpha: 0.14),
+            glow: SwiftUI.Color(hex: 0x38BDF8, alpha: 0.45),
+            line: SwiftUI.Color(hex: 0x38BDF8, alpha: 0.30),
+            lineStrong: SwiftUI.Color(hex: 0x38BDF8, alpha: 0.50)
+        )
+
+        static let joystick = ModeAccent(
+            base: SwiftUI.Color(hex: 0xFB923C),
+            base2: SwiftUI.Color(hex: 0xF97316),
+            soft: SwiftUI.Color(hex: 0xFB923C, alpha: 0.14),
+            glow: SwiftUI.Color(hex: 0xFB923C, alpha: 0.45),
+            line: SwiftUI.Color(hex: 0xFB923C, alpha: 0.30),
+            lineStrong: SwiftUI.Color(hex: 0xFB923C, alpha: 0.50)
+        )
+
+        /// Resolve the accent for a given AppMode. Settings falls back to the global accent.
+        static func forMode(_ mode: AppMode) -> ModeAccent {
+            switch mode {
+            case .teleport:  return .teleport
+            case .route:     return .multiSpot
+            case .joystick:  return .joystick
+            case .settings:  return .teleport
+            }
+        }
     }
 
     struct Radius {
@@ -54,6 +119,12 @@ struct DS {
         static let pill: CGFloat = 14
         static let button: CGFloat = 10
         static let chip: CGFloat = 8
+
+        // Mockup-aligned radii (geospoofer-pro.html `:root` --r-* tokens)
+        static let sm: CGFloat = 8    // --r-sm
+        static let md: CGFloat = 11   // --r-md
+        static let lg: CGFloat = 14   // --r-lg
+        static let xl: CGFloat = 18   // --r-xl
     }
 
     struct Spacing {
