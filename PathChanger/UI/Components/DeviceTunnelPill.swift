@@ -5,7 +5,12 @@
 //  Subordinate top-right pill showing device + tunnel status.
 //  This component owns device selection and status visibility only.
 //
-// DeviceTunnelPill is the SOLE production Phase-1 readiness authority.
+// SUPERSEDED: retired from the production shell by the governed top-bar swap.
+// Phase-1 readiness authority now belongs to ConnectionPill; device selection
+// belongs to DeviceDropdown. This file is retained because it hosts
+// ActiveTransportPresentation (shared transport-presentation resolver used by
+// ConnectionPill and DeviceDropdown) and the legacy popover, and it must not
+// be re-mounted in MainMapShell.
 //
 
 import SwiftUI

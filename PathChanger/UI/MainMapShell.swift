@@ -56,13 +56,22 @@ struct MainMapShell: View {
                 .zIndex(2)
             }
 
-            // Top-right device pill.
+            // Top-right control cluster (mockup topbar port): live connection
+            // state, device selector, and theme toggle on a glass surface.
+            // ConnectionPill is the production Phase-1 readiness surface;
+            // DeviceDropdown owns device selection; ThemeToggle owns appearance.
             VStack {
                 HStack {
                     Spacer()
-                    DeviceTunnelPill()
-                        .padding(.top, DS.Metrics.shellFloatingInset)
-                        .padding(.trailing, DS.Metrics.shellFloatingInset)
+                    HStack(spacing: DS.Spacing.xs) {
+                        ConnectionPill()
+                        DeviceDropdown()
+                        ThemeToggle()
+                    }
+                    .padding(DS.Spacing.xs)
+                    .dsGlassSurface(cornerRadius: DS.Radius.pill)
+                    .padding(.top, DS.Metrics.shellFloatingInset)
+                    .padding(.trailing, DS.Metrics.shellFloatingInset)
                 }
                 Spacer()
             }

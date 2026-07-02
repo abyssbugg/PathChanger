@@ -177,7 +177,7 @@ struct SettingsView: View {
     ///     Device → Location → Simulation progression.
     ///   - Its Start/Stop controls are administrative overrides for
     ///     advanced users who explicitly open Settings. They do not own
-    ///     Phase-1 readiness semantics (which belong to `DeviceTunnelPill`)
+    ///     Phase-1 readiness semantics (which belong to `ConnectionPill`)
     ///     and they do not own T0 execution semantics (which belong to
     ///     `PrimaryActionPill`).
     ///   - The Start button dispatches `autoStart()` so surviving UI

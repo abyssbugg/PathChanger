@@ -13,7 +13,9 @@
 //  The state mapping lives in a pure, side-effect-free resolver
 //  (`ConnectionPillState.resolve`) so it is unit-testable without SwiftUI.
 //  This component is presentation-only; the transport layer is untouched.
-//  DeviceTunnelPill remains the production readiness authority.
+//
+// ConnectionPill is the SOLE production Phase-1 readiness authority.
+// (Reassigned from DeviceTunnelPill in the governed top-bar swap.)
 //
 
 import SwiftUI

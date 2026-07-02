@@ -128,10 +128,11 @@ struct ContentView: View {
     ///     primary execution gestures elsewhere in the UI.
     ///   - PrimaryActionPill remains the sole production T0 execution
     ///     authority.
-    ///   - DeviceTunnelPill remains the sole production Phase-1 readiness
-    ///     authority.
+    ///   - ConnectionPill remains the sole production Phase-1 readiness
+    ///     authority (reassigned from DeviceTunnelPill in the governed
+    ///     top-bar swap).
     ///   - `PrimaryActionPill` remains the sole production T0 execution
-    ///     authority; `DeviceTunnelPill` remains the sole production
+    ///     authority; `ConnectionPill` remains the sole production
     ///     Phase-1 readiness authority.
     ///
     /// W1 Slice S0 is documentation-only. No behavior, layout, state,

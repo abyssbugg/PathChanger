@@ -434,6 +434,29 @@ enum AppSurfaceAlpha {
 
 // MARK: - Modifiers
 
+/// Glass surface: real Liquid Glass on macOS 26+ (Tahoe), ultra-thin material
+/// fallback below — preserving the `.macOS(.v14)` deployment floor. Applied
+/// at the DS level so one modifier restyles every surface consistently.
+struct DSGlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(
+                    shape.stroke(
+                        DS.Color.foregroundTertiary.opacity(DS.Opacity.toolbarPanelStroke),
+                        lineWidth: DS.Metrics.strokeWidth
+                    )
+                )
+        }
+    }
+}
+
 struct GlassCardModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -567,6 +590,11 @@ struct AppHoverOverlayModifier: ViewModifier {
 extension View {
     func glassCard() -> some View {
         modifier(GlassCardModifier())
+    }
+
+    /// Liquid Glass (macOS 26+) with ultra-thin-material fallback.
+    func dsGlassSurface(cornerRadius: CGFloat = DS.Radius.panel) -> some View {
+        modifier(DSGlassSurfaceModifier(cornerRadius: cornerRadius))
     }
 
     func appGlassPanel(

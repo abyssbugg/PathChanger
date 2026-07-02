@@ -143,13 +143,30 @@ final class MapShellSourceWiringTests: XCTestCase {
         let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
         let primary = try readProjectFile("PathChanger/UI/Components/PrimaryActionPill.swift")
         let device = try readProjectFile("PathChanger/UI/Components/DeviceTunnelPill.swift")
+        let connection = try readProjectFile("PathChanger/UI/Components/ConnectionPill.swift")
         let content = try readProjectFile("PathChanger/UI/ContentView.swift")
 
         XCTAssertTrue(shell.contains("MainMapShell is the single production shell layout authority."))
         XCTAssertTrue(primary.contains("PrimaryActionPill is the SOLE production T0 execution authority."))
-        XCTAssertTrue(device.contains("DeviceTunnelPill is the SOLE production Phase-1 readiness authority."))
+        // Governed top-bar swap: readiness authority reassigned to ConnectionPill.
+        XCTAssertTrue(connection.contains("ConnectionPill is the SOLE production Phase-1 readiness authority."))
+        XCTAssertTrue(device.contains("SUPERSEDED"))
+        XCTAssertFalse(device.contains("DeviceTunnelPill is the SOLE production Phase-1 readiness authority."))
         XCTAssertTrue(content.contains("PrimaryActionPill remains the sole production T0 execution"))
-        XCTAssertTrue(content.contains("DeviceTunnelPill remains the sole production"))
+        XCTAssertTrue(content.contains("ConnectionPill remains the sole production"))
+        XCTAssertFalse(content.contains("DeviceTunnelPill remains the sole production"))
+    }
+
+    func testTopBarMountsRedesignClusterAndRetiresLegacyPill() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+
+        // The governed swap mounts the mockup top-bar trio on a glass surface
+        // and must not remount the superseded DeviceTunnelPill.
+        XCTAssertTrue(shell.contains("ConnectionPill()"))
+        XCTAssertTrue(shell.contains("DeviceDropdown()"))
+        XCTAssertTrue(shell.contains("ThemeToggle()"))
+        XCTAssertTrue(shell.contains(".dsGlassSurface(cornerRadius: DS.Radius.pill)"))
+        XCTAssertFalse(shell.contains("DeviceTunnelPill()"))
     }
 
     func testPrimaryActionPillUsesModeSpecificDeviceMutationLabels() throws {
