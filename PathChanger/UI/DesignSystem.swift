@@ -293,6 +293,15 @@ struct DS {
         static let deviceDropdownMenuMinWidth: CGFloat = 224 // .device-menu min-width
         static let deviceDropdownMenuPadding: CGFloat = 5    // .device-menu padding
         static let deviceDropdownOptionDotSize: CGFloat = 7  // .device-opt .od 7x7
+
+        // Connection pill (mockup `.conn-pill` in geospoofer-pro.html)
+        static let connPillHPadding: CGFloat = 13             // .conn-pill padding: 0 13px
+        static let connPillIconSize: CGFloat = 15             // .conn-pill .ci 15x15
+        static let connPillDotSize: CGFloat = 7               // .conn-pill .dot 7x7
+
+        // Top-bar icon button (mockup `.icon-btn` in geospoofer-pro.html)
+        static let iconButtonSize: CGFloat = 32                // .icon-btn 32x32
+        static let iconButtonIconSize: CGFloat = 16            // .icon-btn svg 16x16
     }
 
     struct Opacity {
@@ -321,6 +330,11 @@ struct DS {
         static let toastShadow: Double = 0.12
         static let progressIndicatorFill: Double = 0.3
         static let warningPanelTint: Double = 0.12
+
+        // Connection-state surfaces (mockup `.conn-pill[data-state]` rgba stops)
+        static let statusTint: Double = 0.10       // background: rgba(color, .10)
+        static let statusBorder: Double = 0.25     // border-color: rgba(color, .25)
+        static let statusGlow: Double = 0.70       // dot box-shadow: rgba(color, .7)
     }
 }
 
