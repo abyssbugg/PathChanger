@@ -10,9 +10,15 @@ let package = Package(
     products: [
         .executable(name: "PathChangerCompanion", targets: ["PathChangerCompanion"])
     ],
+    dependencies: [
+        .package(path: "../SharedCompanionProtocol")
+    ],
     targets: [
         .executableTarget(
             name: "PathChangerCompanion",
+            dependencies: [
+                .product(name: "SharedCompanionProtocol", package: "SharedCompanionProtocol")
+            ],
             path: "."
         )
     ]

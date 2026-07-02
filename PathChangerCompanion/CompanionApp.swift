@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import SharedCompanionProtocol
 
 @main
 struct PathChangerCompanionApp: App {
