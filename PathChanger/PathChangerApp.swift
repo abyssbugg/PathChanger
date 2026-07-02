@@ -12,12 +12,14 @@ import Combine
 @main
 struct PathChangerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var appState = AppState()
     @StateObject private var tunneldManager = TunneldManager.shared
     @StateObject private var dependencyValidator = DependencyValidator.shared
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             if dependencyValidator.validationStatus == .invalid {
                 DependencyErrorView(validator: dependencyValidator)
             } else {
@@ -39,15 +41,42 @@ struct PathChangerApp: App {
                             }
                         }
                     }
+                    .onAppear {
+                        Logger.info(
+                            "main_window_lifecycle appear",
+                            category: .general,
+                            metadata: LogMetadata(operationType: "main_window_lifecycle")
+                        )
+                    }
+                    .onDisappear {
+                        Logger.info(
+                            "main_window_lifecycle disappear",
+                            category: .general,
+                            metadata: LogMetadata(operationType: "main_window_lifecycle")
+                        )
+                    }
             }
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            Logger.info(
+                "main_window_lifecycle scenePhase=\(String(describing: newPhase))",
+                category: .general,
+                metadata: LogMetadata(operationType: "main_window_lifecycle")
+            )
+        }
         .commands {
-            CommandGroup(replacing: .newItem) {}
-
-            // "Check for Updates…" menu item was removed in Milestone 5
-            // alongside the stale upstream Sparkle SUFeedURL/SUPublicEDKey
-            // pair. Restore this CommandGroup once a current appcast URL
-            // and matching Ed25519 public key are configured in Info.plist.
+            CommandGroup(replacing: .newItem) {
+                Button("Show PathChanger") {
+                    Logger.info(
+                        "main_window_lifecycle show command",
+                        category: .general,
+                        metadata: LogMetadata(operationType: "main_window_lifecycle")
+                    )
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
 
             CommandMenu("Location") {
                 Button("Set Location...") {
@@ -140,12 +169,12 @@ class AppState: ObservableObject {
     // directly. All mutations go through AppState's facade setters or
     // explicit public mutation methods, preserving the single-writer
     // rule (AAD §5.2).
-    @Published private(set) var device: DeviceStore = .empty
-    @Published private(set) var tunnel: TunnelStore = .empty
-    @Published private(set) var simulation: SimulationStore = .empty
-    @Published private(set) var route: RouteStore = .empty
-    @Published private(set) var joystick: JoystickStore = .empty
-    @Published private(set) var ui: UIStore = .empty
+    @Published var device: DeviceStore = .empty
+    @Published var tunnel: TunnelStore = .empty
+    @Published var simulation: SimulationStore = .empty
+    @Published var route: RouteStore = .empty
+    @Published var joystick: JoystickStore = .empty
+    @Published var ui: UIStore = .empty
 
     // MARK: - SwiftUI-Bound Direct @Published Vars
     //
@@ -271,8 +300,8 @@ class AppState: ObservableObject {
     }
 
     // MARK: Debouncing for UI Stability
-    private var lastTunnelStateChange: Date = .distantPast
-    private var lastUSBStateChange: Date = .distantPast
+    var lastTunnelStateChange: Date = .distantPast
+    var lastUSBStateChange: Date = .distantPast
     // W1 Slice R1 (responsiveness remediation): tightened from the previous
     // 2.5 s anti-flicker default to 0.4 s. The runtime regression report
     // identified the 2.5 s value as the single largest contributor to UI
@@ -282,7 +311,7 @@ class AppState: ObservableObject {
     // canonical state-machine transition. 0.4 s preserves anti-flicker for
     // legacy non-forced callers (e.g. `checkTunneldStatus` background poll)
     // while restoring perceived responsiveness.
-    private let stateDebounceInterval: TimeInterval = 0.4
+    let stateDebounceInterval: TimeInterval = 0.4
 
     // MARK: Shared Managers
     let deviceManager = DeviceManager()
@@ -308,19 +337,25 @@ class AppState: ObservableObject {
     // `joystickTask`, `joystickBaseLocation`, and `offsetCoordinate` were
     // deleted in Milestone 3 because they represented simulation-authority
     // leakage into the state hub.
-    private let locationHistoryStore = LocationHistoryStore()
-    private var cancellables = Set<AnyCancellable>()
-    private var simulationTransitionTail: Task<Void, Never>?
-    private var simulationTransitionSerial: UInt64 = 0
-    private var resumableSessionSnapshot: ResumableSessionSnapshot?
-    private var transientRecoveryTask: Task<Void, Never>?
-    private var transientRecoverySerial: UInt64 = 0
+    let locationHistoryStore = LocationHistoryStore()
+    var cancellables = Set<AnyCancellable>()
+    var simulationTransitionTail: Task<Void, Never>?
+    var simulationTransitionSerial: UInt64 = 0
+    var resumableSessionSnapshot: ResumableSessionSnapshot?
+    var transientRecoveryTask: Task<Void, Never>?
+    var transientRecoverySerial: UInt64 = 0
 #if DEBUG
-    private var debugTransientRecoveryHandler: ((String) async -> Bool)?
-    private var debugSkipDeviceRefreshDuringTransientRecovery = false
+    var debugTransientRecoveryHandler: ((String) async -> Bool)?
+    var debugSkipDeviceRefreshDuringTransientRecovery = false
 #endif
+    let tunnelStatusFallbackPollingKey = "tunnelStatusFallbackPollingEnabled"
 
-    private struct ResumableSessionSnapshot {
+    /// RSD endpoint ("address:port") of the last successfully-applied location
+    /// injection. Used to detect daemon tunnel RSD rotation so a held Teleport
+    /// spoof can be re-applied before the device silently reverts.
+    var lastAppliedRsdKey: String?
+
+    struct ResumableSessionSnapshot {
         let device: Device
         let mode: SimulationModeType
         let coordinate: LocationCoordinate?
@@ -370,7 +405,7 @@ class AppState: ObservableObject {
 
     // MARK: Debounced State Updates
 
-    private func updateTunnelRunning(_ newValue: Bool, force: Bool = false) {
+    func updateTunnelRunning(_ newValue: Bool, force: Bool = false) {
         let now = Date()
         let shouldUpdate = force || now.timeIntervalSince(lastTunnelStateChange) >= stateDebounceInterval
 
@@ -382,7 +417,7 @@ class AppState: ObservableObject {
         }
     }
 
-    private func updateUSBConnected(_ newValue: Bool, force: Bool = false) {
+    func updateUSBConnected(_ newValue: Bool, force: Bool = false) {
         let now = Date()
         let shouldUpdate = force || now.timeIntervalSince(lastUSBStateChange) >= stateDebounceInterval
 
@@ -394,9 +429,32 @@ class AppState: ObservableObject {
         }
     }
 
-    private func syncConnectionAvailability(from devices: [Device]) {
+    /// Resolve whether Wi-Fi connectivity should be presented as available.
+    ///
+    /// Wi-Fi is available when discovery labelled the device as `.wifi`, OR a
+    /// wireless tunnel transport (background daemon / Wi-Fi) is currently the
+    /// active tunnel. The latter is the authoritative signal: in Auto mode with
+    /// a cable connected, usbmux labels the device `.usb` and the merged device
+    /// list never carries a `.wifi` entry, so the previous discovery-only check
+    /// wrongly showed "Wi-Fi Unavailable" while the daemon (wireless) tunnel was
+    /// active. Pure + side-effect free for unit testing.
+    static func resolveWiFiAvailability(
+        wifiDiscovered: Bool,
+        isTunnelRunning: Bool,
+        activeTransport: TunnelMode?
+    ) -> Bool {
+        if wifiDiscovered { return true }
+        guard isTunnelRunning else { return false }
+        return activeTransport == .wifi || activeTransport == .daemon
+    }
+
+    func syncConnectionAvailability(from devices: [Device]) {
         let usbAvailable = devices.contains { $0.connectionType == .usb }
-        let wifiAvailable = devices.contains { $0.connectionType == .wifi }
+        let wifiAvailable = AppState.resolveWiFiAvailability(
+            wifiDiscovered: devices.contains { $0.connectionType == .wifi },
+            isTunnelRunning: TunneldManager.shared.isRunning,
+            activeTransport: TunneldManager.shared.presentationActiveMode
+        )
 
         updateUSBConnected(usbAvailable, force: true)
 
@@ -423,7 +481,10 @@ class AppState: ObservableObject {
 
     init() {
         self.simulationEngine = SimulationEngine()
-        UserDefaults.standard.register(defaults: ["autoStartTunneld": false])
+        UserDefaults.standard.register(defaults: [
+            "autoStartTunneld": false,
+            tunnelStatusFallbackPollingKey: false
+        ])
         AppPreferences.registerUIDefaults()
 
         // Check if onboarding is needed
@@ -455,13 +516,15 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Auto-refresh
-        Timer.publish(every: 5.0, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                Task { await self?.checkTunneldStatus() }
-            }
-            .store(in: &cancellables)
+        // Temporary recovery fallback only: enabled explicitly via defaults.
+        if UserDefaults.standard.bool(forKey: tunnelStatusFallbackPollingKey) {
+            Timer.publish(every: 5.0, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in
+                    Task { await self?.checkTunneldStatus() }
+                }
+                .store(in: &cancellables)
+        }
 
         setupReliabilityManager()
         setupErrorHandler()
@@ -476,817 +539,5 @@ class AppState: ObservableObject {
     /// `currentLocation`, `routeProgress`, `statusMessage`); the engine owns
     /// the underlying motion timer/loop. These subscriptions translate engine
     /// state transitions into AppState mirror updates. Added in Milestone 3.
-    private func setupSimulationEngineMirrors() {
-        simulationEngine.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] engineState in
-                guard let self = self else { return }
-                switch engineState {
-                case .running:
-                    self.isSimulating = true
-                    self.isPaused = false
-                    self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
-                case .paused:
-                    self.isSimulating = true
-                    self.isPaused = true
-                    self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
-                case .completed:
-                    // Final-waypoint history recording: when a route finishes
-                    // naturally, persist the last waypoint to history. Prior
-                    // to Milestone 3 this was inlined in AppState’s route
-                    // playback loop.
-                    if self.simulationEngine.currentMode == .route,
-                       let last = self.currentRoute.last {
-                        self.locationHistoryStore.record(
-                            coordinate: last,
-                            name: "Route end",
-                            source: "Route"
-                        )
-                        self.locationHistory = self.locationHistoryStore.entries
-                        self.statusMessage = "Route playback complete"
-                    }
-                    self.isSimulating = false
-                    self.isPaused = false
-                case .idle:
-                    self.isSimulating = false
-                    self.isPaused = false
-                case .error(let message):
-                    if LocationBridge.isRecoverableTransportDisruption(message) {
-                        self.beginTransientTransportRecovery(reason: message)
-                    } else {
-                        self.isSimulating = false
-                        self.isPaused = false
-                        self.lastError = message
-                    }
-                }
-            }
-            .store(in: &cancellables)
 
-        simulationEngine.$currentCoordinate
-            .receive(on: DispatchQueue.main)
-            .compactMap { $0 }
-            .sink { [weak self] coordinate in
-                guard let self else { return }
-                self.currentLocation = coordinate
-                self.captureResumableSessionSnapshot(mode: self.simulationEngine.currentMode)
-            }
-            .store(in: &cancellables)
-
-        simulationEngine.$routeProgress
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] progress in
-                guard let self else { return }
-                self.routeProgress = progress
-                if self.simulationEngine.currentMode == .route {
-                    self.captureResumableSessionSnapshot(mode: .route)
-                }
-            }
-            .store(in: &cancellables)
-    }
-
-    // MARK: Manager Setup
-
-    private func setupReliabilityManager() {
-        reliabilityManager.onReconnect = { [weak self] in
-            guard let self = self else { return false }
-            await self.refreshDevices()
-            return self.selectedDevice != nil && self.isTunneldRunning
-        }
-
-        reliabilityManager.onConnectionLost = { [weak self] in
-            Task { @MainActor in
-                self?.connectionStatus = .disconnected
-                self?.statusMessage = "Connection lost, attempting to reconnect..."
-            }
-        }
-
-        reliabilityManager.onReconnectionFailed = { [weak self] reason in
-            Task { @MainActor in
-                self?.lastError = reason
-                self?.connectionStatus = .error
-            }
-        }
-    }
-
-    private func cancelTransientTransportRecovery(clearSnapshot: Bool) {
-        transientRecoverySerial &+= 1
-        transientRecoveryTask?.cancel()
-        transientRecoveryTask = nil
-        if clearSnapshot {
-            resumableSessionSnapshot = nil
-        }
-    }
-
-    private func setupErrorHandler() {
-        errorHandler.$currentError
-            .compactMap { $0 }
-            .sink { [weak self] error in
-                self?.lastError = error.message
-                if let suggestion = error.suggestion {
-                    self?.lastError? += "\n\n\(suggestion)"
-                }
-            }
-            .store(in: &cancellables)
-    }
-
-    private func setupUSBFallback() {
-        usbFallbackManager.$isUSBConnected
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] connected in
-                self?.updateUSBConnected(connected)
-            }
-            .store(in: &cancellables)
-
-        usbFallbackManager.$preferUSB
-            .assign(to: &$preferUSBConnection)
-    }
-
-    // MARK: Device Management
-
-    func refreshDevices() async {
-        await deviceManager.refreshDevices()
-
-        // Deduplicate devices by UDID and ensure no duplicates in the list
-        var seenUDIDs = Set<String>()
-        var uniqueDevices: [Device] = []
-
-        for device in deviceManager.devices {
-            if !seenUDIDs.contains(device.id) {
-                uniqueDevices.append(device)
-                seenUDIDs.insert(device.id)
-            }
-        }
-        syncConnectionAvailability(from: uniqueDevices)
-
-        if availableDevices != uniqueDevices {
-            availableDevices = uniqueDevices
-        }
-
-        if let selected = selectedDevice {
-            if let updatedSelection = availableDevices.first(where: { $0.id == selected.id }) {
-                if selected != updatedSelection {
-                    selectedDevice = updatedSelection
-                    simulationEngine.setDevice(updatedSelection)
-                    TunneldManager.shared.setTargetDevice(updatedSelection)
-                }
-            } else if let first = availableDevices.first {
-                selectedDevice = first
-                simulationEngine.setDevice(first)
-                TunneldManager.shared.setTargetDevice(first)
-            } else {
-                selectedDevice = nil
-            }
-        } else if let first = availableDevices.first {
-            selectedDevice = first
-            simulationEngine.setDevice(first)
-            TunneldManager.shared.setTargetDevice(first)
-        }
-
-        connectionStatus = selectedDevice != nil ? .connected : .disconnected
-
-        if connectionStatus == .connected {
-            reliabilityManager.connectionEstablished()
-        }
-    }
-
-    func checkTunneldStatus() async {
-        // BUG FIX (WiFi-Bug-2): tunnel-running truth lives in TunneldManager,
-        // not DeviceManager. The previous code routed through
-        // `deviceManager.checkTunneldStatus()` which (before Bug-1B fix) didn't
-        // know about the WiFi process pattern, and the result kept clobbering
-        // the state-machine-derived value via the 5s timer.
-        //
-        // Now we ask TunneldManager itself two questions:
-        //   1. Does its state machine think a tunnel is up? (`isRunning`)
-        //   2. As a self-heal, does pgrep find any pmd3 tunnel process that the
-        //      state machine missed? (`detectRunningTunnelMode()`)
-        // The OR of those is the single tunnel-truth signal AppState publishes.
-        let stateMachineRunning = TunneldManager.shared.isRunning
-        let externallyDetectedMode = await TunneldManager.shared.detectRunningTunnelMode()
-        let isRunning = stateMachineRunning || externallyDetectedMode != nil
-        updateTunnelRunning(isRunning, force: true)
-
-        if UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool == true,
-           !isRunning && !TunneldManager.shared.isStarting {
-            await TunneldManager.shared.autoStart()
-            updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
-        }
-
-        if isWiFiAvailable {
-            usbFallbackManager.wirelessRestored()
-        } else if !isTunneldRunning {
-            usbFallbackManager.wirelessFailed()
-        }
-    }
-
-    func selectDevice(_ device: Device) {
-        if selectedDevice?.id != device.id {
-            cancelTransientTransportRecovery(clearSnapshot: true)
-        }
-        selectedDevice = device
-        simulationEngine.setDevice(device)
-        TunneldManager.shared.setTargetDevice(device)
-        connectionStatus = .connected
-        reliabilityManager.connectionEstablished()
-    }
-
-    // MARK: Location Control
-
-    func setLocation(
-        _ coordinate: LocationCoordinate,
-        source: String = "Manual",
-        name: String? = nil,
-        recordHistory: Bool = true,
-        showToast: Bool = true
-    ) async {
-        guard let device = selectedDevice else {
-            errorHandler.handle(message: "Connect an iPhone to begin", type: .device, action: .checkConnection)
-            ToastManager.shared.error("Connect an iPhone to begin")
-            return
-        }
-
-        // Show newer-iOS compatibility warning once per device per session.
-        if device.hasLocationCompatibilityWarning {
-            let versionStr = device.iosVersion
-
-            // Only show toast if we haven't shown it for this device yet
-            if !simulation.shownIOSWarningDeviceIds.contains(device.id) {
-                ToastManager.shared.warning(
-                    "iOS \(versionStr) detected - attempting location simulation, but newer iOS may need pymobiledevice3 updates.",
-                    duration: 5.0
-                )
-                simulation.shownIOSWarningDeviceIds.insert(device.id)
-            }
-
-            // Always log the attempt
-            Logger.info(
-                "Attempting location injection on newer iOS version with compatibility warning: \(versionStr)",
-                category: .device,
-                deviceUDID: device.id
-            )
-        }
-
-        targetLocation = coordinate
-        statusMessage = "Teleporting…"
-
-        do {
-            try await LocationBridge.shared.setLocation(coordinate, for: device)
-            currentLocation = coordinate
-            isSimulating = true
-            lastError = nil
-            captureResumableSessionSnapshot(mode: .teleport)
-            injectionStats = await LocationBridge.shared.getStats()
-            errorHandler.clearCurrentError()
-            if recordHistory {
-                locationHistoryStore.record(coordinate: coordinate, name: name ?? targetLocationName, source: source)
-                locationHistory = locationHistoryStore.entries
-            }
-
-            // Show success toast
-            let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
-            statusMessage = "Location set to \(locationStr)"
-            if showToast {
-                ToastManager.shared.success("Location set successfully")
-            }
-
-        } catch let error as LocationInjectionError {
-            if LocationBridge.isTunnelInvalidationError(error),
-               LocationBridge.isRecoverableTransportDisruption(error.localizedDescription) {
-                beginTransientTransportRecovery(reason: error.localizedDescription)
-            } else {
-                errorHandler.handle(error, context: "Location injection")
-                isSimulating = false
-                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
-            }
-
-            if case .deviceNotFound = error {
-                reliabilityManager.connectionLost()
-            }
-        } catch {
-            if LocationBridge.isTunnelInvalidationError(error),
-               LocationBridge.isRecoverableTransportDisruption(error.localizedDescription) {
-                beginTransientTransportRecovery(reason: error.localizedDescription)
-            } else {
-                errorHandler.handle(error, context: "Location injection")
-                isSimulating = false
-                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    func clearLocation() async {
-        guard let device = selectedDevice else {
-            errorHandler.handle(message: "Connect an iPhone to begin", type: .device)
-            return
-        }
-        cancelTransientTransportRecovery(clearSnapshot: true)
-
-        do {
-            try await LocationBridge.shared.clearLocation(for: device)
-            currentLocation = nil
-            targetLocation = nil
-            targetLocationName = nil
-            isSimulating = false
-            isPaused = false
-            lastError = nil
-            statusMessage = "Location cleared"
-            errorHandler.clearCurrentError()
-        } catch {
-            errorHandler.handle(error, context: "Clear location")
-        }
-    }
-
-    // MARK: Simulation Control
-    func canStartSimulation(for mode: AppMode) -> Bool {
-        guard canStartSimulation else { return false }
-
-        switch mode {
-        case .teleport:
-            return targetLocation != nil
-        case .route:
-            return currentRoute.count >= 2
-        case .joystick:
-            return currentLocation != nil || targetLocation != nil
-        case .settings:
-            return false
-        }
-    }
-
-    func startSimulation() async {
-        await startSimulation(mode: .teleport)
-    }
-
-    func startSimulation(mode: AppMode) async {
-        await runSimulationTransition { [weak self] in
-            guard let self = self else { return }
-            await self.performStartSimulation(mode: mode)
-        }
-    }
-
-    private func performStartSimulation(mode: AppMode) async {
-        guard canStartSimulation else { return }
-
-        switch mode {
-        case .teleport:
-            guard let target = targetLocation else {
-                lastError = "Pick a location"
-                return
-            }
-            isPaused = false
-            await setLocation(target, source: "Teleport", name: targetLocationName)
-        case .route:
-            await startRoutePlayback()
-        case .joystick:
-            await startJoystickControl()
-        case .settings:
-            return
-        }
-    }
-
-    func pauseSimulation() {
-        guard simulationTransitionTail == nil else { return }
-        // Delegate to the simulation authority. The engine flips its state
-        // machine to .paused which our mirror subscription propagates back
-        // to AppState.isPaused.
-        simulationEngine.pause()
-        if simulationEngine.state == .paused {
-            isPaused = true
-        }
-    }
-
-    func resumeSimulation() {
-        guard simulationTransitionTail == nil else { return }
-        // Delegate to the simulation authority.
-        simulationEngine.resume()
-        if simulationEngine.state == .running {
-            isPaused = false
-        }
-    }
-
-    func stopSimulation() async {
-        await runSimulationTransition { [weak self] in
-            guard let self = self else { return }
-            await self.performStopSimulation()
-        }
-    }
-
-    private func performStopSimulation() async {
-        cancelTransientTransportRecovery(clearSnapshot: true)
-        // Delegate to the simulation authority. The engine cancels its timer,
-        // stops its mode, and clears the device location.
-        await simulationEngine.stop()
-        resetLocalSimulationStateAfterEngineStop()
-    }
-
-    private func runSimulationTransition(_ operation: @escaping @MainActor () async -> Void) async {
-        let previousTail = simulationTransitionTail
-        simulationTransitionSerial &+= 1
-        let serial = simulationTransitionSerial
-
-        let transitionTask = Task { @MainActor in
-            await previousTail?.value
-            await operation()
-        }
-        simulationTransitionTail = transitionTask
-
-        await transitionTask.value
-
-        if simulationTransitionSerial == serial {
-            simulationTransitionTail = nil
-        }
-    }
-
-    private func resetLocalSimulationStateAfterEngineStop() {
-        cancelTransientTransportRecovery(clearSnapshot: true)
-        currentLocation = nil
-        targetLocation = nil
-        targetLocationName = nil
-        isPaused = false
-        isSimulating = false
-        routeProgress = 0
-        joystickDirection = .zero
-        lastError = nil
-        statusMessage = "Location cleared"
-        errorHandler.clearCurrentError()
-    }
-
-    // MARK: Route Playback
-
-    func loadRoute(from coordinates: [LocationCoordinate]) {
-        currentRoute = coordinates
-        routeProgress = 0
-        targetLocation = coordinates.first
-        targetLocationName = coordinates.isEmpty ? nil : "Route start"
-    }
-
-    func addRoutePoint(_ coordinate: LocationCoordinate? = nil) {
-        guard let point = coordinate ?? targetLocation, point.isValid else {
-            lastError = "Select a valid location before adding a waypoint"
-            return
-        }
-
-        currentRoute.append(point)
-        routeProgress = 0
-        targetLocation = point
-        targetLocationName = "Waypoint \(currentRoute.count)"
-        statusMessage = "Added waypoint \(currentRoute.count)"
-    }
-
-    func removeRoutePoint(at index: Int) {
-        guard currentRoute.indices.contains(index) else { return }
-        currentRoute.remove(at: index)
-        routeProgress = 0
-    }
-
-    func moveRoutePoint(from sourceIndex: Int, to destinationIndex: Int) {
-        guard currentRoute.indices.contains(sourceIndex),
-              destinationIndex >= 0,
-              destinationIndex < currentRoute.count,
-              sourceIndex != destinationIndex else {
-            return
-        }
-
-        let point = currentRoute.remove(at: sourceIndex)
-        currentRoute.insert(point, at: destinationIndex)
-        routeProgress = 0
-    }
-
-    func clearRoute() {
-        currentRoute.removeAll()
-        routeProgress = 0
-        statusMessage = "Route cleared"
-    }
-
-    func startRoutePlayback() async {
-        guard canStartSimulation else { return }
-
-        guard currentRoute.count >= 2 else {
-            lastError = "Add at least two route points"
-            return
-        }
-
-        // Fire the iOS-18-compatibility warning toast once for the active
-        // device, preserving the per-session de-duplication behavior that
-        // used to live inside AppState.setLocation’s per-tick path.
-        if let device = selectedDevice {
-            warnIfNewerIOSDeviceOnce(device: device)
-        }
-
-        // Record the start-of-route waypoint in history before handing off to
-        // the engine. Previously this was done inside the per-tick loop with
-        // `recordHistory: index == 0`. The end-of-route waypoint is recorded
-        // by `setupSimulationEngineMirrors` when engine.state transitions to
-        // .completed.
-        if let first = currentRoute.first {
-            locationHistoryStore.record(
-                coordinate: first,
-                name: "Route start",
-                source: "Route"
-            )
-            locationHistory = locationHistoryStore.entries
-        }
-
-        // Hand off motion progression to the simulation authority. The engine
-        // owns the per-tick timer, RouteInterpolator integration, and
-        // LocationBridge calls from here on. AppState only observes.
-        isPaused = false
-        isSimulating = true
-        routeProgress = 0
-        simulationEngine.speed = simulationSpeed
-        await simulationEngine.startRoute(waypoints: currentRoute)
-        captureResumableSessionSnapshot(mode: .route)
-    }
-
-    // MARK: Joystick Mode
-
-    /// Update the user-facing joystick direction binding and forward the
-    /// vector to the simulation authority.
-    ///
-    /// `joystickDirection` remains the SwiftUI-bindable source of truth for
-    /// the joystick control view. The simulation engine consumes the vector
-    /// at its boundary (converting to a compass bearing internally).
-    func updateJoystickDirection(_ direction: CGPoint) {
-        joystickDirection = direction
-        simulationEngine.updateJoystickDirection(direction)
-    }
-
-    func startJoystickControl() async {
-        guard canStartSimulation else { return }
-
-        guard let start = currentLocation ?? targetLocation else {
-            lastError = "Pick a starting location"
-            return
-        }
-
-        // Fire the iOS-18-compatibility warning toast once for the active
-        // device (per-session de-duplication preserved from the per-tick path).
-        if let device = selectedDevice {
-            warnIfNewerIOSDeviceOnce(device: device)
-        }
-
-        // Persist the starting position to history once. Before Milestone 3
-        // this was the first invocation of the per-tick setLocation loop.
-        locationHistoryStore.record(
-            coordinate: start,
-            name: targetLocationName ?? "Joystick start",
-            source: "Joystick"
-        )
-        locationHistory = locationHistoryStore.entries
-
-        // Hand off motion progression to the simulation authority. The engine
-        // owns the per-tick joystick loop and LocationBridge calls.
-        targetLocation = start
-        isPaused = false
-        isSimulating = true
-        simulationEngine.speed = simulationSpeed
-        simulationEngine.updateJoystickDirection(joystickDirection)
-        await simulationEngine.startJoystick(at: start)
-        captureResumableSessionSnapshot(mode: .joystick)
-    }
-
-    private func captureResumableSessionSnapshot(mode: SimulationModeType) {
-        guard let device = selectedDevice else {
-            resumableSessionSnapshot = nil
-            return
-        }
-
-        let coordinate = currentLocation ?? targetLocation
-        guard coordinate != nil || mode == .route else {
-            resumableSessionSnapshot = nil
-            return
-        }
-
-        if mode == .route, currentRoute.count < 2 {
-            return
-        }
-
-        resumableSessionSnapshot = ResumableSessionSnapshot(
-            device: device,
-            mode: mode,
-            coordinate: coordinate,
-            targetLocation: targetLocation,
-            targetLocationName: targetLocationName,
-            routeWaypoints: currentRoute,
-            routeProgress: routeProgress,
-            joystickDirection: joystickDirection,
-            wasPaused: isPaused || simulationEngine.state == .paused,
-            wasSimulating: isSimulating || simulationEngine.state.isActive,
-            speed: simulationSpeed
-        )
-    }
-
-    private func beginTransientTransportRecovery(reason: String) {
-        guard transientRecoveryTask == nil else {
-            return
-        }
-        guard let snapshot = resumableSessionSnapshot,
-              selectedDevice?.id == snapshot.device.id else {
-            lastError = reason
-            isSimulating = false
-            isPaused = false
-            return
-        }
-
-        transientRecoverySerial &+= 1
-        let serial = transientRecoverySerial
-        isSimulating = snapshot.wasSimulating
-        isPaused = snapshot.wasPaused
-        lastError = nil
-        statusMessage = "Recovering tunnel connection…"
-
-        transientRecoveryTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let recovered = await self.recoverTunnelForTransientFailure(reason: reason)
-            guard self.transientRecoverySerial == serial else { return }
-            if recovered {
-#if DEBUG
-                if !self.debugSkipDeviceRefreshDuringTransientRecovery {
-                    await self.refreshDevices()
-                }
-#else
-                await self.refreshDevices()
-#endif
-            }
-            guard self.transientRecoverySerial == serial else { return }
-
-            if recovered,
-               self.selectedDevice?.id == snapshot.device.id {
-                await self.restoreResumableSession(snapshot)
-            } else {
-                self.isSimulating = false
-                self.isPaused = false
-                self.lastError = reason
-                self.statusMessage = "Tunnel recovery failed"
-            }
-
-            if self.transientRecoverySerial == serial {
-                self.transientRecoveryTask = nil
-            }
-        }
-    }
-
-    private func recoverTunnelForTransientFailure(reason: String) async -> Bool {
-#if DEBUG
-        if let debugTransientRecoveryHandler {
-            return await debugTransientRecoveryHandler(reason)
-        }
-#endif
-        return await TunneldManager.shared.recoverFromTransientTransportFailure(reason: reason)
-    }
-
-    private func restoreResumableSession(_ snapshot: ResumableSessionSnapshot) async {
-        guard selectedDevice?.id == snapshot.device.id else {
-            lastError = "Recovered tunnel, but the selected device changed before session restoration."
-            isSimulating = false
-            isPaused = false
-            return
-        }
-
-        simulationSpeed = snapshot.speed
-        simulationEngine.speed = snapshot.speed
-        targetLocation = snapshot.targetLocation
-        targetLocationName = snapshot.targetLocationName
-        currentRoute = snapshot.routeWaypoints
-        joystickDirection = snapshot.joystickDirection
-
-        switch snapshot.mode {
-        case .teleport:
-            guard let coordinate = snapshot.coordinate else {
-                isSimulating = false
-                isPaused = false
-                return
-            }
-            do {
-                try await LocationBridge.shared.setLocation(coordinate, for: snapshot.device)
-                currentLocation = coordinate
-                targetLocation = coordinate
-                isSimulating = true
-                isPaused = false
-                lastError = nil
-                statusMessage = "Location restored after tunnel recovery"
-                captureResumableSessionSnapshot(mode: .teleport)
-            } catch {
-                isSimulating = false
-                isPaused = false
-                lastError = error.localizedDescription
-                statusMessage = "Tunnel recovered, but location restoration failed"
-            }
-        case .route, .joystick:
-            simulationEngine.restoreSessionAfterTransportRecovery(
-                mode: snapshot.mode,
-                coordinate: snapshot.coordinate,
-                routeWaypoints: snapshot.routeWaypoints,
-                routeProgress: snapshot.routeProgress,
-                joystickDirection: snapshot.joystickDirection,
-                wasPaused: snapshot.wasPaused
-            )
-            isSimulating = true
-            isPaused = snapshot.wasPaused
-            lastError = nil
-            statusMessage = snapshot.wasPaused
-                ? "Session restored after tunnel recovery (paused)"
-                : "Session resumed after tunnel recovery"
-            captureResumableSessionSnapshot(mode: snapshot.mode)
-        }
-    }
-
-    /// Show the iOS-18+ compatibility warning toast at most once per device
-    /// per session.
-    ///
-    /// Extracted in Milestone 3 from the prior per-tick `setLocation` path
-    /// so it can fire exactly once at simulation start instead of every tick.
-    private func warnIfNewerIOSDeviceOnce(device: Device) {
-        guard device.hasLocationCompatibilityWarning else { return }
-        let versionStr = device.iosVersion
-
-        if !simulation.shownIOSWarningDeviceIds.contains(device.id) {
-            ToastManager.shared.warning(
-                "iOS \(versionStr) detected - attempting location simulation, but newer iOS may need pymobiledevice3 updates.",
-                duration: 5.0
-            )
-            simulation.shownIOSWarningDeviceIds.insert(device.id)
-        }
-
-        Logger.info(
-            "Attempting location injection on newer iOS version with compatibility warning: \(versionStr)",
-            category: .device,
-            deviceUDID: device.id
-        )
-    }
-
-    // MARK: Location History
-
-    func selectHistoryEntry(_ entry: LocationHistoryEntry) {
-        targetLocation = entry.coordinate
-        targetLocationName = entry.displayName
-        statusMessage = "Selected recent location: \(entry.displayName)"
-    }
-
-    func removeHistoryEntry(_ entry: LocationHistoryEntry) {
-        locationHistoryStore.remove(entry)
-        locationHistory = locationHistoryStore.entries
-    }
-
-    func clearLocationHistory() {
-        locationHistoryStore.clear()
-        locationHistory = locationHistoryStore.entries
-    }
-
-    // MARK: Speed Control
-
-    func setSpeed(_ speed: SimulationSpeed) {
-        simulationSpeed = speed
-    }
-}
-
-#if DEBUG
-@MainActor
-extension AppState {
-    func testSetTransientRecoveryHandler(_ handler: @escaping (String) async -> Bool) {
-        debugTransientRecoveryHandler = handler
-    }
-
-    func testSetSkipsDeviceRefreshDuringTransientRecovery(_ skip: Bool) {
-        debugSkipDeviceRefreshDuringTransientRecovery = skip
-    }
-
-    func testCaptureResumableSessionSnapshot(mode: SimulationModeType) {
-        captureResumableSessionSnapshot(mode: mode)
-    }
-
-    func testBeginTransientTransportRecovery(reason: String) {
-        beginTransientTransportRecovery(reason: reason)
-    }
-
-    var testHasTransientRecoveryTask: Bool {
-        transientRecoveryTask != nil
-    }
-}
-#endif
-
-// MARK: - Connection Status
-
-enum ConnectionStatus {
-    case disconnected
-    case connecting
-    case connected
-    case error
-
-    var color: Color {
-        switch self {
-        case .disconnected: return .gray
-        case .connecting: return .yellow
-        case .connected: return .green
-        case .error: return .red
-        }
-    }
-
-    var text: String {
-        switch self {
-        case .disconnected: return "Not connected"
-        case .connecting: return "Connecting…"
-        case .connected: return "Connected"
-        case .error: return "Connection lost"
-        }
-    }
 }

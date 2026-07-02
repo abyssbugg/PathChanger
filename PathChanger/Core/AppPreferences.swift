@@ -7,6 +7,27 @@
 
 import Foundation
 
+enum DeviceAutoRefreshPreferences {
+    static let enabledKey = "autoRefreshDevices"
+    static let intervalKey = "refreshInterval"
+
+    static let defaultEnabled = true
+    static let defaultInterval: TimeInterval = 120.0
+    static let allowedIntervals: [TimeInterval] = [60.0, 120.0, 300.0]
+
+    static func enabled(from defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: enabledKey) == nil {
+            return defaultEnabled
+        }
+        return defaults.bool(forKey: enabledKey)
+    }
+
+    static func interval(from defaults: UserDefaults = .standard) -> TimeInterval {
+        let value = defaults.double(forKey: intervalKey)
+        return allowedIntervals.contains(value) ? value : defaultInterval
+    }
+}
+
 /// Centralized helper for managing app preferences via UserDefaults
 final class AppPreferences {
     static let shared = AppPreferences()
@@ -57,7 +78,9 @@ final class AppPreferences {
     /// Call once at app launch from `PathChangerApp` or `AppState.init`.
     static func registerUIDefaults() {
         UserDefaults.standard.register(defaults: [
-            sidebarExpandedKey: true
+            sidebarExpandedKey: true,
+            DeviceAutoRefreshPreferences.enabledKey: DeviceAutoRefreshPreferences.defaultEnabled,
+            DeviceAutoRefreshPreferences.intervalKey: DeviceAutoRefreshPreferences.defaultInterval
         ])
     }
 }

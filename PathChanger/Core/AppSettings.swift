@@ -9,23 +9,47 @@ import Foundation
 
 @MainActor
 class AppSettings: ObservableObject {
-    static let shared = AppSettings()
+    static let shared = AppSettings(defaults: .standard)
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     // MARK: - Timeout Settings (SEC-02 Fix)
 
     @Published var commandTimeout: Double {
         didSet {
-            let clamped = min(max(commandTimeout, AppConstants.Timeout.commandTimeoutMin), AppConstants.Timeout.commandTimeoutMax)
-            defaults.set(clamped, forKey: "commandTimeout")
+            let clamped = Self.clampCommandTimeout(commandTimeout)
+            if commandTimeout != clamped {
+                commandTimeout = clamped
+                return
+            }
+            defaults.set(commandTimeout, forKey: "commandTimeout")
         }
+    }
+
+    private static func clampCommandTimeout(_ value: Double) -> Double {
+        min(max(value, AppConstants.Timeout.commandTimeoutMin), AppConstants.Timeout.commandTimeoutMax)
+    }
+
+    private static func clampTunnelTimeout(_ value: Double) -> Double {
+        min(max(value, AppConstants.Timeout.tunnelTimeoutMin), AppConstants.Timeout.tunnelTimeoutMax)
+    }
+
+    private static func clampRateLimitCapacity(_ value: Int) -> Int {
+        min(max(value, AppConstants.RateLimiting.minCapacity), AppConstants.RateLimiting.maxCapacity)
+    }
+
+    private static func clampRateLimitRefillRate(_ value: Double) -> Double {
+        min(max(value, AppConstants.RateLimiting.minRefillRate), AppConstants.RateLimiting.maxRefillRate)
     }
 
     @Published var tunnelTimeout: Double {
         didSet {
-            let clamped = min(max(tunnelTimeout, AppConstants.Timeout.tunnelTimeoutMin), AppConstants.Timeout.tunnelTimeoutMax)
-            defaults.set(clamped, forKey: "tunnelTimeout")
+            let clamped = Self.clampTunnelTimeout(tunnelTimeout)
+            if tunnelTimeout != clamped {
+                tunnelTimeout = clamped
+                return
+            }
+            defaults.set(tunnelTimeout, forKey: "tunnelTimeout")
         }
     }
 
@@ -33,32 +57,54 @@ class AppSettings: ObservableObject {
 
     @Published var rateLimitCapacity: Int {
         didSet {
-            let clamped = min(max(rateLimitCapacity, AppConstants.RateLimiting.minCapacity), AppConstants.RateLimiting.maxCapacity)
-            defaults.set(clamped, forKey: "rateLimitCapacity")
+            let clamped = Self.clampRateLimitCapacity(rateLimitCapacity)
+            if rateLimitCapacity != clamped {
+                rateLimitCapacity = clamped
+                return
+            }
+            defaults.set(rateLimitCapacity, forKey: "rateLimitCapacity")
         }
     }
 
     @Published var rateLimitRefillRate: Double {
         didSet {
-            let clamped = min(max(rateLimitRefillRate, AppConstants.RateLimiting.minRefillRate), AppConstants.RateLimiting.maxRefillRate)
-            defaults.set(clamped, forKey: "rateLimitRefillRate")
+            let clamped = Self.clampRateLimitRefillRate(rateLimitRefillRate)
+            if rateLimitRefillRate != clamped {
+                rateLimitRefillRate = clamped
+                return
+            }
+            defaults.set(rateLimitRefillRate, forKey: "rateLimitRefillRate")
         }
     }
 
     // MARK: - Initialization
 
-    private init() {
-        let savedCommandTimeout = defaults.double(forKey: "commandTimeout")
-        self.commandTimeout = savedCommandTimeout > 0 ? savedCommandTimeout : AppConstants.Timeout.defaultCommandTimeout
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
 
-        let savedTunnelTimeout = defaults.double(forKey: "tunnelTimeout")
-        self.tunnelTimeout = savedTunnelTimeout > 0 ? savedTunnelTimeout : AppConstants.Timeout.defaultTunnelTimeout
+        if defaults.object(forKey: "commandTimeout") != nil {
+            self.commandTimeout = Self.clampCommandTimeout(defaults.double(forKey: "commandTimeout"))
+        } else {
+            self.commandTimeout = AppConstants.Timeout.defaultCommandTimeout
+        }
 
-        let savedRateLimitCapacity = defaults.integer(forKey: "rateLimitCapacity")
-        self.rateLimitCapacity = savedRateLimitCapacity > 0 ? savedRateLimitCapacity : AppConstants.RateLimiting.tokenBucketCapacity
+        if defaults.object(forKey: "tunnelTimeout") != nil {
+            self.tunnelTimeout = Self.clampTunnelTimeout(defaults.double(forKey: "tunnelTimeout"))
+        } else {
+            self.tunnelTimeout = AppConstants.Timeout.defaultTunnelTimeout
+        }
 
-        let savedRateLimitRefillRate = defaults.double(forKey: "rateLimitRefillRate")
-        self.rateLimitRefillRate = savedRateLimitRefillRate > 0 ? savedRateLimitRefillRate : AppConstants.RateLimiting.tokenRefillRate
+        if defaults.object(forKey: "rateLimitCapacity") != nil {
+            self.rateLimitCapacity = Self.clampRateLimitCapacity(defaults.integer(forKey: "rateLimitCapacity"))
+        } else {
+            self.rateLimitCapacity = AppConstants.RateLimiting.tokenBucketCapacity
+        }
+
+        if defaults.object(forKey: "rateLimitRefillRate") != nil {
+            self.rateLimitRefillRate = Self.clampRateLimitRefillRate(defaults.double(forKey: "rateLimitRefillRate"))
+        } else {
+            self.rateLimitRefillRate = AppConstants.RateLimiting.tokenRefillRate
+        }
     }
 
     // MARK: - Reset to Defaults

@@ -54,6 +54,25 @@ private enum LogTextSanitizer {
     }
 }
 
+enum LogRedactor {
+    static func redact(_ text: String) -> String {
+        var result = text
+        result = replace(pattern: #"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}\b"#, in: result, with: "[REDACTED_UDID]")
+        result = replace(pattern: #"\b[0-9A-Fa-f]{40}\b"#, in: result, with: "[REDACTED_UDID]")
+        result = replace(pattern: #"\b(lat|latitude)=(-?\d+(?:\.\d+)?)\b"#, in: result, with: "$1=[REDACTED_COORDINATE]")
+        result = replace(pattern: #"\b(lon|longitude)=(-?\d+(?:\.\d+)?)\b"#, in: result, with: "$1=[REDACTED_COORDINATE]")
+        result = replace(pattern: #"(?<![A-Za-z0-9])-?\d{1,3}\.\d{3,},-?\d{1,3}\.\d{3,}"#, in: result, with: "[REDACTED_COORDINATES]")
+        result = replace(pattern: #"/Users/[^\s,\]]+"#, in: result, with: "/Users/[REDACTED_USER]/[REDACTED_PATH]")
+        return result
+    }
+
+    private static func replace(pattern: String, in text: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+    }
+}
+
 // MARK: - Log Metadata
 
 /// Structured metadata for log entries
@@ -124,7 +143,8 @@ struct LogEntry: Codable, Sendable {
         let ts = dateFormatter.string(from: timestamp)
         let meta = metadata?.formatted ?? ""
         let metaStr = meta.isEmpty ? "" : " \(meta)"
-        return "[\(ts)] [\(level.uppercased())] [\(category)]\(metaStr) \(LogTextSanitizer.message(message))"
+        let line = "[\(ts)] [\(level.uppercased())] [\(category)]\(metaStr) \(LogTextSanitizer.message(message))"
+        return LogRedactor.redact(line)
     }
 }
 
@@ -141,12 +161,16 @@ actor FileLogger {
     private var fileHandle: FileHandle?
     private var isEnabled: Bool = false
 
-    init() {
-        let appSupport = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
-        logDirectory = appSupport.appendingPathComponent("Logs/PathChanger", isDirectory: true)
+    init(logDirectory: URL? = nil) {
+        if let logDirectory {
+            self.logDirectory = logDirectory
+        } else {
+            let appSupport = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+            self.logDirectory = appSupport.appendingPathComponent("Logs/PathChanger", isDirectory: true)
+        }
 
         // Create log directory if needed
-        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.logDirectory, withIntermediateDirectories: true)
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -192,10 +216,12 @@ actor FileLogger {
         let exportDir = FileManager.default.temporaryDirectory.appendingPathComponent("PathChanger-Logs-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
 
-        // Copy log files
+        // Copy redacted log files
         for file in logFiles {
             let dest = exportDir.appendingPathComponent(file.lastPathComponent)
-            try? FileManager.default.copyItem(at: file, to: dest)
+            if let raw = try? String(contentsOf: file, encoding: .utf8) {
+                try? LogRedactor.redact(raw).write(to: dest, atomically: true, encoding: .utf8)
+            }
         }
 
         // Create zip archive

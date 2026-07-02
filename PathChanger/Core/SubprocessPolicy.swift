@@ -76,6 +76,7 @@ public enum SubprocessPolicy {
         "--tunnel",     // Tunneld-mode device selector
         "--udid",       // Direct device selector
         "--rsd",        // Remote service discovery address
+        "--script-mode", // Machine-readable tunnel output (`HOST PORT`)
         "--no-color",   // Disable colored output
         "--",           // Argument separator
         "-h", "--help", // Help flags (always safe)

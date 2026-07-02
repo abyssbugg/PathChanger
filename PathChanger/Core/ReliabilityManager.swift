@@ -312,6 +312,20 @@ class ReliabilityManager: ObservableObject {
     @Published var isAutoReconnectEnabled: Bool = true
     @Published var circuitBreakerOpen: Bool = false
     @Published var persistentFailureDetected: Bool = false
+    @Published private(set) var totalRecoveryAttempts: Int = 0
+    @Published private(set) var successfulRecoveries: Int = 0
+
+    var recoverySuccessRate: Double {
+        guard totalRecoveryAttempts > 0 else { return 1.0 }
+        return Double(successfulRecoveries) / Double(totalRecoveryAttempts)
+    }
+
+    var meetsRecoverySuccessRateSLO: Bool {
+        ServiceLevelObjectives.evaluateRecoverySuccessRate(
+            successfulRecoveries: successfulRecoveries,
+            totalAttempts: totalRecoveryAttempts
+        ).passed
+    }
 
     // MARK: Configuration
     var strategy: ReconnectionStrategy = .default
@@ -410,6 +424,8 @@ class ReliabilityManager: ObservableObject {
                 do {
                     if let reconnect = onReconnect {
                         if try await reconnect() {
+                            totalRecoveryAttempts += 1
+                            successfulRecoveries += 1
                             // Record success with circuit breaker
                             await circuitBreaker.recordSuccess()
                             connectionEstablished()
@@ -417,9 +433,11 @@ class ReliabilityManager: ObservableObject {
                         }
                     }
                     // Reconnect returned false
+                    totalRecoveryAttempts += 1
                     await recordFailure(nil)
                 } catch {
                     // Reconnection attempt failed
+                    totalRecoveryAttempts += 1
                     await recordFailure(error)
                 }
 
@@ -485,6 +503,8 @@ class ReliabilityManager: ObservableObject {
         failureHistory.removeAll()
         persistentFailureDetected = false
         circuitBreakerOpen = false
+        totalRecoveryAttempts = 0
+        successfulRecoveries = 0
     }
 
     /// Get reliability statistics (REL-001)
@@ -496,7 +516,10 @@ class ReliabilityManager: ObservableObject {
             failuresInWindow: failureHistory.count,
             persistentFailureDetected: persistentFailureDetected,
             connectionUptime: connectionUptime,
-            reconnectionAttempts: reconnectionAttempts
+            reconnectionAttempts: reconnectionAttempts,
+            recoverySuccessRate: recoverySuccessRate,
+            recoverySLOThreshold: ServiceLevelObjectives.recoverySuccessRateThreshold,
+            recoverySLOPassed: meetsRecoverySuccessRateSLO
         )
     }
 
@@ -523,6 +546,9 @@ struct ReliabilityStats {
     let persistentFailureDetected: Bool
     let connectionUptime: TimeInterval
     let reconnectionAttempts: Int
+    let recoverySuccessRate: Double
+    let recoverySLOThreshold: Double
+    let recoverySLOPassed: Bool
 
     var summary: String {
         """
@@ -533,6 +559,8 @@ struct ReliabilityStats {
         - Persistent Failure: \(persistentFailureDetected)
         - Connection Uptime: \(String(format: "%.1f", connectionUptime))s
         - Reconnection Attempts: \(reconnectionAttempts)
+        - Recovery Success Rate: \(String(format: "%.2f", recoverySuccessRate * 100))%
+        - Recovery SLO (\(String(format: "%.0f", recoverySLOThreshold * 100))% min): \(recoverySLOPassed ? "pass" : "fail")
         """
     }
 }

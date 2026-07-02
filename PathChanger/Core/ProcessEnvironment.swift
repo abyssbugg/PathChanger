@@ -58,8 +58,9 @@ public enum ProcessEnvironment {
     ///
     /// pmd3 is invoked exclusively via `python3 -m pymobiledevice3` using the
     /// absolute Python path resolved by `PythonPathResolver`, with PYTHONPATH
-    /// set to the user / Homebrew site-packages directories — so we never
-    /// need a `pymobiledevice3` shim binary on PATH.
+    /// set to trusted Homebrew site-packages by default (user site-packages
+    /// require explicit opt-in) — so we never need a `pymobiledevice3` shim
+    /// binary on PATH.
     private static func dynamicPathDirectories() -> [String] {
         let home = NSHomeDirectory()
         let pyenvVersionsPath = "\(home)/.pyenv/versions"
@@ -77,12 +78,17 @@ public enum ProcessEnvironment {
     /// Supported Python versions for site-packages lookup
     private static let supportedPythonVersions = ["3.13", "3.12", "3.11", "3.10", "3.9"]
 
+    /// UserDefaults key that explicitly opts in to user site-packages trust.
+    ///
+    /// Security default is `false` — user Library site-packages are excluded
+    /// unless this key is enabled or the caller passes an explicit override.
+    public static let allowUserSitePackagesDefaultsKey = "allowUserPythonSitePackages"
+
     /// Generate Python site-packages paths for user installs
     ///
     /// # Security Note
-    /// User home directories are included to support `pip --user` installs.
-    /// This is a trade-off between usability and security isolation that
-    /// enables users to install pymobiledevice3 without sudo.
+    /// These directories are user-writable and therefore untrusted by default.
+    /// They are only appended when an explicit policy opt-in is provided.
     private static func userPythonPaths() -> [String] {
         return supportedPythonVersions.map { version in
             NSHomeDirectory() + "/Library/Python/\(version)/lib/python/site-packages"
@@ -99,6 +105,31 @@ public enum ProcessEnvironment {
         }
     }
 
+    /// Resolve whether user site-packages should be trusted for this process launch.
+    /// Policy precedence:
+    /// 1. Explicit `includeUserSitePackages` argument (strongest)
+    /// 2. UserDefaults opt-in key `allowUserPythonSitePackages`
+    /// 3. Secure default `false`
+    private static func shouldIncludeUserSitePackages(_ includeUserSitePackages: Bool?) -> Bool {
+        if let includeUserSitePackages {
+            return includeUserSitePackages
+        }
+        return UserDefaults.standard.bool(forKey: allowUserSitePackagesDefaultsKey)
+    }
+
+    /// Build PYTHONPATH entries under an explicit trust policy.
+    ///
+    /// - Parameter includeUserSitePackages: Optional explicit override.
+    ///   - `true`: include user Library site-packages
+    ///   - `false`: exclude user Library site-packages
+    ///   - `nil`: use `allowUserPythonSitePackages` UserDefaults policy key
+    public static func configuredPythonPaths(includeUserSitePackages: Bool? = nil) -> [String] {
+        var pythonPaths = homebrewPythonPaths()
+        if shouldIncludeUserSitePackages(includeUserSitePackages) {
+            pythonPaths.append(contentsOf: userPythonPaths())
+        }
+        return pythonPaths
+    }
     // MARK: - Public API
 
     /// Generate a fully configured environment for subprocess execution
@@ -114,8 +145,14 @@ public enum ProcessEnvironment {
     ///
     /// - Parameter preserveExistingPath: If true, appends existing PATH to configured paths.
     ///   Default is false for security (prevents path injection from parent process).
+    /// - Parameter includeUserSitePackages: Optional explicit override for user
+    ///   Library site-packages trust. `nil` defers to
+    ///   `allowUserPythonSitePackages` UserDefaults policy key.
     /// - Returns: Environment dictionary ready for use with Process
-    public static func configured(preserveExistingPath: Bool = false) -> [String: String] {
+    public static func configured(
+        preserveExistingPath: Bool = false,
+        includeUserSitePackages: Bool? = nil
+    ) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
 
         // Build secure PATH
@@ -127,9 +164,8 @@ public enum ProcessEnvironment {
 
         env["PATH"] = pathComponents.joined(separator: ":")
         env["PYENV_ROOT"] = NSHomeDirectory() + "/.pyenv"
-
-        // Build PYTHONPATH
-        let pythonPaths = userPythonPaths() + homebrewPythonPaths()
+        // Build PYTHONPATH under explicit trust policy.
+        let pythonPaths = configuredPythonPaths(includeUserSitePackages: includeUserSitePackages)
         env["PYTHONPATH"] = pythonPaths.joined(separator: ":")
 
         return env
@@ -188,9 +224,11 @@ public enum ProcessEnvironment {
 
     /// Get the configured PYTHONPATH as a string
     ///
-    /// - Returns: Colon-separated PYTHONPATH string
+    /// Security default excludes user Library site-packages.
+    ///
+    /// - Returns: Colon-separated trusted PYTHONPATH string
     public static var pythonPathString: String {
-        let pythonPaths = userPythonPaths() + homebrewPythonPaths()
+        let pythonPaths = configuredPythonPaths(includeUserSitePackages: false)
         return pythonPaths.joined(separator: ":")
     }
 }

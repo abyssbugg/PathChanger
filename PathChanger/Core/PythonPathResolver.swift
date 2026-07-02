@@ -217,6 +217,18 @@ enum PythonPathResolver {
         ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Get the installed pymobiledevice3 version string if available.
+    ///
+    /// Returns nil when pymobiledevice3 cannot be resolved.
+    static func pymobiledevice3Version() async -> String? {
+        do {
+            let version = try await checkPymobiledevice3Installation()
+            return version == "unknown" ? nil : version
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - Private
 
     private static func checkPymobiledevice3Installation() async throws -> String {
