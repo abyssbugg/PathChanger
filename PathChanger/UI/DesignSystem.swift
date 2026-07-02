@@ -286,6 +286,13 @@ struct DS {
         static let joystickInnerRingScale: CGFloat = 0.82
         static let joystickReleaseSpringResponse: CGFloat = 0.3
         static let joystickReleaseSpringDamping: CGFloat = 0.6
+
+        // Device dropdown (mockup `.device-sel` / `.device-menu` in geospoofer-pro.html)
+        static let deviceDropdownHPadding: CGFloat = 11      // .device-sel padding: 0 11px
+        static let deviceDropdownChevronSize: CGFloat = 12   // .device-sel .chev 12x12
+        static let deviceDropdownMenuMinWidth: CGFloat = 224 // .device-menu min-width
+        static let deviceDropdownMenuPadding: CGFloat = 5    // .device-menu padding
+        static let deviceDropdownOptionDotSize: CGFloat = 7  // .device-opt .od 7x7
     }
 
     struct Opacity {
