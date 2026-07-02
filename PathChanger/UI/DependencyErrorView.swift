@@ -17,11 +17,11 @@ struct DependencyErrorView: View {
                 .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: AppSpacing.md) {
                 // Header
-                VStack(spacing: 12) {
+                VStack(spacing: DS.Metrics.dependencyActionHPadding) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 48))
+                        .font(DS.Typography.iconLarge)
                         .foregroundColor(.pcDanger)
 
                     Text("Dependency Issue")
@@ -33,30 +33,30 @@ struct DependencyErrorView: View {
                         .foregroundColor(.pcTextMuted)
                         .multilineTextAlignment(.center)
                 }
-                .padding(.top, 32)
+                .padding(.top, DS.Metrics.dependencyTopPadding)
 
                 Divider()
                     .background(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
 
                 // Errors List
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: AppSpacing.sm) {
                     Text("Issues Found")
                         .font(AppFont.heading)
                         .foregroundColor(.pcText)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, AppSpacing.xs)
 
                     ForEach(validator.errors) { error in
                         ErrorItemView(error: error)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
+                .padding(DS.Metrics.dependencyCardPadding)
                 .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel))
                 .clipShape(RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
 
                 // Solution Section
                 if let firstError = validator.errors.first {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: DS.Metrics.dependencyActionHPadding) {
                         Text("How to Fix")
                             .font(AppFont.caption)
                             .foregroundColor(.pcText)
@@ -64,28 +64,27 @@ struct DependencyErrorView: View {
                         Text(firstError.suggestion)
                             .font(AppFont.monospace)
                             .foregroundColor(.pcSecondary)
-                            .padding(12)
+                            .padding(DS.Metrics.dependencyActionHPadding)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField))
                             .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
-
-                        HStack(spacing: 12) {
+                        HStack(spacing: DS.Metrics.dependencyActionHPadding) {
                             Button(action: {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(firstError.suggestion, forType: .string)
                                 copiedToClipboard = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(DS.Metrics.two)) {
                                     copiedToClipboard = false
                                 }
                             }) {
-                                HStack(spacing: 8) {
+                                HStack(spacing: AppSpacing.xs) {
                                     Image(systemName: copiedToClipboard ? "checkmark.circle.fill" : "doc.on.doc")
                                     Text(copiedToClipboard ? "Copied!" : "Copy Command")
                                 }
                                 .font(AppFont.label)
                                 .foregroundColor(.pcText)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
+                                .padding(.vertical, DS.Metrics.dependencyActionVPadding)
+                                .padding(.horizontal, DS.Metrics.dependencyActionHPadding)
                                 .background(Color.pcAccent)
                                 .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                             }
@@ -97,14 +96,14 @@ struct DependencyErrorView: View {
                             )
 
                             Link(destination: helpURL(for: firstError.type)) {
-                                HStack(spacing: 8) {
+                                HStack(spacing: AppSpacing.xs) {
                                     Image(systemName: "link")
                                     Text("Learn More")
                                 }
                                 .font(AppFont.label)
                                 .foregroundColor(.pcText)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
+                                .padding(.vertical, DS.Metrics.dependencyActionVPadding)
+                                .padding(.horizontal, DS.Metrics.dependencyActionHPadding)
                                 .background(Color.pcSurfaceHighest)
                                 .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                             }
@@ -114,26 +113,26 @@ struct DependencyErrorView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+                    .padding(DS.Metrics.dependencyCardPadding)
                     .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel))
                     .clipShape(RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
                 }
 
                 // Retry Section
-                VStack(spacing: 12) {
+                VStack(spacing: DS.Metrics.dependencyActionHPadding) {
                     Button(action: {
                         Task {
                             await validator.validateAll()
                         }
                     }) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: AppSpacing.xs) {
                             Image(systemName: "arrow.clockwise")
                             Text("Retry Validation")
                         }
                         .font(AppFont.label)
                         .foregroundColor(.pcText)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+                        .padding(.vertical, DS.Metrics.dependencyRetryButtonVPadding)
                         .background(Color.pcAccent)
                         .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                     }
@@ -152,11 +151,16 @@ struct DependencyErrorView: View {
 
                 Spacer()
             }
-                .padding(32)
-                .frame(maxWidth: 760)
+                .padding(AppSpacing.lg)
+                .frame(maxWidth: DS.Metrics.dependencyMaxWidth)
             }
         }
-        .frame(minWidth: 560, idealWidth: 800, minHeight: 480, idealHeight: 600)
+        .frame(
+            minWidth: DS.Metrics.dependencyMinWidth,
+            idealWidth: DS.Metrics.dependencyIdealWidth,
+            minHeight: DS.Metrics.dependencyMinHeight,
+            idealHeight: DS.Metrics.dependencyIdealHeight
+        )
     }
 
     private func helpURL(for type: DependencyValidator.ValidationError.ErrorType) -> URL {
@@ -175,13 +179,13 @@ struct ErrorItemView: View {
     let error: DependencyValidator.ValidationError
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: DS.Metrics.dependencyActionHPadding) {
             Image(systemName: errorIcon)
                 .font(AppFont.heading)
                 .foregroundColor(errorColor)
-                .padding(.top, 3)
+                .padding(.top, DS.Metrics.mapMarkerStrokeWidth)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text(errorTitle)
                     .font(AppFont.label)
                     .foregroundColor(.pcText)

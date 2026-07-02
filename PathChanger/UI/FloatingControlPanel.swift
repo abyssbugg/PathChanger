@@ -44,6 +44,44 @@ struct FloatingControlPanel<Content: View>: View {
     }
 }
 
+struct PanelStateStrip: View {
+    let title: String
+    let detail: String
+    let icon: String
+    let color: Color
+    var accessibilityIdentifier: String
+
+    var body: some View {
+        HStack(spacing: AppSpacing.sm) {
+            Image(systemName: icon)
+                .font(AppFont.metadata)
+                .foregroundStyle(color)
+
+            VStack(alignment: .leading, spacing: DS.Metrics.one) {
+                Text(title)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcText)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(AppFont.metadata)
+                    .foregroundStyle(Color.pcTextMuted)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, AppSpacing.sm)
+        .padding(.vertical, AppSpacing.xs)
+        .background(color.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                .stroke(color.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(detail)")
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
 #if DEBUG
 struct FloatingControlPanel_Previews: PreviewProvider {
     static var previews: some View {
@@ -59,7 +97,7 @@ struct FloatingControlPanel_Previews: PreviewProvider {
                     Button("Teleport") {}
                         .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                 }
-                .frame(width: 200)
+                .frame(width: DS.Metrics.previewSmallWidth)
             }
         }
     }

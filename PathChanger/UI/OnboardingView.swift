@@ -60,9 +60,6 @@ class OnboardingViewModel: ObservableObject {
     @Published var isCheckingDependencies = false
     @Published var showCopiedToast = false
 
-    private let minPythonVersion = "3.9"
-    private let minPymobiledevice3Version = "6.1.5"
-
     func nextStep() {
         if let nextStep = OnboardingStep(rawValue: currentStep.rawValue + 1) {
             withAnimation {
@@ -118,9 +115,7 @@ class OnboardingViewModel: ObservableObject {
                 do {
                     try await PythonPathResolver.validatePymobiledevice3()
                     pmd3Valid = true
-
-                    // Try to get version string (simplified)
-                    pmd3Ver = minPymobiledevice3Version // Placeholder
+                    pmd3Ver = await PythonPathResolver.pymobiledevice3Version()
                 } catch {
                     Logger.debug("pymobiledevice3 validation failed: \(error)", category: .general)
                 }
@@ -146,7 +141,7 @@ class OnboardingViewModel: ObservableObject {
             showCopiedToast = true
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(DS.Metrics.two)) {
             withAnimation {
                 self.showCopiedToast = false
             }
@@ -184,37 +179,48 @@ struct OnboardingView: View {
                 VStack {
                     Spacer()
                     copiedToast
-                        .padding(.bottom, 100)
+                        .padding(.bottom, DS.Metrics.onboardingToastBottomInset)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(minWidth: 560, idealWidth: 700, maxWidth: 820, minHeight: 480, idealHeight: 550, maxHeight: 720)
+        .frame(
+            minWidth: DS.Metrics.onboardingMinWidth,
+            idealWidth: DS.Metrics.onboardingIdealWidth,
+            maxWidth: DS.Metrics.onboardingMaxWidth,
+            minHeight: DS.Metrics.onboardingMinHeight,
+            idealHeight: DS.Metrics.onboardingIdealHeight,
+            maxHeight: DS.Metrics.onboardingMaxHeight
+        )
         .accessibilityIdentifier(identifierForCurrentStep)
     }
 
     private var headerView: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: AppSpacing.xs) {
             Image(systemName: viewModel.currentStep.icon)
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(.pcPrimary)
-                .padding(.top, 30)
+                .padding(.top, DS.Metrics.onboardingHeaderTopPadding)
 
             Text(viewModel.currentStep.title)
                 .font(AppFont.title)
                 .fontWeight(.bold)
 
             // Progress indicator
-            HStack(spacing: 8) {
+            HStack(spacing: AppSpacing.xs) {
                 ForEach(OnboardingStep.allCases, id: \.rawValue) { step in
                     Circle()
-                        .fill(step.rawValue <= viewModel.currentStep.rawValue ? Color.pcPrimary : Color.pcTextMuted.opacity(0.3))
-                        .frame(width: 8, height: 8)
+                        .fill(
+                            step.rawValue <= viewModel.currentStep.rawValue
+                                ? Color.pcPrimary
+                                : Color.pcTextMuted.opacity(DS.Opacity.progressIndicatorFill)
+                        )
+                        .frame(width: DS.Metrics.stepIndicatorSize, height: DS.Metrics.stepIndicatorSize)
                 }
             }
-            .padding(.top, 8)
+            .padding(.top, AppSpacing.xs)
         }
-        .padding(.bottom, 20)
+        .padding(.bottom, DS.Metrics.sheetStepBadgeSize)
         .background(Color.pcBackground)
     }
 
@@ -296,7 +302,7 @@ struct OnboardingView: View {
     // MARK: - Step Views
 
     private var welcomeStepView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
             Spacer()
 
             Text("Simulate GPS Locations on iOS 17+ Devices")
@@ -304,7 +310,7 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
                 .foregroundColor(.pcTextMuted)
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: DS.Metrics.dependencyActionHPadding) {
                 FeatureRow(icon: "location.fill", title: "GPS Simulation", description: "Set custom locations on your iOS device")
                 FeatureRow(icon: "arrow.triangle.2.circlepath", title: "Route Playback", description: "Follow GPX routes with realistic movement")
                 FeatureRow(icon: "wifi", title: "USB & WiFi", description: "Connect via USB or wireless tunnel")
@@ -314,19 +320,19 @@ struct OnboardingView: View {
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, DS.Metrics.onboardingHorizontalPadding)
     }
 
     private var dependenciesStepView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
             if viewModel.isCheckingDependencies {
                 Spacer()
                 ProgressView("Checking system dependencies...")
-                    .scaleEffect(1.2)
+                    .scaleEffect(DS.Metrics.onboardingProgressScale)
                 Spacer()
             } else if let result = viewModel.dependencyResult {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: AppSpacing.sm) {
                         if result.allDependenciesMet {
                             HStack {
                                 Image(systemName: "checkmark.circle.fill")
@@ -337,7 +343,7 @@ struct OnboardingView: View {
                             }
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.pcSecondary.opacity(0.1))
+                            .background(Color.pcSecondary.opacity(DS.Opacity.selectionTint))
                             .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                         } else {
                             HStack {
@@ -349,7 +355,7 @@ struct OnboardingView: View {
                             }
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.pcWarning.opacity(0.12))
+                            .background(Color.pcWarning.opacity(DS.Opacity.warningPanelTint))
                             .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                         }
 
@@ -391,12 +397,12 @@ struct OnboardingView: View {
     }
 
     private var deviceSetupStepView: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: DS.Metrics.sheetStepBadgeSize) {
             Text("Prepare Your iOS Device")
                 .font(AppFont.heading)
                 .fontWeight(.semibold)
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppSpacing.sm) {
                 SetupStep(number: 1, title: "Enable Developer Mode", description: "Settings → Privacy & Security → Developer Mode → ON")
                 SetupStep(number: 2, title: "Trust This Computer", description: "Connect via USB and tap 'Trust' when prompted")
                 SetupStep(number: 3, title: "Connect Device", description: "Use USB for fastest connection, or WiFi for convenience")
@@ -412,18 +418,18 @@ struct OnboardingView: View {
                     .foregroundColor(.pcTextMuted)
             }
             .padding()
-            .background(Color.pcPrimary.opacity(0.1))
+            .background(Color.pcPrimary.opacity(DS.Opacity.selectionTint))
             .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, DS.Metrics.onboardingHorizontalPadding)
     }
 
     private var completeStepView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
             Spacer()
 
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 80))
+                .font(DS.Typography.iconXLarge)
                 .foregroundColor(.pcSecondary)
 
             Text("You're All Set!")
@@ -435,7 +441,7 @@ struct OnboardingView: View {
 
             Spacer()
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: DS.Metrics.dependencyActionHPadding) {
                 QuickTip(icon: "location.circle.fill", text: "Connect your device and start the tunnel")
                 QuickTip(icon: "map.fill", text: "Click the map to set a location")
                 QuickTip(icon: "arrow.triangle.2.circlepath", text: "Import GPX files for route playback")
@@ -446,7 +452,7 @@ struct OnboardingView: View {
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, DS.Metrics.onboardingHorizontalPadding)
     }
 
     private var copiedToast: some View {
@@ -459,7 +465,7 @@ struct OnboardingView: View {
         .padding()
         .background(Color.pcSurface)
         .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
-        .shadow(radius: 4)
+        .shadow(radius: DS.Metrics.mapSearchResultsShadowRadius)
     }
 
     private var identifierForCurrentStep: String {
@@ -484,13 +490,13 @@ struct FeatureRow: View {
     let description: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Metrics.dependencyActionHPadding) {
             Image(systemName: icon)
                 .font(AppFont.heading)
                 .foregroundColor(.pcPrimary)
-                .frame(width: 30)
+                .frame(width: DS.Metrics.featureRowIconWidth)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DS.Metrics.two) {
                 Text(title)
                     .fontWeight(.semibold)
                 Text(description)
@@ -510,7 +516,7 @@ struct DependencyCard: View {
     let onCopy: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Metrics.dependencyActionHPadding) {
             HStack {
                 Image(systemName: installed && valid ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundColor(installed && valid ? .pcSecondary : .pcDanger)
@@ -528,7 +534,7 @@ struct DependencyCard: View {
             }
 
             if !installed || !valid {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: AppSpacing.xs) {
                     Text(installed ? "Version too old" : "Not installed")
                         .font(AppFont.metadata)
                         .foregroundColor(.pcTextMuted)
@@ -536,7 +542,7 @@ struct DependencyCard: View {
                     HStack {
                         Text(installCommand)
                             .font(AppFont.monospace)
-                            .padding(8)
+                            .padding(AppSpacing.xs)
                             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
                             .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
 
@@ -567,17 +573,16 @@ struct SetupStep: View {
     let description: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: AppSpacing.sm) {
             ZStack {
                 Circle()
                     .fill(Color.pcPrimary)
-                    .frame(width: 32, height: 32)
+                    .frame(width: DS.Metrics.setupStepCircleSize, height: DS.Metrics.setupStepCircleSize)
                 Text("\(number)")
                     .foregroundColor(.white)
                     .fontWeight(.bold)
             }
-
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text(title)
                     .fontWeight(.semibold)
                 Text(description)
@@ -593,10 +598,10 @@ struct QuickTip: View {
     let text: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Metrics.dependencyActionHPadding) {
             Image(systemName: icon)
                 .foregroundColor(.pcPrimary)
-                .frame(width: 24)
+                .frame(width: DS.Metrics.quickTipIconWidth)
             Text(text)
                 .font(AppFont.body)
         }

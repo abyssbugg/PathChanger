@@ -16,28 +16,7 @@
 //  Mode selection is owned here (`@State selectedMode`); the sidebar emits
 //  changes via `@Binding`.
 //
-// MARK: - W1 Authority Declaration (Slice S0 — documentation only)
-//
-// MainMapShell is the SOLE production shell layout authority.
-//
-// Authority rules (frozen — see W1 governance plan):
-//   - This shell is the only production layout. `ContentView` always
-//     instantiates MainMapShell, and MainMapShell always instantiates
-//     `SimulationView(mode: ..., chrome: .shell)`. The `.shell` chrome is
-//     therefore the sole production layout authority.
-//   - The shell hosts exactly three floating canonical surfaces:
-//       (a) the Phase-1 readiness pill (`DeviceTunnelPill`),
-//       (b) the T0 execution pill (`PrimaryActionPill`),
-//       (c) the production sidebar (`CollapsibleSidebar`).
-//     All three are placed by this shell and must not be relocated,
-//     duplicated, or shadowed by any other layout.
-//   - `.full` chrome surfaces in `SimulationView`, and the legacy
-//     `SidebarView`, are compatibility shims not reachable through this
-//     shell. They are deferred to the future `.full` deprecation phase
-//     (W4) and are not active production authorities.
-//
-// W1 Slice S0 is documentation-only. No behavior, layout, state, bindings,
-// or routing are altered by this declaration.
+// MainMapShell is the single production shell layout authority.
 //
 
 import SwiftUI
@@ -53,7 +32,7 @@ struct MainMapShell: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Bottom layer: map + mode-specific floating panels (in shell chrome).
-            SimulationView(mode: selectedMode, chrome: .shell)
+            SimulationView(mode: selectedMode)
                 .ignoresSafeArea()
 
             // Sidebar (slides in from the leading edge when expanded).
@@ -72,8 +51,8 @@ struct MainMapShell: View {
                 SidebarToggleButton {
                     toggleSidebar()
                 }
-                .padding(.leading, 16)
-                .padding(.top, 56)
+                .padding(.leading, DS.Metrics.shellSidebarToggleLeadingInset)
+                .padding(.top, DS.Metrics.shellSidebarToggleTopInset)
                 .zIndex(2)
             }
 
@@ -82,8 +61,8 @@ struct MainMapShell: View {
                 HStack {
                     Spacer()
                     DeviceTunnelPill()
-                        .padding(.top, 24)
-                        .padding(.trailing, 24)
+                        .padding(.top, DS.Metrics.shellFloatingInset)
+                        .padding(.trailing, DS.Metrics.shellFloatingInset)
                 }
                 Spacer()
             }
@@ -95,7 +74,7 @@ struct MainMapShell: View {
                 HStack {
                     Spacer()
                     PrimaryActionPill(mode: selectedMode)
-                        .padding(.bottom, 28)
+                        .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
                     Spacer()
                 }
             }
@@ -103,13 +82,13 @@ struct MainMapShell: View {
 
             // Hidden button to host the ⌘\ keyboard shortcut.
             Button(action: toggleSidebar) {
-                Color.clear.frame(width: 1, height: 1)
+                Color.clear.frame(width: DS.Metrics.shellHiddenShortcutSize, height: DS.Metrics.shellHiddenShortcutSize)
             }
             .keyboardShortcut("\\", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.85), value: isSidebarExpanded)
+        .animation(DS.Animation.slow, value: isSidebarExpanded)
         .sheet(isPresented: $isShowingSettings) {
             SettingsSheetContainer {
                 isShowingSettings = false
@@ -123,7 +102,7 @@ struct MainMapShell: View {
     }
 
     private func toggleSidebar() {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+        withAnimation(DS.Animation.slow) {
             isSidebarExpanded.toggle()
         }
     }
@@ -136,7 +115,7 @@ private struct SettingsSheetContainer: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Settings")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(DS.Typography.title)
                     .foregroundStyle(Color.pcText)
 
                 Spacer()
@@ -145,19 +124,19 @@ private struct SettingsSheetContainer: View {
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("mapShellSettingsDoneButton")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .padding(.horizontal, DS.Spacing.sm)
+            .padding(.vertical, DS.Spacing.xs)
             .background(Color.pcSurface)
             .overlay(alignment: .bottom) {
                 Rectangle()
                     .fill(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
-                    .frame(height: 1)
+                    .frame(height: DS.Metrics.strokeWidth)
                     .allowsHitTesting(false)
             }
 
             SettingsView(showsHeader: false)
         }
-        .frame(width: 760, height: 620)
+        .frame(width: DS.Metrics.settingsContentMaxWidth, height: DS.Metrics.settingsSheetHeight)
         .background(Color.pcBackground)
     }
 }
@@ -168,7 +147,7 @@ struct MainMapShell_Previews: PreviewProvider {
         MainMapShell()
             .environmentObject(AppState())
             .environmentObject(TunneldManager.shared)
-            .frame(width: 1100, height: 720)
+            .frame(width: DS.Metrics.shellPreviewWidth, height: DS.Metrics.shellPreviewHeight)
     }
 }
 #endif

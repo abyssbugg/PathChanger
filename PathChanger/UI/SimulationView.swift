@@ -11,22 +11,8 @@ import MapKit
 import UniformTypeIdentifiers
 import AppKit
 
-/// Visual chrome mode for `SimulationView`.
-///
-/// `.full` is the legacy layout used when SimulationView hosts the entire
-/// window (top toolbar with search + bottom main control panel both visible).
-/// `.shell` is the new layout used inside `MainMapShell`: the shell takes
-/// over search (sidebar) and the primary action (bottom-center pill), so
-/// SimulationView suppresses its top toolbar and main control panel and
-/// floats the mode-specific control panel higher to leave room for the pill.
-enum SimulationViewChrome {
-    case full
-    case shell
-}
-
 struct SimulationView: View {
     let mode: AppMode
-    var chrome: SimulationViewChrome = .full
     @EnvironmentObject var appState: AppState
     @StateObject private var searchService = LocationSearchService()
 
@@ -41,7 +27,6 @@ struct SimulationView: View {
     @State private var showCoordinateInput: Bool = false
     @State private var latitudeInput: String = ""
     @State private var longitudeInput: String = ""
-    @State private var routeType: RouteType = .navigation
     @State private var mapContextAction: MapContextAction?
     @FocusState private var isSearchFocused: Bool
     @FocusState private var focusedCoordinateField: CoordinateField?
@@ -57,33 +42,16 @@ struct SimulationView: View {
             mapView
                 .ignoresSafeArea()
 
-            // 2. Top Controls (Search & Map Style) — only in full chrome.
-            // In shell chrome the sidebar provides search and the host has its
-            // own toolbars.
-            if chrome == .full {
-                VStack {
-                    topControls
-                    Spacer()
-                }
-            }
-
             // 3. Floating Action Panel
             VStack(spacing: AppSpacing.xl) {
                 // Mode-specific controls
                 modeSpecificControls
-
-                // Main control panel — hidden in shell chrome where the action
-                // pill (PrimaryActionPill) handles play/pause/stop.
-                if chrome == .full {
-                    mainControlPanel
-                }
             }
             .padding(.horizontal, AppSpacing.xl)
-            // Push higher in shell chrome to clear the bottom action pill.
-            .padding(.bottom, chrome == .shell ? 96 : AppSpacing.xl)
+            .padding(.bottom, DS.Spacing.xl * DS.Metrics.two)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(chrome == .full ? Color.pcBackground : Color.clear)
+        .background(Color.clear)
         .onChange(of: appState.currentLocation) { _, newLocation in
             if let location = newLocation {
                 withAnimation {
@@ -113,16 +81,16 @@ struct SimulationView: View {
                     Annotation("Location", coordinate: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude)) {
                         ZStack {
                             Circle()
-                                .fill(Color.pcAccent.opacity(0.14))
-                                .frame(width: 48, height: 48)
+                                .fill(DS.Color.accent.opacity(DS.Opacity.mapMarkerHalo))
+                                .frame(width: DS.Metrics.mapMarkerHaloSize, height: DS.Metrics.mapMarkerHaloSize)
                             Circle()
-                                .fill(Color.pcAccent)
-                                .frame(width: 16, height: 16)
+                                .fill(DS.Color.accent)
+                                .frame(width: DS.Metrics.mapMarkerCoreSize, height: DS.Metrics.mapMarkerCoreSize)
                             Circle()
-                                .stroke(Color.white, lineWidth: 3)
-                                .frame(width: 16, height: 16)
+                                .stroke(DS.Color.markerStroke, lineWidth: DS.Metrics.mapMarkerStrokeWidth)
+                                .frame(width: DS.Metrics.mapMarkerCoreSize, height: DS.Metrics.mapMarkerCoreSize)
                         }
-                        .shadow(color: Color.black.opacity(0.12), radius: 2)
+                        .shadow(color: DS.Color.shadow.opacity(DS.Opacity.mapMarkerShadow), radius: DS.Metrics.mapMarkerShadowRadius)
                     }
                 }
 
@@ -152,7 +120,10 @@ struct SimulationView: View {
             .overlay(alignment: .topLeading) {
                 if let action = mapContextAction {
                     mapContextMenu(for: action)
-                        .offset(x: min(action.screenPoint.x, 520), y: min(action.screenPoint.y, 520))
+                        .offset(
+                            x: min(action.screenPoint.x, DS.Metrics.mapContextMenuMaxOffset),
+                            y: min(action.screenPoint.y, DS.Metrics.mapContextMenuMaxOffset)
+                        )
                         .transition(.opacity.combined(with: .scale))
                 }
             }
@@ -184,8 +155,8 @@ struct SimulationView: View {
         appState.targetLocation = location
         appState.targetLocationName = "Selected location"
         appState.statusMessage = mode == .route
-            ? "Selected waypoint candidate. Use Add Waypoint to include it in the route."
-            : String(format: "Selected location: %.4f, %.4f. Press Play or Apply to set.", coordinate.latitude, coordinate.longitude)
+            ? "Selected route spot. Use Add Waypoint to include it in the route."
+            : String(format: "Selected target: %.4f, %.4f. Use the primary action pill to apply it to the device.", coordinate.latitude, coordinate.longitude)
     }
 
     private func showMapContext(at coordinate: CLLocationCoordinate2D, screenPoint: CGPoint) {
@@ -198,7 +169,7 @@ struct SimulationView: View {
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
 
-        withAnimation(.easeInOut(duration: 0.15)) {
+        withAnimation(DS.Animation.fast) {
             mapContextAction = MapContextAction(coordinate: location, screenPoint: screenPoint)
         }
     }
@@ -206,38 +177,31 @@ struct SimulationView: View {
     private func mapContextMenu(for action: MapContextAction) -> some View {
         VStack(alignment: .leading, spacing: AppSpacing.sm) {
             Text(action.coordinate.formattedShort)
-                .font(AppFont.metadata)
-                .foregroundStyle(Color.pcTextMuted)
+                .font(DS.Typography.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
                 .monospacedDigit()
             Button {
                 appState.targetLocation = action.coordinate
                 appState.targetLocationName = "Selected location"
-                appState.statusMessage = "Selected \(action.coordinate.formattedShort)"
+                appState.statusMessage = mode == .route
+                    ? "Selected route spot. Use Add Waypoint to include it in the route."
+                    : "Selected \(action.coordinate.formattedShort)"
                 withAnimation { mapContextAction = nil }
             } label: {
-                Label("Set Target", systemImage: "mappin")
+                if mode == .route {
+                    Label("Set Route Spot", systemImage: "mappin")
+                } else {
+                    Label("Set Target", systemImage: "mappin")
+                }
             }
+            .font(DS.Typography.labelPrimary)
+            .foregroundStyle(DS.Color.foregroundPrimary)
             .buttonStyle(.plain)
             .accessibleButton(
-                label: "Set map target",
-                hint: "Selects this coordinate without changing the device location",
+                label: mode == .route ? "Set route spot" : "Set map target",
+                hint: mode == .route ? "Selects this coordinate so Add Waypoint can include it in the route" : "Selects this coordinate without changing the device location",
                 identifier: "mapContextSetTargetButton"
             )
-
-            if mode == .route {
-                Button {
-                    appState.addRoutePoint(action.coordinate)
-                    withAnimation { mapContextAction = nil }
-                } label: {
-                    Label("Add Waypoint", systemImage: "plus.circle")
-                }
-                .buttonStyle(.plain)
-                .accessibleButton(
-                    label: "Add map waypoint",
-                    hint: "Adds this coordinate to the current route",
-                    identifier: "mapContextAddWaypointButton"
-                )
-            }
 
             Button {
                 withAnimation { mapContextAction = nil }
@@ -245,7 +209,8 @@ struct SimulationView: View {
                 Label("Cancel", systemImage: "xmark")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.pcTextMuted)
+            .font(DS.Typography.labelSecondary)
+            .foregroundStyle(DS.Color.foregroundTertiary)
             .accessibleButton(
                 label: "Cancel map actions",
                 hint: "Closes the map context menu",
@@ -286,7 +251,7 @@ struct SimulationView: View {
 
                     if searchService.isSearching {
                         ProgressView()
-                            .scaleEffect(0.7)
+                            .scaleEffect(DS.Opacity.hoverRow)
                     }
 
                     if !searchService.searchText.isEmpty {
@@ -306,13 +271,20 @@ struct SimulationView: View {
                     }
                 }
                 .padding(.horizontal, AppSpacing.md)
-                .frame(minHeight: 36)
+                .frame(minHeight: DS.Metrics.mapToolbarSearchMinHeight)
                 .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                        .stroke(isSearchFocused ? Color.pcAccent.opacity(0.6) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                        .stroke(
+                            isSearchFocused ? DS.Color.accent.opacity(DS.Opacity.focusStroke) : DS.Color.foregroundTertiary.opacity(AppSurfaceAlpha.outline),
+                            lineWidth: DS.Metrics.strokeWidth
+                        )
                 )
-                .frame(minWidth: 260, idealWidth: 360, maxWidth: 420)
+                .frame(
+                    minWidth: DS.Metrics.mapToolbarSearchMinWidth,
+                    idealWidth: DS.Metrics.mapToolbarSearchIdealWidth,
+                    maxWidth: DS.Metrics.mapToolbarSearchMaxWidth
+                )
 
                 Spacer(minLength: AppSpacing.md)
 
@@ -323,13 +295,13 @@ struct SimulationView: View {
                 }
 
                 Divider()
-                    .frame(height: 28)
+                    .frame(height: DS.Metrics.mapToolbarDividerHeight)
                     .overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
 
                 HStack(spacing: AppSpacing.xxs) {
                     ForEach(MapStyleType.allCases) { style in
                         Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
+                            withAnimation(DS.Animation.standard) {
                                 mapStyle = style
                             }
                         } label: {
@@ -365,11 +337,11 @@ struct SimulationView: View {
                 } label: {
                     Image(systemName: "location.fill")
                         .foregroundStyle(appState.currentLocation == nil ? Color.pcTextMuted : Color.pcPrimary)
-                        .frame(width: 32, height: 32)
+                        .frame(width: DS.Metrics.mapToolbarLocateButtonSize, height: DS.Metrics.mapToolbarLocateButtonSize)
                         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                         )
                 }
                 .buttonStyle(.plain)
@@ -382,17 +354,17 @@ struct SimulationView: View {
                 )
             }
             .padding(AppSpacing.sm)
-            .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: 0.18, shadowOpacity: 0.12)
+            .appGlassPanel(cornerRadius: AppRadius.lg, strokeOpacity: DS.Opacity.toolbarPanelStroke, shadowOpacity: DS.Opacity.toolbarPanelShadow)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("mapToolbar")
 
             if showSearchResults && !searchService.searchResults.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: DS.Metrics.zero) {
                     ForEach(searchService.searchResults.prefix(5)) { result in
                         Button {
                             selectSearchResult(result)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: DS.Metrics.two) {
                                 Text(result.name)
                                     .font(AppFont.label)
                                     .foregroundStyle(Color.pcText)
@@ -419,13 +391,17 @@ struct SimulationView: View {
                         }
                     }
                 }
-                .frame(width: 420, alignment: .leading)
-                .background(Color.pcSurface.opacity(0.98), in: RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous))
+                .frame(width: DS.Metrics.mapToolbarSearchMaxWidth, alignment: .leading)
+                .background(Color.pcSurface.opacity(DS.Opacity.searchResultsSurface), in: RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppRadius.lg, style: .continuous)
-                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                 )
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                .shadow(
+                    color: DS.Color.shadow.opacity(DS.Opacity.searchResultsShadow),
+                    radius: DS.Metrics.mapSearchResultsShadowRadius,
+                    y: DS.Metrics.mapSearchResultsShadowYOffset
+                )
             }
         }
         .padding(AppSpacing.lg)
@@ -460,12 +436,13 @@ struct SimulationView: View {
             // it), and consolidate the disabled-state hint inline so the
             // panel no longer grows a permanent third row at empty state.
             VStack(alignment: .leading, spacing: AppSpacing.sm) {
+                teleportPanelStateStrip
                 if let target = appState.targetLocation {
                     HStack(alignment: .center, spacing: AppSpacing.sm) {
                         Image(systemName: "location.north.fill")
                             .font(AppFont.metadata)
                             .foregroundStyle(Color.pcPrimary)
-                        VStack(alignment: .leading, spacing: 1) {
+                        VStack(alignment: .leading, spacing: DS.Metrics.one) {
                             Text(appState.targetLocationName ?? "Custom Location")
                                 .font(AppFont.label)
                                 .foregroundStyle(Color.pcText)
@@ -505,7 +482,7 @@ struct SimulationView: View {
                     Button {
                         applyCoordinatesToTarget()
                     } label: {
-                        Label("Apply", systemImage: "mappin")
+                        Label("Set Target", systemImage: "mappin")
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
                     .disabled(coordinateApplyDisabledReason != nil)
@@ -527,9 +504,13 @@ struct SimulationView: View {
                     Spacer(minLength: 0)
                 }
             }
-            .frame(minWidth: 260, idealWidth: 296, maxWidth: 312)
+            .frame(
+                minWidth: DS.Metrics.mapTeleportPanelMinWidth,
+                idealWidth: DS.Metrics.mapTeleportPanelIdealWidth,
+                maxWidth: DS.Metrics.mapTeleportPanelMaxWidth
+            )
         }
-        .frame(maxWidth: 312, alignment: .leading)
+        .frame(maxWidth: DS.Metrics.mapTeleportPanelMaxWidth, alignment: .leading)
     }
 
     // MARK: - Route Controls
@@ -537,6 +518,7 @@ struct SimulationView: View {
     // W1 visual governance: route controls are subordinate-prominent
     // interactions for route composition/import/clearing only. Execution
     // remains owned by the canonical PrimaryActionPill.
+    // Route Type control is intentionally hidden until it is wired to route playback behavior.
     private var routeControls: some View {
         FloatingControlPanel(title: "Multi-Spot", icon: "point.topleft.down.curvedto.point.bottomright.up") {
             // Operational refinement: tighten inner rhythm (sm vs md), demote
@@ -545,12 +527,7 @@ struct SimulationView: View {
             // empty-state hint so the panel no longer grows a multi-line
             // tutorial below the action row.
             VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                Picker("Route Type", selection: $routeType) {
-                    Text("Navigation").tag(RouteType.navigation)
-                    Text("Straight").tag(RouteType.straight)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeList)
+                routePanelStateStrip
 
                 routeTargetSummary
 
@@ -564,9 +541,10 @@ struct SimulationView: View {
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
                     .disabled(appState.targetLocation == nil)
+                    .help(addWaypointDisabledReason ?? "Adds the selected spot to the route")
                     .accessibleButton(
                         label: "Add selected location as waypoint",
-                        hint: "Adds the currently selected map or search location to the route",
+                        hint: addWaypointDisabledReason ?? "Adds the currently selected map or search location to the route",
                         identifier: AccessibilityIdentifiers.Route.addWaypointButton
                     )
 
@@ -574,7 +552,7 @@ struct SimulationView: View {
                         appState.showRouteImport = true
                     } label: {
                         Image(systemName: "square.and.arrow.down")
-                            .frame(width: 28, height: 28)
+                            .frame(width: DS.Metrics.mapRoutePanelButtonSize, height: DS.Metrics.mapRoutePanelButtonSize)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcTextMuted))
                     .help("Import GPX")
@@ -588,7 +566,7 @@ struct SimulationView: View {
                         appState.clearRoute()
                     } label: {
                         Image(systemName: "trash")
-                            .frame(width: 28, height: 28)
+                            .frame(width: DS.Metrics.mapRoutePanelButtonSize, height: DS.Metrics.mapRoutePanelButtonSize)
                     }
                     .buttonStyle(AppCapsuleButtonStyle(accent: .pcDanger))
                     .disabled(appState.currentRoute.isEmpty)
@@ -601,7 +579,7 @@ struct SimulationView: View {
                 }
 
                 if appState.currentRoute.isEmpty {
-                    Label("Search the sidebar or tap the map to add spots.", systemImage: "info.circle")
+                    Label("Select a spot, then Add Waypoint.", systemImage: "info.circle")
                         .labelStyle(.titleAndIcon)
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
@@ -611,9 +589,64 @@ struct SimulationView: View {
                     routePointList
                 }
             }
-            .frame(minWidth: 280, idealWidth: 312, maxWidth: 332)
+            .frame(
+                minWidth: DS.Metrics.mapRoutePanelMinWidth,
+                idealWidth: DS.Metrics.mapRoutePanelIdealWidth,
+                maxWidth: DS.Metrics.mapRoutePanelMaxWidth
+            )
         }
-        .frame(maxWidth: 332, alignment: .leading)
+        .frame(maxWidth: DS.Metrics.mapRoutePanelMaxWidth, alignment: .leading)
+    }
+    private var teleportPanelStateStrip: some View {
+        let hasTarget = appState.targetLocation != nil
+        return PanelStateStrip(
+            title: hasTarget ? "Target selected · Not applied" : "No target selected",
+            detail: hasTarget ? "Use Apply to Device to move the device" : "Tap map, search, or enter coordinates",
+            icon: hasTarget ? "scope" : "mappin",
+            color: hasTarget ? .pcPrimary : .pcTextMuted,
+            accessibilityIdentifier: "teleportPanelStateStrip"
+        )
+    }
+
+    private var routePanelStateStrip: some View {
+        let routeCount = appState.currentRoute.count
+        if appState.isSimulating {
+            return PanelStateStrip(
+                title: "Route running",
+                detail: "\(Int(appState.routeProgress * 100))% complete",
+                icon: "play.circle.fill",
+                color: .pcSecondary,
+                accessibilityIdentifier: "routePanelStateStrip"
+            )
+        }
+
+        if routeCount > 0 {
+            return PanelStateStrip(
+                title: "Ready to start",
+                detail: "\(routeCount) waypoint\(routeCount == 1 ? "" : "s") · Start Route uses the primary action",
+                icon: "point.topleft.down.curvedto.point.bottomright.up",
+                color: .pcSecondary,
+                accessibilityIdentifier: "routePanelStateStrip"
+            )
+        }
+
+        if appState.targetLocation != nil {
+            return PanelStateStrip(
+                title: "Spot selected · Not added",
+                detail: "Use Add Waypoint to include it in the route",
+                icon: "mappin",
+                color: .pcPrimary,
+                accessibilityIdentifier: "routePanelStateStrip"
+            )
+        }
+
+        return PanelStateStrip(
+            title: "No route spots",
+            detail: "Select a spot before adding a waypoint",
+            icon: "mappin.and.ellipse",
+            color: .pcTextMuted,
+            accessibilityIdentifier: "routePanelStateStrip"
+        )
     }
 
     private var routeTargetSummary: some View {
@@ -642,7 +675,7 @@ struct SimulationView: View {
                     .font(AppFont.monoSmall)
                     .foregroundStyle(Color.pcTextMuted)
                     .padding(.horizontal, AppSpacing.sm)
-                    .frame(height: 22)
+                    .frame(height: DS.Metrics.mapRouteCounterHeight)
                     .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
             }
         }
@@ -651,7 +684,7 @@ struct SimulationView: View {
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
         .accessibilityIdentifier("routeSelectedTargetSummary")
     }
@@ -678,7 +711,7 @@ struct SimulationView: View {
                     }
                 }
             }
-            .frame(maxHeight: 132)
+            .frame(maxHeight: DS.Metrics.mapRouteListMaxHeight)
             .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeList)
             .accessibilityLabel("Route waypoint list")
         }
@@ -688,8 +721,8 @@ struct SimulationView: View {
         HStack(spacing: AppSpacing.sm) {
             Text("\(index + 1)")
                 .font(AppFont.metadata)
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
+                .foregroundStyle(DS.Color.markerStroke)
+                .frame(width: DS.Metrics.mapRouteCounterHeight, height: DS.Metrics.mapRouteCounterHeight)
                 .background(index == 0 ? Color.pcSecondary : (index == appState.currentRoute.count - 1 ? Color.pcDanger : Color.pcWarning))
                 .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
 
@@ -732,187 +765,30 @@ struct SimulationView: View {
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Waypoint \(index + 1), \(coordinate.formattedShort)")
-        .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeRow)
+        .accessibilityIdentifier(AccessibilityIdentifiers.Route.routeRow(index: index))
     }
 
-
-    // MARK: - Main Control Panel
-
-    private var mainControlPanel: some View {
-        HStack(spacing: AppSpacing.xl) {
-            // Speed Control
-            VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                Text("Speed: \(appState.simulationSpeed.displayName)")
-                    .font(AppFont.metadata)
-                    .foregroundStyle(Color.pcTextMuted)
-                    .monospacedDigit()
-
-                HStack(spacing: AppSpacing.sm) {
-                    ForEach(SimulationSpeed.allCases, id: \.self) { speed in
-                        Button {
-                            appState.setSpeed(speed)
-                        } label: {
-                            Image(systemName: speed.icon)
-                                .font(AppFont.metadata)
-                                .frame(width: 32, height: 32)
-                                .background(appState.simulationSpeed == speed ? Color.pcAccent.opacity(AppSurfaceAlpha.hoverRow) : Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow))
-                                .foregroundStyle(appState.simulationSpeed == speed ? Color.pcText : Color.pcTextMuted)
-                                .clipShape(RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .appHoverOverlay(cornerRadius: AppRadius.sm)
-                        .accessibilityLabel("Set speed to \(speed.displayName)")
-                        .accessibilityValue(AccessibilityLabels.Values.speed(name: speed.displayName, metersPerSecond: speed.metersPerSecond))
-                    }
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier(AccessibilityIdentifiers.Simulation.speedSelector)
-
-            Divider()
-                .frame(height: 40)
-                .overlay(Color.pcOutline)
-
-            // Play/Pause Button
-            Button {
-                Task {
-                    if appState.isSimulating {
-                        if appState.isPaused {
-                            appState.resumeSimulation()
-                        } else {
-                            appState.pauseSimulation()
-                        }
-                    } else {
-                        await appState.startSimulation(mode: mode)
-                    }
-                }
-            } label: {
-                Label(playButtonTitle, systemImage: playButtonIcon)
-                    .frame(width: 112)
-            }
-            .buttonStyle(AppCapsuleButtonStyle(accent: playButtonColor, isProminent: true))
-            .disabled(!appState.canStartSimulation(for: mode) && !appState.isSimulating)
-            .accessibleButton(
-                label: playButtonAccessibilityLabel,
-                hint: appState.isSimulating ? AccessibilityHints.pauseSimulation : AccessibilityHints.startSimulation,
-                identifier: appState.isSimulating ? AccessibilityIdentifiers.Simulation.pauseButton : AccessibilityIdentifiers.Simulation.startButton
-            )
-
-            // Stop Button
-            Button {
-                Task {
-                    await appState.stopSimulation()
-                }
-            } label: {
-                Label("Stop", systemImage: "stop.fill")
-            }
-            .buttonStyle(AppCapsuleButtonStyle(accent: .pcDanger))
-            .disabled(!appState.isSimulating)
-            .accessibleButton(
-                label: AccessibilityLabels.Actions.stopSimulation,
-                hint: AccessibilityHints.stopSimulation,
-                identifier: AccessibilityIdentifiers.Simulation.stopButton
-            )
-
-            Divider()
-                .frame(height: 40)
-                .overlay(Color.pcOutline)
-
-            // Status
-            PCStatusChip(
-                title: simulationStatusTitle,
-                icon: "circle.fill",
-                color: simulationStatusColor,
-                detail: simulationStatusDetail
-            )
-            .help(appState.simulationStatusText)
-            .accessibilityIdentifier(AccessibilityIdentifiers.Status.statusMessage)
-        }
-        .padding(AppSpacing.lg)
-        .appGlassPanel(cornerRadius: AppRadius.xl)
-        .accessibilityElement(children: .contain)
-    }
-
-    // MARK: - Helper Properties
-
-    private var playButtonIcon: String {
-        if appState.isSimulating && !appState.isPaused {
-            return "pause.fill"
-        }
-        return "play.fill"
-    }
-
-    private var playButtonColor: Color {
-        if appState.isSimulating && !appState.isPaused {
-            return .pcWarning
-        }
-        return .pcAccent
-    }
-
-    private var playButtonTitle: String {
-        if appState.isSimulating {
-            return appState.isPaused ? "Resume" : "Pause"
-        }
-        return "Start"
-    }
-
-    private var simulationStatusTitle: String {
-        if appState.isSimulating {
-            return appState.isPaused ? "Paused" : "Active"
-        }
-        return appState.canStartSimulation(for: mode) ? "Ready" : "Waiting"
-    }
-
-    private var simulationStatusColor: Color {
-        if appState.isSimulating {
-            return appState.isPaused ? .pcWarning : .pcSecondary
-        }
-        return appState.canStartSimulation(for: mode) ? .pcPrimary : .pcTextMuted
-    }
-
-    private var simulationStatusDetail: String? {
-        if let location = appState.currentLocation {
-            return location.formattedShort
-        }
-        if !appState.canStartSimulation(for: mode) && !appState.isSimulating {
-            return simulationUnavailableReason
-        }
-        return appState.simulationStatusText
-    }
 
     private var coordinateApplyDisabledReason: String? {
         if latitudeInput.isEmpty || longitudeInput.isEmpty {
             return "Enter latitude and longitude"
         }
+        guard let latitude = Double(latitudeInput), let longitude = Double(longitudeInput) else {
+            return "Enter valid decimal coordinates"
+        }
+        let coordinate = LocationCoordinate(latitude: latitude, longitude: longitude)
+        if !coordinate.isValid {
+            return "Latitude must be -90...90; longitude -180...180"
+        }
         return nil
     }
 
-    private var simulationUnavailableReason: String? {
-        if !appState.isTunneldRunning {
-            return "Start tunnel"
-        }
-        if appState.selectedDevice == nil {
-            return "Select device"
-        }
-
-        switch mode {
-        case .teleport:
-            return appState.targetLocation == nil ? "Select target" : nil
-        case .route:
-            return appState.currentRoute.count < 2 ? "Add 2 waypoints" : nil
-        case .joystick:
-            return appState.currentLocation == nil && appState.targetLocation == nil ? "Select start" : nil
-        case .settings:
-            return nil
-        }
+    private var addWaypointDisabledReason: String? {
+        appState.targetLocation == nil ? "Select a spot first" : nil
     }
 
     private func routeMarkerColor(index: Int) -> Color {
@@ -925,12 +801,6 @@ struct SimulationView: View {
         return .pcWarning
     }
 
-    private var playButtonAccessibilityLabel: String {
-        if appState.isSimulating {
-            return appState.isPaused ? AccessibilityLabels.Actions.resumeSimulation : AccessibilityLabels.Actions.pauseSimulation
-        }
-        return AccessibilityLabels.Actions.startSimulation
-    }
 
     // MARK: - Actions
 
@@ -954,7 +824,7 @@ struct SimulationView: View {
         withAnimation {
             appState.targetLocation = coordinate
             appState.targetLocationName = "Custom location"
-            appState.statusMessage = String(format: "Selected location: %.4f, %.4f. Press Play or Apply to set.", coordinate.latitude, coordinate.longitude)
+            appState.statusMessage = String(format: "Selected target: %.4f, %.4f. Use the primary action pill to apply it to the device.", coordinate.latitude, coordinate.longitude)
         }
     }
 
@@ -982,8 +852,8 @@ struct SimulationView: View {
         }
 
         appState.statusMessage = mode == .route
-            ? "Selected \(result.name). Use Add Waypoint to add it to the route."
-            : "Selected \(result.name). Press Play to apply it."
+            ? "Selected \(result.name) as route spot. Use Add Waypoint to include it in the route."
+            : "Selected \(result.name) as target. Use the primary action pill to apply it to the device."
     }
 
 
@@ -1030,12 +900,6 @@ enum MapStyleType: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Route Type
-
-enum RouteType: String {
-    case navigation
-    case straight
-}
 
 private struct MapContextAction: Identifiable {
     let id = UUID()

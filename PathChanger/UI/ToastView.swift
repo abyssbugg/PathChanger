@@ -172,11 +172,16 @@ struct ToastView: View {
         .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel), in: RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.xl, style: .continuous)
-                .strokeBorder(toast.type.color.opacity(AppSurfaceAlpha.selectedRow), lineWidth: 1)
+                .strokeBorder(toast.type.color.opacity(AppSurfaceAlpha.selectedRow), lineWidth: DS.Metrics.strokeWidth)
         )
-        .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 3)
-        .scaleEffect(isVisible ? 1 : 0.8)
-        .opacity(isVisible ? 1 : 0)
+        .shadow(
+            color: .black.opacity(DS.Opacity.toastShadow),
+            radius: DS.Metrics.toastShadowRadius,
+            x: DS.Metrics.zero,
+            y: DS.Metrics.toastShadowYOffset
+        )
+        .scaleEffect(isVisible ? DS.Metrics.unitScale : DS.Metrics.toastHiddenScale)
+        .opacity(isVisible ? Double(DS.Metrics.unitScale) : Double(DS.Metrics.zero))
         .onAppear {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                 isVisible = true
@@ -201,7 +206,7 @@ struct ToastContainerView: View {
         }
         .padding(.top, AppSpacing.lg)
         .padding(.horizontal, AppSpacing.lg)
-        .frame(maxWidth: 500)
+        .frame(maxWidth: DS.Metrics.toastContainerMaxWidth)
     }
 }
 
@@ -223,7 +228,7 @@ struct ToastView_Previews: PreviewProvider {
         VStack {
             Spacer()
 
-            VStack(spacing: 20) {
+            VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
                 Button("Show Success") {
                     ToastManager.shared.success("Location set successfully!")
                 }
@@ -257,7 +262,7 @@ struct ToastView_Previews: PreviewProvider {
 
             Spacer()
         }
-        .frame(width: 600, height: 400)
+        .frame(width: DS.Metrics.toastPreviewWidth, height: DS.Metrics.toastPreviewHeight)
         .withToasts()
     }
 }

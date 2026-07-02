@@ -11,12 +11,13 @@ struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var tunneldManager = TunneldManager.shared
     let showsHeader: Bool
-    @AppStorage("autoRefreshDevices") private var autoRefreshDevices: Bool = true
-    @AppStorage("refreshInterval") private var refreshInterval: Double = 5.0
+    @AppStorage(DeviceAutoRefreshPreferences.enabledKey) private var autoRefreshDevices: Bool = DeviceAutoRefreshPreferences.defaultEnabled
+    @AppStorage(DeviceAutoRefreshPreferences.intervalKey) private var refreshInterval: Double = DeviceAutoRefreshPreferences.defaultInterval
     @AppStorage("defaultMapStyle") private var defaultMapStyle: String = "standard"
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
     @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = false
     @State private var showDiagnostics: Bool = false
+    @State private var showTunnelStopConfirmation = false
 
     init(showsHeader: Bool = true) {
         self.showsHeader = showsHeader
@@ -39,7 +40,7 @@ struct SettingsView: View {
                 aboutCard
             }
             .padding(AppSpacing.xl)
-            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: DS.Metrics.settingsContentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Color.pcBackground)
@@ -47,6 +48,14 @@ struct SettingsView: View {
         .sheet(isPresented: $showDiagnostics) {
             DiagnosticsSheet()
                 .environmentObject(appState)
+        }
+        .alert("Stop tunnel?", isPresented: $showTunnelStopConfirmation) {
+            Button("Stop", role: .destructive) {
+                tunneldManager.stopTunnel()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will disconnect the current tunnel session.")
         }
     }
 
@@ -75,18 +84,23 @@ struct SettingsView: View {
                 }
 
                 if autoRefreshDevices {
-                    SettingsLine(title: "Refresh interval", subtitle: "Controls automatic device scanning cadence") {
+                    SettingsLine(title: "Refresh interval", subtitle: "Controls background device scanning cadence; shorter intervals may reduce stability") {
                         Picker("", selection: $refreshInterval) {
-                            Text("5 seconds").tag(5.0)
-                            Text("10 seconds").tag(10.0)
-                            Text("30 seconds").tag(30.0)
-                            Text("60 seconds").tag(60.0)
+                            Text("1 minute").tag(60.0)
+                            Text("2 minutes").tag(120.0)
+                            Text("5 minutes").tag(300.0)
                         }
                         .labelsHidden()
-                        .frame(width: 150)
+                        .frame(width: DS.Metrics.settingsPickerWidth)
                     }
                 }
             }
+        }
+        .onChange(of: autoRefreshDevices) { _, enabled in
+            appState.deviceManager.configureAutoRefresh(enabled: enabled, interval: refreshInterval)
+        }
+        .onChange(of: refreshInterval) { _, interval in
+            appState.deviceManager.configureAutoRefresh(enabled: autoRefreshDevices, interval: interval)
         }
     }
 
@@ -142,6 +156,7 @@ struct SettingsView: View {
             selectedConnectionType: appState.selectedDevice?.connectionType,
             isUSBConnected: appState.isUSBConnected,
             isWiFiAvailable: appState.isWiFiAvailable,
+            isConnectionHealthy: tunneldManager.currentTunnelConnectivityHealthy(),
             preferUSBConnection: appState.preferUSBConnection
         ) {
             PCStatusChip(
@@ -193,11 +208,11 @@ struct SettingsView: View {
                 HStack(spacing: AppSpacing.md) {
                     if tunneldManager.isStarting {
                         ProgressView()
-                            .scaleEffect(0.75)
+                            .scaleEffect(DS.Metrics.settingsTunnelSpinnerScale)
                     } else {
                         Circle()
                             .fill(tunneldManager.isRunning ? Color.pcSecondary : Color.pcDanger)
-                            .frame(width: 8, height: 8)
+                            .frame(width: DS.Metrics.settingsStatusDotSize, height: DS.Metrics.settingsStatusDotSize)
                     }
 
                     VStack(alignment: .leading, spacing: AppSpacing.xxs) {
@@ -215,7 +230,7 @@ struct SettingsView: View {
 
                     if tunneldManager.isRunning {
                         Button("Stop") {
-                            tunneldManager.stopTunnel()
+                            showTunnelStopConfirmation = true
                         }
                         .buttonStyle(AppCapsuleButtonStyle(accent: .pcDanger))
                     } else if tunneldManager.isStarting {
@@ -235,7 +250,7 @@ struct SettingsView: View {
                 .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                 )
 
                 if let info = tunneldManager.tunnelInfo {
@@ -257,7 +272,7 @@ struct SettingsView: View {
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcWarning)
                         .padding(AppSpacing.md)
-                        .background(Color.pcWarning.opacity(0.1), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+                        .background(Color.pcWarning.opacity(DS.Opacity.warningTint), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
                 }
 
                 VStack(alignment: .leading, spacing: AppSpacing.xs) {
@@ -303,9 +318,9 @@ struct SettingsView: View {
     private var bonjourProbeRow: some View {
         HStack(alignment: .center, spacing: AppSpacing.md) {
             Image(systemName: bonjourStatusIcon)
-                .font(.system(size: 18))
+                .font(DS.Typography.title)
                 .foregroundStyle(bonjourStatusColor)
-                .frame(width: 28)
+                .frame(width: DS.Metrics.settingsListIconWidth)
 
             VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text(bonjourStatusTitle)
@@ -322,7 +337,7 @@ struct SettingsView: View {
                 Task { await tunneldManager.probeBonjourWiFiDevices() }
             } label: {
                 if tunneldManager.bonjourProbeInProgress {
-                    ProgressView().scaleEffect(0.7)
+                    ProgressView().scaleEffect(DS.Metrics.settingsProbeSpinnerScale)
                 } else {
                     Label("Probe", systemImage: "antenna.radiowaves.left.and.right")
                 }
@@ -330,20 +345,21 @@ struct SettingsView: View {
             .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent))
             .disabled(tunneldManager.bonjourProbeInProgress)
         }
-        .padding(AppSpacing.md)
+        .padding(.horizontal, DS.Spacing.sm)
+        .padding(.vertical, DS.Spacing.xs)
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
     }
 
     private var pairButtonRow: some View {
         HStack(alignment: .center, spacing: AppSpacing.md) {
             Image(systemName: "key.horizontal")
-                .font(.system(size: 18))
+                .font(DS.Typography.title)
                 .foregroundStyle(Color.pcAccent)
-                .frame(width: 28)
+                .frame(width: DS.Metrics.settingsListIconWidth)
 
             VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                 Text("Pair this Mac with the iPhone for legacy WiFi Only")
@@ -362,7 +378,7 @@ struct SettingsView: View {
             } label: {
                 if tunneldManager.wifiPairingInProgress {
                     HStack(spacing: AppSpacing.xs) {
-                        ProgressView().scaleEffect(0.65)
+                        ProgressView().scaleEffect(DS.Metrics.settingsPairSpinnerScale)
                         Text("Pairing…")
                     }
                 } else {
@@ -372,11 +388,12 @@ struct SettingsView: View {
             .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
             .disabled(tunneldManager.wifiPairingInProgress)
         }
-        .padding(AppSpacing.md)
+        .padding(.horizontal, DS.Spacing.sm)
+        .padding(.vertical, DS.Spacing.xs)
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
     }
 
@@ -392,7 +409,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(AppSpacing.sm)
             }
-            .frame(maxHeight: 160)
+            .frame(maxHeight: DS.Metrics.settingsLogMaxHeight)
             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
         }
     }
@@ -470,7 +487,7 @@ struct SettingsView: View {
                         Text("Hybrid").tag("hybrid")
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .frame(width: DS.Metrics.settingsPickerWidth)
                 }
 
                 SettingsLine(title: "Show coordinates overlay", subtitle: "Display coordinate readouts on the map") {
@@ -495,7 +512,7 @@ struct SettingsView: View {
                         Text("60 seconds").tag(60.0)
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .frame(width: DS.Metrics.settingsPickerWidth)
                 }
 
                 SettingsLine(title: "Tunnel Start Timeout", subtitle: "How long tunnel startup may wait") {
@@ -509,7 +526,7 @@ struct SettingsView: View {
                         Text("90 seconds").tag(90.0)
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .frame(width: DS.Metrics.settingsPickerWidth)
                 }
             }
         }
@@ -531,13 +548,8 @@ struct SettingsView: View {
                 }
                 Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
                 ShortcutGroup(title: "Navigation") {
-                    ShortcutRow(shortcut: "⌘⇧S", description: "Toggle sidebar")
+                    ShortcutRow(shortcut: "⌘\\", description: "Toggle sidebar")
                     ShortcutRow(shortcut: "⌘,", description: "Open settings")
-                }
-                Divider().overlay(Color.pcOutline.opacity(AppSurfaceAlpha.divider))
-                ShortcutGroup(title: "Speed Control") {
-                    ShortcutRow(shortcut: "⌘⌥↑", description: "Increase simulation speed")
-                    ShortcutRow(shortcut: "⌘⌥↓", description: "Decrease simulation speed")
                 }
             }
         }
@@ -639,11 +651,12 @@ struct SettingsLine<Trailing: View>: View {
 
             trailing
         }
-        .padding(AppSpacing.md)
+        .padding(.horizontal, DS.Spacing.sm)
+        .padding(.vertical, DS.Spacing.xs)
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
     }
 }
@@ -672,25 +685,37 @@ struct ConnectionStatusBadge: View {
         .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(isConnected ? Color.pcSecondary.opacity(AppSurfaceAlpha.hoverRow) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(
+                    isConnected ? Color.pcSecondary.opacity(AppSurfaceAlpha.hoverRow) : Color.pcOutline.opacity(AppSurfaceAlpha.outline),
+                    lineWidth: DS.Metrics.strokeWidth
+                )
         )
     }
 }
 
 struct ConnectionSummaryPresentation: Equatable {
+    /// Four-state-per-transport tone model (see Connection Mode redesign):
+    /// - connected: tunnel up AND device reachable/healthy (green)
+    /// - active: this transport owns the running tunnel but health is not yet
+    ///   confirmed, e.g. starting/handshaking (white/grey)
+    /// - notConnected: transport is available but no working tunnel (red)
+    /// - warning: nothing available and nothing connected (amber)
     enum Tone: Equatable {
-        case primary
-        case secondary
+        case connected
+        case active
+        case notConnected
         case warning
 
         var color: Color {
             switch self {
-            case .primary:
-                return .pcPrimary
-            case .secondary:
-                return .pcSecondary
+            case .connected:
+                return .pcSecondary   // green
+            case .active:
+                return .pcText        // white / grey-white
+            case .notConnected:
+                return .pcDanger      // red
             case .warning:
-                return .pcWarning
+                return .pcWarning     // amber
             }
         }
     }
@@ -712,115 +737,84 @@ struct ConnectionSummaryPresentation: Equatable {
         selectedConnectionType: ConnectionType?,
         isUSBConnected: Bool,
         isWiFiAvailable: Bool,
+        isConnectionHealthy: Bool,
         preferUSBConnection: Bool
     ) -> ConnectionSummaryPresentation? {
-        if !isTunnelRunning && !isUSBConnected && !isWiFiAvailable {
-            return ConnectionSummaryPresentation(
-                title: "No Connection",
-                icon: "exclamationmark.triangle.fill",
-                tone: .warning,
-                detail: "connect USB or start tunnel"
-            )
-        }
+        // Honest availability for the detail line, including the real
+        // both-at-once case (cable in AND same Wi-Fi network).
+        let availability = availabilityText(usb: isUSBConnected, wifi: isWiFiAvailable)
 
+        // Active tunnel: report the ACTIVE transport and whether it is
+        // confirmed connected (green) or merely active/handshaking (grey).
         if isTunnelRunning {
             let resolvedMode = presentationMode(
                 activeTunnelMode: activeTunnelMode,
                 tunnelInfoMode: tunnelInfoMode,
                 preferredMode: preferredMode
             )
-            // Presentation-only guard mirrors `ActiveTransportPresentation`:
-            // when USB is not physically connected, the running tunnel cannot
-            // be cable-backed. Collapse a stale `.usb` active-mode signal to
-            // the wireless presentation so the Settings card stops claiming
-            // "USB Active · cable in use" during real Wi-Fi sessions.
+            // When USB is not physically connected, a running tunnel cannot be
+            // cable-backed; collapse a stale `.usb` signal to wireless so we
+            // never claim USB under a Wi-Fi session.
             let coerceToWireless = (resolvedMode == .usb) && !isUSBConnected
-            switch coerceToWireless ? .wifi : resolvedMode {
+            let mode = coerceToWireless ? TunnelMode.wifi : resolvedMode
+
+            let transport: String
+            let icon: String
+            let tunnelKind: String
+            switch mode {
             case .usb:
-                return ConnectionSummaryPresentation(
-                    title: "USB Active",
-                    icon: "cable.connector",
-                    tone: .primary,
-                    detail: "active tunnel · cable in use"
-                )
+                transport = "USB"; icon = "cable.connector"; tunnelKind = "lockdown tunnel"
             case .wifi:
-                return ConnectionSummaryPresentation(
-                    title: "Wi-Fi Active",
-                    icon: "wifi",
-                    tone: .primary,
-                    detail: wirelessActiveDetail(
-                        base: "active tunnel",
-                        isUSBConnected: isUSBConnected,
-                        preferUSBConnection: preferUSBConnection
-                    )
-                )
+                transport = "Wi-Fi"; icon = "wifi"; tunnelKind = "Wi-Fi tunnel"
             case .daemon:
-                return ConnectionSummaryPresentation(
-                    title: "Wi-Fi Active",
-                    icon: "wifi",
-                    tone: .primary,
-                    detail: wirelessActiveDetail(
-                        base: "background daemon tunnel",
-                        isUSBConnected: isUSBConnected,
-                        preferUSBConnection: preferUSBConnection
-                    )
-                )
+                transport = "Wi-Fi"; icon = "wifi"; tunnelKind = "background daemon tunnel"
             case .auto, .none:
-                return ConnectionSummaryPresentation(
-                    title: "Tunnel Active",
-                    icon: "point.3.connected.trianglepath.dotted",
-                    tone: .secondary,
-                    detail: nil
-                )
+                transport = "Tunnel"; icon = "point.3.connected.trianglepath.dotted"; tunnelKind = "tunnel"
             }
-        }
 
-        if selectedConnectionType == .usb {
+            let detail = [tunnelKind, availability].compactMap { $0 }.joined(separator: " · ")
             return ConnectionSummaryPresentation(
-                title: "USB Selected",
-                icon: "cable.connector",
-                tone: .primary,
-                detail: "direct connection available"
+                title: "\(transport) \(isConnectionHealthy ? "Connected" : "Active")",
+                icon: icon,
+                tone: isConnectionHealthy ? .connected : .active,
+                detail: detail.isEmpty ? nil : detail
             )
         }
 
-        if selectedConnectionType == .wifi {
+        // No tunnel running. If a transport is available, it is reachable but
+        // not connected (red). Choose which transport to title by
+        // selection/preference, else USB before Wi-Fi.
+        let reported: (label: String, icon: String)?
+        if selectedConnectionType == .usb, isUSBConnected {
+            reported = ("USB", "cable.connector")
+        } else if selectedConnectionType == .wifi, isWiFiAvailable {
+            reported = ("Wi-Fi", "wifi")
+        } else if preferUSBConnection, isUSBConnected {
+            reported = ("USB", "cable.connector")
+        } else if isUSBConnected {
+            reported = ("USB", "cable.connector")
+        } else if isWiFiAvailable {
+            reported = ("Wi-Fi", "wifi")
+        } else {
+            reported = nil
+        }
+
+        if let reported {
             return ConnectionSummaryPresentation(
-                title: "Wi-Fi Available",
-                icon: "wifi",
-                tone: .primary,
-                detail: "not active"
+                title: "\(reported.label) Not Connected",
+                icon: reported.icon,
+                tone: .notConnected,
+                detail: availability
             )
         }
 
-        if preferUSBConnection && isUSBConnected {
-            return ConnectionSummaryPresentation(
-                title: "USB Preferred",
-                icon: "cable.connector",
-                tone: .secondary,
-                detail: "USB available · not active"
-            )
-        }
-
-        if isUSBConnected {
-            return ConnectionSummaryPresentation(
-                title: "USB Available",
-                icon: "cable.connector",
-                tone: .secondary,
-                detail: "not active"
-            )
-        }
-
-        if isWiFiAvailable {
-            return ConnectionSummaryPresentation(
-                title: "Wi-Fi Available",
-                icon: "wifi",
-                tone: .secondary,
-                detail: "not active"
-            )
-        }
-
-        return nil
+        // Nothing available and nothing connected.
+        return ConnectionSummaryPresentation(
+            title: "No Connection",
+            icon: "exclamationmark.triangle.fill",
+            tone: .warning,
+            detail: "connect USB or start tunnel"
+        )
     }
 
     private static func presentationMode(
@@ -839,16 +833,19 @@ struct ConnectionSummaryPresentation: Equatable {
         return activeTunnelMode ?? tunnelInfoMode
     }
 
-    private static func wirelessActiveDetail(
-        base: String,
-        isUSBConnected: Bool,
-        preferUSBConnection: Bool
-    ) -> String {
-        var segments = [base]
-        if isUSBConnected {
-            segments.append(preferUSBConnection ? "USB available/preferred" : "USB available")
+    /// Honest availability detail reflecting exactly which transports are
+    /// available, including the both-at-once (USB cable + same Wi-Fi) case.
+    private static func availabilityText(usb: Bool, wifi: Bool) -> String? {
+        switch (usb, wifi) {
+        case (true, true):
+            return "USB + Wi-Fi available"
+        case (true, false):
+            return "USB available"
+        case (false, true):
+            return "Wi-Fi available"
+        case (false, false):
+            return nil
         }
-        return segments.joined(separator: " · ")
     }
 }
 
@@ -865,7 +862,7 @@ struct ShortcutGroup<Content: View>: View {
                 .font(AppFont.labelCaps)
                 .foregroundColor(.pcTextMuted)
                 .textCase(.uppercase)
-                .tracking(0.7)
+                .tracking(DS.Metrics.shortcutLabelTracking)
 
             content()
         }
@@ -882,7 +879,7 @@ struct ShortcutRow: View {
             Text(shortcut)
                 .font(AppFont.monoSmall)
                 .foregroundColor(.pcText)
-                .frame(width: 80, alignment: .leading)
+                .frame(width: DS.Metrics.shortcutKeyWidth, alignment: .leading)
 
             Text(description)
                 .font(AppFont.body)

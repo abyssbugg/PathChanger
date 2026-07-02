@@ -2,121 +2,84 @@
 //  DeviceTunnelPill.swift
 //  PathChanger
 //
-//  Top-right 280×56 floating glass pill that shows the active device avatar,
-//  device name, and tunnel status. Tapping it opens a popover that lets the
-//  user switch devices or refresh the device list.
-//
-//  Tunnel-truth comes directly from `TunneldManager.shared.isRunning` (and its
-//  `isStarting` flag) — NOT through AppState's debounced mirror. This matches
-//  the bug-fix discipline established in the WiFi-mode work and avoids the
-//  pre-existing flicker/clobber issues.
-//
-// MARK: - W1 Authority Declaration (Slice S0 — documentation only)
+//  Subordinate top-right pill showing device + tunnel status.
+//  This component owns device selection and status visibility only.
 //
 // DeviceTunnelPill is the SOLE production Phase-1 readiness authority.
 //
-// Authority rules (frozen — see W1 governance plan):
-//   - This pill owns device selection (Phase-1 device readiness) and the
-//     proactive tunnel-readiness controls inside its own popover. Its
-//     popover "Start Tunnel" button is the canonical Phase-1 transport-
-//     start surface and routes through `TunneldManager.shared.autoStart()`.
-//   - This pill is NOT a T0 execution authority. PrimaryActionPill is the
-//     sole T0 surface; DeviceTunnelPill never initiates simulation
-//     execution.
-//   - All other UI surfaces that depict tunnel state outside this pill
-//     (SettingsView admin card, DiagnosticsView, status banners,
-//     CollapsibleSidebar status detail) are inspector-only or read-only.
-//     They may surface tunnel state but MUST NOT define Phase-1 readiness
-//     semantics or compete with this pill for device-selection authority.
-//
-// W1 Slice S0 is documentation-only. No behavior, layout, state, bindings,
-// or routing are altered by this declaration.
-//
 
 import SwiftUI
-import Combine
 
 struct DeviceTunnelPill: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @State private var isShowingPopover = false
+    @State private var isHovered = false
 
     var body: some View {
         Button {
             isShowingPopover.toggle()
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Spacing.xs) {
                 avatar
                 textStack
             }
-            .padding(.leading, 14)
-            .padding(.trailing, 16)
-            .frame(width: 280, height: 56)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.pcSurfaceTintDynamic)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.pcOutlineDynamic, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 20, x: 0, y: 6)
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, DS.Spacing.sm)
+            .frame(width: DS.Metrics.devicePillWidth, height: DS.Metrics.devicePillHeight)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DevicePillButtonStyle(isHovered: isHovered))
+        .onHover { hovering in
+            withAnimation(DS.Animation.fast) {
+                isHovered = hovering
+            }
+        }
         .popover(isPresented: $isShowingPopover, arrowEdge: .top) {
-            DevicePopoverContent(
-                isPresented: $isShowingPopover
-            )
-            .environmentObject(appState)
-            .environmentObject(tunneldManager)
-            .frame(width: 320)
+            DevicePopoverContent(isPresented: $isShowingPopover)
+                .environmentObject(appState)
+                .environmentObject(tunneldManager)
+                .frame(width: DS.Metrics.popoverWidth)
         }
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("mapShellDevicePill")
     }
 
-    // MARK: - Avatar
-
     private var avatar: some View {
         ZStack {
             Circle()
                 .fill(AppActionGradient.avatar)
-                .frame(width: 32, height: 32)
+                .frame(width: DS.Metrics.deviceAvatarSize, height: DS.Metrics.deviceAvatarSize)
             Text(avatarInitials)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.white)
+                .font(DS.Typography.labelPrimary)
+                .foregroundStyle(DS.Color.foregroundPrimary)
         }
     }
 
     private var avatarInitials: String {
-        guard let device = appState.selectedDevice else { return "—" }
+        guard let device = appState.selectedDevice else {
+            return "—"
+        }
         let trimmed = device.displayName.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return "iP" }
+        guard !trimmed.isEmpty else {
+            return "iP"
+        }
         return String(trimmed.uppercased().prefix(2))
     }
 
-    // MARK: - Text stack
-
     private var textStack: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
             Text(deviceName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.pcTextDynamic)
+                .font(DS.Typography.labelPrimary)
+                .foregroundStyle(DS.Color.foregroundPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            HStack(spacing: 6) {
+            HStack(spacing: DS.Spacing.xs) {
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 8, height: 8)
+                    .frame(width: DS.Metrics.statusDotSize, height: DS.Metrics.statusDotSize)
                 Text(statusText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.pcTextMutedDynamic)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
                     .lineLimit(1)
             }
         }
@@ -129,9 +92,12 @@ struct DeviceTunnelPill: View {
 
     private var statusColor: Color {
         if tunneldManager.isStarting {
-            return .orange
+            return DS.Color.warning
         }
-        return tunneldManager.isRunning ? .green : .red
+        if tunneldManager.isRunning {
+            return DS.Color.success
+        }
+        return appState.selectedDevice == nil ? DS.Color.inactive : DS.Color.destructive
     }
 
     private var statusText: String {
@@ -140,9 +106,6 @@ struct DeviceTunnelPill: View {
         }
         if tunneldManager.isStarting {
             return "Tunnel starting…"
-        }
-        if tunneldManager.isRunning {
-            return "\(transportPresentation.title) · iOS \(device.iosVersion)"
         }
         return "\(transportPresentation.title) · iOS \(device.iosVersion)"
     }
@@ -162,6 +125,53 @@ struct DeviceTunnelPill: View {
             isWiFiAvailable: appState.isWiFiAvailable,
             preferUSBConnection: appState.preferUSBConnection
         )
+    }
+}
+
+private struct DevicePillButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isPressed = configuration.isPressed
+        return configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
+                    .fill(backgroundColor(isPressed: isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
+                    .stroke(DS.Color.foregroundTertiary.opacity(DS.Opacity.outline), lineWidth: DS.Metrics.strokeWidth)
+            )
+            .shadow(
+                color: .black.opacity(DS.Opacity.idleRow),
+                radius: DS.Metrics.subordinatePillShadowRadius,
+                x: DS.Metrics.zero,
+                y: DS.Metrics.subordinatePillShadowYOffset
+            )
+            .scaleEffect(scaleValue(isPressed: isPressed))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous))
+            .animation(DS.Animation.fast, value: configuration.isPressed)
+            .animation(DS.Animation.fast, value: isHovered)
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        if isPressed {
+            return DS.Color.backgroundSecondary
+        }
+        if isHovered {
+            return DS.Color.backgroundElevated
+        }
+        return DS.Color.backgroundElevated.opacity(DS.Opacity.panel)
+    }
+
+    private func scaleValue(isPressed: Bool) -> CGFloat {
+        if isPressed {
+            return DS.Metrics.subordinatePillPressedScale
+        }
+        if isHovered {
+            return DS.Metrics.subordinatePillHoverScale
+        }
+        return DS.Metrics.unitScale
     }
 }
 
@@ -186,12 +196,6 @@ struct ActiveTransportPresentation: Equatable {
                 tunnelInfoMode: tunnelInfoMode,
                 preferredMode: preferredMode
             )
-            // Presentation-only guard: if USB is not physically connected,
-            // the running tunnel cannot be cable-backed. A stale `.usb`
-            // active mode would otherwise mis-report "USB Active" during an
-            // actual Wi-Fi session (e.g. after the cable was unplugged and
-            // recovery converged on Wi-Fi). Collapse to the wireless
-            // presentation. Runtime ownership is not modified.
             if resolvedMode == .usb && !isUSBConnected {
                 return ActiveTransportPresentation(title: "Wi-Fi Active", icon: "wifi", isActive: true)
             }
@@ -240,77 +244,75 @@ struct ActiveTransportPresentation: Equatable {
     }
 }
 
-// MARK: - Popover content
-
 private struct DevicePopoverContent: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @Binding var isPresented: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
                 Text("Devices")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.pcTextDynamic)
+                    .font(DS.Typography.labelPrimary)
+                    .foregroundStyle(DS.Color.foregroundPrimary)
                 Spacer()
                 Button {
                     Task { await appState.refreshDevices() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(DS.Typography.caption)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.pcTextMutedDynamic)
+                .foregroundStyle(DS.Color.foregroundSecondary)
                 .accessibilityLabel("Refresh device list")
             }
 
             Divider()
 
             if appState.availableDevices.isEmpty {
-                HStack(spacing: 8) {
+                HStack(spacing: DS.Spacing.xs) {
                     Image(systemName: "iphone.slash")
-                        .foregroundStyle(Color.pcTextMutedDynamic)
+                        .foregroundStyle(DS.Color.inactive)
                     Text("No iPhone connected")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.pcTextMutedDynamic)
+                        .font(DS.Typography.caption)
+                        .foregroundStyle(DS.Color.foregroundSecondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 8)
+                .padding(.vertical, DS.Spacing.xs)
             } else {
-                VStack(spacing: 4) {
+                VStack(spacing: DS.Spacing.xxs) {
                     ForEach(appState.availableDevices) { device in
                         Button {
                             appState.selectDevice(device)
                             isPresented = false
                         } label: {
-                            HStack(spacing: 10) {
+                            HStack(spacing: DS.Spacing.xs) {
                                 Image(systemName: "iphone")
-                                    .foregroundStyle(Color.pcTextMutedDynamic)
-                                VStack(alignment: .leading, spacing: 2) {
+                                    .foregroundStyle(DS.Color.foregroundSecondary)
+                                VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                                     Text(device.displayName)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Color.pcTextDynamic)
+                                        .font(DS.Typography.labelPrimary)
+                                        .foregroundStyle(DS.Color.foregroundPrimary)
                                     Text("iOS \(device.iosVersion) · \(device.connectionType.rawValue)")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Color.pcTextMutedDynamic)
+                                        .font(DS.Typography.caption)
+                                        .foregroundStyle(DS.Color.foregroundSecondary)
                                 }
                                 Spacer()
                                 if appState.selectedDevice?.id == device.id {
                                     Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(Color.pcSystemBlue)
+                                        .foregroundStyle(DS.Color.accent)
                                 }
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, DS.Spacing.xs)
+                            .padding(.vertical, DS.Spacing.xs)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
                                     .fill(appState.selectedDevice?.id == device.id
-                                          ? Color.pcSystemBlue.opacity(0.10)
+                                          ? DS.Color.accent.opacity(DS.Opacity.selectionTint)
                                           : Color.clear)
                             )
-                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Select \(device.displayName)")
@@ -320,27 +322,16 @@ private struct DevicePopoverContent: View {
 
             Divider()
 
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.xs) {
                 Image(systemName: transportPresentation.icon)
-                    .foregroundStyle(tunneldManager.isRunning ? Color.green : Color.orange)
+                    .foregroundStyle(tunnelPresentationColor)
                 Text(tunneldManager.isRunning ? transportPresentation.title : "Tunnel offline · \(transportPresentation.title)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.pcTextMutedDynamic)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
                 Spacer()
-                if !tunneldManager.isRunning && !tunneldManager.isStarting {
-                    Button {
-                        Task { await tunneldManager.autoStart() }
-                    } label: {
-                        Text("Start Tunnel")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .buttonStyle(AppCapsuleButtonStyle(accent: .pcSystemBlue, isProminent: true))
-                    .controlSize(.small)
-                    .accessibilityLabel("Start tunnel")
-                }
             }
         }
-        .padding(14)
+        .padding(DS.Spacing.sm)
     }
 
     private var transportPresentation: ActiveTransportPresentation {
@@ -355,18 +346,31 @@ private struct DevicePopoverContent: View {
             preferUSBConnection: appState.preferUSBConnection
         )
     }
+
+    private var tunnelPresentationColor: Color {
+        if tunneldManager.isStarting {
+            return DS.Color.warning
+        }
+        if tunneldManager.isRunning {
+            return DS.Color.success
+        }
+        return DS.Color.destructive
+    }
 }
 
 #if DEBUG
 struct DeviceTunnelPill_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.black.opacity(0.12)
+            DS.Color.backgroundSecondary
             DeviceTunnelPill()
                 .environmentObject(AppState())
                 .environmentObject(TunneldManager.shared)
         }
-        .frame(width: 360, height: 120)
+        .frame(
+            width: DS.Metrics.devicePillWidth + DS.Spacing.xl,
+            height: DS.Metrics.devicePillHeight + DS.Spacing.xxl
+        )
     }
 }
 #endif

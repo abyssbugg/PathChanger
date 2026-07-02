@@ -2,18 +2,7 @@
 //  CollapsibleSidebar.swift
 //  PathChanger
 //
-//  240pt-wide glass sidebar used by `MainMapShell`. Hosts:
-//   - traffic-light spacer (56pt top inset)
-//   - search field (binds to `LocationSearchService`)
-//   - 3-segment mode picker
-//   - "RECENT LOCATIONS" header + rows
-//   - footer cog that opens SettingsView as a sheet
-//
-//  This view does NOT own the map — it only emits selection events through
-//  bindings provided by the shell (selected mode, settings sheet, target
-//  location). It is intentionally narrower than the current production
-//  `SidebarView` because the device chooser now lives inside the top-right
-//  device pill.
+//  Context/navigation-only sidebar for map shell interactions.
 //
 
 import SwiftUI
@@ -27,27 +16,21 @@ struct CollapsibleSidebar: View {
     @StateObject private var searchService = LocationSearchService()
     @State private var showSearchResults = false
     @FocusState private var isSearchFocused: Bool
-    private enum SelectionSource {
-        case search
-        case recent
-    }
+
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Traffic-light gutter so the sidebar's content sits below the
-            // window controls. The native traffic lights are drawn by the
-            // window itself; we just reserve space.
+        VStack(spacing: DS.Metrics.zero) {
             topGutter
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                 searchField
                 modePicker
 
                 Text("RECENT LOCATIONS")
-                    .font(.system(size: 11, weight: .medium))
-                    .tracking(0.8)
-                    .foregroundStyle(Color.pcTextMutedDynamic)
-                    .padding(.top, 6)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
+                    .textCase(.uppercase)
+                    .padding(.top, DS.Spacing.xs)
 
                 if appState.locationHistory.isEmpty {
                     emptyRecents
@@ -55,41 +38,32 @@ struct CollapsibleSidebar: View {
                     recentsList
                 }
 
-                Spacer(minLength: 0)
-
+                Spacer(minLength: DS.Metrics.zero)
                 footer
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            .padding(.horizontal, DS.Spacing.sm)
+            .padding(.bottom, DS.Spacing.sm)
         }
-        .frame(width: 240)
+        .frame(width: DS.Metrics.sidebarWidth)
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial)
-        // Slice F1 (UX remediation): both decorative overlay rectangles must be
-        // hit-test-transparent. A `Rectangle().fill(...)` overlay without
-        // `.allowsHitTesting(false)` absorbs every tap, silently blocking the
-        // mode picker, recent locations, settings cog, and search field that
-        // live BELOW these overlays. Visual appearance, glass styling, layout,
-        // and accessibility semantics are unchanged.
+        .background(DS.Color.backgroundSecondary)
         .overlay(
             Rectangle()
-                .fill(Color.pcSurfaceTintDynamic)
+                .fill(DS.Color.backgroundElevated.opacity(DS.Opacity.panel))
                 .allowsHitTesting(false)
         )
         .overlay(
             Rectangle()
-                .fill(Color.pcOutlineDynamic)
-                .frame(width: 1)
+                .fill(DS.Color.foregroundTertiary)
+                .frame(width: DS.Metrics.strokeWidth)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .allowsHitTesting(false)
         )
         .overlay(alignment: .top) {
-            // Search results dropdown — anchored just below the search field
-            // so it floats over the recents list when active.
             if showSearchResults && !searchService.searchResults.isEmpty {
                 searchResultsDropdown
-                    .padding(.top, 56 + 16 + 32 + 4)
-                    .padding(.horizontal, 16)
+                    .padding(.top, DS.Metrics.sidebarSearchDropdownTopInset)
+                    .padding(.horizontal, DS.Spacing.sm)
             }
         }
         .accessibilityIdentifier("mapShellSidebar")
@@ -102,36 +76,37 @@ struct CollapsibleSidebar: View {
             Spacer()
             Button(action: onCollapse) {
                 Image(systemName: "sidebar.leading")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.pcTextMutedDynamic)
-                    .frame(width: 32, height: 32)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .font(DS.Typography.labelPrimary)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
+                    .frame(width: DS.Metrics.sidebarCollapseButtonSize, height: DS.Metrics.sidebarCollapseButtonSize)
+                    .background(DS.Color.backgroundElevated, in: RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.pcOutlineDynamic, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous)
+                            .stroke(DS.Color.foregroundTertiary, lineWidth: DS.Metrics.strokeWidth)
                     )
-                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Hide sidebar")
             .accessibilityHint("Collapses the navigation sidebar")
             .accessibilityIdentifier("mapShellSidebarCollapseButton")
         }
-        .padding(.horizontal, 16)
-        .frame(height: 56)
+        .padding(.horizontal, DS.Spacing.sm)
+        .frame(height: DS.Metrics.sidebarTopGutterHeight)
     }
 
     // MARK: - Search field
 
     private var searchField: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.xs) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(Color.pcTextMutedDynamic)
+                .font(DS.Typography.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+
             TextField("Search a place", text: $searchService.searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.pcTextDynamic)
+                .font(DS.Typography.labelSecondary)
+                .foregroundStyle(DS.Color.foregroundPrimary)
                 .focused($isSearchFocused)
                 .onChange(of: searchService.searchText) { _, newValue in
                     showSearchResults = !newValue.isEmpty
@@ -145,7 +120,8 @@ struct CollapsibleSidebar: View {
                 .accessibilityIdentifier("mapShellSearchField")
 
             if searchService.isSearching {
-                ProgressView().scaleEffect(0.6)
+                ProgressView()
+                    .controlSize(.small)
             }
 
             if !searchService.searchText.isEmpty {
@@ -154,57 +130,56 @@ struct CollapsibleSidebar: View {
                     showSearchResults = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(Color.pcTextMutedDynamic)
+                        .foregroundStyle(DS.Color.foregroundSecondary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
+        .padding(.horizontal, DS.Spacing.xs)
+        .frame(height: DS.Metrics.sidebarControlHeight)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                .fill(DS.Color.backgroundElevated)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSearchFocused ? Color.pcSystemBlue.opacity(0.5) : Color.pcOutlineDynamic, lineWidth: 1)
+            RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                .stroke(isSearchFocused ? DS.Color.accent : DS.Color.foregroundTertiary, lineWidth: DS.Metrics.strokeWidth)
         )
     }
 
     // MARK: - Mode picker
 
     private var modePicker: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: DS.Spacing.xxs) {
             ForEach([AppMode.teleport, .route, .joystick], id: \.self) { mode in
                 modeSegment(mode)
             }
         }
-        .padding(2)
-        .frame(height: 32)
+        .padding(DS.Spacing.xxs)
+        .frame(height: DS.Metrics.sidebarControlHeight)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.06))
+            RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                .fill(DS.Color.backgroundElevated.opacity(DS.Opacity.idleRow))
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AccessibilityIdentifiers.Simulation.modeSelector)
     }
 
     private func modeSegment(_ mode: AppMode) -> some View {
-        let isSelected = (selectedMode == mode)
+        let isSelected = selectedMode == mode
         return Button {
             selectedMode = mode
         } label: {
             Text(mode.rawValue)
-                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                .foregroundStyle(isSelected ? Color.pcTextDynamic : Color.pcTextMutedDynamic)
+                .font(isSelected ? DS.Typography.labelPrimary : DS.Typography.labelSecondary)
+                .foregroundStyle(isSelected ? DS.Color.foregroundPrimary : DS.Color.foregroundSecondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? Color.pcSurfaceTintDynamic : .clear)
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .fill(isSelected ? DS.Color.accent.opacity(DS.Opacity.selectionTint) : Color.clear)
                 )
-                .shadow(color: isSelected ? .black.opacity(0.10) : .clear, radius: 3, x: 0, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(mode.rawValue) mode")
@@ -212,25 +187,22 @@ struct CollapsibleSidebar: View {
 
     // MARK: - Recents
 
-    // W1 visual governance: recents are contextual interactions for target
-    // selection only. They do not execute location changes or duplicate the
-    // canonical PrimaryActionPill authority.
     private var emptyRecents: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.xs) {
             Image(systemName: "clock")
-                .foregroundStyle(Color.pcTextMutedDynamic)
+                .foregroundStyle(DS.Color.foregroundSecondary)
             Text("Successful locations appear here")
-                .font(.system(size: 12))
-                .foregroundStyle(Color.pcTextMutedDynamic)
+                .font(DS.Typography.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
+        .padding(.vertical, DS.Spacing.xs)
     }
 
     private var recentsList: some View {
         ScrollView {
-            VStack(spacing: 4) {
+            VStack(spacing: DS.Spacing.xxs) {
                 ForEach(appState.locationHistory.prefix(6)) { entry in
                     recentRow(entry)
                 }
@@ -241,26 +213,27 @@ struct CollapsibleSidebar: View {
 
     private func recentRow(_ entry: LocationHistoryEntry) -> some View {
         Button {
-            select(coordinate: entry.coordinate, name: entry.displayName, source: .recent)
+            select(coordinate: entry.coordinate, name: entry.displayName)
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                 Text(entry.displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.pcTextDynamic)
+                    .font(DS.Typography.labelPrimary)
+                    .foregroundStyle(DS.Color.foregroundPrimary)
                     .lineLimit(1)
+
                 Text(entry.coordinate.formattedShort)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.pcTextMutedDynamic)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, DS.Spacing.xs)
+            .padding(.vertical, DS.Spacing.xs)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.pcSurfaceTintDynamic.opacity(0.4))
+                RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                    .fill(DS.Color.accent.opacity(DS.Opacity.selectionTint))
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Recent location \(entry.displayName)")
@@ -270,45 +243,42 @@ struct CollapsibleSidebar: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: DS.Spacing.xs) {
             Button {
                 isShowingSettings = true
             } label: {
                 Label("Settings", systemImage: "gearshape")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.pcTextMutedDynamic)
+                    .font(DS.Typography.caption)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
             .accessibilityIdentifier("mapShellSettingsButton")
         }
-        .padding(.top, 8)
+        .padding(.top, DS.Spacing.xs)
     }
 
     // MARK: - Search results dropdown
 
-    // W1 visual governance: search results are contextual interactions that
-    // select target context. Applying that target remains owned by the
-    // canonical PrimaryActionPill.
     private var searchResultsDropdown: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: DS.Metrics.zero) {
             ForEach(searchService.searchResults.prefix(5)) { result in
                 Button {
                     select(searchResult: result)
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xxs) {
                         Text(result.name)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.pcTextDynamic)
+                            .font(DS.Typography.labelPrimary)
+                            .foregroundStyle(DS.Color.foregroundPrimary)
                         Text(result.subtitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.pcTextMutedDynamic)
+                            .font(DS.Typography.caption)
+                            .foregroundStyle(DS.Color.foregroundSecondary)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, DS.Spacing.xs)
+                    .padding(.vertical, DS.Spacing.xs)
                 }
                 .buttonStyle(.plain)
                 .background(Color.clear)
@@ -319,30 +289,32 @@ struct CollapsibleSidebar: View {
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous)
+                .fill(DS.Color.backgroundElevated)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.pcOutlineDynamic, lineWidth: 1)
+            RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous)
+                .stroke(DS.Color.foregroundTertiary, lineWidth: DS.Metrics.strokeWidth)
         )
-        .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 4)
+        .shadow(
+            color: .black.opacity(DS.Opacity.idleRow),
+            radius: DS.Spacing.sm,
+            x: DS.Metrics.zero,
+            y: DS.Spacing.xs
+        )
     }
 
     private func select(searchResult result: LocationSearchResult) {
-        select(coordinate: result.coordinate, name: result.name, source: .search)
+        select(coordinate: result.coordinate, name: result.name)
     }
 
-    private func select(coordinate: LocationCoordinate, name: String, source: SelectionSource) {
+    private func select(coordinate: LocationCoordinate, name: String) {
         appState.targetLocation = coordinate
         appState.targetLocationName = name
 
         switch selectedMode {
         case .route:
-            appState.addRoutePoint(coordinate)
-            appState.targetLocationName = name
-            let nextAction = source == .search ? "Search again for the next spot." : "Select another recent or search for the next spot."
-            appState.statusMessage = "Added \(name) as waypoint \(appState.currentRoute.count). \(nextAction)"
+            appState.statusMessage = "Selected \(name) as route spot. Use Add Waypoint to include it in the route."
         case .joystick:
             appState.statusMessage = "Selected \(name) as joystick start. Press the action pill to begin."
         case .teleport:
@@ -364,7 +336,7 @@ struct CollapsibleSidebar_Previews: PreviewProvider {
             isShowingSettings: .constant(false)
         )
         .environmentObject(AppState())
-        .frame(height: 700)
+        .frame(height: DS.Metrics.sidebarWidth + DS.Metrics.sidebarWidth)
     }
 }
 #endif

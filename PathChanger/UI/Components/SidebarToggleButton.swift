@@ -14,16 +14,21 @@ struct SidebarToggleButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "sidebar.leading")
-                .font(.system(size: 16, weight: .medium))
+                .font(DS.Typography.headline)
                 .foregroundStyle(Color.pcTextDynamic)
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(width: DS.Metrics.sidebarToggleSize, height: DS.Metrics.sidebarToggleSize)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.Metrics.sidebarToggleCornerRadius, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.pcOutlineDynamic, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: DS.Metrics.sidebarToggleCornerRadius, style: .continuous)
+                        .stroke(Color.pcOutlineDynamic, lineWidth: DS.Metrics.strokeWidth)
                 )
-                .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 4)
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(
+                    color: DS.Color.shadow.opacity(DS.Opacity.sidebarToggleShadow),
+                    radius: DS.Metrics.sidebarToggleShadowRadius,
+                    x: DS.Metrics.zero,
+                    y: DS.Metrics.sidebarToggleShadowYOffset
+                )
+                .contentShape(RoundedRectangle(cornerRadius: DS.Metrics.sidebarToggleCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Show sidebar")
@@ -36,10 +41,10 @@ struct SidebarToggleButton: View {
 struct SidebarToggleButton_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.gray.opacity(0.2)
+            Color.gray.opacity(DS.Opacity.previewDim)
             SidebarToggleButton(action: {})
         }
-        .frame(width: 200, height: 120)
+        .frame(width: DS.Metrics.previewSmallWidth, height: DS.Metrics.previewSmallHeight)
     }
 }
 #endif

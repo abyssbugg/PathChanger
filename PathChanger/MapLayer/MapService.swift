@@ -101,15 +101,11 @@ protocol MapServiceProtocol: AnyObject {
 /// Map provider types
 enum MapProvider: String, CaseIterable, Identifiable {
     case mapKit = "Apple Maps"
-    case mapbox = "Mapbox"
 
     var id: String { rawValue }
 
     var icon: String {
-        switch self {
-        case .mapKit: return "map"
-        case .mapbox: return "globe"
-        }
+        "map"
     }
 }
 
@@ -192,65 +188,6 @@ class MapKitService: MapServiceProtocol, ObservableObject {
     }
 }
 
-// MARK: - Mapbox Placeholder
-
-/// Mapbox placeholder implementation
-/// Note: Requires MapboxMaps SDK integration when enabled
-class MapboxService: MapServiceProtocol, ObservableObject {
-    @Published var region: MKCoordinateRegion
-    @Published private(set) var annotations: [LocationAnnotation] = []
-    @Published private(set) var routes: [MapRoute] = []
-
-    init() {
-        self.region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 35.6762, longitude: 139.6503),
-            span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
-        )
-    }
-
-    func setRegion(_ region: MKCoordinateRegion, animated: Bool = true) {
-        self.region = region
-    }
-
-    func centerOn(coordinate: CLLocationCoordinate2D, span: MKCoordinateSpan? = nil, animated: Bool = true) {
-        let newSpan = span ?? region.span
-        region = MKCoordinateRegion(center: coordinate, span: newSpan)
-    }
-
-    func addAnnotation(_ annotation: LocationAnnotation) {
-        annotations.append(annotation)
-    }
-
-    func removeAnnotation(_ annotation: LocationAnnotation) {
-        annotations.removeAll { $0.id == annotation.id }
-    }
-
-    func removeAllAnnotations() {
-        annotations.removeAll()
-    }
-
-    func addRoute(_ route: MapRoute) {
-        routes.append(route)
-    }
-
-    func removeRoute(_ route: MapRoute) {
-        routes.removeAll { $0.id == route.id }
-    }
-
-    func clearAllRoutes() {
-        routes.removeAll()
-    }
-
-    func searchLocation(query: String) async throws -> [MKMapItem] {
-        // Mapbox Geocoding API would be used here
-        // For now, fall back to MapKit search
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = query
-        let search = MKLocalSearch(request: request)
-        let response = try await search.start()
-        return response.mapItems
-    }
-}
 
 // MARK: - Map Manager
 
@@ -263,7 +200,6 @@ class MapManager: ObservableObject {
     @Published var selectedAnnotation: LocationAnnotation?
 
     private let mapKitService = MapKitService()
-    private let mapboxService = MapboxService()
 
     enum MapStyleType: String, CaseIterable, Identifiable {
         case standard = "Standard"
@@ -282,12 +218,7 @@ class MapManager: ObservableObject {
     }
 
     var currentService: MapServiceProtocol {
-        switch currentProvider {
-        case .mapKit:
-            return mapKitService
-        case .mapbox:
-            return mapboxService
-        }
+        mapKitService
     }
 
     var region: MKCoordinateRegion {

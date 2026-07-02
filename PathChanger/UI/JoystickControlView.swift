@@ -11,9 +11,8 @@ struct JoystickControlView: View {
     @EnvironmentObject var appState: AppState
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
-
-    private let outerRadius: CGFloat = 56
-    private let innerRadius: CGFloat = 18
+    private let outerRadius: CGFloat = DS.Metrics.joystickOuterRadius
+    private let innerRadius: CGFloat = DS.Metrics.joystickInnerRadius
 
     var body: some View {
         FloatingControlPanel(title: "Joystick Control", icon: "gamecontroller.fill") {
@@ -23,40 +22,51 @@ struct JoystickControlView: View {
             // the N/S/E/W dial already conveys it. startLocationSummary
             // provides the empty-state hint when no start point is selected.
             VStack(spacing: AppSpacing.sm) {
+                joystickPanelStateStrip
                 startLocationSummary
                 ZStack {
                     Circle()
-                        .fill(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.activeRow))
+                        .fill(Color.pcSurfaceHigh.opacity(joystickIsLive ? AppSurfaceAlpha.activeRow : AppSurfaceAlpha.idleRow))
                         .frame(width: outerRadius * 2, height: outerRadius * 2)
                         .overlay(
                             Circle()
-                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                         )
-                        .shadow(color: Color.black.opacity(0.08), radius: 4, y: 2)
+                        .shadow(
+                            color: DS.Color.shadow.opacity(DS.Opacity.searchResultsShadow),
+                            radius: DS.Metrics.mapSearchResultsShadowRadius,
+                            y: DS.Metrics.mapSearchResultsShadowYOffset
+                        )
 
                     Circle()
-                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: 1)
-                        .frame(width: outerRadius * 1.45, height: outerRadius * 1.45)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: DS.Metrics.strokeWidth)
+                        .frame(
+                            width: outerRadius * DS.Metrics.joystickOuterRingScale,
+                            height: outerRadius * DS.Metrics.joystickOuterRingScale
+                        )
 
                     Circle()
-                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: 1)
-                        .frame(width: outerRadius * 0.82, height: outerRadius * 0.82)
+                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.divider), lineWidth: DS.Metrics.strokeWidth)
+                        .frame(
+                            width: outerRadius * DS.Metrics.joystickInnerRingScale,
+                            height: outerRadius * DS.Metrics.joystickInnerRingScale
+                        )
 
                     Text("N").font(AppFont.monoSmall).foregroundStyle(Color.pcTextMuted)
-                        .offset(y: -outerRadius + 13)
+                        .offset(y: -outerRadius + DS.Metrics.joystickDirectionInset)
                     Text("S").font(AppFont.monoSmall).foregroundStyle(Color.pcTextMuted)
-                        .offset(y: outerRadius - 13)
+                        .offset(y: outerRadius - DS.Metrics.joystickDirectionInset)
                     Text("W").font(AppFont.monoSmall).foregroundStyle(Color.pcTextMuted)
-                        .offset(x: -outerRadius + 13)
+                        .offset(x: -outerRadius + DS.Metrics.joystickDirectionInset)
                     Text("E").font(AppFont.monoSmall).foregroundStyle(Color.pcTextMuted)
-                        .offset(x: outerRadius - 13)
+                        .offset(x: outerRadius - DS.Metrics.joystickDirectionInset)
 
                     Circle()
-                        .fill(Color.pcAccent)
+                        .fill(joystickIsLive ? Color.pcAccent : Color.pcTextMuted)
                         .frame(width: innerRadius * 2, height: innerRadius * 2)
                         .overlay(
                             Circle()
-                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                         )
                         .offset(x: knobPosition.x + dragOffset.width, y: knobPosition.y + dragOffset.height)
                         .gesture(
@@ -83,22 +93,60 @@ struct JoystickControlView: View {
                                     appState.updateJoystickDirection(CGPoint(x: normalizedX, y: normalizedY))
                                 }
                                 .onEnded { _ in
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                    withAnimation(
+                                        .spring(
+                                            response: DS.Metrics.joystickReleaseSpringResponse,
+                                            dampingFraction: DS.Metrics.joystickReleaseSpringDamping
+                                        )
+                                    ) {
                                         knobPosition = .zero
                                     }
                                     appState.updateJoystickDirection(.zero)
                                 }
                         )
+
+                    if !joystickIsLive {
+                        VStack(spacing: AppSpacing.xxs) {
+                            Image(systemName: "pause.circle")
+                                .font(AppFont.label)
+                            Text("Preview only")
+                                .font(AppFont.metadata)
+                        }
+                        .foregroundStyle(Color.pcTextMuted)
+                        .padding(.horizontal, AppSpacing.sm)
+                        .padding(.vertical, AppSpacing.xs)
+                        .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel), in: Capsule())
+                        .accessibilityHidden(true)
+                    }
                 }
                 .frame(width: outerRadius * 2, height: outerRadius * 2)
                 .frame(maxWidth: .infinity)
+                .allowsHitTesting(joystickIsLive)
+                .accessibilityHint(joystickIsLive ? "Drag to stream joystick direction to the device." : "Start Joystick to send movement to the device.")
             }
             // Operational refinement: standardize panel width to align with
             // Teleport/Multi-Spot (312–332). The joystick dial now centers
             // horizontally inside the panel without dead horizontal padding.
-            .frame(minWidth: 280, idealWidth: 296, maxWidth: 312)
+            .frame(
+                minWidth: DS.Metrics.mapTeleportPanelMinWidth,
+                idealWidth: DS.Metrics.mapTeleportPanelIdealWidth,
+                maxWidth: DS.Metrics.mapTeleportPanelMaxWidth
+            )
         }
-        .frame(maxWidth: 312, alignment: .leading)
+        .frame(maxWidth: DS.Metrics.mapTeleportPanelMaxWidth, alignment: .leading)
+    }
+    private var joystickIsLive: Bool {
+        appState.isSimulating
+    }
+
+    private var joystickPanelStateStrip: some View {
+        PanelStateStrip(
+            title: joystickIsLive ? "Live" : "Not live",
+            detail: joystickIsLive ? "Dragging moves the device" : "Start Joystick to send movement to the device.",
+            icon: joystickIsLive ? "dot.radiowaves.left.and.right" : "pause.circle",
+            color: joystickIsLive ? .pcSecondary : .pcTextMuted,
+            accessibilityIdentifier: "joystickPanelStateStrip"
+        )
     }
 
     private var startLocationSummary: some View {
@@ -125,7 +173,7 @@ struct JoystickControlView: View {
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
         .accessibilityIdentifier("joystickStartLocationSummary")
     }

@@ -282,7 +282,7 @@ struct DiagnosticsView: View {
             if results.isEmpty && !isRunning {
                 VStack(spacing: AppSpacing.sm) {
                     Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 48))
+                        .font(DS.Typography.iconLarge)
                         .foregroundColor(.pcTextMuted)
                     Text("Click 'Run Diagnostics' to check your setup")
                         .font(AppFont.body)
@@ -296,7 +296,7 @@ struct DiagnosticsView: View {
                             DiagnosticResultRow(result: result)
                         }
                     }
-                    .padding(.vertical, 8)
+                    .padding(.vertical, AppSpacing.xs)
                 }
             }
 
@@ -331,7 +331,7 @@ struct DiagnosticsView: View {
         }
         .padding(AppSpacing.lg)
         .background(Color.pcBackground)
-        .frame(minWidth: 500, minHeight: 400)
+        .frame(minWidth: DS.Metrics.diagnosticsMinWidth, minHeight: DS.Metrics.diagnosticsMinHeight)
         .alert("Logs Exported", isPresented: $showExportSuccess) {
             Button("Show in Finder") {
                 if let url = exportedLogURL {
@@ -356,7 +356,7 @@ struct DiagnosticsView: View {
         if let url = await Logger.exportLogs() {
             exportedLogURL = url
             showExportSuccess = true
-            Logger.info("Diagnostic logs exported successfully to: \(url.path)", category: .general)
+            Logger.info("Diagnostic logs exported successfully", category: .general)
         } else {
             // Show error if export failed
             Logger.error("Failed to export diagnostic logs", category: .general)
@@ -588,21 +588,13 @@ struct DiagnosticsView: View {
         let iosVersionDisplay = "iOS \(iosVersion)"
         let hasCompatibilityWarning = device.hasLocationCompatibilityWarning
 
-        // Test with actual simulate-location set command using test coordinates (0.0, 0.0)
+        // Probe DVT readiness without mutating the device location.
         do {
-            var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set"]
-
-            // Add device connection arguments based on tunnel status
-            if tunneldManager.isRunning, let rsdInfo = tunneldManager.tunnelInfo {
-                args.append(contentsOf: ["--rsd", rsdInfo.rsdAddress, String(rsdInfo.rsdPort)])
-            } else if tunneldManager.isRunning {
-                args.append(contentsOf: ["--tunnel", device.id])
-            } else {
-                args.append(contentsOf: ["--udid", device.id])
-            }
-
-            // Add test coordinates
-            args.append(contentsOf: ["--", "0.0", "0.0"])
+            let args = Self.locationCapabilityProbeArguments(
+                for: device,
+                tunnelInfo: tunneldManager.tunnelInfo,
+                isTunnelRunning: tunneldManager.isRunning
+            )
 
             let output = try await runCommand(PythonPathResolver.path, args: args)
             let outputLower = output.lowercased()
@@ -647,8 +639,8 @@ struct DiagnosticsView: View {
                     name: "Location Injection",
                     status: .success,
                     message: hasCompatibilityWarning
-                        ? "\(iosVersionDisplay) - Location simulation command succeeded; newer iOS may still be less reliable"
-                        : "\(iosVersionDisplay) - Location simulation test successful (used test coordinates 0.0, 0.0)",
+                        ? "\(iosVersionDisplay) - DVT service reachable; actual location simulation may still be blocked by this iOS build"
+                        : "\(iosVersionDisplay) - DVT location service reachable (non-mutating readiness check)",
                     recoveryAction: nil
                 )
             }
@@ -699,6 +691,25 @@ struct DiagnosticsView: View {
                 recoveryAction: "Check: 1) Developer Mode ON, 2) Device trusted, 3) Device unlocked"
             )
         }
+    }
+
+    static func locationCapabilityProbeArguments(
+        for device: Device,
+        tunnelInfo: TunnelInfo?,
+        isTunnelRunning: Bool
+    ) -> [String] {
+        var args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
+
+        if isTunnelRunning, let tunnelInfo {
+            args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
+        } else if isTunnelRunning {
+            args.append(contentsOf: ["--tunnel", device.id])
+        } else {
+            args.append(contentsOf: ["--udid", device.id])
+        }
+
+        args.append("/")
+        return args
     }
 
     func runCommand(_ path: String, args: [String]) async throws -> String {
@@ -794,7 +805,7 @@ struct DiagnosticResultRow: View {
                     Text(recovery)
                         .font(AppFont.metadata)
                         .foregroundColor(.pcPrimary)
-                        .padding(.top, 2)
+                        .padding(.top, DS.Metrics.two)
                 }
             }
 
@@ -804,7 +815,7 @@ struct DiagnosticResultRow: View {
         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow), in: RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
     }
 }
@@ -835,7 +846,7 @@ struct DiagnosticsSheet: View {
             DiagnosticsView()
                 .environmentObject(appState)
         }
-        .frame(minWidth: 600, minHeight: 500)
+        .frame(minWidth: DS.Metrics.diagnosticsSheetMinWidth, minHeight: DS.Metrics.diagnosticsSheetMinHeight)
     }
 }
 

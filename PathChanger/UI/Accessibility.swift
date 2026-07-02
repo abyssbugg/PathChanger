@@ -62,6 +62,9 @@ enum AccessibilityIdentifiers {
     enum Route {
         static let routeList = "routeList"
         static let routeRow = "routeRow"
+        static func routeRow(index: Int) -> String {
+            "routeRow-\(index)"
+        }
         static let importButton = "importRouteButton"
         static let exportButton = "exportRouteButton"
         static let addWaypointButton = "addWaypointButton"
@@ -274,8 +277,8 @@ enum KeyboardShortcuts {
     static let pauseSimulation = KeyboardShortcut("p", modifiers: .command)
     static let stopSimulation = KeyboardShortcut(.escape, modifiers: .command)
 
-    // Navigation (Cmd+Shift+)
-    static let showSidebar = KeyboardShortcut("s", modifiers: [.command, .shift])
+    // Navigation
+    static let showSidebar = KeyboardShortcut("\\", modifiers: .command)
     static let showSettings = KeyboardShortcut(",", modifiers: .command)
 
     // Speed control (Cmd+Option+)

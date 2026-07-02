@@ -15,10 +15,10 @@ struct ErrorDialogView: View {
     let onAction: ((ErrorHandler.ErrorAction) -> Void)?
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: AppSpacing.sm) {
             // Icon
             Image(systemName: iconForType(error.type))
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(colorForType(error.type))
 
             // Title
@@ -32,7 +32,7 @@ struct ErrorDialogView: View {
                 .foregroundColor(.pcTextMuted)
             // Suggestion
             if let suggestion = error.suggestion {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     Text("How to fix:")
                         .font(AppFont.metadata)
                         .fontWeight(.semibold)
@@ -43,11 +43,11 @@ struct ErrorDialogView: View {
                 }
                 .padding()
                 .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
-                .cornerRadius(8)
+                .cornerRadius(AppRadius.sm)
             }
 
             // Actions
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Metrics.dependencyActionHPadding) {
                 Button("Dismiss") {
                     onDismiss()
                 }
@@ -61,8 +61,8 @@ struct ErrorDialogView: View {
                 }
             }
         }
-        .padding(24)
-        .frame(maxWidth: 400)
+        .padding(AppSpacing.md)
+        .frame(maxWidth: DS.Metrics.dialogWidth)
     }
 
     private func iconForType(_ type: ErrorHandler.ErrorType) -> String {
@@ -133,10 +133,10 @@ struct EnhancedErrorDialogView: View {
     let onLearnMore: ((URL) -> Void)?
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: AppSpacing.sm) {
             // Icon with animation
             Image(systemName: iconForType(error.type))
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(colorForType(error.type))
                 .symbolEffect(.pulse, isActive: error.type == .connection)
 
@@ -152,7 +152,7 @@ struct EnhancedErrorDialogView: View {
 
             // Suggestion with recovery steps
             if let suggestion = error.suggestion {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: AppSpacing.xs) {
                     Label("How to fix:", systemImage: "lightbulb.fill")
                         .font(AppFont.metadata)
                         .fontWeight(.semibold)
@@ -164,13 +164,13 @@ struct EnhancedErrorDialogView: View {
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.pcWarning.opacity(0.12))
-                .cornerRadius(8)
+                .background(Color.pcWarning.opacity(DS.Opacity.warningPanelTint))
+                .cornerRadius(AppRadius.sm)
             }
 
             // Actions with Learn More
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
+            VStack(spacing: AppSpacing.xs) {
+                HStack(spacing: DS.Metrics.dependencyActionHPadding) {
                     Button("Dismiss") {
                         onDismiss()
                     }
@@ -202,8 +202,8 @@ struct EnhancedErrorDialogView: View {
                 }
             }
         }
-        .padding(24)
-        .frame(maxWidth: 400)
+        .padding(AppSpacing.md)
+        .frame(maxWidth: DS.Metrics.dialogWidth)
     }
 
     private func iconForType(_ type: ErrorHandler.ErrorType) -> String {
@@ -273,10 +273,10 @@ struct IOSCompatibilityWarningDialogView: View {
     let onLearnMore: ((URL) -> Void)?
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: AppSpacing.sm) {
             // Warning icon
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(.pcWarning)
                 .symbolEffect(.pulse)
 
@@ -291,13 +291,12 @@ struct IOSCompatibilityWarningDialogView: View {
                 .foregroundColor(.pcTextMuted)
 
             // Compatibility notes
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: AppSpacing.xs) {
                 Label("What to try:", systemImage: "lightbulb.fill")
                     .font(AppFont.metadata)
                     .fontWeight(.semibold)
                     .foregroundColor(.pcWarning)
-
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: AppSpacing.xxs) {
                     Text("1. Keep pymobiledevice3 updated")
                     Text("2. Start the tunnel, then try location simulation")
                     Text("3. If it fails, copy the exact DVT error for upstream tracking")
@@ -307,12 +306,12 @@ struct IOSCompatibilityWarningDialogView: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.pcWarning.opacity(0.12))
-            .cornerRadius(8)
+            .background(Color.pcWarning.opacity(DS.Opacity.warningPanelTint))
+            .cornerRadius(AppRadius.sm)
 
             // Actions
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
+            VStack(spacing: AppSpacing.xs) {
+                HStack(spacing: DS.Metrics.dependencyActionHPadding) {
                     Button("Dismiss") {
                         onDismiss()
                     }
@@ -328,8 +327,8 @@ struct IOSCompatibilityWarningDialogView: View {
 
             }
         }
-        .padding(24)
-        .frame(maxWidth: 400)
+        .padding(AppSpacing.md)
+        .frame(maxWidth: DS.Metrics.dialogWidth)
     }
 }
 
@@ -356,8 +355,8 @@ struct ConnectionStatusBanner: View {
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.pcWarning.opacity(0.12))
-                .cornerRadius(8)
+                .background(Color.pcWarning.opacity(DS.Opacity.warningPanelTint))
+                .cornerRadius(AppRadius.sm)
 
             case .reconnecting(let attempt, let max):
                 HStack {
@@ -372,8 +371,8 @@ struct ConnectionStatusBanner: View {
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.pcWarning.opacity(0.12))
-                .cornerRadius(8)
+                .background(Color.pcWarning.opacity(DS.Opacity.warningPanelTint))
+                .cornerRadius(AppRadius.sm)
 
             case .failed(let reason):
                 HStack {
@@ -388,8 +387,8 @@ struct ConnectionStatusBanner: View {
                     .controlSize(.small)
                 }
                 .padding()
-                .background(Color.pcDanger.opacity(0.12))
-                .cornerRadius(8)
+                .background(Color.pcDanger.opacity(DS.Opacity.warningPanelTint))
+                .cornerRadius(AppRadius.sm)
 
             case .suspended:
                 HStack {
@@ -405,7 +404,7 @@ struct ConnectionStatusBanner: View {
                 }
                 .padding()
                 .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
-                .cornerRadius(8)
+                .cornerRadius(AppRadius.sm)
             }
         }
     }
@@ -421,7 +420,7 @@ struct TunneldStatusView: View {
         HStack {
             Circle()
                 .fill(isRunning ? Color.pcSecondary : Color.pcDanger)
-                .frame(width: 8, height: 8)
+                .frame(width: DS.Metrics.stepIndicatorSize, height: DS.Metrics.stepIndicatorSize)
 
             Text(isRunning ? "Tunnel ready" : "Tunnel offline")
                 .font(AppFont.metadata)
@@ -443,9 +442,9 @@ struct StartTunneldSheet: View {
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
             Image(systemName: "terminal.fill")
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(.pcPrimary)
 
             Text("Start Tunnel")
@@ -456,7 +455,7 @@ struct StartTunneldSheet: View {
                 .foregroundColor(.pcTextMuted)
                 .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: AppSpacing.xs) {
                 Text("Run this command in Terminal:")
                     .font(AppFont.metadata)
                     .fontWeight(.semibold)
@@ -464,9 +463,9 @@ struct StartTunneldSheet: View {
                 HStack {
                     Text("sudo python3 -m pymobiledevice3 remote tunneld")
                         .font(AppFont.monospace)
-                        .padding(8)
+                        .padding(AppSpacing.xs)
                         .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField))
-                        .cornerRadius(4)
+                        .cornerRadius(DS.Metrics.smallCornerRadius)
 
                     Button {
                         copyToClipboard("sudo python3 -m pymobiledevice3 remote tunneld")
@@ -478,7 +477,7 @@ struct StartTunneldSheet: View {
             }
             .padding()
             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
-            .cornerRadius(8)
+            .cornerRadius(AppRadius.sm)
 
             Text("Keep the Terminal window open while using PathChanger.")
                 .font(AppFont.metadata)
@@ -489,8 +488,8 @@ struct StartTunneldSheet: View {
             }
             .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
         }
-        .padding(24)
-        .frame(width: 400)
+        .padding(AppSpacing.md)
+        .frame(width: DS.Metrics.dialogWidth)
     }
 
     private func copyToClipboard(_ text: String) {
@@ -507,9 +506,9 @@ struct DeveloperModeGuideSheet: View {
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Metrics.sheetStepBadgeSize) {
             Image(systemName: "wrench.and.screwdriver.fill")
-                .font(.system(size: 48))
+                .font(DS.Typography.iconLarge)
                 .foregroundColor(.pcAccent)
 
             Text("Enable Developer Mode")
@@ -520,7 +519,7 @@ struct DeveloperModeGuideSheet: View {
                 .foregroundColor(.pcTextMuted)
                 .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: DS.Metrics.dependencyActionHPadding) {
                 StepRow(number: 1, text: "Open Settings on your iPhone")
                 StepRow(number: 2, text: "Go to Privacy & Security")
                 StepRow(number: 3, text: "Scroll down and tap Developer Mode")
@@ -529,15 +528,15 @@ struct DeveloperModeGuideSheet: View {
             }
             .padding()
             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.selectedRow))
-            .cornerRadius(8)
+            .cornerRadius(AppRadius.sm)
 
             Button("Done") {
                 dismiss()
             }
             .buttonStyle(AppCapsuleButtonStyle(accent: .pcAccent, isProminent: true))
         }
-        .padding(24)
-        .frame(width: 400)
+        .padding(AppSpacing.md)
+        .frame(width: DS.Metrics.dialogWidth)
     }
 }
 
@@ -546,12 +545,12 @@ struct StepRow: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: DS.Metrics.dependencyActionHPadding) {
             Text("\(number)")
                 .font(AppFont.metadata)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
-                .frame(width: 20, height: 20)
+                .frame(width: DS.Metrics.sheetStepBadgeSize, height: DS.Metrics.sheetStepBadgeSize)
                 .background(Color.pcPrimary)
                 .clipShape(Circle())
 

@@ -43,19 +43,32 @@ struct PrimaryActionPill: View {
     let mode: AppMode
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
+    @State private var isHovered = false
+    @State private var isPerformingAction = false
+    @State private var loadingContext = "Working…"
 
     var body: some View {
         Button(action: performAction) {
-            HStack(spacing: 8) {
-                Image(systemName: pillState.iconName)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(pillState.label)
+            labelContent
+        }
+        .buttonStyle(
+            PrimaryActionPillStyle(
+                visualState: visualState,
+                isHovered: isHovered,
+                isDisabled: isInteractionDisabled
+            )
+        )
+        .disabled(isInteractionDisabled)
+        .onHover { hovering in
+            guard !isInteractionDisabled else {
+                isHovered = false
+                return
+            }
+            withAnimation(DS.Animation.fast) {
+                isHovered = hovering
             }
         }
-        .buttonStyle(AppCapsuleActionStyle(tone: pillState.tone))
-        .disabled(pillState.isDisabled)
-        .opacity(pillState.isDisabled ? 0.55 : 1.0)
-        .accessibilityLabel(pillState.label)
+        .accessibilityLabel(isLoading ? loadingContext : pillState.label)
         .accessibilityHint(pillState.hint)
         .accessibilityIdentifier("mapShellPrimaryActionPill")
     }
@@ -63,84 +76,156 @@ struct PrimaryActionPill: View {
     // MARK: - Action
 
     private func performAction() {
+        guard !isInteractionDisabled else {
+            return
+        }
         switch pillState {
         case .tunnelRequired:
-            Task { await tunneldManager.autoStart() }
+            runWithLoading(context: "Starting Tunnel…") {
+                await tunneldManager.autoStart()
+            }
         case .selectDevice:
-            // Disabled — no-op
-            break
+            return
         case .ready, .running:
-            Task {
+            runWithLoading(context: simulationLoadingContext) {
                 if appState.isSimulating {
-                    if mode == .teleport {
-                        // Teleport doesn't really "stop" — clear simulating state
-                        await appState.stopSimulation()
-                    } else if mode == .joystick {
-                        await appState.stopSimulation()
-                    } else {
-                        await appState.stopSimulation()
-                    }
+                    await appState.stopSimulation()
                 } else {
                     await appState.startSimulation(mode: mode)
                 }
             }
         case .selectTarget:
-            // Disabled — no-op (action requires user to set a target on the map)
-            break
+            return
+        }
+    }
+
+    private func runWithLoading(context: String, operation: @escaping () async -> Void) {
+        Task {
+            await MainActor.run {
+                loadingContext = context
+                isPerformingAction = true
+            }
+            await operation()
+            await MainActor.run {
+                isPerformingAction = false
+            }
+        }
+    }
+
+    // MARK: - Display state
+
+    private var isLoading: Bool {
+        isPerformingAction || (pillState == .tunnelRequired && tunneldManager.isStarting)
+    }
+
+    private var isInteractionDisabled: Bool {
+        pillState.isDisabled || isLoading
+    }
+
+    private var visualState: PrimaryActionPillStyle.VisualState {
+        if isInteractionDisabled {
+            return .inactive
+        }
+        switch pillState {
+        case .tunnelRequired:
+            return .warning
+        default:
+            return .accent
+        }
+    }
+
+    private var simulationLoadingContext: String {
+        if appState.isSimulating {
+            return "Stopping…"
+        }
+        switch mode {
+        case .teleport:
+            return "Applying Location…"
+        case .route:
+            return "Starting Route…"
+        case .joystick:
+            return "Starting Joystick…"
+        case .settings:
+            return "Applying…"
+        }
+    }
+
+    @ViewBuilder
+    private var labelContent: some View {
+        HStack(spacing: DS.Spacing.xs) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                Text(loadingContext)
+                    .lineLimit(1)
+            } else {
+                Image(systemName: pillState.iconName)
+                Text(pillState.label)
+                    .lineLimit(1)
+            }
         }
     }
 
     // MARK: - State derivation
 
-    private enum PillState {
+    private enum PillState: Equatable {
         case tunnelRequired
         case selectDevice
         case selectTarget(needs: String)
-        case ready
+        case ready(label: String, hint: String)
         case running
 
         var isDisabled: Bool {
             switch self {
-            case .selectDevice, .selectTarget: return true
-            default: return false
-            }
-        }
-
-        var tone: AppCapsuleActionStyle.Tone {
-            switch self {
-            case .tunnelRequired: return .warning
-            case .running: return .danger
-            default: return .accent
+            case .selectDevice, .selectTarget:
+                return true
+            default:
+                return false
             }
         }
 
         var iconName: String {
             switch self {
-            case .tunnelRequired: return "exclamationmark.triangle.fill"
-            case .selectDevice: return "iphone.slash"
-            case .selectTarget: return "mappin.slash"
-            case .ready: return "play.fill"
-            case .running: return "stop.fill"
+            case .tunnelRequired:
+                return "exclamationmark.triangle.fill"
+            case .selectDevice:
+                return "iphone.slash"
+            case .selectTarget:
+                return "mappin.slash"
+            case .ready:
+                return "play.fill"
+            case .running:
+                return "stop.fill"
             }
         }
 
         var label: String {
             switch self {
-            case .tunnelRequired: return "Tunnel Required"
-            case .selectDevice: return "Select a Device"
-            case .selectTarget(let needs): return needs
-            case .ready: return "Set Location"
-            case .running: return "Stop"
+            case .tunnelRequired:
+                return "Tunnel Required"
+            case .selectDevice:
+                return "Select a Device"
+            case .selectTarget(let needs):
+                return needs
+            case .ready(let label, _):
+                return label
+            case .running:
+                return "Stop"
             }
         }
 
         var hint: String {
             switch self {
-            case .tunnelRequired: return "Starts the tunnel required for location simulation"
-            case .selectDevice: return "Open the device pill (top-right) to choose a device"
-            case .selectTarget(let needs): return needs
-            case .ready: return "Applies the selected location to the device"
-            case .running: return "Stops the active simulation"
+            case .tunnelRequired:
+                return "Starts the tunnel required for location simulation"
+            case .selectDevice:
+                return "Open the device pill (top-right) to choose a device"
+            case .selectTarget(let needs):
+                return needs
+            case .ready(_, let hint):
+                return hint
+            case .running:
+                return "Stops the active simulation"
             }
         }
     }
@@ -159,18 +244,87 @@ struct PrimaryActionPill: View {
         case .teleport:
             return appState.targetLocation == nil
                 ? .selectTarget(needs: "Tap a Place")
-                : .ready
+                : .ready(label: "Apply to Device", hint: "Applies the selected target to the device")
         case .route:
             return appState.currentRoute.count >= 2
-                ? .ready
+                ? .ready(label: "Start Route", hint: "Starts route playback on the selected device")
                 : .selectTarget(needs: "Add 2 Waypoints")
         case .joystick:
             return (appState.currentLocation != nil || appState.targetLocation != nil)
-                ? .ready
+                ? .ready(label: "Start Joystick", hint: "Starts joystick control on the selected device")
                 : .selectTarget(needs: "Pick a Start")
         case .settings:
-            return .ready
+            return .ready(label: "Apply to Device", hint: "Applies the selected target to the device")
         }
+    }
+}
+
+private struct PrimaryActionPillStyle: ButtonStyle {
+    enum VisualState {
+        case accent
+        case warning
+        case inactive
+    }
+
+    let visualState: VisualState
+    let isHovered: Bool
+    let isDisabled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isPressed = configuration.isPressed && !isDisabled
+        let scaleValue = scale(isPressed: isPressed)
+
+        return configuration.label
+            .font(DS.Typography.headline)
+            .foregroundStyle(DS.Color.foregroundPrimary)
+            .frame(width: DS.Metrics.primaryPillWidth, height: DS.Metrics.primaryPillHeight)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
+                    .fill(backgroundColor(isPressed: isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.pill, style: .continuous)
+                    .stroke(DS.Color.foregroundTertiary.opacity(DS.Opacity.hoverRow), lineWidth: DS.Metrics.strokeWidth)
+            )
+            .scaleEffect(scaleValue)
+            .shadow(
+                color: isDisabled ? .clear : .black.opacity(DS.Opacity.hoverRow),
+                radius: isDisabled ? DS.Metrics.zero : DS.Metrics.primaryPillShadowRadius,
+                x: DS.Metrics.zero,
+                y: isDisabled ? DS.Metrics.zero : DS.Metrics.primaryPillShadowYOffset
+            )
+            .animation(DS.Animation.fast, value: configuration.isPressed)
+            .animation(DS.Animation.fast, value: isHovered)
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        if isDisabled {
+            return DS.Color.inactive
+        }
+        switch visualState {
+        case .accent:
+            if isPressed {
+                return DS.Color.accentPressed
+            }
+            return isHovered ? DS.Color.accentHover : DS.Color.accent
+        case .warning:
+            return DS.Color.warning
+        case .inactive:
+            return DS.Color.inactive
+        }
+    }
+
+    private func scale(isPressed: Bool) -> CGFloat {
+        if isDisabled {
+            return DS.Metrics.unitScale
+        }
+        if isPressed {
+            return DS.Metrics.primaryPillPressedScale
+        }
+        if isHovered {
+            return DS.Metrics.primaryPillHoverScale
+        }
+        return DS.Metrics.unitScale
     }
 }
 
@@ -178,12 +332,15 @@ struct PrimaryActionPill: View {
 struct PrimaryActionPill_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.gray.opacity(0.2)
+            DS.Color.backgroundSecondary
             PrimaryActionPill(mode: .teleport)
                 .environmentObject(AppState())
                 .environmentObject(TunneldManager.shared)
         }
-        .frame(width: 320, height: 120)
+        .frame(
+            width: DS.Metrics.primaryPillWidth + DS.Spacing.xl,
+            height: DS.Metrics.primaryPillHeight + DS.Spacing.xxl
+        )
     }
 }
 #endif

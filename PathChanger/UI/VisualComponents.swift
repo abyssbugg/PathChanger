@@ -17,24 +17,24 @@ struct PCStatusChip: View {
         HStack(spacing: AppSpacing.sm) {
             Circle()
                 .fill(color)
-                .frame(width: 6, height: 6)
+                .frame(width: DS.Metrics.statusChipDotSize, height: DS.Metrics.statusChipDotSize)
 
             if let icon {
                 Image(systemName: icon)
                     .font(AppFont.metadata)
-                    .foregroundStyle(color.opacity(0.92))
+                    .foregroundStyle(color.opacity(DS.Opacity.panel))
             }
 
             Text(title)
                 .font(AppFont.label)
                 .foregroundStyle(Color.pcText)
                 .textCase(.uppercase)
-                .tracking(0.6)
+                .tracking(DS.Metrics.labelTrackingTight)
 
             if let detail {
                 Divider()
-                    .frame(height: 12)
-                    .background(Color.pcOutline.opacity(0.65))
+                    .frame(height: DS.Metrics.sidebarToggleCornerRadius)
+                    .background(Color.pcOutline.opacity(DS.Opacity.subtleDivider))
 
                 Text(detail)
                     .font(AppFont.metadata)
@@ -43,11 +43,11 @@ struct PCStatusChip: View {
             }
         }
         .padding(.horizontal, AppSpacing.md)
-        .frame(minHeight: 28)
+        .frame(minHeight: DS.Metrics.mapRoutePanelButtonSize)
         .background(Color.pcSurface.opacity(AppSurfaceAlpha.panel), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
         )
     }
 }
@@ -66,7 +66,7 @@ struct PCSectionCard<Content: View>: View {
                     Image(systemName: icon)
                         .font(AppFont.label)
                         .foregroundStyle(Color.pcTextMuted)
-                        .frame(width: 16)
+                        .frame(width: AppSpacing.sm)
                 }
 
                 VStack(alignment: .leading, spacing: AppSpacing.xxs) {
@@ -80,11 +80,11 @@ struct PCSectionCard<Content: View>: View {
                                 .font(AppFont.metadata)
                                 .foregroundStyle(Color.pcTextMuted)
                                 .padding(.horizontal, AppSpacing.sm)
-                                .frame(height: 22)
+                                .frame(height: DS.Metrics.mapRouteCounterHeight)
                                 .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                                        .stroke(Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: DS.Metrics.strokeWidth)
                                 )
                         }
                     }
@@ -127,7 +127,7 @@ struct PCFieldShell<Content: View>: View {
                     Text(prefix)
                         .font(AppFont.metadata)
                         .foregroundStyle(Color.pcTextMuted)
-                        .frame(width: 28, alignment: .leading)
+                        .frame(width: DS.Metrics.mapRoutePanelButtonSize, alignment: .leading)
                 }
 
                 content
@@ -135,11 +135,14 @@ struct PCFieldShell<Content: View>: View {
                     .foregroundStyle(Color.pcText)
             }
             .padding(.horizontal, AppSpacing.sm)
-            .frame(minHeight: 28)
+            .frame(minHeight: DS.Metrics.mapRoutePanelButtonSize)
             .background(Color.pcSurfaceHigh.opacity(AppSurfaceAlpha.inputField), in: RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.sm, style: .continuous)
-                    .stroke(isFocused ? Color.pcAccent.opacity(0.6) : Color.pcOutline.opacity(AppSurfaceAlpha.outline), lineWidth: 1)
+                    .stroke(
+                        isFocused ? Color.pcAccent.opacity(DS.Opacity.focusStroke) : Color.pcOutline.opacity(AppSurfaceAlpha.outline),
+                        lineWidth: DS.Metrics.strokeWidth
+                    )
             )
         }
     }

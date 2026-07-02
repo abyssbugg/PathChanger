@@ -60,7 +60,12 @@ struct ContentView: View {
             // bottom-center primary action pill.
             MainMapShell()
         }
-        .frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 700)
+        .frame(
+            minWidth: DS.Metrics.contentMinWidth,
+            idealWidth: DS.Metrics.contentIdealWidth,
+            minHeight: DS.Metrics.contentMinHeight,
+            idealHeight: DS.Metrics.contentIdealHeight
+        )
         // Onboarding sheet
         .sheet(isPresented: $appState.showOnboarding) {
             OnboardingView()
@@ -121,6 +126,10 @@ struct ContentView: View {
     ///     `.checkConnection`, `.enableDeveloperMode`) are likewise
     ///     recovery-only side effects and must not be reused as user-facing
     ///     primary execution gestures elsewhere in the UI.
+    ///   - PrimaryActionPill remains the sole production T0 execution
+    ///     authority.
+    ///   - DeviceTunnelPill remains the sole production Phase-1 readiness
+    ///     authority.
     ///   - `PrimaryActionPill` remains the sole production T0 execution
     ///     authority; `DeviceTunnelPill` remains the sole production
     ///     Phase-1 readiness authority.
@@ -221,11 +230,11 @@ struct IOSCompatibilityWarningBanner: View {
                 }
                 .padding(.horizontal, AppSpacing.md)
                 .padding(.vertical, AppSpacing.sm)
-                .background(Color.pcWarning.opacity(0.12))
+                .background(Color.pcWarning.opacity(DS.Opacity.warningBannerTint))
                 .overlay(
                     Rectangle()
                         .fill(Color.pcWarning.opacity(AppSurfaceAlpha.selectedRow))
-                        .frame(height: 1),
+                        .frame(height: DS.Metrics.strokeWidth),
                     alignment: .bottom
                 )
             }
