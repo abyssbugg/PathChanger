@@ -59,6 +59,18 @@ final class AppPreferences {
         set { defaults.set(newValue, forKey: "onboardingCompleted") }
     }
 
+    // MARK: - Appearance
+
+    private static let appThemeKey = "ui.theme"
+
+    /// Persisted app appearance override: "system" | "light" | "dark".
+    /// Consumed by `AppTheme` (UI/Components/ThemeToggle.swift); defaults to
+    /// "system" (no override) so existing installs keep current behavior.
+    var appTheme: String {
+        get { defaults.string(forKey: Self.appThemeKey) ?? AppTheme.system.rawValue }
+        set { defaults.set(newValue, forKey: Self.appThemeKey) }
+    }
+
     // MARK: - Map Shell UI State
 
     private static let sidebarExpandedKey = "mapShell.sidebarExpanded"
@@ -79,6 +91,7 @@ final class AppPreferences {
     static func registerUIDefaults() {
         UserDefaults.standard.register(defaults: [
             sidebarExpandedKey: true,
+            appThemeKey: AppTheme.system.rawValue,
             DeviceAutoRefreshPreferences.enabledKey: DeviceAutoRefreshPreferences.defaultEnabled,
             DeviceAutoRefreshPreferences.intervalKey: DeviceAutoRefreshPreferences.defaultInterval
         ])

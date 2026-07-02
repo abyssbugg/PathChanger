@@ -28,6 +28,11 @@ struct PathChangerApp: App {
                     .environmentObject(tunneldManager)
                     .frame(minWidth: 760, idealWidth: 1000, minHeight: 560, idealHeight: 700)
                     .onAppear {
+                        // Re-apply the persisted theme override (dark/light/system)
+                        // before any long-running startup work so the window paints
+                        // with the user's chosen appearance from the first frame.
+                        AppTheme.applySaved()
+
                         Task {
                             // Validate dependencies before device/tunnel workflows.
                             await dependencyValidator.validateAll()
