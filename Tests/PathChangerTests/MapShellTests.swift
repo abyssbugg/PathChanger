@@ -169,6 +169,20 @@ final class MapShellSourceWiringTests: XCTestCase {
         XCTAssertFalse(shell.contains("DeviceTunnelPill()"))
     }
 
+    func testTelemetryBarIsMountedAndDisplayOnly() throws {
+        let shell = try readProjectFile("PathChanger/UI/MainMapShell.swift")
+        let telemetry = try readProjectFile("PathChanger/UI/Components/TelemetryBar.swift")
+
+        XCTAssertTrue(shell.contains("TelemetryBar()"))
+        // Display-only guarantee: the telemetry strip must not grow execution
+        // gestures — PrimaryActionPill is the SOLE production T0 execution
+        // authority (stop included).
+        XCTAssertFalse(telemetry.contains("stopSimulation"))
+        XCTAssertFalse(telemetry.contains("startSimulation"))
+        XCTAssertFalse(telemetry.contains("setLocation"))
+        XCTAssertTrue(telemetry.contains("PrimaryActionPill is the SOLE production T0 execution"))
+    }
+
     func testPrimaryActionPillUsesModeSpecificDeviceMutationLabels() throws {
         let primary = try readProjectFile("PathChanger/UI/Components/PrimaryActionPill.swift")
 

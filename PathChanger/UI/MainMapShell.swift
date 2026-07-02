@@ -77,14 +77,23 @@ struct MainMapShell: View {
             }
             .zIndex(3)
 
-            // Bottom-center primary action pill.
+            // Bottom-center primary action pill, with the display-only
+            // telemetry strip (mockup .telemetry-bar port) bottom-leading.
             VStack {
                 Spacer()
-                HStack {
-                    Spacer()
-                    PrimaryActionPill(mode: selectedMode)
-                        .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
-                    Spacer()
+                ZStack(alignment: .bottom) {
+                    HStack {
+                        TelemetryBar()
+                            .padding(.leading, DS.Metrics.shellFloatingInset)
+                            .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
+                        Spacer()
+                    }
+                    HStack {
+                        Spacer()
+                        PrimaryActionPill(mode: selectedMode)
+                            .padding(.bottom, DS.Metrics.shellPrimaryPillBottomInset)
+                        Spacer()
+                    }
                 }
             }
             .zIndex(4)
