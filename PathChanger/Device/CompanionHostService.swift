@@ -8,32 +8,7 @@
 import Foundation
 import MultipeerConnectivity
 import Combine
-
-// MARK: - Companion Message (shared)
-
-/// Messages exchanged between Mac app and iPhone companion
-enum CompanionMessage: Codable {
-    case status(SpoofingStatus)
-    case emergencyStop
-    case ping
-    case pong
-    case locationUpdate(latitude: Double, longitude: Double)
-    case connectionState(isConnected: Bool)
-}
-
-/// Current spoofing status to send to companion
-struct SpoofingStatus: Codable {
-    var isActive: Bool
-    var isPaused: Bool
-    var currentLatitude: Double?
-    var currentLongitude: Double?
-    var targetLatitude: Double?
-    var targetLongitude: Double?
-    var deviceName: String?
-    var mode: String
-    var speed: String
-    var routeProgress: Double?
-}
+import SharedCompanionProtocol
 
 // MARK: - Companion Host Service
 

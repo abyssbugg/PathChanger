@@ -94,8 +94,8 @@ class TunnelHealthMonitor: ObservableObject {
     private var healthCheckTask: Task<Void, Never>?
     private var connectionStartTime: Date?
     private let healthCheckInterval: TimeInterval = 2.0 // Check every 2 seconds (reduced from 5s for faster detection)
-    private let latencyThreshold: Double = 50.0 // Target <50ms
-    private let degradedLatencyThreshold: Double = 100.0 // >100ms is degraded
+    private let latencyThreshold: Double = ServiceLevelObjectives.tunnelAttachLatencyMsThreshold
+    private let degradedLatencyThreshold: Double = ServiceLevelObjectives.tunnelAttachLatencyMsThreshold * 2
     private let maxConsecutiveFailures: Int = 3
 
     // MARK: Failure notification
@@ -156,18 +156,12 @@ class TunnelHealthMonitor: ObservableObject {
     }
 
     private func checkTunnelConnectivity() async -> Bool {
-        // Check if tunnel info is available and valid
-        guard let tunnelInfo = TunneldManager.shared.tunnelInfo else {
-            return false
-        }
-
-        // Verify process is still running if we have a PID
-        if let pid = tunnelInfo.processId {
-            return TunneldManager.shared.isTunnelProcessAlive(pid: pid)
-        }
-
-        // If no PID, just verify tunnel is marked as running
-        return TunneldManager.shared.isRunning
+        // Mode-aware health: in daemon mode the live RSD is served per-device
+        // from the tunneld HTTP API (deviceTunnelInfo), not the legacy
+        // log-parsed tunnelInfo. Delegating keeps the USB and daemon paths
+        // correct from a single source of truth and avoids false
+        // "connectivity lost" flips while injection still works.
+        return TunneldManager.shared.currentTunnelConnectivityHealthy()
     }
 
     private func evaluateHealthStatus(latencyMs: Double, pingSuccess: Bool) {

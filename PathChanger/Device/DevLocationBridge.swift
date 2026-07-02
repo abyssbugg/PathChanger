@@ -143,8 +143,8 @@ struct CommandStructureValidator {
             return true
         }
 
-        // IPv6 address (for RSD connections)
-        if ArgumentSanitizer.isValidIPv6Address(arg) {
+        // RSD address (IPv4 or IPv6)
+        if ArgumentSanitizer.isValidRsdAddress(arg) {
             return true
         }
 

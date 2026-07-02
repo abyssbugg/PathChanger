@@ -340,18 +340,26 @@ class MultiDeviceCoordinator: ObservableObject {
         devices: [Device]
     ) async {
         guard synchronizedMode else { return }
+        guard !selectedDeviceIds.isEmpty else { return }
+
+        let availableDeviceIds = Set(devices.map(\.id))
 
         for deviceId in selectedDeviceIds {
             let state = getState(for: deviceId)
-            state.isActive = true
+            state.isActive = false
             state.simulationMode = .route
             state.speed = speed
             state.routeProgress = 0
-        }
+            state.lastUpdateTime = Date()
 
-        // Note: Actual synchronized simulation would require a timer-based
-        // coordinator that updates all devices at once. This is a placeholder
-        // for the architecture.
+            if !availableDeviceIds.contains(deviceId) {
+                state.error = "Selected device is not currently available for synchronized routing."
+            } else if waypoints.isEmpty {
+                state.error = "No waypoints provided for synchronized route."
+            } else {
+                state.error = "Synchronized multi-device route playback is currently unavailable."
+            }
+        }
     }
 
     // MARK: Persistence
