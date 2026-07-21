@@ -19,6 +19,8 @@ struct ModeControlPanel: View {
 
     @State private var latitudeInput: String = ""
     @State private var longitudeInput: String = ""
+    /// Cosmetic-but-persisted realism preference (mockup Safe Mode switch).
+    @AppStorage("safeModeEnabled") private var safeModeEnabled: Bool = true
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case latitude, longitude }
@@ -33,10 +35,17 @@ struct ModeControlPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     switch selectedMode {
-                    case .teleport: teleportCard
-                    case .route:    routeCard
-                    case .joystick: JoystickControlView()
-                    case .settings: teleportCard
+                    case .teleport:
+                        teleportCard
+                        movementCard
+                    case .route:
+                        routeCard
+                        movementCard
+                    case .joystick:
+                        JoystickControlView()
+                        movementCard
+                    case .settings:
+                        teleportCard
                     }
                 }
                 .padding(DS.Spacing.sm)
@@ -73,27 +82,129 @@ struct ModeControlPanel: View {
             withAnimation(DS.Animation.fast) { selectedMode = tab }
         } label: {
             Text(tab.rawValue)
-                .font(isSelected ? DS.Typography.labelPrimary : DS.Typography.labelSecondary)
-                .foregroundStyle(isSelected ? accent.base : DS.Color.foregroundSecondary)
+                .font(DS.Typography.labelPrimary)
+                .foregroundStyle(isSelected ? .white : DS.Color.foregroundSecondary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, DS.Spacing.xs)
                 .background(
                     RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
-                        .fill(isSelected ? accent.soft : Color.clear)
+                        .fill(isSelected ? AnyShapeStyle(accent.gradient) : AnyShapeStyle(Color.clear))
                 )
-                .overlay(alignment: .bottom) {
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: DS.Metrics.strokeWidth, style: .continuous)
-                            .fill(accent.base)
-                            .frame(height: DS.Metrics.two)
-                            .padding(.horizontal, DS.Spacing.sm)
-                    }
-                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(tab.rawValue) mode")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    // MARK: - Movement card (mockup Movement: travel modes + speed + safe mode)
+
+    private let travelModes: [SimulationSpeed] = [.walking, .cycling, .driving, .fast]
+
+    private var movementCard: some View {
+        FloatingControlPanel(title: "Movement", icon: "arrow.right", accent: DS.ModeAccent.teleport.base) {
+            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                Text("TRAVEL MODE")
+                    .font(DS.Typography.labelCaps)
+                    .foregroundStyle(DS.Color.foregroundTertiary)
+                    .tracking(DS.Metrics.shortcutLabelTracking)
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.xs), GridItem(.flexible(), spacing: DS.Spacing.xs)], spacing: DS.Spacing.xs) {
+                    ForEach(travelModes) { mode in
+                        travelModeTile(mode)
+                    }
+                }
+
+                HStack {
+                    Text("Speed")
+                        .font(DS.Typography.labelSecondary)
+                        .foregroundStyle(DS.Color.foregroundSecondary)
+                    Spacer()
+                    Text(String(format: "%.1f m/s", appState.simulationSpeed.metersPerSecond))
+                        .font(DS.Typography.monoSmall)
+                        .foregroundStyle(DS.Color.foregroundPrimary)
+                }
+
+                safeModeCard
+            }
+        }
+    }
+
+    private func travelModeTile(_ mode: SimulationSpeed) -> some View {
+        let isSelected = appState.simulationSpeed == mode
+        let accent = DS.ModeAccent.teleport
+        return Button {
+            appState.setSpeed(mode)
+        } label: {
+            HStack(spacing: DS.Spacing.xs) {
+                Image(systemName: mode.icon)
+                    .font(DS.Typography.labelPrimary)
+                    .foregroundStyle(isSelected ? accent.base : DS.Color.foregroundSecondary)
+                    .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                            .fill(isSelected ? accent.soft : DS.Color.backgroundElevated.opacity(DS.Opacity.panel))
+                    )
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(mode.displayName)
+                        .font(DS.Typography.caption.weight(.semibold))
+                        .foregroundStyle(DS.Color.foregroundPrimary)
+                    Text(String(format: "%.1f m/s", mode.metersPerSecond))
+                        .font(DS.Typography.monoSmall)
+                        .foregroundStyle(DS.Color.foregroundTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(DS.Spacing.xxs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                    .fill(isSelected ? accent.soft : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                    .stroke(isSelected ? accent.line : DS.Color.foregroundTertiary.opacity(DS.Opacity.divider), lineWidth: DS.Metrics.strokeWidth)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(mode.displayName) travel mode")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var safeModeCard: some View {
+        HStack(spacing: DS.Spacing.xs) {
+            Image(systemName: "checkmark.shield.fill")
+                .foregroundStyle(DS.Color.mockupEmerald)
+                .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .fill(DS.Color.mockupEmerald.opacity(DS.Opacity.statusTint))
+                )
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Safe Mode Enabled")
+                    .font(DS.Typography.caption.weight(.semibold))
+                    .foregroundStyle(DS.Color.mockupEmerald)
+                Text("Mimics natural movement and respects cooldown to avoid detection.")
+                    .font(DS.Typography.monoSmall)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Toggle("", isOn: $safeModeEnabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(DS.Color.mockupEmerald)
+        }
+        .padding(DS.Spacing.xs)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                .fill(DS.Color.mockupEmerald.opacity(DS.Opacity.statusTint))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                .stroke(DS.Color.mockupEmerald.opacity(DS.Opacity.statusBorder), lineWidth: DS.Metrics.strokeWidth)
+        )
     }
 
     // MARK: - Teleport card (mockup Teleport to Location)

@@ -72,11 +72,11 @@ open /Applications/PathChanger.app
 
 **Install Python Dependencies:**
 ```bash
-# Install pymobiledevice3
-python3 -m pip install -U pymobiledevice3
+# Install the approved pymobiledevice3 pin (PC-G-001 — do not use unconstrained -U)
+python3 -m pip install -r requirements-pathchanger.txt
 
-# Verify installation
-pymobiledevice3 version  # Should be >= 6.1.5
+# Verify installation (must match pin exactly)
+python3 -m pymobiledevice3 version  # Expect 9.12.0
 ```
 
 ### First Run
@@ -380,8 +380,8 @@ These are upstream target metrics and must be revalidated with PathChanger on ta
 Check Python and dependencies:
 ```bash
 python3 --version  # Should be >= 3.9
-python3 -m pip install -U pymobiledevice3
-pymobiledevice3 version  # Should be >= 6.1.5
+python3 -m pip install -r requirements-pathchanger.txt
+python3 -m pymobiledevice3 version  # Expect 9.12.0
 ```
 
 **2. "Device not detected"**
@@ -441,8 +441,8 @@ python3 -m pymobiledevice3 --debug developer dvt simulate-location set \
 
 *Option 3: Check for Updates*
 ```bash
-# Update pymobiledevice3 to latest version
-pip3 install --upgrade pymobiledevice3
+# Reinstall the approved pin (prefer requirements file over open-ended upgrade)
+python3 -m pip install -r requirements-pathchanger.txt
 
 # Verify version (check if > 6.1.5 has iOS 18 fixes)
 python3 -m pymobiledevice3 version

@@ -130,7 +130,7 @@ class DependencyValidator: ObservableObject {
                 message: "Unexpected error during Python validation",
                 suggestion: "Try restarting the application"
             )
-        case .pymobiledevice3VersionTooOld:
+        case .pymobiledevice3VersionTooOld, .pymobiledevice3VersionMismatch:
             return ValidationError(
                 type: .pythonVersionTooOld,
                 message: "Unexpected error during Python validation",
@@ -146,13 +146,19 @@ class DependencyValidator: ObservableObject {
             return ValidationError(
                 type: .pymobiledevice3Missing,
                 message: "pymobiledevice3 is not installed",
-                suggestion: "Install with: pip3 install pymobiledevice3"
+                suggestion: "Install with: \(PythonPathResolver.pinnedInstallCommand)"
             )
         case .pymobiledevice3VersionTooOld(let version):
             return ValidationError(
                 type: .pymobiledevice3VersionTooOld,
-                message: "pymobiledevice3 version \(version) is too old (minimum: 6.1.5)",
-                suggestion: "Upgrade with: pip3 install --upgrade pymobiledevice3"
+                message: "pymobiledevice3 version \(version) is below pin \(PythonPathResolver.pinnedPymobiledevice3Version)",
+                suggestion: "Install pin with: \(PythonPathResolver.pinnedInstallCommand)"
+            )
+        case .pymobiledevice3VersionMismatch(let found, let expected):
+            return ValidationError(
+                type: .pymobiledevice3VersionTooOld,
+                message: "pymobiledevice3 version \(found) is not the approved pin (\(expected))",
+                suggestion: "Install pin with: \(PythonPathResolver.pinnedInstallCommand)"
             )
         case .pythonNotFound, .pythonNotExecutable, .invalidPythonVersion:
             return ValidationError(

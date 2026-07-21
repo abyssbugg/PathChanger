@@ -290,11 +290,20 @@ class TunneldManager: ObservableObject {
         get { stateMachine.currentContext.activeProcessIds }
     }
 
-    /// Log file in ~/Library/Logs/PathChanger (more secure than /tmp)
-    var logFilePath: String {
-        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
+    /// Log directory under ~/Library/Logs/PathChanger (not /tmp).
+    var privilegedLogsDirectoryPath: String {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
             .first!.appendingPathComponent("Logs/PathChanger").path
-        return "\(logsDir)/tunnel.log"
+    }
+
+    /// Tunnel process log (created via PrivilegedPathSecurity.prepareSecureLogFile before redirect).
+    var logFilePath: String {
+        "\(privilegedLogsDirectoryPath)/tunnel.log"
+    }
+
+    /// Wi-Fi pairing log (PC-D-001: not under NSTemporaryDirectory).
+    var pairWiFiLogFilePath: String {
+        "\(privilegedLogsDirectoryPath)/pair-wifi.log"
     }
 
     var startupTraceFilePath: String {
@@ -305,9 +314,14 @@ class TunneldManager: ObservableObject {
 
     /// Ensure log directory exists
     func ensureLogDirectoryExists() {
-        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
-            .first!.appendingPathComponent("Logs/PathChanger")
+        let logsDir = URL(fileURLWithPath: privilegedLogsDirectoryPath, isDirectory: true)
+        // Create directory if needed. Parent Library/Logs is a system location.
         try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        // Best-effort restrictive mode on the app log directory.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: logsDir.path
+        )
     }
 
     /// Synchronize published state with state machine

@@ -14,6 +14,8 @@ enum PythonResolverError: Error, LocalizedError {
     case pythonNotExecutable(String)
     case pymobiledevice3NotInstalled
     case pymobiledevice3VersionTooOld(String)
+    /// Installed version is not the Wave 0 approved pin (PC-G-001).
+    case pymobiledevice3VersionMismatch(found: String, expected: String)
     case invalidPythonVersion(String)
 
     var errorDescription: String? {
@@ -25,7 +27,9 @@ enum PythonResolverError: Error, LocalizedError {
         case .pymobiledevice3NotInstalled:
             return "pymobiledevice3 is not installed"
         case .pymobiledevice3VersionTooOld(let version):
-            return "pymobiledevice3 version \(version) is too old. Minimum required: 6.1.5"
+            return "pymobiledevice3 version \(version) is too old. Minimum required: \(PythonPathResolver.pinnedPymobiledevice3Version)"
+        case .pymobiledevice3VersionMismatch(let found, let expected):
+            return "pymobiledevice3 version \(found) is not the approved pin (\(expected)). Install the pinned release."
         case .invalidPythonVersion(let version):
             return "Python version \(version) is not supported. Minimum required: 3.9"
         }
@@ -38,9 +42,9 @@ enum PythonResolverError: Error, LocalizedError {
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
-            return "Install pymobiledevice3 using:\npython3 -m pip install -U pymobiledevice3"
-        case .pymobiledevice3VersionTooOld:
-            return "Upgrade pymobiledevice3 using:\npython3 -m pip install -U pymobiledevice3"
+            return "Install the pinned pymobiledevice3 using:\npython3 -m pip install -r requirements-pathchanger.txt"
+        case .pymobiledevice3VersionTooOld, .pymobiledevice3VersionMismatch:
+            return "Install the approved pin using:\npython3 -m pip install -r requirements-pathchanger.txt\n(Do not use unconstrained pip upgrades for production/privileged use.)"
         case .invalidPythonVersion:
             return "Install Python 3.9 or later"
         }
@@ -57,8 +61,18 @@ enum PythonPathResolver {
     /// Minimum required Python version (major.minor)
     private static let minimumPythonVersion = (major: 3, minor: 9)
 
-    /// Minimum required pymobiledevice3 version
-    private static let minimumPmd3Version = "6.1.5"
+    /// Approved pymobiledevice3 version pin (PC-G-001 / Wave 0).
+    /// Keep in sync with `requirements-pathchanger.txt` and localization install hints.
+    ///
+    /// Maintainer bump procedure:
+    /// 1. Choose version, verify against PathChanger tunnel/location smoke tests.
+    /// 2. Update this constant, `requirements-pathchanger.txt` (version + wheel hash),
+    ///    DependencyValidator messages, Localizable.strings `dependency.pipCommand`, and tests.
+    /// 3. Prefer exact pin over open-ended upgrades for privileged runtime trust.
+    static let pinnedPymobiledevice3Version = "9.12.0"
+
+    /// Optional lower bound retained for messaging only; validation is exact-pin.
+    private static let minimumPmd3Version = pinnedPymobiledevice3Version
 
     /// Common Python 3 installation paths on macOS, ordered by user-managed installs first.
     private static var searchPaths: [String] {
@@ -196,14 +210,76 @@ enum PythonPathResolver {
         }
     }
 
-    /// Validate pymobiledevice3 installation and version
+    /// Validate pymobiledevice3 installation and version on the default resolver path.
     /// - Throws: PythonResolverError if not installed or version is too old
     static func validatePymobiledevice3() async throws {
-        let version = try await checkPymobiledevice3Installation()
+        try await validatePymobiledevice3(at: path)
+    }
 
-        if version != "unknown", compareVersions(version, minimumPmd3Version) == .orderedAscending {
-            throw PythonResolverError.pymobiledevice3VersionTooOld(version)
+    /// Validate pymobiledevice3 on a **specific** interpreter (Wave 0.1 / PC-FULL-A07).
+    /// Pin and privileged elevation must use the same binary.
+    static func validatePymobiledevice3(at pythonPath: String) async throws {
+        let version = try await checkPymobiledevice3Installation(at: pythonPath)
+        guard isApprovedPymobiledevice3Version(version) else {
+            if version == "unknown" {
+                throw PythonResolverError.pymobiledevice3VersionMismatch(
+                    found: "unknown",
+                    expected: pinnedPymobiledevice3Version
+                )
+            }
+            if compareVersions(version, pinnedPymobiledevice3Version) == .orderedAscending {
+                throw PythonResolverError.pymobiledevice3VersionTooOld(version)
+            }
+            throw PythonResolverError.pymobiledevice3VersionMismatch(
+                found: version,
+                expected: pinnedPymobiledevice3Version
+            )
         }
+    }
+
+    /// Exact-pin check for PC-G-001. `unknown` always fails closed.
+    static func isApprovedPymobiledevice3Version(_ version: String) -> Bool {
+        version == pinnedPymobiledevice3Version
+    }
+
+    /// Synchronous pin probe for privileged path resolution (Wave 0.1 / A07).
+    /// Fail-closed on timeout, missing module, or non-pin version.
+    static func hasPinnedPymobiledevice3Sync(at pythonPath: String, timeout: TimeInterval = 4.0) -> Bool {
+        guard !pythonPath.isEmpty, FileManager.default.isExecutableFile(atPath: pythonPath) else {
+            return false
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = ["-m", "pymobiledevice3", "version"]
+        process.environment = processEnvironment()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+            return false
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        try? pipe.fileHandleForReading.close()
+        guard process.terminationStatus == 0 else { return false }
+        let output = String(data: data, encoding: .utf8) ?? ""
+        guard let version = extractVersion(from: output) else { return false }
+        return isApprovedPymobiledevice3Version(version)
+    }
+
+    /// Install command aligned with the pin (no unconstrained `-U`).
+    static var pinnedInstallCommand: String {
+        "python3 -m pip install -r requirements-pathchanger.txt"
     }
 
     /// Get the Python version string with timeout protection
@@ -232,17 +308,21 @@ enum PythonPathResolver {
     // MARK: - Private
 
     private static func checkPymobiledevice3Installation() async throws -> String {
+        try await checkPymobiledevice3Installation(at: path)
+    }
+
+    private static func checkPymobiledevice3Installation(at pythonPath: String) async throws -> String {
         do {
-            return try await checkPymobiledevice3WithModule()
+            return try await checkPymobiledevice3WithModule(at: pythonPath)
         } catch {
-            return try await checkPymobiledevice3WithPip()
+            return try await checkPymobiledevice3WithPip(at: pythonPath)
         }
     }
 
-    /// Check pymobiledevice3 by running the module with the resolved Python.
-    private static func checkPymobiledevice3WithModule() async throws -> String {
+    /// Check pymobiledevice3 by running the module with the given Python.
+    private static func checkPymobiledevice3WithModule(at pythonPath: String) async throws -> String {
         let output = try await runProcess(
-            executablePath: path,
+            executablePath: pythonPath,
             arguments: ["-m", "pymobiledevice3", "version"],
             timeout: 5.0
         )
@@ -250,10 +330,10 @@ enum PythonPathResolver {
         return extractVersion(from: output) ?? "unknown"
     }
 
-    /// Check pymobiledevice3 using pip show with the resolved Python.
-    private static func checkPymobiledevice3WithPip() async throws -> String {
+    /// Check pymobiledevice3 using pip show with the given Python.
+    private static func checkPymobiledevice3WithPip(at pythonPath: String) async throws -> String {
         let output = try await runProcess(
-            executablePath: path,
+            executablePath: pythonPath,
             arguments: ["-m", "pip", "show", "pymobiledevice3"],
             timeout: 5.0
         )

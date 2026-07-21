@@ -374,7 +374,14 @@ struct SettingsView: View {
             Spacer()
 
             Button {
-                Task { _ = await tunneldManager.pairOverWiFi() }
+                Task {
+                    // PC-F-001: pass selected device identity so multi-device LANs
+                    // do not pair every advertising iPhone. Bonjour name is best-effort
+                    // (deviceName/displayName); unique substring match is enforced in script.
+                    let nameFilter = appState.selectedDevice?.deviceName
+                        ?? appState.selectedDevice?.displayName
+                    _ = await tunneldManager.pairOverWiFi(nameFilter: nameFilter)
+                }
             } label: {
                 if tunneldManager.wifiPairingInProgress {
                     HStack(spacing: AppSpacing.xs) {
@@ -463,7 +470,7 @@ struct SettingsView: View {
     private var pairButtonSubtitle: String {
         switch tunneldManager.lastWiFiPairingResult {
         case .success(let count):
-            return "Last attempt succeeded (\(count) device(s) paired)."
+            return "Last attempt succeeded (\(count) device paired)."
         case .noDevicesFound:
             return "No manual-pairing service was found. On iOS 26+, use Background Daemon instead."
         case .scriptError(let message):
@@ -473,7 +480,7 @@ struct SettingsView: View {
         case .scriptMissing:
             return "pair_wifi.py is missing from the app bundle. Reinstall PathChanger."
         case .none:
-            return "Runs scripts/pair_wifi.py with admin privileges; iPhone will prompt for confirmation."
+            return "Pairs exactly one iPhone (selected device name when available). Multi-device networks require a unique name."
         }
     }
 

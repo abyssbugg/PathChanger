@@ -244,7 +244,7 @@ enum L10n {
         static let pymobiledevice = LocalizedStringKey("dependency.pymobiledevice")
         static let installInstructions = LocalizedStringKey("dependency.installInstructions")
         static let brewCommand = "brew install python3"
-        static let pipCommand = "pip3 install pymobiledevice3"
+        static let pipCommand = "python3 -m pip install -r requirements-pathchanger.txt"
     }
 }
 

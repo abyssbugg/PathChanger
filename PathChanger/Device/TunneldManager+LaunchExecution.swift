@@ -10,20 +10,94 @@ import AppKit
 @MainActor
 extension TunneldManager {
     func attemptStart(mode: TunnelMode) async -> Bool {
-        let launchCommand: String
-        let udidArgument = targetTunnelUDID.map { " --udid \($0)" } ?? ""
+        // Ensure log directory exists; actual log open is O_NOFOLLOW as root (Wave 0.1 / A03).
+        ensureLogDirectoryExists()
+        guard PrivilegedPathSecurity.isShellSafeSingleQuotedPath(logFilePath) else {
+            Logger.error("SECURITY: Tunnel log path is unsafe for shell embedding", category: .security)
+            lastError = "Secure log path is unsafe for privileged shell embedding"
+            return false
+        }
+        switch PrivilegedPathSecurity.validatePrivilegedLogParentDirectory(forFile: logFilePath) {
+        case .failure(let error):
+            Logger.error(
+                "SECURITY: Tunnel log parent rejected - \(error.localizedDescription)",
+                category: .security
+            )
+            lastError = "Secure log preparation failed: \(error.localizedDescription)"
+            return false
+        case .success:
+            break
+        }
 
+        // Wave 0.1 / A07: same interpreter for pin check and elevation (prefer resolver path).
+        guard let privilegedPython = PrivilegedPathSecurity.resolvePrivilegedPythonPath(
+            preferredUserPath: python3Path
+        ) else {
+            let message = """
+            No acceptable Python 3 interpreter with pinned pymobiledevice3 \(PythonPathResolver.pinnedPymobiledevice3Version) \
+            is available for privileged tunnel start. Install the pin on your Python \
+            (\(PythonPathResolver.pinnedInstallCommand)), not via unconstrained pip -U. Pyenv is not allowed for elevation.
+            """
+            Logger.error("SECURITY: \(message)", category: .security)
+            lastError = message
+            return false
+        }
+        if privilegedPython != python3Path {
+            Logger.info(
+                "Using privileged Python \(privilegedPython) (pinned) instead of default resolver path \(python3Path)",
+                category: .security
+            )
+        }
+
+        var moduleArguments: [String] = ["-m", "pymobiledevice3"]
         switch mode {
         case .usb:
-            launchCommand = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel --script-mode\(udidArgument) > \(logFilePath) 2>&1 &"
+            moduleArguments += ["lockdown", "start-tunnel", "--script-mode"]
         case .wifi:
-            launchCommand = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi --protocol tcp\(udidArgument) > \(logFilePath) 2>&1 &"
+            moduleArguments += ["remote", "start-tunnel", "-t", "wifi", "--protocol", "tcp"]
         case .daemon:
-            launchCommand = "\(python3Path) -m pymobiledevice3 remote tunneld > \(logFilePath) 2>&1 &"
+            moduleArguments += ["remote", "tunneld"]
         case .auto:
             return false // Should not reach here
         }
-        let privilegedCommand = "\(launchCommand) echo $!"
+        if let udid = targetTunnelUDID {
+            moduleArguments += ["--udid", udid]
+        }
+
+        // Legacy pattern allowlist validates a flattened command shape (no shell redirect).
+        let shapeCommand = ([privilegedPython] + moduleArguments).joined(separator: " ")
+        switch PrivilegedCommandValidator.validate(command: shapeCommand, pythonPath: privilegedPython) {
+        case .success:
+            break
+        case .failure(let error):
+            Logger.error("SECURITY: Blocked privileged command - \(error.localizedDescription)", category: .security)
+            lastError = "Security validation failed: \(error.localizedDescription)"
+            return false
+        }
+        switch PrivilegedPathSecurity.validatePrivilegedCommandValues(shapeCommand) {
+        case .success:
+            Logger.info("Security validation passed for \(mode.rawValue) tunnel command", category: .security)
+        case .failure(let error):
+            Logger.error("SECURITY: Blocked privileged command values - \(error.localizedDescription)", category: .security)
+            lastError = "Security validation failed: \(error.localizedDescription)"
+            return false
+        }
+
+        // Wave 0.1 / A03: O_NOFOLLOW log open inside elevated process (no shell `>` after dialog).
+        let privilegedCommand: String
+        switch PrivilegedPathSecurity.buildPrivilegedBackgroundTunnelCommand(
+            privilegedPython: privilegedPython,
+            logPath: logFilePath,
+            moduleArguments: moduleArguments
+        ) {
+        case .success(let cmd):
+            privilegedCommand = cmd
+        case .failure(let error):
+            Logger.error("SECURITY: Failed to build privileged launch - \(error.localizedDescription)", category: .security)
+            lastError = "Security validation failed: \(error.localizedDescription)"
+            return false
+        }
+
         let launchTargetUDID = targetTunnelUDID
         let beforeLaunchPids = Set(liveTunnelProcessIdsSync(for: mode, targetUDID: launchTargetUDID))
         let generation = tunnelLifecycleGeneration
@@ -32,20 +106,9 @@ extension TunneldManager {
         logStartupTrace("wrapper_launch_prepared", fields: [
             "mode": mode.rawValue,
             "targetUDID": launchTargetUDID ?? "nil",
-            "beforeLaunchPids": beforeLaunchPids.sorted()
+            "beforeLaunchPids": beforeLaunchPids.sorted(),
+            "privilegedPython": privilegedPython
         ])
-
-        // SECURITY: Validate the pmd3 launch command before adding the static
-        // `$!` handoff suffix. The validator intentionally rejects `$`, so the
-        // shell handoff wrapper remains hardcoded and is not user-influenced.
-        switch PrivilegedCommandValidator.validate(command: launchCommand, pythonPath: python3Path) {
-        case .success:
-            Logger.info("Security validation passed for \(mode.rawValue) tunnel command", category: .security)
-        case .failure(let error):
-            Logger.error("SECURITY: Blocked privileged command - \(error.localizedDescription)", category: .security)
-            lastError = "Security validation failed: \(error.localizedDescription)"
-            return false
-        }
 
         let script = """
         do shell script "\(privilegedCommand)" with administrator privileges
@@ -290,25 +353,31 @@ extension TunneldManager {
 
     /// Run the bundled `scripts/pair_wifi.py` helper with administrator
     /// privileges. Drives a longer (default 30s) Bonjour browse window than
-    /// `pmd3 remote pair` and pairs the first discovered iPhone (or matches
-    /// against `nameFilter` if provided).
+    /// `pmd3 remote pair` and pairs **exactly one** device (PC-F-001).
     ///
-    /// This is the iOS-side prerequisite for WiFi mode. After this runs, the
-    /// pair record is on disk and `pmd3 remote start-tunnel -t wifi` can
+    /// Selection (implemented in `pair_wifi.py`, fail closed):
+    /// - 1 advertising device and no filter → pair that device
+    /// - 2+ devices without a unique `--name` → script error (does not pair all)
+    /// - `nameFilter` exact or unique substring match → pair that one device
+    ///
+    /// This is the iOS-side prerequisite for legacy WiFi mode. After this runs,
+    /// the pair record is on disk and `pmd3 remote start-tunnel -t wifi` can
     /// connect without the user touching Terminal.
     ///
     /// - Parameters:
     ///   - timeout: Bonjour browse window in seconds (default 30).
-    ///   - nameFilter: Optional substring to match the iPhone's Bonjour name.
+    ///   - nameFilter: Exact Bonjour name or unique substring; required when
+    ///     multiple devices are advertising. Prefer the selected device name.
     func pairOverWiFi(timeout: TimeInterval = 30.0, nameFilter: String? = nil) async -> WiFiPairingResult {
         guard !wifiPairingInProgress else {
             return .scriptError("WiFi pairing is already in progress.")
         }
 
-        // SECURITY: validate python path against the same allowlist used for tunnel
-        // launch commands so we can never call an attacker-controlled binary as root.
-        guard PrivilegedCommandValidator.isPythonPathAllowed(python3Path) else {
-            let message = "Refusing to run pair_wifi.py: python3 path is not in the security allowlist (\(python3Path))."
+        // Wave 0.1 / A07: same pinned interpreter as tunnel elevation.
+        guard let privilegedPython = PrivilegedPathSecurity.resolvePrivilegedPythonPath(
+            preferredUserPath: python3Path
+        ) else {
+            let message = "Refusing to run pair_wifi.py: no acceptable Python with pinned pymobiledevice3 \(PythonPathResolver.pinnedPymobiledevice3Version)."
             Logger.error(message, category: .security)
             wifiPairingLog = message
             lastWiFiPairingResult = .scriptError(message)
@@ -323,14 +392,20 @@ extension TunneldManager {
             return .scriptMissing
         }
 
-        // SECURITY: paths must end in the expected suffix and contain only safe
-        // characters before we string-concat them into a shell command. This
-        // closes the gap that PrivilegedCommandValidator can't (its allowlist is
-        // for tunnel commands only).
-        guard scriptPath.hasSuffix("/scripts/pair_wifi.py"),
-              isShellSafePath(scriptPath),
-              isShellSafePath(python3Path) else {
-            let message = "Refusing to run pair_wifi.py: resolved path is unsafe (\(scriptPath))."
+        // Wave 0.1 / A08: bundle Resources path + owner self/root + not group/other-writable
+        // (no uid-0 requirement — drag-drop install.sh remains usable).
+        if let scriptError = PrivilegedPathSecurity.validatePrivilegedPairScriptPath(scriptPath) {
+            let message = "Refusing to run pair_wifi.py: \(scriptError.localizedDescription)"
+            Logger.error(message, category: .security)
+            wifiPairingLog = message
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        }
+        guard isShellSafePath(scriptPath),
+              isShellSafePath(privilegedPython),
+              PrivilegedPathSecurity.shellSingleQuotedPath(scriptPath) != nil,
+              PrivilegedPathSecurity.shellSingleQuotedPath(privilegedPython) != nil else {
+            let message = "Refusing to run pair_wifi.py: resolved path is unsafe for shell embedding (\(scriptPath))."
             Logger.error(message, category: .security)
             wifiPairingLog = message
             lastWiFiPairingResult = .scriptError(message)
@@ -345,24 +420,54 @@ extension TunneldManager {
         statusMessage = "Pairing over Wi-Fi (browsing Bonjour for up to \(timeoutSec)s)…"
         defer { wifiPairingInProgress = false }
 
-        // Build the inner command that runs as root via osascript. All
-        // user-influenced segments are validated above; the only remaining
-        // free-form input is `nameFilter` which is restricted to alnum/dash/
-        // underscore/space. We single-quote inputs for the shell.
-        let logFile = "\(NSTemporaryDirectory())pathchanger-pair-wifi.log"
-        guard isShellSafePath(logFile) else {
-            let message = "Refusing to run pair_wifi.py: temporary log path is unsafe."
+        ensureLogDirectoryExists()
+        let logFile = pairWiFiLogFilePath
+        guard PrivilegedPathSecurity.isShellSafeSingleQuotedPath(logFile) else {
+            let message = "Refusing to run pair_wifi.py: log path is unsafe for shell embedding."
             Logger.error(message, category: .security)
             lastWiFiPairingResult = .scriptError(message)
             return .scriptError(message)
         }
+        switch PrivilegedPathSecurity.validatePrivilegedLogParentDirectory(forFile: logFile) {
+        case .failure(let error):
+            let message = "Refusing to run pair_wifi.py: secure log parent rejected (\(error.localizedDescription))."
+            Logger.error(message, category: .security)
+            wifiPairingLog = message
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        case .success:
+            break
+        }
 
-        var inner = "'\(python3Path)' '\(scriptPath)' --timeout \(timeoutSec)"
+        var extraArguments = ["--timeout", "\(timeoutSec)"]
         if let nameFilter, !nameFilter.isEmpty,
            nameFilter.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == " " }) {
-            inner += " --name '\(nameFilter)'"
+            // nameFilter may contain spaces — encode as single argv only if no spaces,
+            // otherwise reject (shell-unsafe for our builder). Prefer underscore form.
+            if nameFilter.contains(" ") {
+                let message = "Refusing to run pair_wifi.py: device name filter must not contain spaces for privileged embedding."
+                Logger.error(message, category: .security)
+                lastWiFiPairingResult = .scriptError(message)
+                return .scriptError(message)
+            }
+            extraArguments += ["--name", nameFilter]
         }
-        inner += " > '\(logFile)' 2>&1"
+
+        let inner: String
+        switch PrivilegedPathSecurity.buildPrivilegedForegroundPairCommand(
+            privilegedPython: privilegedPython,
+            scriptPath: scriptPath,
+            logPath: logFile,
+            extraArguments: extraArguments
+        ) {
+        case .success(let cmd):
+            inner = cmd
+        case .failure(let error):
+            let message = "Refusing to run pair_wifi.py: \(error.localizedDescription)"
+            Logger.error(message, category: .security)
+            lastWiFiPairingResult = .scriptError(message)
+            return .scriptError(message)
+        }
 
         let script = """
         do shell script "\(inner)" with administrator privileges
@@ -397,16 +502,25 @@ extension TunneldManager {
                 Task { @MainActor in self.wifiPairingLog = truncated }
 
                 if logContent.contains("Pair record written") {
-                    // Count how many devices the script reported.
-                    var deviceCount = 0
+                    // PC-F-001: script pairs exactly one device even if browse found more.
+                    let pairedOne = logContent.contains("Selected single device")
+                    var browseCount = 0
                     for line in logContent.components(separatedBy: .newlines) where line.hasPrefix("[pair-wifi] Found ") {
                         let parts = line.split(separator: " ")
                         if parts.count > 2, let n = Int(parts[2]) {
-                            deviceCount = n
+                            browseCount = n
                             break
                         }
                     }
-                    continuation.resume(returning: .success(deviceCount: max(deviceCount, 1)))
+                    continuation.resume(returning: .success(deviceCount: pairedOne ? 1 : max(browseCount, 1)))
+                } else if logContent.contains("multiple devices found; refusing to pair all") {
+                    continuation.resume(returning: .scriptError(
+                        "Multiple devices are advertising. Select one device in PathChanger or re-run with a unique device name."
+                    ))
+                } else if logContent.contains("no device matched --name") {
+                    continuation.resume(returning: .scriptError(
+                        "No advertising device matched the selected name. Check the iPhone Bonjour name or selection."
+                    ))
                 } else if logContent.contains("no _remotepairing-manual-pairing instances found") {
                     continuation.resume(returning: .noDevicesFound)
                 } else {

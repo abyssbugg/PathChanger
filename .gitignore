@@ -43,3 +43,7 @@ Thumbs.db
 
 # Recovery staging
 .recovery/
+
+# Audit prompt inputs (local only, not part of the project)
+Hybrid-Universal-Technical-Collaboration-Frameworkn.v3.md
+security-audit-prompt-full.md

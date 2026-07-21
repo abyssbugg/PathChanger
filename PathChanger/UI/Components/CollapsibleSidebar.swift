@@ -56,18 +56,6 @@ struct CollapsibleSidebar: View {
                 accessibility: "Settings"
             ) { isShowingSettings = true }
 
-            Text("RECENT LOCATIONS")
-                .font(DS.Typography.labelCaps)
-                .foregroundStyle(DS.Color.foregroundTertiary)
-                .tracking(DS.Metrics.shortcutLabelTracking)
-                .padding(.top, DS.Spacing.xs)
-
-            if appState.locationHistory.isEmpty {
-                emptyRecents
-            } else {
-                recentsList
-            }
-
             Spacer(minLength: DS.Metrics.zero)
 
             sessionCard

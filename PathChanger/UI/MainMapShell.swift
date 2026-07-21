@@ -111,10 +111,16 @@ struct MainMapShell: View {
             HStack(spacing: DS.Spacing.xs) {
                 ConnectionPill()
                 DeviceDropdown()
+                topBarIconButton(icon: "arrow.clockwise", label: "Refresh device") {
+                    Task { await appState.refreshDevices() }
+                }
             }
 
             Spacer(minLength: DS.Spacing.sm)
 
+            topBarIconButton(icon: "questionmark", label: "Help") {
+                appState.showOnboarding = true
+            }
             ThemeToggle()
         }
         // Leading inset clears the native traffic-light controls (hidden title bar).
@@ -146,6 +152,26 @@ struct MainMapShell: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("PathChanger version 1.0.0")
+    }
+
+    private func topBarIconButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: DS.Metrics.iconButtonIconSize - 2, weight: .regular))
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .frame(width: DS.Metrics.iconButtonSize, height: DS.Metrics.iconButtonSize)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .fill(DS.Color.backgroundSecondary.opacity(DS.Opacity.panel))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .stroke(DS.Color.foregroundTertiary.opacity(DS.Opacity.divider), lineWidth: DS.Metrics.strokeWidth)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var sidebarToggle: some View {
