@@ -39,11 +39,9 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 	
-	<!-- Network Server: ENABLED                                         -->
-	<!-- Required for: MultipeerConnectivity with Companion iOS app      -->
-	<!-- Used by: CompanionHostService for hosting advertiser sessions   -->
-	<key>com.apple.security.network.server</key>
-	<true/>
+	<!-- Network Server: REMOVED (least privilege)                       -->
+	<!-- Was used only by the dormant CompanionHostService, which has     -->
+	<!-- been removed. The app ships no in-app server socket.             -->
 	
 	<!-- ============================================================== -->
 	<!-- DEVICE ACCESS ENTITLEMENTS                                      -->
@@ -55,11 +53,9 @@
 	<key>com.apple.security.device.usb</key>
 	<true/>
 	
-	<!-- Bluetooth Access: ENABLED                                       -->
-	<!-- Required for: MultipeerConnectivity with Companion iOS app      -->
-	<!-- Used by: CompanionHostService for Bluetooth-based discovery     -->
-	<key>com.apple.security.device.bluetooth</key>
-	<true/>
+	<!-- Bluetooth Access: REMOVED (least privilege)                     -->
+	<!-- Was used only by the dormant CompanionHostService, which has     -->
+	<!-- been removed.                                                    -->
 	
 	<!-- ============================================================== -->
 	<!-- FILE ACCESS ENTITLEMENTS                                        -->
