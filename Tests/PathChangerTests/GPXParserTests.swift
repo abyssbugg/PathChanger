@@ -194,4 +194,65 @@ final class GPXParserTests: XCTestCase {
 
         XCTAssertEqual(gpx.totalPoints, 4) // 1 waypoint + 2 track points + 1 route point
     }
+
+    // MARK: - Wave 2 Hardening Tests
+
+    func testParserSkipsOutOfRangeCoordinates() throws {
+        let gpxString = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <gpx version="1.1">
+            <trk><trkseg>
+                <trkpt lat="35.0" lon="139.0"></trkpt>
+                <trkpt lat="120.0" lon="500.0"></trkpt>
+                <trkpt lat="36.0" lon="140.0"></trkpt>
+            </trkseg></trk>
+        </gpx>
+        """
+        let gpx = try parser.parse(string: gpxString)
+        XCTAssertEqual(gpx.tracks.first?.segments.first?.points.count, 2, "out-of-range point must be skipped")
+        XCTAssertEqual(parser.skippedInvalidCoordinateCount, 1)
+    }
+
+    func testRoutePointNameDoesNotOverwriteRouteName() throws {
+        let gpxString = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <gpx version="1.1">
+            <rte>
+                <name>My Route</name>
+                <rtept lat="35.0" lon="139.0"><name>Start</name></rtept>
+                <rtept lat="36.0" lon="140.0"><name>End</name></rtept>
+            </rte>
+        </gpx>
+        """
+        let gpx = try parser.parse(string: gpxString)
+        XCTAssertEqual(gpx.routes.first?.name, "My Route")
+        XCTAssertEqual(gpx.routes.first?.points.first?.name, "Start")
+        XCTAssertEqual(gpx.routes.first?.points.last?.name, "End")
+    }
+
+    func testNestedAuthorNameSetsAuthorNotGPXName() throws {
+        let gpxString = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <gpx version="1.1">
+            <metadata>
+                <name>Doc Name</name>
+                <author><name>Jane</name></author>
+            </metadata>
+            <wpt lat="1.0" lon="2.0"></wpt>
+        </gpx>
+        """
+        let gpx = try parser.parse(string: gpxString)
+        XCTAssertEqual(gpx.name, "Doc Name")
+        XCTAssertEqual(gpx.author, "Jane")
+    }
+
+    func testOversizedDataIsRejected() {
+        // A data blob just over the cap must be rejected before parsing.
+        let oversized = Data(count: GPXParser.maxDataBytes + 1)
+        XCTAssertThrowsError(try parser.parse(data: oversized)) { error in
+            guard case GPXParserError.fileTooLarge = error else {
+                return XCTFail("Expected fileTooLarge, got \(error)")
+            }
+        }
+    }
 }
