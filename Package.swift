@@ -12,15 +12,10 @@ let package = Package(
     products: [
         .executable(name: "PathChanger", targets: ["PathChanger"])
     ],
-    dependencies: [
-        .package(path: "SharedCompanionProtocol")
-    ],
+    dependencies: [],
     targets: [
         .executableTarget(
             name: "PathChanger",
-            dependencies: [
-                .product(name: "SharedCompanionProtocol", package: "SharedCompanionProtocol")
-            ],
             path: "PathChanger",
             exclude: ["Info.plist"],
             resources: [
