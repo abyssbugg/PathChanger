@@ -6,6 +6,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# Private, unique temp file for plist probes (avoids fixed /tmp symlink clobbering, CWE-377/CWE-59).
+TMP_CHECK="$(mktemp "${TMPDIR:-/tmp}/pathchanger-relcheck.XXXXXXXX")"
+trap 'rm -f "$TMP_CHECK"' EXIT
+
 fail() {
     echo "✗ $1" >&2
     exit 1
@@ -50,27 +54,23 @@ BUILD_VERSION="$(plist_value CFBundleVersion Resources/Info.plist)"
 [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]] || fail "CFBundleVersion must be numeric: $BUILD_VERSION"
 pass "Bundle build version is numeric: $BUILD_VERSION"
 
-if /usr/libexec/PlistBuddy -c "Print :com.apple.security.get-task-allow" Resources/PathChanger.entitlements >/tmp/pathchanger-get-task-allow 2>/dev/null; then
-    if grep -qx "true" /tmp/pathchanger-get-task-allow; then
-        rm -f /tmp/pathchanger-get-task-allow
+if /usr/libexec/PlistBuddy -c "Print :com.apple.security.get-task-allow" Resources/PathChanger.entitlements >"$TMP_CHECK" 2>/dev/null; then
+    if grep -qx "true" "$TMP_CHECK"; then
         fail "get-task-allow must not be enabled in distribution entitlements"
     fi
 fi
-rm -f /tmp/pathchanger-get-task-allow
 
 for entitlement in \
     com.apple.security.cs.allow-unsigned-executable-memory \
     com.apple.security.cs.disable-library-validation \
     com.apple.security.cs.allow-dyld-environment-variables
 do
-    if /usr/libexec/PlistBuddy -c "Print :$entitlement" Resources/PathChanger.entitlements >/tmp/pathchanger-entitlement-check 2>/dev/null; then
-        if grep -qx "true" /tmp/pathchanger-entitlement-check; then
-            rm -f /tmp/pathchanger-entitlement-check
+    if /usr/libexec/PlistBuddy -c "Print :$entitlement" Resources/PathChanger.entitlements >"$TMP_CHECK" 2>/dev/null; then
+        if grep -qx "true" "$TMP_CHECK"; then
             fail "High-risk entitlement must not be enabled: $entitlement"
         fi
     fi
 done
-rm -f /tmp/pathchanger-entitlement-check
 pass "Distribution entitlements exclude debug/high-risk code-signing permissions"
 
 if grep -qi "sparkle" Package.swift; then
@@ -172,8 +172,8 @@ if grep -nE '03_SECURITY_VERIFICATION_CHECKLIST\.md|04_PERFORMANCE_BASELINE\.md'
 fi
 pass "Deployment docs do not link removed legacy release documents"
 
-grep -q 'APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"' build-app-bundle.sh || \
-    fail "App bundle script must default outside the workspace to avoid file-provider metadata contamination"
+grep -q 'mktemp -d "${TMPDIR:-/tmp}/pathchanger-app-build.XXXXXXXX"' build-app-bundle.sh || \
+    fail "App bundle script must mint a unique private mktemp workspace (no predictable shared build root)"
 grep -q 'DIST_BUILD_ROOT="${APP_BUNDLE_DIST_ROOT:-$(pwd)/dist}"' build.sh || \
     fail "build.sh must default dist output inside the repository for durable local artifacts"
 if grep -q 'ln -s "\$DIST_BUILD_ROOT/PathChanger.app" dist/PathChanger.app' build.sh; then

@@ -2,7 +2,7 @@
 # Coverage Report Generator for PathChanger
 # Usage: ./scripts/coverage.sh [--html] [--json] [--threshold N]
 
-set -e
+set -eo pipefail
 cd "$(dirname "$0")/.."
 
 # Default settings
@@ -73,8 +73,10 @@ echo ""
 
 # Generate text summary
 echo "=== Coverage Summary ===" > "$OUTPUT_DIR/summary.txt"
+# Fail closed: report generation feeds the threshold gate below, so a failure
+# here must not be swallowed (previously `|| true` let coverage pass silently).
 xcrun llvm-cov report "$TEST_BINARY" -instr-profile="$PROFDATA" \
-    -ignore-filename-regex="Tests/|.build/" >> "$OUTPUT_DIR/summary.txt" 2>/dev/null || true
+    -ignore-filename-regex="Tests/|.build/" >> "$OUTPUT_DIR/summary.txt"
 
 cat "$OUTPUT_DIR/summary.txt"
 
@@ -110,11 +112,19 @@ fi
 
 # Extract coverage percentage
 COVERAGE_LINE=$(grep "TOTAL" "$OUTPUT_DIR/summary.txt" 2>/dev/null || echo "")
-if [ -n "$COVERAGE_LINE" ]; then
+if [ -z "$COVERAGE_LINE" ]; then
+    # Fail closed: if a threshold was requested we must not silently pass when
+    # coverage could not be parsed (e.g. report generation produced no TOTAL).
+    if [ "$THRESHOLD" -gt 0 ]; then
+        echo "" >&2
+        echo "ERROR: Coverage threshold ${THRESHOLD}% requested but total coverage could not be determined" >&2
+        exit 1
+    fi
+else
     COVERAGE_PCT=$(echo "$COVERAGE_LINE" | awk '{print $4}' | tr -d '%')
     echo ""
     echo "=== Total Coverage: ${COVERAGE_PCT}% ==="
-    
+
     # Check threshold
     if [ "$THRESHOLD" -gt 0 ]; then
         COVERAGE_INT=${COVERAGE_PCT%.*}

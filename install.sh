@@ -28,6 +28,15 @@ if [ ! -d "$SCRIPT_DIR/dist/PathChanger.app" ]; then
     echo "ERROR: Build failed - dist/PathChanger.app not found"
     exit 1
 fi
+if [ -L "$SCRIPT_DIR/dist/PathChanger.app" ]; then
+    echo "ERROR: dist/PathChanger.app must not be a symlink"
+    exit 1
+fi
+# Verify the freshly built bundle before trusting it for installation.
+if ! codesign --verify --deep --strict "$SCRIPT_DIR/dist/PathChanger.app"; then
+    echo "ERROR: dist/PathChanger.app failed signature verification"
+    exit 1
+fi
 echo "      Build successful."
 
 echo ""
@@ -44,6 +53,11 @@ echo "      Cleanup complete."
 echo ""
 echo "[3/3] Installing to $TARGET_APP ..."
 cp -R "$SCRIPT_DIR/dist/PathChanger.app" "$TARGET_APP"
+# Re-verify the installed copy to detect any post-verification substitution.
+if ! codesign --verify --deep --strict "$TARGET_APP"; then
+    echo "ERROR: installed bundle failed signature verification"
+    exit 1
+fi
 echo "      Installed."
 
 echo ""
