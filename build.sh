@@ -30,7 +30,16 @@ swift package clean 2>/dev/null || true
 rm -rf build dist 2>/dev/null || true
 
 echo "Building app bundle..."
-APP_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"
+# Mint a private, unique 0700 workspace (CWE-377/CWE-367). Clean it on exit so a
+# predictable path cannot be pre-seeded or reused across runs by another account.
+if [ -n "${APP_BUNDLE_BUILD_ROOT:-}" ]; then
+    APP_BUILD_ROOT="$APP_BUNDLE_BUILD_ROOT"
+    mkdir -p "$APP_BUILD_ROOT"
+else
+    APP_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pathchanger-app-build.XXXXXXXX")"
+    trap 'rm -rf "$APP_BUILD_ROOT"' EXIT
+fi
+chmod 700 "$APP_BUILD_ROOT"
 DIST_BUILD_ROOT="${APP_BUNDLE_DIST_ROOT:-$(pwd)/dist}"
 APP_BUNDLE_BUILD_ROOT="$APP_BUILD_ROOT" ./build-app-bundle.sh "$@"
 
@@ -59,6 +68,11 @@ if contains_forbidden_metadata "$DIST_BUILD_ROOT/PathChanger.app"; then
         exit 1
     fi
 fi
+
+echo ""
+echo "Verifying signature of dist bundle (post-copy integrity check)..."
+codesign --verify --deep --strict --verbose=2 "$DIST_BUILD_ROOT/PathChanger.app" \
+    || { echo "ERROR: dist bundle failed signature verification after copy" >&2; exit 1; }
 
 echo ""
 echo "Build complete! App located at:"

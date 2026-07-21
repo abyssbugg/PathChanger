@@ -73,7 +73,33 @@ verify_no_forbidden_xattrs() {
 # Configuration
 APP_NAME="PathChanger"
 APP_BUNDLE_NAME="$APP_NAME.app"
-APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}"
+
+# Resolve a private, unique, non-symlink build workspace owned by the current
+# user (CWE-377 / CWE-367). A predictable shared root under TMPDIR/tmp could be
+# pre-created or swapped by another local account between build and signature
+# verification. When APP_BUNDLE_BUILD_ROOT is supplied (e.g. by build.sh) it is
+# validated; otherwise we mint one with mktemp. Still lives under TMPDIR so the
+# file-provider/metadata rationale is preserved.
+resolve_secure_build_root() {
+    local root="${APP_BUNDLE_BUILD_ROOT:-}"
+    if [ -z "$root" ]; then
+        root="$(mktemp -d "${TMPDIR:-/tmp}/pathchanger-app-build.XXXXXXXX")" \
+            || fail "Could not create secure build workspace"
+    else
+        mkdir -p "$root" || fail "Could not create build workspace: $root"
+    fi
+    if [ -L "$root" ]; then
+        fail "Build workspace must not be a symlink: $root"
+    fi
+    local owner
+    owner="$(stat -f '%u' "$root")" || fail "Could not stat build workspace: $root"
+    if [ "$owner" != "$(id -u)" ]; then
+        fail "Build workspace must be owned by the current user (uid $(id -u)): $root"
+    fi
+    chmod 700 "$root" || fail "Could not restrict build workspace permissions: $root"
+    APP_BUNDLE_BUILD_ROOT="$root"
+}
+resolve_secure_build_root
 APP_DIR="$APP_BUNDLE_BUILD_ROOT/$APP_BUNDLE_NAME"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
