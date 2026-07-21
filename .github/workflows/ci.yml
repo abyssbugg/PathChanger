@@ -151,11 +151,19 @@ jobs:
         git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
         git -C "$GITHUB_WORKSPACE" checkout --force FETCH_HEAD
 
-    - name: Install SwiftLint
-      run: brew install swiftlint
+    - name: Install SwiftLint (pinned + checksum-verified)
+      run: |
+        SWIFTLINT_VERSION="0.65.0"
+        SWIFTLINT_SHA256="d6cb0aa7a2f5f1ef306fc9e37bcb54dc9a26facc8f7784ac0c3dd3eccf5c6ba6"
+        curl -fsSL -o portable_swiftlint.zip \
+          "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+        echo "${SWIFTLINT_SHA256}  portable_swiftlint.zip" | shasum -a 256 -c -
+        mkdir -p .swiftlint-bin
+        unzip -o -q portable_swiftlint.zip -d .swiftlint-bin
+        .swiftlint-bin/swiftlint version
 
     - name: Run SwiftLint
-      run: swiftlint lint --quiet
+      run: .swiftlint-bin/swiftlint lint --quiet
 
   security-scan:
     name: Security Scan
@@ -175,21 +183,36 @@ jobs:
         git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
         git -C "$GITHUB_WORKSPACE" checkout --force FETCH_HEAD
 
-    - name: Check for Secrets
+    - name: Secret Scan (gitleaks, pinned + checksum-verified)
       run: |
-        if grep -rE "(api[_-]?key|secret|password|token)[[:space:]]*[:=][[:space:]]*['\"][^'\"]+['\"]" \
-          --include="*.swift" --include="*.json" --include="*.plist" \
-          --exclude-dir=.git --exclude-dir=.build --exclude-dir=Tests .; then
-          echo "Potential secrets detected in code"
-          exit 1
-        fi
+        GITLEAKS_VERSION="8.30.1"
+        GITLEAKS_SHA256="b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"
+        curl -fsSL -o gitleaks.tar.gz \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_darwin_arm64.tar.gz"
+        echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | shasum -a 256 -c -
+        mkdir -p .gitleaks-bin
+        tar -xzf gitleaks.tar.gz -C .gitleaks-bin gitleaks
+        # Scan all files in the checkout (every file type), redacting any matches.
+        .gitleaks-bin/gitleaks detect --source . --no-git --no-banner --redact --exit-code 1
 
-    - name: Check Entitlements
+    - name: Check Entitlements Policy
       run: |
-        if [ -f "Resources/PathChanger.entitlements" ]; then
-          echo "Checking entitlements..."
-          cat Resources/PathChanger.entitlements
-        fi
+        ENT="Resources/PathChanger.entitlements"
+        test -f "$ENT" || { echo "Entitlements file missing: $ENT"; exit 1; }
+        plutil -lint "$ENT" >/dev/null
+        # Fail if any high-risk code-signing entitlement is enabled.
+        for key in \
+          com.apple.security.cs.allow-unsigned-executable-memory \
+          com.apple.security.cs.disable-library-validation \
+          com.apple.security.cs.allow-dyld-environment-variables \
+          com.apple.security.cs.allow-jit \
+          com.apple.security.get-task-allow; do
+          if /usr/libexec/PlistBuddy -c "Print :$key" "$ENT" 2>/dev/null | grep -qx "true"; then
+            echo "High-risk entitlement must not be enabled: $key"
+            exit 1
+          fi
+        done
+        echo "Entitlement policy OK (no high-risk code-signing entitlements enabled)."
 
   documentation:
     name: Build Documentation
