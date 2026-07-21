@@ -1,16 +1,27 @@
 # PathChanger approved Python dependency pin (PC-G-001 / Wave 0)
 #
-# Install (do NOT use unconstrained `pip install -U` for production/privileged use):
+# This file is the human-reviewed DIRECT pin (the input to the lock below).
+#
+# For reproducible, tamper-evident installation use the fully hashed transitive
+# lock and enforce hashes:
+#   python3 -m pip install --require-hashes -r requirements-pathchanger.lock
+# The lock pins every transitive dependency with sha256 hashes and is verified in
+# CI (see the "Python Dependency Lock" job in .github/workflows/ci.yml).
+#
+# Plain (non-hash-enforced) install of the direct pin is still supported:
 #   python3 -m pip install -r requirements-pathchanger.txt
+# Do NOT use unconstrained `pip install -U` for production/privileged use.
 #
 # Maintainer bump procedure:
 #   1. Smoke-test the candidate pymobiledevice3 against tunnel start + location set.
-#   2. Update PythonPathResolver.pinnedPymobiledevice3Version
-#   3. Update this file (version + recorded wheel hash below)
-#   4. Update Localizable.strings dependency.pipCommand + unit tests
+#   2. Update PythonPathResolver.pinnedPymobiledevice3Version.
+#   3. Update the version below.
+#   4. Regenerate the hashed lock:
+#        uv pip compile requirements-pathchanger.txt --generate-hashes \
+#          --output-file requirements-pathchanger.lock
+#   5. Update Localizable.strings dependency.pipCommand + unit tests.
 #
-# Recorded wheel integrity (informational; not enforced via --require-hashes to avoid
-# pinning the entire transitive tree in this Wave 0 containment step):
+# Direct wheel integrity (now enforced transitively via requirements-pathchanger.lock):
 #   pymobiledevice3-9.12.0-py3-none-any.whl
 #   sha256:50a5c441213df6a0cc238e086f46e5579c0aff4303bac312f9c900202c973c99
 #

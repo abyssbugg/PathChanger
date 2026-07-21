@@ -47,3 +47,16 @@ Thumbs.db
 # Audit prompt inputs (local only, not part of the project)
 Hybrid-Universal-Technical-Collaboration-Frameworkn.v3.md
 security-audit-prompt-full.md
+
+# Signing material, keys, and provisioning profiles (never commit; CWE-312)
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.der
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
