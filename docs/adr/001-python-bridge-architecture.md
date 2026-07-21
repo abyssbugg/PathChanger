@@ -1,7 +1,10 @@
 # ADR 001: Python Bridge Architecture
 
 ## Status
-Accepted
+Superseded (2026-07). `PersistentLocationBridge` was removed (commit `c1d550b`);
+the app now uses the subprocess bridge (`DevLocationBridge`) only. This ADR is
+retained for historical decision provenance. Do not reintroduce a persistent
+bridge without a new ADR. See ADR 004 for the current security posture.
 
 ## Context
 PathChanger needs to communicate with iOS devices to simulate GPS locations. The pymobiledevice3 library provides this capability but is Python-based. We needed to decide between:
