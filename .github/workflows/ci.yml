@@ -71,9 +71,13 @@ jobs:
     - name: Build App Bundle Smoke Test
       run: |
         chmod +x build-app-bundle.sh
+        # build-app-bundle.sh now mints a unique mktemp workspace by default, so
+        # pass an explicit private workspace to keep the bundle path deterministic.
+        APP_BUNDLE_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pc-ci-build.XXXXXXXX")"
+        export APP_BUNDLE_BUILD_ROOT
         ./build-app-bundle.sh
 
-        APP="${TMPDIR:-/tmp}/pathchanger-app-build/PathChanger.app"
+        APP="$APP_BUNDLE_BUILD_ROOT/PathChanger.app"
         EXECUTABLE="$APP/Contents/MacOS/PathChanger"
         PLIST="$APP/Contents/Info.plist"
 
@@ -93,6 +97,41 @@ jobs:
           -instr-profile=.build/debug/codecov/default.profdata \
           -format=lcov > coverage.lcov
         test -s coverage.lcov
+
+  python-lock:
+    name: Python Dependency Lock
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        git init "$GITHUB_WORKSPACE"
+        git -C "$GITHUB_WORKSPACE" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+        git -C "$GITHUB_WORKSPACE" config gc.auto 0
+        git -C "$GITHUB_WORKSPACE" config advice.detachedHead false
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        AUTH_HEADER=$(printf "x-access-token:%s" "$GITHUB_TOKEN" | base64 | tr -d '\n')
+        git -C "$GITHUB_WORKSPACE" -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
+        git -C "$GITHUB_WORKSPACE" checkout --force FETCH_HEAD
+
+    - name: Verify hashed dependency lock installs cleanly
+      run: |
+        python3 -m venv "${RUNNER_TEMP}/pc-lockcheck-venv"
+        # shellcheck disable=SC1091
+        source "${RUNNER_TEMP}/pc-lockcheck-venv/bin/activate"
+        python -m pip install --upgrade pip
+        # --require-hashes fails closed if any package or transitive dep lacks a
+        # pinned sha256; --no-deps installs exactly the locked closure.
+        python -m pip install --require-hashes --no-deps -r requirements-pathchanger.lock
+        python -m pymobiledevice3 version 2>&1 | grep -q "9.12.0" \
+          || { echo "Installed pymobiledevice3 does not report expected version 9.12.0"; exit 1; }
+
+    - name: Assert lock stays in sync with the direct pin
+      run: |
+        grep -q '^pymobiledevice3==9.12.0' requirements-pathchanger.lock \
+          || { echo "requirements-pathchanger.lock must pin pymobiledevice3==9.12.0"; exit 1; }
 
   lint:
     name: Swift Lint
