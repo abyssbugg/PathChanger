@@ -17,7 +17,6 @@ let package = Package(
         .executableTarget(
             name: "PathChanger",
             path: "PathChanger",
-            exclude: ["Info.plist"],
             resources: [
                 .process("Resources/en.lproj"),
                 .process("Resources/ja.lproj")

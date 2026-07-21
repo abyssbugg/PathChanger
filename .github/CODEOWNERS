@@ -1,0 +1,24 @@
+# Code owners for PathChanger.
+# Changes to the paths below request review from the listed owner(s).
+# Sole maintainer today; expand as the team grows. Pair this with branch
+# protection "Require review from Code Owners" once a second reviewer exists.
+
+# CI/CD, release automation, and supply-chain manifests
+/.github/                              @abyssbugg
+/requirements-pathchanger.txt          @abyssbugg
+/requirements-pathchanger.lock         @abyssbugg
+/build.sh                              @abyssbugg
+/build-app-bundle.sh                   @abyssbugg
+/install.sh                            @abyssbugg
+/scripts/                              @abyssbugg
+/Package.swift                         @abyssbugg
+
+# Entitlements and bundle configuration
+/Resources/PathChanger.entitlements    @abyssbugg
+/Resources/Info.plist                  @abyssbugg
+
+# Privileged execution, subprocess, tunnel, and input-sanitization code
+/PathChanger/Core/PrivilegedPathSecurity.swift  @abyssbugg
+/PathChanger/Core/ArgumentSanitizer.swift        @abyssbugg
+/PathChanger/Core/PythonPathResolver.swift       @abyssbugg
+/PathChanger/Device/                             @abyssbugg

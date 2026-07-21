@@ -1,7 +1,11 @@
 # ADR 003: State Machine for Tunnel Management
 
 ## Status
-Accepted
+Superseded in part (2026-07). The finite-state-machine decision stands, but the
+code below has drifted: the current `TunnelState` (`PathChanger/Device/TunnelState.swift`)
+has no `externallyManaged` case and the `starting`/`running` shapes differ from
+this document. Treat the concrete enum/event snippets here as historical; consult
+the source for the authoritative state model.
 
 ## Context
 Tunnel lifecycle management is complex with multiple states, transitions, and error conditions:

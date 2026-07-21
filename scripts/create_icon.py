@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Create PathChanger app icon - modern location pin design."""
+"""Create PathChanger app icon - modern location pin design.
+
+Manual developer tool only. It is NOT part of the app runtime or CI, and its
+generated assets under Resources/AppIcon.iconset are committed to the repo.
+Regenerate only when the brand icon changes. Requires Pillow, which is a
+dev-only dependency intentionally excluded from requirements-pathchanger.txt:
+
+    pip install pillow
+    python3 scripts/create_icon.py
+"""
 
 from PIL import Image, ImageDraw
 import math
