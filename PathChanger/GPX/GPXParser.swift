@@ -184,6 +184,8 @@ enum GPXParserError: Error, LocalizedError {
     case parseError(String)
     case emptyFile
     case unsupportedVersion
+    case fileTooLarge(Int)
+    case tooManyPoints(Int)
 
     var errorDescription: String? {
         switch self {
@@ -191,6 +193,8 @@ enum GPXParserError: Error, LocalizedError {
         case .parseError(let msg): return "GPX parse error: \(msg)"
         case .emptyFile: return "GPX file contains no tracks or routes"
         case .unsupportedVersion: return "Unsupported GPX version"
+        case .fileTooLarge(let bytes): return "GPX input too large: \(bytes) bytes (max \(GPXParser.maxDataBytes))"
+        case .tooManyPoints(let count): return "GPX contains too many points: \(count) (max \(GPXParser.maxTotalPoints))"
         }
     }
 }
@@ -217,6 +221,45 @@ class GPXParser: NSObject {
     private var currentAttributes: [String: String] = [:]
     private var currentText: String = ""
     private var parseError: Error?
+
+    /// DoS bounds (ui-models MEDIUM): cap input size and total point count so a
+    /// crafted or huge GPX file cannot exhaust memory or block the caller.
+    static let maxDataBytes = 64 * 1024 * 1024
+    static let maxTotalPoints = 1_000_000
+    private var parsedPointCount = 0
+    private(set) var skippedInvalidCoordinateCount = 0
+
+    /// Parent-element stack so element text (name/desc) is attributed to the
+    /// correct container rather than the previous heuristic that could misassign
+    /// nested metadata/author/route-point names.
+    private var elementStack: [String] = []
+
+    /// Build a coordinate from element attributes, rejecting out-of-range values
+    /// via the model's own bounds validation (`LocationCoordinate.isValid`).
+    private func validCoordinate(from attrs: [String: String]) -> LocationCoordinate? {
+        guard let lat = attrs["lat"].flatMap(Double.init),
+              let lon = attrs["lon"].flatMap(Double.init) else {
+            return nil
+        }
+        let coord = LocationCoordinate(latitude: lat, longitude: lon)
+        guard coord.isValid else {
+            skippedInvalidCoordinateCount += 1
+            Logger.debug("Skipped out-of-range GPX coordinate: \(lat), \(lon)", category: .general)
+            return nil
+        }
+        return coord
+    }
+
+    /// Count a point and abort the parse if the total exceeds the cap.
+    private func registerPointOrAbort(_ parser: XMLParser) -> Bool {
+        parsedPointCount += 1
+        if parsedPointCount > Self.maxTotalPoints {
+            parseError = GPXParserError.tooManyPoints(parsedPointCount)
+            parser.abortParsing()
+            return false
+        }
+        return true
+    }
 
     // ISO8601 date formatters for GPX timestamps (primary with fractional seconds, fallback without)
     private lazy var dateFormatter: ISO8601DateFormatter = {
@@ -253,6 +296,9 @@ class GPXParser: NSObject {
         guard !data.isEmpty else {
             throw GPXParserError.invalidData
         }
+        guard data.count <= Self.maxDataBytes else {
+            throw GPXParserError.fileTooLarge(data.count)
+        }
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let startMemory = getMemoryUsage()
@@ -264,6 +310,9 @@ class GPXParser: NSObject {
         currentElement = ""
         currentText = ""
         parseError = nil
+        parsedPointCount = 0
+        skippedInvalidCoordinateCount = 0
+        elementStack = []
 
         let parser = XMLParser(data: data)
         parser.delegate = self
@@ -308,6 +357,11 @@ class GPXParser: NSObject {
 
     /// Parse GPX from file URL
     func parse(fileURL: URL) throws -> GPXFile {
+        // Reject oversized files before reading them fully into memory.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.size] as? Int,
+           size > Self.maxDataBytes {
+            throw GPXParserError.fileTooLarge(size)
+        }
         let data = try Data(contentsOf: fileURL)
         var gpx = try parse(data: data)
         gpx.name = fileURL.deletingPathExtension().lastPathComponent
@@ -331,16 +385,15 @@ extension GPXParser: XMLParserDelegate {
         currentElement = elementName.lowercased()
         currentAttributes = attributeDict
         currentText = ""
+        elementStack.append(currentElement)
 
         switch currentElement {
         case "gpx":
             break
 
         case "wpt":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let waypoint = GPXWaypoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentGPX?.waypoints.append(waypoint)
+            if let coord = validCoordinate(from: attributeDict), registerPointOrAbort(parser) {
+                currentGPX?.waypoints.append(GPXWaypoint(coordinate: coord))
             }
 
         case "trk":
@@ -350,20 +403,16 @@ extension GPXParser: XMLParserDelegate {
             currentSegment = GPXTrackSegment()
 
         case "trkpt":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let point = GPXTrackPoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentSegment?.points.append(point)
+            if let coord = validCoordinate(from: attributeDict), registerPointOrAbort(parser) {
+                currentSegment?.points.append(GPXTrackPoint(coordinate: coord))
             }
 
         case "rte":
             currentRoute = GPXRoute()
 
         case "rtept":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let point = GPXRoutePoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentRoute?.points.append(point)
+            if let coord = validCoordinate(from: attributeDict), registerPointOrAbort(parser) {
+                currentRoute?.points.append(GPXRoutePoint(coordinate: coord))
             }
 
         default:
@@ -377,30 +426,59 @@ extension GPXParser: XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let element = elementName.lowercased()
+        // Immediate parent element (the entry below the one now ending).
+        let parent = elementStack.count >= 2 ? elementStack[elementStack.count - 2] : ""
+        defer {
+            currentText = ""
+            if !elementStack.isEmpty { elementStack.removeLast() }
+        }
 
-        switch elementName.lowercased() {
+        switch element {
         case "name":
-            if currentRoute != nil {
-                currentRoute?.name = text
-            } else if currentTrack != nil {
-                currentTrack?.name = text
-            } else if let lastIndex = currentGPX?.waypoints.indices.last {
-                currentGPX?.waypoints[lastIndex].name = text
-            } else {
+            guard !text.isEmpty else { break }
+            switch parent {
+            case "metadata":
                 currentGPX?.name = text
+            case "wpt":
+                if let lastIndex = currentGPX?.waypoints.indices.last {
+                    currentGPX?.waypoints[lastIndex].name = text
+                }
+            case "trk":
+                currentTrack?.name = text
+            case "rte":
+                currentRoute?.name = text
+            case "rtept":
+                if let lastIndex = currentRoute?.points.indices.last {
+                    currentRoute?.points[lastIndex].name = text
+                }
+            case "author":
+                currentGPX?.author = text
+            default:
+                if currentTrack == nil && currentRoute == nil {
+                    currentGPX?.name = text
+                }
             }
 
         case "desc":
-            if currentRoute != nil {
-                currentRoute?.description = text
-            } else if currentTrack != nil {
+            guard !text.isEmpty else { break }
+            switch parent {
+            case "trk":
                 currentTrack?.description = text
-            } else {
+            case "rte":
+                currentRoute?.description = text
+            case "wpt":
+                if let lastIndex = currentGPX?.waypoints.indices.last {
+                    currentGPX?.waypoints[lastIndex].description = text
+                }
+            default:
                 currentGPX?.description = text
             }
 
         case "author":
-            currentGPX?.author = text
+            if !text.isEmpty {
+                currentGPX?.author = text
+            }
 
         case "time":
             if let date = parseTimestamp(text) {
@@ -443,8 +521,6 @@ extension GPXParser: XMLParserDelegate {
         default:
             break
         }
-
-        currentText = ""
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
