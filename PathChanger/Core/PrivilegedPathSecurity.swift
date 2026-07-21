@@ -30,6 +30,7 @@ enum PrivilegedPathSecurityError: Error, LocalizedError, Equatable {
     case pathContainsShellMeta(String)
     case pinMissingOnInterpreter(String)
     case unsafeLaunchConstruction(String)
+    case writableAncestor(String)
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +66,8 @@ enum PrivilegedPathSecurityError: Error, LocalizedError, Equatable {
             return "Pinned pymobiledevice3 \(PythonPathResolver.pinnedPymobiledevice3Version) not found on privileged interpreter: \(path)"
         case .unsafeLaunchConstruction(let detail):
             return "Could not build safe privileged launch command: \(detail)"
+        case .writableAncestor(let path):
+            return "Privileged target has a group/other-writable ancestor directory: \(path)"
         }
     }
 }
@@ -159,13 +162,15 @@ enum PrivilegedPathSecurity {
             pool = acceptable
         }
 
-        // Prefer caller's path when it made the pool (same binary as onboarding checks).
-        if let preferredUserPath, pool.contains(preferredUserPath) {
-            return preferredUserPath
-        }
-        // Prefer root-owned among remaining.
+        // Prefer a root-owned interpreter when one is pinned and available: unlike
+        // a user-owned Homebrew install it cannot be rewritten by same-UID code, so
+        // it is the safer provenance for administrator-privileged execution.
         if let rootOwned = pool.first(where: { isRootOwnedFile(at: $0) }) {
             return rootOwned
+        }
+        // Otherwise fall back to the caller's path (same binary onboarding checked).
+        if let preferredUserPath, pool.contains(preferredUserPath) {
+            return preferredUserPath
         }
         return pool.first
     }
@@ -532,19 +537,58 @@ enum PrivilegedPathSecurity {
         }
 
         let fileType = info.st_mode & S_IFMT
+        let binaryError: PrivilegedPathSecurityError?
         if fileType == S_IFLNK {
             var target = stat()
             guard stat(path, &target) == 0 else {
                 return .symlinkRejected(path)
             }
-            return validateStatForPrivilegedBinary(target, path: path, requireExecutable: requireExecutable)
-        }
-
-        if fileType != S_IFREG {
+            binaryError = validateStatForPrivilegedBinary(target, path: path, requireExecutable: requireExecutable)
+        } else if fileType != S_IFREG {
             return .notRegularFile(path)
+        } else {
+            binaryError = validateStatForPrivilegedBinary(info, path: path, requireExecutable: requireExecutable)
         }
 
-        return validateStatForPrivilegedBinary(info, path: path, requireExecutable: requireExecutable)
+        if let binaryError {
+            return binaryError
+        }
+
+        // Wave 1 interim hardening: reject a target reachable through a group/other-
+        // writable (non-sticky) ancestor directory, which would let another local
+        // user replace the privileged binary/script. Same-UID replacement remains a
+        // residual risk to be closed by the signed SMAppService/XPC helper.
+        return validateNoWritableAncestors(of: path)
+    }
+
+    /// Walk ancestor directories from the target's parent up to `/` and reject any
+    /// group- or other-writable directory that is not sticky. Sticky world-writable
+    /// dirs (for example `/tmp`) are permitted because the sticky bit prevents a
+    /// different user from replacing files they do not own.
+    static func validateNoWritableAncestors(of path: String) -> PrivilegedPathSecurityError? {
+        var current = URL(fileURLWithPath: path).deletingLastPathComponent().path
+        var iterations = 0
+        while true {
+            iterations += 1
+            if iterations > 128 { break }
+            var info = stat()
+            guard stat(current, &info) == 0 else {
+                return .pathMissing(current)
+            }
+            if (info.st_mode & S_IFMT) == S_IFDIR {
+                let groupWrite = (info.st_mode & S_IWGRP) != 0
+                let otherWrite = (info.st_mode & S_IWOTH) != 0
+                let sticky = (info.st_mode & S_ISVTX) != 0
+                if (groupWrite || otherWrite) && !sticky {
+                    return .writableAncestor(current)
+                }
+            }
+            if current == "/" { break }
+            let parent = URL(fileURLWithPath: current).deletingLastPathComponent().path
+            if parent == current { break }
+            current = parent
+        }
+        return nil
     }
 
     private static func validateStatForPrivilegedBinary(

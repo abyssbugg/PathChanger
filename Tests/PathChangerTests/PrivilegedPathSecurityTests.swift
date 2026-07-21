@@ -148,6 +148,42 @@ final class PrivilegedPathSecurityTests: XCTestCase {
         XCTAssertEqual(err, .symlinkRejected(link.path))
     }
 
+    // MARK: - Wave 1 interim hardening: writable-ancestor rejection
+
+    func testPrivilegedPairScriptRejectsWorldWritableAncestor() throws {
+        // A group/other-writable (non-sticky) ancestor would let another local user
+        // swap the script between validation and privileged execution, so reject it.
+        let resources = tempRoot.appendingPathComponent("PathChanger.app/Contents/Resources", isDirectory: true)
+        let scriptsDir = resources.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
+        let script = scriptsDir.appendingPathComponent("pair_wifi.py")
+        FileManager.default.createFile(
+            atPath: script.path,
+            contents: Data("# pair helper\n".utf8),
+            attributes: [.posixPermissions: 0o644]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: resources.path)
+        let err = PrivilegedPathSecurity.validatePrivilegedPairScriptPath(script.path)
+        if case .writableAncestor = err {
+            // expected
+        } else {
+            XCTFail("World-writable ancestor must be rejected, got \(String(describing: err))")
+        }
+    }
+
+    func testValidateNoWritableAncestorsFlagsGroupWritableDirectory() throws {
+        let openDir = tempRoot.appendingPathComponent("open-dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: openDir, withIntermediateDirectories: true)
+        let file = openDir.appendingPathComponent("thing")
+        FileManager.default.createFile(atPath: file.path, contents: Data("x".utf8), attributes: [.posixPermissions: 0o600])
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: openDir.path)
+        if case .writableAncestor = PrivilegedPathSecurity.validateNoWritableAncestors(of: file.path) {
+            // expected
+        } else {
+            XCTFail("Group-writable ancestor directory must be flagged")
+        }
+    }
+
     func testResolvePrivilegedPythonRequiresPinWhenEnabled() {
         let path = PrivilegedPathSecurity.resolvePrivilegedPythonPath(
             preferredUserPath: "/usr/bin/python3",
