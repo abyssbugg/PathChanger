@@ -239,6 +239,27 @@ extension TunneldManager {
         return port > 0 && port <= 65535
     }
 
+    /// Resolve the first usable port from a tunneld API entry, preferring native
+    /// numeric values over their string representations across all keys.
+    ///
+    /// Written as an explicit search rather than a chain of `as? Int ?? Int(... as? String ?? "")`
+    /// coalescing operators: that form mixes optional casts and failable `Int` inits across six
+    /// terms, which exceeds the Swift type checker's expression budget and fails the release
+    /// build with "unable to type-check this expression in reasonable time".
+    nonisolated static func firstPort(in entry: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            if let value = entry[key] as? Int {
+                return value
+            }
+        }
+        for key in keys {
+            if let text = entry[key] as? String, let value = Int(text) {
+                return value
+            }
+        }
+        return nil
+    }
+
     /// Query the tunneld HTTP API to get RSD info for all connected devices
     /// API returns: {"UDID": [{"tunnel-address": "...", "tunnel-port": ..., "interface": "..."}], ...}
     func queryTunneldAPI() async {
@@ -263,12 +284,7 @@ extension TunneldManager {
                     let address = entry["tunnel-address"] as? String ??
                         entry["rsd-address"] as? String ??
                         entry["address"] as? String
-                    let port = entry["tunnel-port"] as? Int ??
-                        entry["rsd-port"] as? Int ??
-                        entry["port"] as? Int ??
-                        Int(entry["tunnel-port"] as? String ?? "") ??
-                        Int(entry["rsd-port"] as? String ?? "") ??
-                        Int(entry["port"] as? String ?? "")
+                    let port = Self.firstPort(in: entry, keys: ["tunnel-port", "rsd-port", "port"])
                     let interface = entry["interface"] as? String
 
                     guard let address,

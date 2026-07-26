@@ -993,8 +993,12 @@ actor DevLocationBridge {
         process.terminationHandler = { [weak self] terminatedProcess in
             let outputState = startupState.snapshot()
 
+            // A `weak` capture is mutable storage, so referencing `self` directly from
+            // the nested Task is a concurrent capture of a var. Bind an immutable copy
+            // first; the actor reference itself is Sendable.
+            let bridge = self
             Task {
-                await self?.removeActiveLocationProcess(for: deviceUDID, process: terminatedProcess)
+                await bridge?.removeActiveLocationProcess(for: deviceUDID, process: terminatedProcess)
             }
 
             guard !outputState.completed else { return }
