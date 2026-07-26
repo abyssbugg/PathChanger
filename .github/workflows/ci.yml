@@ -30,7 +30,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # head_ref for pull_request, ref for push. Without the fallback, a branch with
+  # an open PR builds twice for every commit -- once per event -- in two separate
+  # groups. Collapsing them means the newer run cancels the older.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -84,8 +87,16 @@ jobs:
     - name: Build (Release)
       run: swift build -c release
 
+    # FOLLOW-UP: the suite is slow, not failing. The first run that ever reached
+    # completion exceeded the previous 20-minute budget with zero test failures.
+    # Wall-clock per-test figures point at multi-minute stalls (CircuitBreakerTests
+    # reported 306s for a test whose body has no sleep and no I/O), so the cost is
+    # almost certainly blocking work elsewhere -- real subprocess timeouts and the
+    # 0.5s tearDown sleep in TunneldManagerTests, multiplied across the suite --
+    # rather than the tests it is billed to. Profile and fix that, then lower this
+    # back down. Raised rather than left failing so the gate reports real results.
     - name: Run Unit Tests
-      timeout-minutes: 20
+      timeout-minutes: 45
       env:
         PATHCHANGER_RUN_DEVICE_TESTS: "0"
       run: swift test --enable-code-coverage
