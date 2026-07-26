@@ -56,7 +56,10 @@ Developer ID signing + notarization are in place.
 
 ## Follow-ups
 1. Obtain Developer ID; sign + notarize releases; implement the SMAppService/XPC
-   helper and route privileged tunnel/pairing through it.
+   helper and route privileged tunnel/pairing through it. The interim posture this
+   forces on distribution — ad-hoc signing, no notarization, no auto-update — is
+   recorded separately in [ADR 005](005-interim-adhoc-distribution.md), which shares
+   this prerequisite and lists the reversal steps.
 2. App Sandbox feasibility spike for the UI process, keeping device/Python work
    behind the privileged helper.
 3. Add a second trusted reviewer, then enable "require Code Owner review".
