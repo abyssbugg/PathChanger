@@ -12,7 +12,9 @@ pending Developer ID."
 
 That constraint has a second consequence ADR 004 did not record. The UI redesign
 and security-remediation branch removed the entire signed-distribution path that
-existed on `main`, and nothing documented the removal:
+existed on `main`. The removal is *enforced* — `scripts/validate-release-config.sh`
+fails the build if Sparkle wiring or the legacy deployment documents reappear — but
+it was never *explained*; no ADR or changelog entry recorded why. What was removed:
 
 - the Sparkle dependency in `Package.swift` and `PathChanger/Core/UpdaterController.swift`
 - the Developer ID → notarize → staple → Gatekeeper-assess → Sparkle-sign steps in
@@ -44,14 +46,33 @@ and record it rather than leaving it implicit in a deleted file.
 - **No auto-update channel.** Sparkle and `UpdaterController` stay removed until
   updates can be signed; an unsigned update channel is a worse risk than no
   update channel.
-- **The deleted DEPLOYMENT documents are restored under explicit status banners**
-  rather than deleted, because two of them are still live and the other two are
-  the historical record:
-  - `02_CODE_SIGNING_PROCEDURES.md` — DEFERRED; the playbook for the day signing lands.
-  - `03_SECURITY_VERIFICATION_CHECKLIST.md` — ACTIVE; its file and test-suite references are current.
-  - `04_PERFORMANCE_BASELINE.md` — HISTORICAL; December 2025 figures, not re-validated.
-  - `05_UAT_SIGN_OFF.md` — HISTORICAL; a completed v1.0.0 RC1 sheet whose "macOS 11.0+"
-    and "Universal Binary" claims no longer match the `.macOS(.v14)` target.
+- **`DEPLOYMENT/02` through `05` stay deleted.** Their absence is not incidental:
+  `scripts/validate-release-config.sh` asserts it by name and fails the *Build &
+  Test* required check if any reappears ("Contradictory legacy deployment document
+  must be removed"), with a companion check that `DEPLOYMENT/README.md` does not
+  link them. `DEPLOYMENT/README.md` states that where documentation and workflow
+  behaviour diverge, the workflow and validation script are authoritative.
+
+  That enforcement is correct: a repository that simultaneously ships a
+  notarization playbook and a validation script forbidding notarization is worse
+  than one that ships neither. What was missing was the *reason*, which existed
+  only as a shell assertion. This ADR is that reason.
+
+  The content is not lost. Retrieve it when signing lands:
+
+  ```bash
+  git show 75321f5:DEPLOYMENT/02_CODE_SIGNING_PROCEDURES.md
+  git show 75321f5:DEPLOYMENT/03_SECURITY_VERIFICATION_CHECKLIST.md
+  git show 75321f5:DEPLOYMENT/04_PERFORMANCE_BASELINE.md
+  git show 75321f5:DEPLOYMENT/05_UAT_SIGN_OFF.md
+  ```
+
+  Two cautions for whoever restores them. `04` and `05` are December 2025 records
+  whose "macOS 11.0+" and "Universal Binary" claims already contradict the current
+  `.macOS(.v14)` target, and `05` is a completed v1.0.0 RC1 sign-off rather than a
+  blank template. `03` is the one whose file and test-suite references remain
+  accurate and is the strongest candidate to reinstate — but reinstating any of
+  them requires updating `validate-release-config.sh` in the same change set.
 
 ## Consequences
 - Positive: the release pipeline is honest — every step it runs can actually pass,

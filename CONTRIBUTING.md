@@ -3,10 +3,25 @@
 ## Code Style
 
 ### SwiftLint Enforcement
-- All Swift code must pass SwiftLint validation
-- CI automatically runs `swiftlint lint` on every PR (see `.github/workflows/ci.yml`)
-- Install locally: `brew install swiftlint`
-- Run before committing: `swiftlint lint --strict`
+- All Swift code must pass SwiftLint validation. The *Swift Lint* check is required
+  by branch protection and will fail the build.
+- CI runs a **pinned, checksum-verified SwiftLint 0.65.0** (see the `lint` job in
+  `.github/workflows/ci.yml`). Match that version locally or your results will
+  differ from CI:
+
+  ```bash
+  brew install swiftlint            # convenient, but tracks whatever brew has
+  swiftlint --version               # compare against the pin in ci.yml
+  ```
+
+- Run before committing: `swiftlint lint`
+
+  Do **not** use `--strict` as a pre-commit gate. It promotes warnings to errors,
+  and the codebase currently carries a large warning backlog. CI does not use it.
+- The build fails on SwiftLint **errors** only. If you are adding a file, keep it
+  under the `file_length` (1200) and `type_body_length` (600) error thresholds —
+  see `Tests/PathChangerTests/TunneldManagerStopTunnelTests.swift` for the
+  extension-split pattern used when a type outgrows them.
 
 ### Swift Conventions
 - Follow Swift API Design Guidelines
@@ -24,37 +39,60 @@
 
 ### CI Pipeline
 All PRs trigger automated checks (`.github/workflows/ci.yml`):
-- **Build**: Debug + Release configurations
-- **Tests**: All unit tests must pass (100% pass rate required)
-- **Coverage**: Generates report via `llvm-cov`, uploads to CodeCov
-- **Lint**: SwiftLint validation
-- **Security**: Secret scanning, entitlement validation
-- **Documentation**: DocC build verification
+- **Build & Test**: Debug + Release builds, unit tests, app-bundle smoke test
+- **Coverage**: exports `coverage.lcov` via `llvm-cov` as a build artifact. It is
+  not uploaded to a coverage service and no coverage threshold is enforced in CI.
+- **Swift Lint**: SwiftLint, pinned and checksum-verified. This gate fails the build.
+- **Security Scan**: gitleaks secret scan and entitlement policy assertion
+- **Python Dependency Lock**: hash-enforced install of `requirements-pathchanger.lock`
+- **Build Documentation**: DocC build verification
+
+Four of these are required by branch protection: *Build & Test*, *Python Dependency
+Lock*, *Swift Lint*, *Security Scan*.
+
+> A pull request that has merge conflicts will show **none** of these checks.
+> GitHub cannot construct a merge ref for a conflicted PR, so the workflows never
+> start and the required checks sit unreported rather than red. Rebase or merge
+> `main` first, then look for the checks.
 
 ### Review Process
-- PRs target `main` or `develop` branches
+- PRs target `main`
 - Require 1 approving review
-- All CI checks must pass (green status)
+- All required CI checks must pass (green status)
 - Address review feedback promptly
 
 ## Testing Requirements
 
 ### Standards
-- **100% test pass rate**
-- **>70% code coverage** maintained
-- Add tests for new features/bug fixes
+- **100% test pass rate** — enforced by the *Build & Test* required check
+- **Add tests for new features and bug fixes**
+- **>70% code coverage** is a goal, not a gate. Nothing in CI enforces a coverage
+  threshold today. `scripts/coverage.sh` accepts `--threshold N` if you want to
+  check locally, and wiring it into CI is tracked as follow-up work — the number
+  should be set from a measured baseline rather than asserted.
 
 ### Running Tests
 ```bash
-# Run all tests
-swift test
+# Run all tests (device-dependent tests are skipped by default in CI)
+PATHCHANGER_RUN_DEVICE_TESTS=0 swift test
 
 # Run with coverage
 swift test --enable-code-coverage
 
 # Generate HTML coverage report
 ./scripts/coverage.sh --html
+
+# Check against a threshold locally
+./scripts/coverage.sh --threshold 70
 ```
+
+> **macOS sync folders break local builds.** If the repository lives in a folder
+> synced by iCloud Drive, Dropbox, Google Drive or similar, the sync client
+> attaches `com.apple.fileprovider.*`, `com.apple.FinderInfo` and `com.apple.macl`
+> extended attributes to your files. `codesign` rejects these with *"resource fork,
+> Finder information, or similar detritus not allowed"*, so `swift test` and
+> `./build.sh` fail while CI passes. `xattr -c` cannot remove `com.apple.macl`.
+> Clone into a non-synced directory such as `~/Developer/`.
 
 ### Test Suites
 - Unit tests: `Tests/PathChangerTests/`
@@ -121,8 +159,8 @@ New contributors can start with:
 
 ## Questions?
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/PathChanger/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/PathChanger/discussions)
+- **Issues**: [GitHub Issues](https://github.com/abyssbugg/PathChanger/issues)
+- **Security reports**: see [SECURITY.md](SECURITY.md) — report privately, not via Issues
 
 ---
 

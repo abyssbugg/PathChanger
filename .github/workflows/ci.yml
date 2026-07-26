@@ -1,5 +1,16 @@
 name: CI
 
+# Runner image: macos-26.
+#
+# Not cosmetic. PathChanger/UI/DesignSystem.swift applies Liquid Glass via
+# `glassEffect`, correctly guarded by `if #available(macOS 26.0, *)` with an
+# ultra-thin-material fallback so the .macOS(.v14) deployment floor is preserved.
+# `#available` gates *runtime* availability, not SDK presence: the symbol has to
+# exist in the SDK to compile at all. macos-14 ships Xcode 15.4 (macOS 14 SDK),
+# which does not have it, so that image cannot build this project regardless of
+# the deployment target. Keep every job on the same image so the lint, docs and
+# build jobs agree about the toolchain.
+
 on:
   push:
     branches: [ main, develop ]
@@ -21,7 +32,7 @@ defaults:
 jobs:
   build:
     name: Build & Test
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
@@ -100,7 +111,7 @@ jobs:
 
   python-lock:
     name: Python Dependency Lock
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
@@ -135,7 +146,7 @@ jobs:
 
   lint:
     name: Swift Lint
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
@@ -167,7 +178,7 @@ jobs:
 
   security-scan:
     name: Security Scan
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout
@@ -216,7 +227,7 @@ jobs:
 
   documentation:
     name: Build Documentation
-    runs-on: macos-14
+    runs-on: macos-26
 
     steps:
     - name: Checkout

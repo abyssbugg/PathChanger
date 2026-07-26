@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build-and-release:
     name: Build & Publish GitHub Artifacts
-    runs-on: macos-14
+    runs-on: macos-26
 
     permissions:
       contents: write
