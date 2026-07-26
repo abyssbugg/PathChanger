@@ -30,10 +30,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # head_ref for pull_request, ref for push. Without the fallback, a branch with
-  # an open PR builds twice for every commit -- once per event -- in two separate
-  # groups. Collapsing them means the newer run cancels the older.
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # head_ref for pull_request, ref_name for push -- both yield the bare branch
+  # name, so the two events for one commit land in the SAME group and the newer
+  # cancels the older. github.ref must not be used here: it expands to
+  # "refs/heads/<branch>" on push and would never match head_ref's "<branch>",
+  # leaving two full macOS suites racing each other for the same commit.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
