@@ -346,7 +346,7 @@ final class LocationBridgeTests: XCTestCase {
             print(json.dumps({"request_id": request_id, "success": True}), flush=True)
         """
         let device = Device(
-            id: "00008130000C5144019A001C",
+            id: "00008130-000C5144019A001C",
             displayName: "Test iPhone",
             connectionType: .usb,
             productVersion: "17.4"
@@ -414,7 +414,7 @@ final class LocationBridgeTests: XCTestCase {
             }), flush=True)
         """
         let device = Device(
-            id: "00008130000C5144019A001C",
+            id: "00008130-000C5144019A001C",
             displayName: "Test iPhone",
             connectionType: .usb,
             productVersion: "17.4"

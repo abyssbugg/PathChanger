@@ -31,9 +31,17 @@ extension TunneldManager {
         }
 
         // Wave 0.1 / A07: same interpreter for pin check and elevation (prefer resolver path).
-        guard let privilegedPython = PrivilegedPathSecurity.resolvePrivilegedPythonPath(
+        // Resolution depends on host Python provenance, so DEBUG builds allow tests to
+        // pin it; release builds always resolve for real.
+        var resolvedPrivilegedPython = PrivilegedPathSecurity.resolvePrivilegedPythonPath(
             preferredUserPath: python3Path
-        ) else {
+        )
+#if DEBUG
+        if let debugPrivilegedPythonPath {
+            resolvedPrivilegedPython = debugPrivilegedPythonPath
+        }
+#endif
+        guard let privilegedPython = resolvedPrivilegedPython else {
             let message = """
             No acceptable Python 3 interpreter with pinned pymobiledevice3 \(PythonPathResolver.pinnedPymobiledevice3Version) \
             is available for privileged tunnel start. Install the pin on your Python \

@@ -135,14 +135,14 @@ extension TunneldManagerTests {
             processId: nil
         )
 
-        XCTAssertNil(manager.getRsdInfo(for: "00008130000C5144019A001C"))
+        XCTAssertNil(manager.getRsdInfo(for: "00008130-000C5144019A001C"))
 
         manager.testSendTunnelEvent(.startRequested(mode: .usb))
         manager.testSendTunnelEvent(.connectionEstablished(info: info))
-        XCTAssertEqual(manager.getRsdInfo(for: "00008130000C5144019A001C"), info)
+        XCTAssertEqual(manager.getRsdInfo(for: "00008130-000C5144019A001C"), info)
 
         manager.testSendTunnelEvent(.healthCheckFailed)
-        XCTAssertNil(manager.getRsdInfo(for: "00008130000C5144019A001C"))
+        XCTAssertNil(manager.getRsdInfo(for: "00008130-000C5144019A001C"))
     }
 
     func testDaemonModeConnectivityHealthyFromApiRsdWhenLogTunnelInfoMissing() {
@@ -197,11 +197,11 @@ extension TunneldManagerTests {
 
         manager.testSendTunnelEvent(.startRequested(mode: .usb))
         manager.testSendTunnelEvent(.connectionEstablished(info: info))
-        XCTAssertNotNil(manager.getRsdInfo(for: "00008130000C5144019A001C"))
+        XCTAssertNotNil(manager.getRsdInfo(for: "00008130-000C5144019A001C"))
 
         manager.invalidateActiveTunnelAfterTransportFailure("No route to host")
 
-        XCTAssertNil(manager.getRsdInfo(for: "00008130000C5144019A001C"))
+        XCTAssertNil(manager.getRsdInfo(for: "00008130-000C5144019A001C"))
         if case .error = manager.state {
             XCTAssertTrue(true)
         } else {

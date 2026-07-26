@@ -13,7 +13,7 @@ import Darwin
 final class TunneldManagerTests: XCTestCase {
 
     var manager: TunneldManager!
-    let testUDID = "00008130000C5144019A001C"
+    let testUDID = "00008130-000C5144019A001C"
 
     func usbTunnelCommand(udid: String? = nil) -> String {
         let udidArgument = udid.map { " --udid \($0)" } ?? ""
@@ -30,6 +30,14 @@ final class TunneldManagerTests: XCTestCase {
         manager = TunneldManager.shared
 #if DEBUG
         manager.testResetTunnelLifecycleForTests()
+        // Wave 1 made attemptStart resolve a non-pyenv interpreter carrying the
+        // pinned pymobiledevice3 before it builds anything. That is a property of
+        // the host: on a pyenv-based dev machine, or on a CI runner without the
+        // pin, resolution returns nil and attemptStart bails before any of the
+        // orchestration these tests actually cover. Pin it so the launch tests
+        // are hermetic; the resolver itself is covered by
+        // PrivilegedPathSecurityTests.
+        manager.testSetPrivilegedPythonPath("/usr/bin/python3")
 #else
         manager.stopTunnel()
 #endif

@@ -57,6 +57,7 @@ extension TunneldManager {
         debugRecoveredRsdInfoFromLogOverrideEnabled = false
         debugPrivilegedWrapperRunner = nil
         debugSignalHandler = nil
+        debugPrivilegedPythonPath = nil
         let wasLoadingPreferredModeFromDefaults = isLoadingPreferredModeFromDefaults
         isLoadingPreferredModeFromDefaults = true
         preferredMode = .auto
@@ -131,6 +132,12 @@ extension TunneldManager {
 
     func testSetPrivilegedWrapperRunner(_ runner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?) {
         debugPrivilegedWrapperRunner = runner
+    }
+
+    /// Pin the interpreter `attemptStart` will treat as the resolved privileged
+    /// Python, so launch-orchestration tests do not depend on host Python layout.
+    func testSetPrivilegedPythonPath(_ path: String?) {
+        debugPrivilegedPythonPath = path
     }
 
     func testSetTargetTunnelUDID(_ udid: String?) {

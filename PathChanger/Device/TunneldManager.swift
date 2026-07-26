@@ -283,6 +283,16 @@ class TunneldManager: ObservableObject {
     var debugRecoveredRsdInfoFromLogOverrideEnabled = false
     var debugPrivilegedWrapperRunner: (@Sendable (String) -> PrivilegedWrapperExecutionResult)?
     var debugSignalHandler: (@MainActor (Int32, Int32) -> Bool)?
+    /// Overrides privileged interpreter resolution in `attemptStart`.
+    ///
+    /// Wave 1 made `attemptStart` resolve a non-pyenv, root-preferred interpreter
+    /// carrying the pinned pymobiledevice3 before it builds anything. That is a
+    /// property of the *host*, so unit tests covering the launch orchestration
+    /// otherwise pass or fail based on how the developer installed Python — and
+    /// fail on CI runners, which have no pin. Injecting it here keeps those tests
+    /// hermetic, exactly as `debugPrivilegedWrapperRunner` does for the AppleScript.
+    /// DEBUG-only: release builds always resolve for real.
+    var debugPrivilegedPythonPath: String?
 #endif
 
     /// Active process IDs to prevent duplicates (mirrored from state machine context)
