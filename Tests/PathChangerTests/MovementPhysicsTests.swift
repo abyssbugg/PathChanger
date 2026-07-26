@@ -270,17 +270,17 @@ final class MovementPhysicsEngineTests: XCTestCase {
     }
 
     // Helper function
-    private func distanceBetween(_ a: LocationCoordinate, _ b: LocationCoordinate) -> Double {
-        let R = 6371000.0
-        let dLat = (b.latitude - a.latitude) * .pi / 180
-        let dLon = (b.longitude - a.longitude) * .pi / 180
-        let lat1 = a.latitude * .pi / 180
-        let lat2 = b.latitude * .pi / 180
+    private func distanceBetween(_ from: LocationCoordinate, _ to: LocationCoordinate) -> Double {
+        let earthRadiusMeters = 6371000.0
+        let dLat = (to.latitude - from.latitude) * .pi / 180
+        let dLon = (to.longitude - from.longitude) * .pi / 180
+        let lat1 = from.latitude * .pi / 180
+        let lat2 = to.latitude * .pi / 180
 
-        let aa = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(aa), sqrt(1-aa))
+        let haversine = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
+        let angularDistance = 2 * atan2(sqrt(haversine), sqrt(1-haversine))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 }
 

@@ -1,6 +1,15 @@
 disabled_rules:
   - multiple_closures_with_trailing_closure
 
+# Build products and local recovery staging are not source. CI never sees these
+# (it lints a fresh checkout), but they otherwise swamp local `swiftlint lint`
+# runs, which CONTRIBUTING.md tells contributors to run before committing.
+excluded:
+  - .build
+  - .recovery
+  - dist
+  - DerivedData
+
 line_length:
   warning: 300
   error: 350

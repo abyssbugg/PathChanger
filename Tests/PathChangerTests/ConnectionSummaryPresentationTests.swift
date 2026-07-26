@@ -15,7 +15,7 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
     // MARK: Active tunnel — Connected (green) vs Active (grey)
 
     func testWiFiDaemonHealthyIsConnectedGreen() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .daemon,
             selectedConnectionType: .wifi,
@@ -25,16 +25,16 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Connected")
-        XCTAssertEqual(p?.icon, "wifi")
-        XCTAssertEqual(p?.tone, .connected)
-        XCTAssertTrue(p?.detail?.contains("background daemon tunnel") == true)
-        XCTAssertTrue(p?.detail?.contains("Wi-Fi available") == true)
-        XCTAssertFalse(p?.detail?.localizedCaseInsensitiveContains("USB") == true)
+        XCTAssertEqual(presentation?.title, "Wi-Fi Connected")
+        XCTAssertEqual(presentation?.icon, "wifi")
+        XCTAssertEqual(presentation?.tone, .connected)
+        XCTAssertTrue(presentation?.detail?.contains("background daemon tunnel") == true)
+        XCTAssertTrue(presentation?.detail?.contains("Wi-Fi available") == true)
+        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("USB") == true)
     }
 
     func testWiFiDaemonNotHealthyIsActiveGrey() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .daemon,
             selectedConnectionType: .wifi,
@@ -44,13 +44,13 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Active")
-        XCTAssertEqual(p?.tone, .active)
-        XCTAssertTrue(p?.detail?.contains("background daemon tunnel") == true)
+        XCTAssertEqual(presentation?.title, "Wi-Fi Active")
+        XCTAssertEqual(presentation?.tone, .active)
+        XCTAssertTrue(presentation?.detail?.contains("background daemon tunnel") == true)
     }
 
     func testBothAvailableDetailShowsUSBPlusWiFi() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .daemon,
             selectedConnectionType: .usb,
@@ -60,13 +60,13 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Connected")
-        XCTAssertEqual(p?.tone, .connected)
-        XCTAssertTrue(p?.detail?.contains("USB + Wi-Fi available") == true)
+        XCTAssertEqual(presentation?.title, "Wi-Fi Connected")
+        XCTAssertEqual(presentation?.tone, .connected)
+        XCTAssertTrue(presentation?.detail?.contains("USB + Wi-Fi available") == true)
     }
 
     func testUSBHealthyIsConnectedWithLockdownDetail() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .usb,
             selectedConnectionType: .usb,
@@ -76,17 +76,17 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(p?.title, "USB Connected")
-        XCTAssertEqual(p?.icon, "cable.connector")
-        XCTAssertEqual(p?.tone, .connected)
-        XCTAssertTrue(p?.detail?.contains("lockdown tunnel") == true)
-        XCTAssertTrue(p?.detail?.contains("USB available") == true)
+        XCTAssertEqual(presentation?.title, "USB Connected")
+        XCTAssertEqual(presentation?.icon, "cable.connector")
+        XCTAssertEqual(presentation?.tone, .connected)
+        XCTAssertTrue(presentation?.detail?.contains("lockdown tunnel") == true)
+        XCTAssertTrue(presentation?.detail?.contains("USB available") == true)
     }
 
     /// Regression: cable pulled but activeMode still `.usb` — must collapse to
     /// Wi-Fi and never claim USB.
     func testStaleUSBActiveModeCollapsesToWiFiWhenCableUnplugged() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .usb,
             selectedConnectionType: .wifi,
@@ -96,14 +96,14 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Connected")
-        XCTAssertEqual(p?.icon, "wifi")
-        XCTAssertFalse(p?.title.contains("USB") == true)
-        XCTAssertFalse(p?.detail?.localizedCaseInsensitiveContains("USB") == true)
+        XCTAssertEqual(presentation?.title, "Wi-Fi Connected")
+        XCTAssertEqual(presentation?.icon, "wifi")
+        XCTAssertFalse(presentation?.title.contains("USB") == true)
+        XCTAssertFalse(presentation?.detail?.localizedCaseInsensitiveContains("USB") == true)
     }
 
     func testPreferredWiFiOverridesStaleUSBActiveMode() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: true,
             activeTunnelMode: .usb,
             tunnelInfoMode: .wifi,
@@ -115,14 +115,14 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Connected")
-        XCTAssertEqual(p?.icon, "wifi")
+        XCTAssertEqual(presentation?.title, "Wi-Fi Connected")
+        XCTAssertEqual(presentation?.icon, "wifi")
     }
 
     // MARK: No tunnel — Not Connected (red) / No Connection (warning)
 
     func testWiFiAvailableNoTunnelIsNotConnectedRed() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: false,
             activeTunnelMode: nil,
             selectedConnectionType: .wifi,
@@ -132,14 +132,14 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(p?.title, "Wi-Fi Not Connected")
-        XCTAssertEqual(p?.icon, "wifi")
-        XCTAssertEqual(p?.tone, .notConnected)
-        XCTAssertEqual(p?.detail, "Wi-Fi available")
+        XCTAssertEqual(presentation?.title, "Wi-Fi Not Connected")
+        XCTAssertEqual(presentation?.icon, "wifi")
+        XCTAssertEqual(presentation?.tone, .notConnected)
+        XCTAssertEqual(presentation?.detail, "Wi-Fi available")
     }
 
     func testUSBAvailableNoTunnelIsNotConnectedRed() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: false,
             activeTunnelMode: nil,
             selectedConnectionType: nil,
@@ -149,14 +149,14 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: true
         )
 
-        XCTAssertEqual(p?.title, "USB Not Connected")
-        XCTAssertEqual(p?.icon, "cable.connector")
-        XCTAssertEqual(p?.tone, .notConnected)
-        XCTAssertEqual(p?.detail, "USB available")
+        XCTAssertEqual(presentation?.title, "USB Not Connected")
+        XCTAssertEqual(presentation?.icon, "cable.connector")
+        XCTAssertEqual(presentation?.tone, .notConnected)
+        XCTAssertEqual(presentation?.detail, "USB available")
     }
 
     func testNoConnectionWhenNothingAvailable() {
-        let p = ConnectionSummaryPresentation.resolve(
+        let presentation = ConnectionSummaryPresentation.resolve(
             isTunnelRunning: false,
             activeTunnelMode: nil,
             selectedConnectionType: nil,
@@ -166,10 +166,10 @@ final class ConnectionSummaryPresentationTests: XCTestCase {
             preferUSBConnection: false
         )
 
-        XCTAssertEqual(p?.title, "No Connection")
-        XCTAssertEqual(p?.icon, "exclamationmark.triangle.fill")
-        XCTAssertEqual(p?.tone, .warning)
-        XCTAssertEqual(p?.detail, "connect USB or start tunnel")
+        XCTAssertEqual(presentation?.title, "No Connection")
+        XCTAssertEqual(presentation?.icon, "exclamationmark.triangle.fill")
+        XCTAssertEqual(presentation?.tone, .warning)
+        XCTAssertEqual(presentation?.detail, "connect USB or start tunnel")
     }
 }
 

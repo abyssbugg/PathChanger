@@ -139,11 +139,11 @@ final class DeviceManagerIntegrationTests: XCTestCase {
 
     func testRepeatedRefreshStability() async throws {
         /// Test that repeated refreshes don't cause crashes or memory leaks
-        for i in 0..<5 {
+        for cycle in 0..<5 {
             await deviceManager.refreshDevices()
             await deviceManager.checkTunneldStatus()
 
-            Logger.debug("Refresh cycle \(i + 1)/5 completed", category: .device)
+            Logger.debug("Refresh cycle \(cycle + 1)/5 completed", category: .device)
 
             try? await Task.sleep(nanoseconds: 500_000_000) // 500ms between refreshes
         }
