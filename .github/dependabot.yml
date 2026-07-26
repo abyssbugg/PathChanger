@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  # GitHub Actions used by workflows in .github/workflows and .github/actions.
+  #
+  # Coverage caveat: this repository deliberately avoids third-party actions and
+  # hand-rolls checkout in shell, so there is little for this ecosystem to watch
+  # today. The tool versions that actually carry supply-chain risk — SwiftLint and
+  # gitleaks — are pinned by version *and* SHA-256 inside `run:` steps in
+  # ci.yml, which Dependabot cannot parse or update. Those pins must be reviewed
+  # by hand; see SECURITY.md.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # Python bridge dependency (pymobiledevice3 and its closure).
+  #
+  # `requirements-pathchanger.txt` holds the direct pin; `requirements-pathchanger.lock`
+  # is the hash-enforced closure that CI installs with `--require-hashes --no-deps`.
+  # A Dependabot PR that bumps the .txt without regenerating the .lock WILL fail the
+  # "Python Dependency Lock" job. That failure is correct and must not be "fixed" by
+  # relaxing the job: regenerate the lock instead, e.g.
+  #
+  #   pip install pip-tools
+  #   pip-compile --generate-hashes --output-file=requirements-pathchanger.lock \
+  #               requirements-pathchanger.txt
+  #
+  # and update the version assertion in ci.yml's python-lock job in the same commit.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps"
