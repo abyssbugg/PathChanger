@@ -100,8 +100,16 @@ final class AppStateTransientRecoveryTests: XCTestCase {
         XCTAssertNil(appState.lastError)
     }
 
+    /// Polls `condition` until it holds or `timeout` elapses.
+    ///
+    /// The timeout is a failure ceiling, not a delay: the helper returns as soon
+    /// as the condition is true, so a generous value costs nothing on a passing
+    /// run. 2 seconds was too tight on a loaded CI runner and produced a
+    /// "Timed out waiting for condition" flake in
+    /// testTransientRecoveryRestoresPausedRouteSessionForSameUDID while the
+    /// recovery task was still in flight.
     private func waitUntil(
-        timeout: TimeInterval = 2.0,
+        timeout: TimeInterval = 15.0,
         condition: @escaping @MainActor () -> Bool
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
