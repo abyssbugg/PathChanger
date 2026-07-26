@@ -60,3 +60,6 @@ security-audit-prompt-full.md
 *.provisionprofile
 *.keychain
 *.keychain-db
+
+# Design reference renders (kept locally, not tracked -- 3.1 MB of PNG)
+docs/design/*.png

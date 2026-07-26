@@ -10,12 +10,23 @@ name: CI
 # which does not have it, so that image cannot build this project regardless of
 # the deployment target. Keep every job on the same image so the lint, docs and
 # build jobs agree about the toolchain.
+#
+# The Checkout step is intentionally duplicated in every job rather than factored
+# out. This repository uses no third-party `uses:` actions by policy (see
+# docs/audit/reports/cicd-supply-audit.md), and a local composite action cannot
+# perform the checkout itself -- `uses: ./.github/actions/...` requires the
+# repository to already be present in the workspace. The duplication is the cost
+# of that policy; do not "simplify" it to actions/checkout without revisiting the
+# audit decision, and if any action is ever introduced, pin it by full commit SHA.
 
 on:
   push:
-    branches: [ main, develop ]
+    # Feature and security branches are long-lived here, and a conflicted PR
+    # reports no checks at all (GitHub cannot build a merge ref), so PR-only CI
+    # let 40 commits reach "done" unverified. Build them on push as well.
+    branches: [ main, 'feat/**', 'sec/**', 'oz/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
