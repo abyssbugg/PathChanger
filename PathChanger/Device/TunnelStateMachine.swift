@@ -496,6 +496,7 @@ final class TunnelStateMachine: ObservableObject {
     ///
     /// This is a pure function that determines the next state and actions
     /// based on the current state and incoming event.
+    // swiftlint:disable:next cyclomatic_complexity -- exhaustive switch over (state, event) pairs. The explicit, total transition table IS the design; splitting it would hide the state machine rather than simplify it.
     private func transition(from currentState: TunnelState, event: TunnelEvent) -> TransitionResult {
         switch (currentState, event) {
 

@@ -22,14 +22,14 @@ final class FileDescriptorLeakTests: XCTestCase {
         let initialFDs = getOpenFDCount()
 
         // Simulate multiple coordinate operations (which internally work with FDs)
-        for i in 0..<10 {
-            let coord = LocationCoordinate(latitude: Double(i), longitude: Double(i * 2))
+        for index in 0..<10 {
+            let coord = LocationCoordinate(latitude: Double(index), longitude: Double(index * 2))
             _ = coord.formattedString
 
             // Simulate doing work that would normally leak FDs if not cleaned up
             let task = Process()
             task.launchPath = "/bin/echo"
-            task.arguments = ["test_\(i)"]
+            task.arguments = ["test_\(index)"]
             do {
                 try task.run()
                 task.waitUntilExit()
@@ -52,8 +52,8 @@ final class FileDescriptorLeakTests: XCTestCase {
     private func getOpenFDCount() -> Int32 {
         var count: Int32 = 0
         for fd in 0..<Int32(Darwin.getdtablesize()) {
-            var stat_info = stat()
-            if fstat(fd, &stat_info) == 0 {
+            var statInfo = stat()
+            if fstat(fd, &statInfo) == 0 {
                 count += 1
             }
         }

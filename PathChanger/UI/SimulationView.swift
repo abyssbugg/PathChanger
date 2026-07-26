@@ -11,6 +11,7 @@ import MapKit
 import UniformTypeIdentifiers
 import AppKit
 
+// swiftlint:disable:next type_body_length -- SwiftUI view composed of many small @ViewBuilder sections; splitting it means extracting subviews into their own files. Tracked as follow-up, not new debt.
 struct SimulationView: View {
     let mode: AppMode
     /// When true, render the map only (no floating mode panels, no safe-area

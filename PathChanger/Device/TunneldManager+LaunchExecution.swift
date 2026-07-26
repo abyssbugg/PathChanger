@@ -9,6 +9,7 @@ import AppKit
 
 @MainActor
 extension TunneldManager {
+    // swiftlint:disable:next cyclomatic_complexity -- launch path branches over mode, interpreter resolution, and log setup. Deferred with the other privileged-path decompositions.
     func attemptStart(mode: TunnelMode) async -> Bool {
         // Ensure log directory exists; actual log open is O_NOFOLLOW as root (Wave 0.1 / A03).
         ensureLogDirectoryExists()
@@ -368,6 +369,7 @@ extension TunneldManager {
     ///   - timeout: Bonjour browse window in seconds (default 30).
     ///   - nameFilter: Exact Bonjour name or unique substring; required when
     ///     multiple devices are advertising. Prefer the selected device name.
+    // swiftlint:disable:next cyclomatic_complexity -- Wi-Fi pairing interprets many distinct script outcomes. Deferred with the other privileged-path decompositions.
     func pairOverWiFi(timeout: TimeInterval = 30.0, nameFilter: String? = nil) async -> WiFiPairingResult {
         guard !wifiPairingInProgress else {
             return .scriptError("WiFi pairing is already in progress.")
@@ -507,8 +509,8 @@ extension TunneldManager {
                     var browseCount = 0
                     for line in logContent.components(separatedBy: .newlines) where line.hasPrefix("[pair-wifi] Found ") {
                         let parts = line.split(separator: " ")
-                        if parts.count > 2, let n = Int(parts[2]) {
-                            browseCount = n
+                        if parts.count > 2, let foundCount = Int(parts[2]) {
+                            browseCount = foundCount
                             break
                         }
                     }

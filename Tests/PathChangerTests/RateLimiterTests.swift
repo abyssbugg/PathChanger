@@ -183,9 +183,9 @@ final class RequestQueueManagerSecurityTests: XCTestCase {
         let queue = RequestQueueManager(maxQueueSize: 50)
 
         // Normal priority limit is 5 per second
-        for i in 0..<5 {
+        for index in 0..<5 {
             let result = await queue.enqueue(makeRequest(priority: .normal))
-            XCTAssertTrue(result.isSuccess, "Request \(i+1) should succeed")
+            XCTAssertTrue(result.isSuccess, "Request \(index+1) should succeed")
         }
 
         // 6th should fail (rate limit exceeded)
@@ -432,11 +432,11 @@ final class RequestQueueManagerSecurityTests: XCTestCase {
         // Create multiple requests for same device
         let device = Device(id: "device-1", displayName: "Test Device", connectionType: .usb, productVersion: "17.0")
 
-        for i in 0..<3 {
+        for index in 0..<3 {
             let request = QueuedLocationRequest(
-                coordinate: LocationCoordinate(latitude: 35.0 + Double(i) * 0.1, longitude: 139.0),
+                coordinate: LocationCoordinate(latitude: 35.0 + Double(index) * 0.1, longitude: 139.0),
                 device: device,
-                timestamp: Date().addingTimeInterval(Double(i) * 0.1),
+                timestamp: Date().addingTimeInterval(Double(index) * 0.1),
                 priority: .normal
             )
             _ = await queue.enqueueWithStrategy(request)
@@ -506,8 +506,8 @@ final class RequestQueueManagerSecurityTests: XCTestCase {
         let device = Device(id: "device-1", displayName: "Test", connectionType: .usb, productVersion: "17.0")
         let coord = LocationCoordinate(latitude: 35.0, longitude: 139.0)
 
-        for i in 0..<5 {
-            let request = QueuedLocationRequest(coordinate: coord, device: device, timestamp: Date().addingTimeInterval(Double(i) * 0.01), priority: .normal)
+        for index in 0..<5 {
+            let request = QueuedLocationRequest(coordinate: coord, device: device, timestamp: Date().addingTimeInterval(Double(index) * 0.01), priority: .normal)
             _ = await queue.enqueueWithStrategy(request)
         }
 

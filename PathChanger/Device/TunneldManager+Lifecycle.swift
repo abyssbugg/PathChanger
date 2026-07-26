@@ -25,6 +25,7 @@ extension TunneldManager {
         await startTunnel(replaceStaleOnMissingRsd: false)
     }
 
+    // swiftlint:disable:next cyclomatic_complexity -- tunnel startup arbitrates mode selection, stale-RSD replacement, and lifecycle guards in one place. Decomposing it touches the privileged path; deferred until the test suite has a green baseline.
     func startTunnel(replaceStaleOnMissingRsd: Bool) async {
         guard !tunnelStartInFlight else {
             Logger.debug("Ignoring duplicate tunnel start request while another start is in progress", category: .device)

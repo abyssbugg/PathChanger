@@ -6,6 +6,13 @@
 //  Supports both USB (--udid) and WiFi via lockdown tunnel (--rsd)
 //
 
+// swiftlint:disable file_length
+// 1273 lines against a 1200 error threshold. The executor owns rate limiting,
+// request queueing, pre-flight checks, retry policy and stats accounting for the
+// privileged injection path. Splitting it is tracked as follow-up work; it is
+// deliberately not attempted in the same change set that first gave this
+// repository a working CI baseline.
+
 import Foundation
 import Combine
 import Darwin
@@ -316,6 +323,7 @@ struct InjectionStats {
 ///
 /// - Note: Developer Mode must be enabled on the iOS device.
 /// - Important: Requires pymobiledevice3 to be installed.
+// swiftlint:disable:next type_body_length -- executor owns rate limiting, queueing, retry policy, and stats accounting. Splitting it is tracked as follow-up.
 actor DevLocationBridge {
 
     // MARK: Configuration

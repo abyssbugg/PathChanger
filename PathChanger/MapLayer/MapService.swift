@@ -70,9 +70,9 @@ struct MapRoute: Identifiable {
     var totalDistance: CLLocationDistance {
         guard coordinates.count > 1 else { return 0 }
         var distance: CLLocationDistance = 0
-        for i in 1..<coordinates.count {
-            let from = CLLocation(latitude: coordinates[i-1].latitude, longitude: coordinates[i-1].longitude)
-            let to = CLLocation(latitude: coordinates[i].latitude, longitude: coordinates[i].longitude)
+        for index in 1..<coordinates.count {
+            let from = CLLocation(latitude: coordinates[index-1].latitude, longitude: coordinates[index-1].longitude)
+            let to = CLLocation(latitude: coordinates[index].latitude, longitude: coordinates[index].longitude)
             distance += from.distance(from: to)
         }
         return distance

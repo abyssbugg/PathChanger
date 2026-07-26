@@ -239,8 +239,8 @@ class RouteMode: SimulationModeProtocol {
     var totalDistance: CLLocationDistance {
         guard waypoints.count > 1 else { return 0 }
         var distance: CLLocationDistance = 0
-        for i in 1..<waypoints.count {
-            distance += RouteInterpolator.haversineDistance(from: waypoints[i-1], to: waypoints[i])
+        for index in 1..<waypoints.count {
+            distance += RouteInterpolator.haversineDistance(from: waypoints[index-1], to: waypoints[index])
         }
         return distance
     }

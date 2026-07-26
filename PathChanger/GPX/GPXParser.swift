@@ -68,9 +68,9 @@ struct GPXFile: Identifiable, Codable {
         guard coords.count > 1 else { return 0 }
 
         var distance: Double = 0
-        for i in 1..<coords.count {
-            let from = CLLocation(latitude: coords[i-1].latitude, longitude: coords[i-1].longitude)
-            let to = CLLocation(latitude: coords[i].latitude, longitude: coords[i].longitude)
+        for index in 1..<coords.count {
+            let from = CLLocation(latitude: coords[index-1].latitude, longitude: coords[index-1].longitude)
+            let to = CLLocation(latitude: coords[index].latitude, longitude: coords[index].longitude)
             distance += from.distance(from: to)
         }
         return distance
@@ -424,6 +424,7 @@ extension GPXParser: XMLParserDelegate {
         currentText += string
     }
 
+    // swiftlint:disable:next cyclomatic_complexity -- XMLParser delegate dispatching on element name. Complexity here is the tag count, not branching logic.
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
         let element = elementName.lowercased()

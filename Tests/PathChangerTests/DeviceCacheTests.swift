@@ -100,10 +100,10 @@ final class DeviceCacheTests: XCTestCase {
         let cache = DeviceCache()
 
         // Add multiple devices
-        for i in 1...5 {
+        for index in 1...5 {
             let device = Device(
-                id: "device-\(i)",
-                displayName: "Device \(i)",
+                id: "device-\(index)",
+                displayName: "Device \(index)",
                 connectionType: .usb,
                 productType: nil,
                 productVersion: nil,
@@ -219,10 +219,10 @@ final class DeviceCacheTests: XCTestCase {
         let cache = DeviceCache(config: config)
 
         // Add more devices than max
-        for i in 1...5 {
+        for index in 1...5 {
             let device = Device(
-                id: "device-\(i)",
-                displayName: "Device \(i)",
+                id: "device-\(index)",
+                displayName: "Device \(index)",
                 connectionType: .usb,
                 productType: nil,
                 productVersion: nil,
@@ -326,18 +326,18 @@ final class DeviceManagerCacheIntegrationTests: XCTestCase {
         // Simulate concurrent access
         await withTaskGroup(of: Void.self) { group in
             // Multiple concurrent reads and writes
-            for i in 0..<10 {
+            for index in 0..<10 {
                 group.addTask {
                     let device = Device(
-                        id: "concurrent-\(i)",
-                        displayName: "Device \(i)",
+                        id: "concurrent-\(index)",
+                        displayName: "Device \(index)",
                         connectionType: .usb,
                         productType: nil,
                         productVersion: nil,
                         deviceName: nil
                     )
                     await cache.cacheDevice(device, source: .usb)
-                    _ = await cache.getCachedDevice(udid: "concurrent-\(i)")
+                    _ = await cache.getCachedDevice(udid: "concurrent-\(index)")
                 }
             }
         }

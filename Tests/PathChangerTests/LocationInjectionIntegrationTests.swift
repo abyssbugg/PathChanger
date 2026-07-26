@@ -84,9 +84,9 @@ final class LocationInjectionIntegrationTests: XCTestCase {
         var stats = InjectionStats()
 
         // Simulate some injections
-        for i in 0..<5 {
-            stats.recordSuccess(latencyMs: Double(100 + i * 50))
-            Logger.debug("Recorded injection \(i + 1)", category: .device)
+        for index in 0..<5 {
+            stats.recordSuccess(latencyMs: Double(100 + index * 50))
+            Logger.debug("Recorded injection \(index + 1)", category: .device)
         }
 
         XCTAssertEqual(stats.totalInjections, 5, "Should track all injections")
@@ -164,9 +164,9 @@ final class LocationInjectionIntegrationTests: XCTestCase {
     func testCoordinateValidationPerformance() async throws {
         /// Benchmark coordinate validation performance
         measure {
-            for i in 0..<1000 {
-                let lat = Double(i % 180 - 90)
-                let lon = Double((i * 37) % 360 - 180)
+            for index in 0..<1000 {
+                let lat = Double(index % 180 - 90)
+                let lon = Double((index * 37) % 360 - 180)
                 let coordinate = LocationCoordinate(latitude: lat, longitude: lon)
 
                 try? coordinate.validated()

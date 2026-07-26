@@ -4,8 +4,14 @@ import XCTest
 private func pythonStringLiteral(_ value: String) -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.withoutEscapingSlashes]
-    let data = try! encoder.encode(value)
-    return String(data: data, encoding: .utf8)!
+    guard let data = try? encoder.encode(value),
+          let literal = String(data: data, encoding: .utf8) else {
+        // Encoding a String cannot fail in practice. If it ever does, emit a
+        // literal that makes the generated Python fail loudly rather than
+        // silently substituting a valid-but-wrong path.
+        return "None"
+    }
+    return literal
 }
 
 @MainActor

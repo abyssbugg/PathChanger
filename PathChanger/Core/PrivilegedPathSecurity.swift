@@ -332,10 +332,10 @@ enum PrivilegedPathSecurity {
         var bodyParts: [String] = [qPython, "-c", "'\(launcher)'", qLog]
         for arg in executableArguments {
             if arg.hasPrefix("/") {
-                guard let q = shellSingleQuotedPath(arg) else {
+                guard let quotedPath = shellSingleQuotedPath(arg) else {
                     return .failure(.pathContainsShellMeta(arg))
                 }
-                bodyParts.append(q)
+                bodyParts.append(quotedPath)
             } else {
                 bodyParts.append(arg)
             }

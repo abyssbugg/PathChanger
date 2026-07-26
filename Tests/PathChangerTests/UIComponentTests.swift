@@ -99,8 +99,8 @@ final class ToastManagerTests: XCTestCase {
     }
 
     func testMaxVisibleToastsEnforced() {
-        for i in 1...5 {
-            manager.show(Toast(type: .info, message: "Toast \(i)"))
+        for index in 1...5 {
+            manager.show(Toast(type: .info, message: "Toast \(index)"))
         }
 
         // Should be limited to maxVisibleToasts (3)

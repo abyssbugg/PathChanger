@@ -71,7 +71,14 @@ final class ReleaseConfigurationTests: XCTestCase {
     func testBundleScriptHasDeterministicOutputAndOptionalProductionGates() throws {
         let bundleScript = try readProjectFile("build-app-bundle.sh")
 
-        XCTAssertTrue(bundleScript.contains("APP_BUNDLE_BUILD_ROOT=\"${APP_BUNDLE_BUILD_ROOT:-${TMPDIR:-/tmp}/pathchanger-app-build}\""))
+        // Wave 0 (commit 0fe4f99) replaced the fixed workspace default with a
+        // per-run mktemp root to close a bundle-substitution TOCTOU, and asserts
+        // the workspace is not a symlink, is owned by the caller, and is chmod 700.
+        // Assert that hardening rather than the superseded fixed path.
+        XCTAssertTrue(bundleScript.contains("mktemp -d \"${TMPDIR:-/tmp}/pathchanger-app-build.XXXXXXXX\""))
+        XCTAssertTrue(bundleScript.contains("Build workspace must not be a symlink"))
+        XCTAssertTrue(bundleScript.contains("Build workspace must be owned by the current user"))
+        XCTAssertTrue(bundleScript.contains("chmod 700 \"$root\""))
         XCTAssertTrue(bundleScript.contains("REQUIRE_PRODUCTION_SIGNING=\"${REQUIRE_PRODUCTION_SIGNING:-0}\""))
         XCTAssertTrue(bundleScript.contains("Production bundle builds require a Developer ID signing identity"))
         XCTAssertTrue(bundleScript.contains("Developer ID signing identity not available in the current keychain"))

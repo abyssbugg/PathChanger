@@ -25,34 +25,60 @@ import Darwin
 /// Established by ADR-001 (Python bridge architecture, revised) and the
 /// Milestone-2 architectural consolidation.
 @MainActor
+// swiftlint:disable:next type_body_length -- NDJSON bridge owns process lifecycle, request correlation, and the public facade. Splitting it is tracked as follow-up.
 final class LocationBridge: ObservableObject {
 
     // MARK: - Types
 
     /// Request to send to Python bridge
+    ///
+    /// The bridge (`scripts/location_bridge.py`) speaks snake_case on the wire.
+    /// `CodingKeys` pins the encoded names so the JSON stays byte-identical while
+    /// the Swift side uses Swift naming — do not remove them, and keep any new
+    /// property in sync with the Python `Request`/`Response` shapes documented at
+    /// the top of that script.
     private struct BridgeRequest: Codable {
-        let request_id: String
+        let requestID: String
         let cmd: String
         var lat: Double?
         var lng: Double?
         var udid: String?
-        var rsd_address: String?
-        var rsd_port: Int?
+        var rsdAddress: String?
+        var rsdPort: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case cmd
+            case lat
+            case lng
+            case udid
+            case rsdAddress = "rsd_address"
+            case rsdPort = "rsd_port"
+        }
 
         init(cmd: String, requestID: String = UUID().uuidString) {
-            self.request_id = requestID
+            self.requestID = requestID
             self.cmd = cmd
         }
     }
 
     /// Response from Python bridge
     private struct BridgeResponse: Codable {
-        let request_id: String?
+        let requestID: String?
         let success: Bool?
         var error: String?
         var message: String?
         var ready: Bool?
         var fatal: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case requestID = "request_id"
+            case success
+            case error
+            case message
+            case ready
+            case fatal
+        }
     }
 
     /// Errors specific to persistent bridge
@@ -509,8 +535,8 @@ final class LocationBridge: ObservableObject {
         request.lat = coordinate.latitude
         request.lng = coordinate.longitude
         request.udid = device.id
-        request.rsd_address = rsdInfo?.rsdAddress
-        request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
+        request.rsdAddress = rsdInfo?.rsdAddress
+        request.rsdPort = rsdInfo.map { Int($0.rsdPort) }
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let response: BridgeResponse
@@ -553,8 +579,8 @@ final class LocationBridge: ObservableObject {
 
         var request = BridgeRequest(cmd: "clear_location")
         request.udid = device.id
-        request.rsd_address = rsdInfo?.rsdAddress
-        request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
+        request.rsdAddress = rsdInfo?.rsdAddress
+        request.rsdPort = rsdInfo.map { Int($0.rsdPort) }
         let response: BridgeResponse
         do {
             response = try await sendCommand(request)
@@ -675,7 +701,7 @@ final class LocationBridge: ObservableObject {
 
         // Wait for response with timeout
         return try await withCheckedThrowingContinuation { continuation in
-            let requestID = request.request_id
+            let requestID = request.requestID
             setPendingContinuation(continuation, for: requestID)
             pendingTimeoutTasks[requestID] = Task { [weak self] in
                 guard let self else { return }
@@ -808,7 +834,7 @@ final class LocationBridge: ObservableObject {
                 return
             }
 
-            guard let requestID = response.request_id, !requestID.isEmpty else {
+            guard let requestID = response.requestID, !requestID.isEmpty else {
                 failBridge(
                     with: LocationBridgeError.invalidResponse("Bridge response missing request_id: \(line)"),
                     generation: generation

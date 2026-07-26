@@ -253,6 +253,7 @@ extension TunneldManager {
         return nil
     }
 
+    // swiftlint:disable:next function_parameter_count -- authoritative startup polling needs the full acquisition context. Collapsing these into a struct is a mechanical follow-up.
     func pollAuthoritativeStartup(
         mode: TunnelMode,
         targetUDID: String?,

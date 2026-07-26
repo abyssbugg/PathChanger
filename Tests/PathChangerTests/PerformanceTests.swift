@@ -17,16 +17,16 @@ final class PerformanceTests: XCTestCase {
     // MARK: - Performance Baselines
 
     /// Target latency: <50ms for location injection
-    private static let INJECTION_LATENCY_MS: Double = 50.0
+    private static let injectionLatencyMS: Double = 50.0
 
     /// Target memory: <150MB for sustained operation
-    private static let MEMORY_USAGE_MB: Double = 150.0
+    private static let memoryUsageMB: Double = 150.0
 
     /// Target CPU: <20% for single location injection
-    private static let CPU_USAGE_PERCENT: Double = 20.0
+    private static let cpuUsagePercent: Double = 20.0
 
     /// Target throughput: 5+ requests per second
-    private static let THROUGHPUT_RPS: Double = 5.0
+    private static let throughputRPS: Double = 5.0
 
     // MARK: - Setup/Teardown
 
@@ -41,10 +41,10 @@ final class PerformanceTests: XCTestCase {
     /// Measure latency of coordinate transformation (base operation)
     func testLocationCoordinateTransformationLatency() {
         // Create test data
-        let testCoordinates = (0..<1000).map { i in
+        let testCoordinates = (0..<1000).map { index in
             LocationCoordinate(
-                latitude: 40.7128 + Double(i) * 0.001,
-                longitude: -74.0060 + Double(i) * 0.001
+                latitude: 40.7128 + Double(index) * 0.001,
+                longitude: -74.0060 + Double(index) * 0.001
             )
         }
 
@@ -183,10 +183,10 @@ final class PerformanceTests: XCTestCase {
         // This is a synthetic test - actual tunnel startup requires device
         // Just measure the time to create test coordinates instead
         measure {
-            for i in 0..<100 {
+            for index in 0..<100 {
                 let coordinate = LocationCoordinate(
-                    latitude: 40.7128 + Double(i) * 0.001,
-                    longitude: -74.0060 + Double(i) * 0.001
+                    latitude: 40.7128 + Double(index) * 0.001,
+                    longitude: -74.0060 + Double(index) * 0.001
                 )
                 _ = coordinate.formattedString
             }
@@ -197,10 +197,10 @@ final class PerformanceTests: XCTestCase {
 
     /// Measure coordinate validation latency
     func testCoordinateValidationLatency() {
-        let validCoordinates = (0..<1000).map { i in
+        let validCoordinates = (0..<1000).map { index in
             LocationCoordinate(
-                latitude: -90.0 + Double(i) * 0.18,
-                longitude: -180.0 + Double(i) * 0.36
+                latitude: -90.0 + Double(index) * 0.18,
+                longitude: -180.0 + Double(index) * 0.36
             )
         }
 
@@ -288,12 +288,12 @@ final class PerformanceTests: XCTestCase {
             <trkseg>
         """
 
-        for i in 0..<pointCount {
-            let lat = 40.7128 + Double(i) * 0.001
-            let lon = -74.0060 + Double(i) * 0.001
+        for index in 0..<pointCount {
+            let lat = 40.7128 + Double(index) * 0.001
+            let lon = -74.0060 + Double(index) * 0.001
             gpx += """
               <trkpt lat="\(lat)" lon="\(lon)">
-                <time>2024-01-01T\(String(format: "%02d", i % 24)):\(String(format: "%02d", (i * 2) % 60)):00Z</time>
+                <time>2024-01-01T\(String(format: "%02d", index % 24)):\(String(format: "%02d", (index * 2) % 60)):00Z</time>
               </trkpt>
             """
         }
@@ -332,9 +332,9 @@ final class PerformanceTests: XCTestCase {
         var count = 0
         let maxFDs = Darwin.getdtablesize()
 
-        for i in 0..<maxFDs {
+        for index in 0..<maxFDs {
             var sb = stat()
-            if Darwin.fstat(Int32(i), &sb) == 0 {
+            if Darwin.fstat(Int32(index), &sb) == 0 {
                 count += 1
             }
         }

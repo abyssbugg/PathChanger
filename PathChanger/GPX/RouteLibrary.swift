@@ -55,27 +55,27 @@ struct SavedRoute: Identifiable, Codable {
     private static func calculateDistance(_ coords: [LocationCoordinate]) -> Double {
         guard coords.count > 1 else { return 0 }
         var total: Double = 0
-        for i in 1..<coords.count {
-            let from = coords[i-1]
-            let to = coords[i]
+        for index in 1..<coords.count {
+            let from = coords[index-1]
+            let to = coords[index]
             total += haversineDistance(from: from, to: to)
         }
         return total
     }
 
     private static func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
-        let R = 6371000.0 // Earth radius in meters
+        let earthRadiusMeters = 6371000.0
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
         let dLat = (to.latitude - from.latitude) * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
 
-        let a = sin(dLat/2) * sin(dLat/2) +
+        let haversine = sin(dLat/2) * sin(dLat/2) +
                 cos(lat1) * cos(lat2) *
                 sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(a), sqrt(1-a))
+        let angularDistance = 2 * atan2(sqrt(haversine), sqrt(1-haversine))
 
-        return R * c
+        return earthRadiusMeters * angularDistance
     }
 }
 
