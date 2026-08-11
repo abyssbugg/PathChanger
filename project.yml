@@ -1,0 +1,96 @@
+name: PathChanger
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "5.9"
+
+configs:
+  Debug: debug
+  Release: release
+
+targets:
+  PathChanger:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: PathChanger
+        excludes:
+          - Info.plist
+          - Resources
+    resources:
+      - path: PathChanger/Resources
+      - path: Resources/AppIcon.icns
+      - path: Resources/PathChanger.entitlements
+    dependencies:
+      - package: Sparkle
+        product: Sparkle
+    settings:
+      base:
+        PRODUCT_NAME: PathChanger
+        PRODUCT_MODULE_NAME: PathChanger
+        PRODUCT_BUNDLE_IDENTIFIER: com.pathchanger.app
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/PathChanger.entitlements
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          ENABLE_TESTABILITY: NO
+          SWIFT_COMPILATION_MODE: wholemodule
+
+  PathChangerTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    hostApplication: PathChanger
+    sources:
+      - path: Tests/PathChangerTests
+    dependencies:
+      - target: PathChanger
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pathchanger.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  PathChanger:
+    build:
+      targets:
+        PathChanger: all
+        PathChangerTests:
+          - test
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - name: PathChangerTests
+          parallelizable: false
+          randomExecutionOrder: false
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
