@@ -270,6 +270,46 @@ swift build -c release
 ./build-app-bundle.sh
 ```
 
+### FlowDeck Development Wrapper
+
+PathChanger keeps `Package.swift` as its SwiftPM source definition and includes a generated `PathChanger.xcodeproj` wrapper for FlowDeck-based macOS development. The generated project is build metadata, not a replacement source definition.
+
+Prerequisites:
+
+- FlowDeck CLI with an active license
+- XcodeGen installed from a verified package-manager source
+- Full Xcode installation
+
+Configure the current worktree once:
+
+```bash
+flowdeck config set -w PathChanger.xcodeproj -s PathChanger -C Debug -D "My Mac"
+flowdeck config get --json
+```
+
+Regenerate the wrapper after changing `project.yml`:
+
+```bash
+xcodegen generate --spec project.yml
+python3 scripts/validate-xcode-wrapper.py
+```
+
+The parity validator is mandatory after every `project.yml` change and before committing regenerated project files.
+
+Build and discover tests without launching privileged runtime behavior:
+
+```bash
+flowdeck build --show-warnings
+flowdeck build -C Release --show-warnings
+flowdeck test discover
+```
+
+`flowdeck test discover` performs static source enumeration only; it does not build or execute tests.
+
+Do not run `flowdeck run` or `flowdeck test` until the separate safe-auto-start testability work is complete. Current launch and hosted-test paths can request administrator privileges to start the device tunnel.
+
+Never edit `PathChanger.xcodeproj/project.pbxproj` manually; edit `project.yml` and regenerate it.
+
 ### Project Structure
 
 ```
