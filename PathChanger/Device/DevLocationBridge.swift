@@ -226,7 +226,7 @@ enum LocationInjectionError: Error, LocalizedError {
     var recoverySuggestion: String? {
         switch self {
         case .tunneldNotRunning:
-            return "Run in Terminal:\nsudo python3 -m pymobiledevice3 lockdown start-tunnel"
+            return "Open PathChanger Settings and choose Start Tunnel."
         case .developerModeRequired:
             return "Settings > Privacy & Security > Developer Mode > Enable"
         case .deviceNotFound:

@@ -121,6 +121,34 @@ final class TunnelStateMachineTests: XCTestCase {
         }
     }
 
+    func testStartingUntracksExactExitedProcess() {
+        stateMachine.send(.startRequested(mode: .wifi))
+        stateMachine.send(.processLaunched(pid: 12345))
+
+        let result = stateMachine.send(.processExited(pid: 12345))
+
+        if case .success(let newState, _) = result {
+            XCTAssertEqual(newState, .error("Tunnel process exited"))
+            XCTAssertFalse(stateMachine.currentContext.activeProcessIds.contains(12345))
+        } else {
+            XCTFail("Expected success transition")
+        }
+    }
+
+    func testStartingAdoptsExternallyDetectedTunnel() {
+        stateMachine.send(.startRequested(mode: .usb))
+
+        let result = stateMachine.send(.externalTunnelDetected(mode: .daemon))
+
+        if case .success(let newState, _) = result {
+            XCTAssertEqual(newState, .running)
+            XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
+            XCTAssertTrue(stateMachine.currentContext.activeProcessIds.isEmpty)
+        } else {
+            XCTFail("Expected success transition")
+        }
+    }
+
     func testStartingToRunningOnConnectionEstablished() {
         stateMachine.send(.startRequested(mode: .usb))
 

@@ -156,7 +156,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Tunnel.start)
         XCTAssertNotNil(L10n.Tunnel.stop)
         XCTAssertNotNil(L10n.Tunnel.restart)
-        XCTAssertNotNil(L10n.Tunnel.requiresSudo)
         XCTAssertNotNil(L10n.Tunnel.modeUSB)
         XCTAssertNotNil(L10n.Tunnel.modeWiFi)
         XCTAssertNotNil(L10n.Tunnel.modeDaemon)
@@ -204,8 +203,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Dependency.python)
         XCTAssertNotNil(L10n.Dependency.pymobiledevice)
         XCTAssertNotNil(L10n.Dependency.installInstructions)
-        XCTAssertFalse(L10n.Dependency.brewCommand.isEmpty)
-        XCTAssertFalse(L10n.Dependency.pipCommand.isEmpty)
     }
 
     // MARK: - Format String Tests
@@ -309,10 +306,4 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(actions.count, 16)
     }
 
-    // MARK: - Dependency Commands Tests
-
-    func testDependencyCommandsAreValid() {
-        XCTAssertEqual(L10n.Dependency.brewCommand, "brew install python3")
-        XCTAssertEqual(L10n.Dependency.pipCommand, "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3")
-    }
 }

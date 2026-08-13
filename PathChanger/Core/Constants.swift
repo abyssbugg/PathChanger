@@ -296,17 +296,7 @@ enum AppConstants {
 enum SecurityConstants {
 
     /// Allowed Python executable paths
-    static let allowedPythonPaths: Set<String> = [
-        "/opt/homebrew/bin/python3",
-        "/usr/local/bin/python3",
-        "/usr/bin/python3",
-        "/opt/homebrew/bin/python3.11",
-        "/opt/homebrew/bin/python3.12",
-        "/opt/homebrew/bin/python3.13",
-        "/usr/local/bin/python3.11",
-        "/usr/local/bin/python3.12",
-        "/usr/local/bin/python3.13"
-    ]
+    static let allowedPythonPaths = Set(PythonPathResolver.candidatePaths)
 
     /// Allowed pymobiledevice3 subcommands
     static let allowedSubcommands: Set<String> = [

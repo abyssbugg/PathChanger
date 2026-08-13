@@ -168,7 +168,7 @@ struct SettingsView: View {
 
                 // Control buttons
                 if tunneldManager.isRunning {
-                    Button("Stop") {
+                    Button("Stop Tunnel") {
                         tunneldManager.stopTunnel()
                     }
                     .buttonStyle(.bordered)
@@ -178,7 +178,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .disabled(true)
                 } else {
-                    Button("Start") {
+                    Button("Start Tunnel") {
                         Task {
                             await tunneldManager.startTunnel()
                         }
@@ -269,12 +269,12 @@ struct SettingsView: View {
                 }
 
                 Label {
-                    Text("Requires administrator privileges")
+                    Text("Runs with your user account")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } icon: {
-                    Image(systemName: "lock.shield")
-                        .foregroundColor(.orange)
+                    Image(systemName: "person.crop.circle")
+                        .foregroundColor(.blue)
                 }
             }
             .padding(.top, 4)

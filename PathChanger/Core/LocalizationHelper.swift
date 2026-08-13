@@ -185,7 +185,6 @@ enum L10n {
         static let start = LocalizedStringKey("tunnel.start")
         static let stop = LocalizedStringKey("tunnel.stop")
         static let restart = LocalizedStringKey("tunnel.restart")
-        static let requiresSudo = LocalizedStringKey("tunnel.requiresSudo")
         static let modeUSB = LocalizedStringKey("tunnel.modeUSB")
         static let modeWiFi = LocalizedStringKey("tunnel.modeWiFi")
         static let modeDaemon = LocalizedStringKey("tunnel.modeDaemon")
@@ -243,8 +242,6 @@ enum L10n {
         static let python = LocalizedStringKey("dependency.python")
         static let pymobiledevice = LocalizedStringKey("dependency.pymobiledevice")
         static let installInstructions = LocalizedStringKey("dependency.installInstructions")
-        static let brewCommand = "brew install python3"
-        static let pipCommand = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3"
     }
 }
 

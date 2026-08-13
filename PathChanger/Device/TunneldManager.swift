@@ -164,109 +164,6 @@ struct TunnelInfo: Equatable {
     }
 }
 
-// MARK: - Security Validation
-
-/// Security errors for privileged command validation
-enum PrivilegedCommandError: LocalizedError {
-    case invalidPythonPath(String)
-    case dangerousCharacters(String)
-    case unrecognizedCommand(String)
-    case commandStructureInvalid(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidPythonPath(let path):
-            return "Invalid Python path: \(path)"
-        case .dangerousCharacters(let chars):
-            return "Dangerous characters detected: \(chars)"
-        case .unrecognizedCommand(let cmd):
-            return "Unrecognized command pattern: \(cmd)"
-        case .commandStructureInvalid(let reason):
-            return "Invalid command structure: \(reason)"
-        }
-    }
-}
-
-/// Security validator for privileged AppleScript commands
-/// Only allows pre-approved pymobiledevice3 operations to prevent command injection
-struct PrivilegedCommandValidator {
-
-    // MARK: - Security Constants
-
-    /// Allowed Python executable paths (prevents path injection attacks)
-    private static let allowedPythonPaths: Set<String> = [
-        "/opt/homebrew/bin/python3",
-        "/opt/homebrew/bin/python3.11",
-        "/opt/homebrew/bin/python3.12",
-        "/opt/homebrew/bin/python3.13",
-        "/usr/local/bin/python3",
-        "/usr/local/bin/python3.11",
-        "/usr/local/bin/python3.12",
-        "/usr/local/bin/python3.13",
-        "/usr/bin/python3"
-    ]
-
-    /// Allowed pymobiledevice3 command patterns (exact subcommand match required)
-    private static let allowedCommandPatterns: [(module: String, subcommands: [String])] = [
-        ("lockdown", ["start-tunnel"]),
-        ("remote", ["start-tunnel", "-t", "wifi"]),
-        ("remote", ["tunneld"])
-    ]
-
-    /// Characters that should NEVER appear in privileged commands
-    private static let dangerousCharacters: [Character] = [
-        ";", "|", "`", "$", "(", ")", "{", "}", "<", "\n", "\r"
-    ]
-
-    // MARK: - Validation
-
-    /// Validates a command is safe for privileged execution
-    /// - Parameters:
-    ///   - command: The full command string to validate
-    ///   - pythonPath: The Python executable path being used
-    /// - Returns: Success if command is safe, failure with specific error otherwise
-    static func validate(command: String, pythonPath: String) -> Result<Void, PrivilegedCommandError> {
-        // Step 1: Validate Python path is in allowlist
-        if !allowedPythonPaths.contains(pythonPath) {
-            return .failure(.invalidPythonPath(pythonPath))
-        }
-
-        // Step 2: Check for dangerous shell metacharacters
-        for char in dangerousCharacters {
-            if command.contains(char) {
-                return .failure(.dangerousCharacters(String(char)))
-            }
-        }
-
-        // Step 3: Validate command starts with the approved Python path
-        guard command.hasPrefix(pythonPath) else {
-            return .failure(.commandStructureInvalid("Command must start with approved Python path"))
-        }
-
-        // Step 4: Validate pymobiledevice3 module invocation
-        guard command.contains("-m pymobiledevice3") else {
-            return .failure(.commandStructureInvalid("Must invoke pymobiledevice3 via -m flag"))
-        }
-
-        // Step 5: Validate command matches one of the allowed patterns
-        let isAllowed = allowedCommandPatterns.contains { pattern in
-            command.contains("pymobiledevice3 \(pattern.module)") &&
-            pattern.subcommands.allSatisfy { command.contains($0) }
-        }
-
-        guard isAllowed else {
-            return .failure(.unrecognizedCommand("Command does not match any allowed pattern"))
-        }
-
-        return .success(())
-    }
-
-    /// Quick check if a Python path is in the allowlist
-    static func isPythonPathAllowed(_ path: String) -> Bool {
-        allowedPythonPaths.contains(path)
-    }
-}
-
 // MARK: - Tunneld Manager
 
 /// Manages the pymobiledevice3 tunnel lifecycle for iOS 17+ device communication.
@@ -323,10 +220,7 @@ struct PrivilegedCommandValidator {
 /// - **Secure termination**: Proper cleanup of subprocess resources
 ///
 /// ```swift
-/// // Check if tunnel requires elevated privileges
-/// if tunnelManager.requiresSudo {
-///     // Prompt user for password or show instructions
-/// }
+/// await tunnelManager.startTunnel(mode: .usb)
 /// ```
 ///
 /// ## State Management
@@ -371,8 +265,6 @@ struct PrivilegedCommandValidator {
 /// - ``isStarting``
 /// - ``lastError``
 /// - ``statusMessage``
-/// - ``requiresSudo``
-///
 /// ### Mode Configuration
 ///
 /// - ``preferredMode``
@@ -412,7 +304,6 @@ class TunneldManager: ObservableObject {
 
     @Published var lastError: String?
     @Published var statusMessage: String?
-    @Published var requiresSudo: Bool = true
 
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .auto {
@@ -560,8 +451,32 @@ class TunneldManager: ObservableObject {
 
     // MARK: - Public API
 
+    static func shouldAutoStart(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        AppRuntimeEnvironment.allowsAutomaticStartup(environment: environment)
+    }
+
+    static func arguments(for mode: TunnelMode) -> [String]? {
+        switch mode {
+        case .usb:
+            return ["-m", "pymobiledevice3", "lockdown", "start-tunnel"]
+        case .wifi:
+            return ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi"]
+        case .daemon:
+            return ["-m", "pymobiledevice3", "remote", "tunneld"]
+        case .auto:
+            return nil
+        }
+    }
+
     /// Start tunnel automatically - called on app launch
     func autoStart() async {
+        guard Self.shouldAutoStart() else {
+            Logger.debug("Skipping tunnel auto-start: automatic startup is disallowed", category: .device)
+            return
+        }
+
         // First check if any tunnel is already running
         if let runningMode = await detectRunningTunnel() {
             stateMachine.send(.externalTunnelDetected(mode: runningMode))
@@ -591,17 +506,61 @@ class TunneldManager: ObservableObject {
             modesToTry = [preferredMode]
         }
 
-        for mode in modesToTry {
-            Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
+        guard let firstMode = modesToTry.first else {
+            return
+        }
 
-            // Send start event to state machine
-            stateMachine.send(.startRequested(mode: mode))
+        // Reserve startup synchronously before the first suspension point.
+        guard case .success = stateMachine.send(.startRequested(mode: firstMode)) else {
+            return
+        }
+
+        if let runningMode = await detectRunningTunnel() {
+            guard stateMachine.currentState == .starting else {
+                return
+            }
+            stateMachine.send(.externalTunnelDetected(mode: runningMode))
+            return
+        }
+
+        // Another caller or a stop request may have changed the reserved state.
+        guard stateMachine.currentState == .starting else {
+            return
+        }
+
+        for (index, mode) in modesToTry.enumerated() {
+            if index > 0 {
+                guard case .success = stateMachine.send(.startRequested(mode: mode)) else {
+                    return
+                }
+            }
+
+            Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
 
             let success = await attemptStart(mode: mode)
 
             if success {
                 // Parse RSD info
                 await parseRsdInfo()
+
+                guard stateMachine.currentState == .starting,
+                      let launchedProcess = tunneldProcess,
+                      launchedProcess.isRunning else {
+                    let failedProcess = tunneldProcess
+                    if stateMachine.currentState == .starting {
+                        lastError = lastError ?? "Tunnel process exited before the connection was established"
+                        if let failedProcess {
+                            stateMachine.send(.processExited(pid: failedProcess.processIdentifier))
+                        } else {
+                            stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
+                        }
+                    }
+                    if failedProcess?.isRunning == true {
+                        failedProcess?.terminate()
+                    }
+                    tunneldProcess = nil
+                    return
+                }
 
                 // Connection established - state machine handles the rest
                 if let info = stateMachine.currentContext.tunnelInfo {
@@ -624,18 +583,20 @@ class TunneldManager: ObservableObject {
 
             // If not auto mode, don't try other modes
             if preferredMode != .auto {
-                stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
+                if stateMachine.currentState == .starting {
+                    stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
+                }
                 break
             }
 
-            Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
-            // Reset to idle to try next mode
-            stateMachine.reset()
-        }
-
-        // All modes failed
-        if stateMachine.currentState != .error("") {
-            stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel. Ensure device is connected and trusted."))
+            if index < modesToTry.count - 1 {
+                Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
+                stateMachine.reset()
+            } else if stateMachine.currentState == .starting {
+                stateMachine.send(.errorOccurred(
+                    lastError ?? "Failed to start tunnel. Ensure device is connected and trusted."
+                ))
+            }
         }
     }
 
@@ -694,54 +655,6 @@ class TunneldManager: ObservableObject {
         }
     }
 
-    // MARK: - Process Validation
-
-    /// Validate that only a single tunnel instance is running
-    /// Prevents race conditions where multiple processes start simultaneously
-    private func validateSingleTunnelInstance(mode: TunnelMode) async -> Bool {
-        do {
-            let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
-            let pids = output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-
-            // Get tracked PIDs from state machine context
-            let trackedPids = stateMachine.currentContext.activeProcessIds
-
-            // Check if we already know about these PIDs
-            let newPids = pids.filter { !trackedPids.contains($0) }
-
-            if newPids.count > 1 {
-                // Multiple NEW processes detected - race condition!
-                Logger.debug("Detected \(newPids.count) tunnel processes for \(mode.rawValue), keeping only first", category: .device)
-
-                // Keep only the first PID, kill the rest
-                for pid in newPids.dropFirst() {
-                    let killProcess = Process()
-                    killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-                    killProcess.arguments = ["-9", String(pid)]
-                    try? killProcess.run()
-                }
-
-                // Track the surviving process via state machine event
-                if let firstPid = newPids.first {
-                    stateMachine.send(.processLaunched(pid: firstPid))
-                }
-
-                return true
-            } else if let pid = newPids.first {
-                // Single new process - track it via state machine
-                stateMachine.send(.processLaunched(pid: pid))
-                return true
-            } else if !pids.isEmpty {
-                // All PIDs are already tracked
-                return true
-            }
-
-            return false
-        } catch {
-            return false
-        }
-    }
-
     // MARK: - Private Methods
 
     /// Detect which tunnel mode is currently running
@@ -761,86 +674,68 @@ class TunneldManager: ObservableObject {
 
     /// Attempt to start tunnel with specific mode
     private func attemptStart(mode: TunnelMode) async -> Bool {
-        let command: String
-
-        switch mode {
-        case .usb:
-            command = "\(python3Path) -m pymobiledevice3 lockdown start-tunnel > \(logFilePath) 2>&1 &"
-        case .wifi:
-            command = "\(python3Path) -m pymobiledevice3 remote start-tunnel -t wifi > \(logFilePath) 2>&1 &"
-        case .daemon:
-            command = "\(python3Path) -m pymobiledevice3 remote tunneld > \(logFilePath) 2>&1 &"
-        case .auto:
-            return false // Should not reach here
-        }
-
-        // SECURITY: Validate command before privileged execution (SEC-001)
-        switch PrivilegedCommandValidator.validate(command: command, pythonPath: python3Path) {
-        case .success:
-            Logger.info("Security validation passed for \(mode.rawValue) tunnel command", category: .security)
-        case .failure(let error):
-            Logger.error("SECURITY: Blocked privileged command - \(error.localizedDescription)", category: .security)
-            lastError = "Security validation failed: \(error.localizedDescription)"
+        guard let arguments = Self.arguments(for: mode) else {
             return false
         }
 
-        let script = """
-        do shell script "\(command)" with administrator privileges
-        """
+        guard PythonPathResolver.isAvailable else {
+            lastError = "Python is not available at \(python3Path)"
+            return false
+        }
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                var error: NSDictionary?
-                if let appleScript = NSAppleScript(source: script) {
-                    appleScript.executeAndReturnError(&error)
+        ensureLogDirectoryExists()
+        guard FileManager.default.createFile(atPath: logFilePath, contents: nil) else {
+            lastError = "Unable to create tunnel log"
+            return false
+        }
+        guard let logHandle = FileHandle(forWritingAtPath: logFilePath) else {
+            lastError = "Unable to open tunnel log"
+            return false
+        }
 
-                    if let error = error {
-                        Task { @MainActor in
-                            let errorMessage = error[NSAppleScript.errorMessage] as? String ?? "Unknown error"
-                            if !errorMessage.contains("cancel") {
-                                self.lastError = "Failed to start \(mode.rawValue) tunnel: \(errorMessage)"
-                            } else {
-                                self.lastError = "Administrator access required"
-                            }
-                        }
-                        continuation.resume(returning: false)
-                    } else {
-                        // Wait for tunnel to start using async sleep
-                        let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: python3Path)
+        process.arguments = arguments
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        process.environment = ProcessEnvironment.configured()
 
-                        Task.detached { [weak self] in
-                            try await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
+        do {
+            try process.run()
+            tunneldProcess = process
+            stateMachine.send(.processLaunched(pid: process.processIdentifier))
+            try? logHandle.close()
 
-                            guard let self = self else { return }
+            let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
+            try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
 
-                            _ = await MainActor.run {
-                                // Validate single instance and track process
-                                Task {
-                                    let validated = await self.validateSingleTunnelInstance(mode: mode)
+            guard process.isRunning else {
+                await checkLogForErrors(mode: mode)
+                if lastError == nil {
+                    lastError = "\(mode.rawValue) tunnel exited with status \(process.terminationStatus)"
+                }
+                stateMachine.send(.processExited(pid: process.processIdentifier))
+                tunneldProcess = nil
+                return false
+            }
 
-                                    if validated {
-                                        let running = await self.detectRunningTunnel() == mode
-                                        if !running {
-                                            // Process started but died quickly - check logs
-                                            await self.checkLogForErrors(mode: mode)
-                                        }
-                                        continuation.resume(returning: running)
-                                    } else {
-                                        // No process detected
-                                        await self.checkLogForErrors(mode: mode)
-                                        continuation.resume(returning: false)
-                                    }
-                                }
-                            }
-                        }
+            process.terminationHandler = { [weak self] terminatedProcess in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.tunneldProcess === terminatedProcess else {
+                        return
                     }
-                } else {
-                    Task { @MainActor in
-                        self.lastError = "Failed to create AppleScript"
-                    }
-                    continuation.resume(returning: false)
+
+                    self.stateMachine.send(.processExited(pid: terminatedProcess.processIdentifier))
+                    self.tunneldProcess = nil
                 }
             }
+
+            return true
+        } catch {
+            try? logHandle.close()
+            lastError = "Failed to start \(mode.rawValue) tunnel: \(error.localizedDescription)"
+            return false
         }
     }
 

@@ -12,7 +12,9 @@ import Combine
 @main
 struct PathChangerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var appState = AppState()
+    @StateObject private var appState = AppState(
+        startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup
+    )
     @StateObject private var tunneldManager = TunneldManager.shared
     @StateObject private var dependencyValidator = DependencyValidator.shared
 
@@ -26,6 +28,10 @@ struct PathChangerApp: App {
                     .environmentObject(tunneldManager)
                     .frame(minWidth: 1000, minHeight: 700)
                     .onAppear {
+                        guard AppRuntimeEnvironment.allowsAutomaticStartup else {
+                            return
+                        }
+
                         Task {
                             // Validate dependencies before starting tunnel
                             await dependencyValidator.validateAll()
@@ -224,12 +230,16 @@ class AppState: ObservableObject {
 
     // MARK: Initialization
 
-    init() {
+    init(startBackgroundServices: Bool = true) {
         self.simulationEngine = SimulationEngine(locationBridge: locationBridge)
 
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
+
+        guard startBackgroundServices else {
+            return
+        }
 
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)

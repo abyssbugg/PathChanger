@@ -143,7 +143,6 @@
 "tunnel.start" = "Start Tunnel";
 "tunnel.stop" = "Stop Tunnel";
 "tunnel.restart" = "Restart Tunnel";
-"tunnel.requiresSudo" = "Requires admin privileges";
 "tunnel.modeUSB" = "USB Mode";
 "tunnel.modeWiFi" = "WiFi Mode";
 "tunnel.modeDaemon" = "Daemon Mode";

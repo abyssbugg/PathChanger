@@ -251,7 +251,7 @@ struct DiagnosticsView: View {
 
     func checkPython() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: ["--version"])
+            let output = try await runPython(args: ["--version"])
             pythonVersion = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return DiagnosticResult(
                 name: "Python 3",
@@ -271,7 +271,7 @@ struct DiagnosticsView: View {
 
     func checkPymobiledevice3() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: ["-m", "pymobiledevice3", "version"])
+            let output = try await runPython(args: ["-m", "pymobiledevice3", "version"])
             pymobiledevice3Version = output.trimmingCharacters(in: .whitespacesAndNewlines)
             return DiagnosticResult(
                 name: "pymobiledevice3",
@@ -309,14 +309,14 @@ struct DiagnosticsView: View {
                 name: "Tunnel Status",
                 status: .failure,
                 message: "Tunnel not running - required for iOS 17+",
-                recoveryAction: "Go to Settings > Start Tunnel, or run: sudo python3 -m pymobiledevice3 lockdown start-tunnel"
+                recoveryAction: "Go to Settings and choose Start Tunnel"
             )
         }
     }
 
     func checkDevice() async -> DiagnosticResult {
         do {
-            let output = try await runCommand("/usr/bin/python3", args: [
+            let output = try await runPython(args: [
                 "-m", "pymobiledevice3", "usbmux", "list"
             ])
 
@@ -410,7 +410,7 @@ struct DiagnosticsView: View {
             // Add test coordinates
             args.append(contentsOf: ["--", "0.0", "0.0"])
 
-            let output = try await runCommand("/usr/bin/python3", args: args)
+            let output = try await runPython(args: args)
             let outputLower = output.lowercased()
 
             // Check for specific error patterns that indicate failure
@@ -506,21 +506,42 @@ struct DiagnosticsView: View {
         }
     }
 
-    func runCommand(_ path: String, args: [String]) async throws -> String {
+    func runPython(args: [String]) async throws -> String {
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
-            let pipe = Pipe()
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pathchanger-diagnostics-\(UUID().uuidString).log")
+            guard FileManager.default.createFile(atPath: outputURL.path, contents: nil) else {
+                continuation.resume(throwing: NSError(
+                    domain: "PathChanger",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to create diagnostics output log"]
+                ))
+                return
+            }
 
-            process.executableURL = URL(fileURLWithPath: path)
+            guard let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
+                continuation.resume(throwing: NSError(
+                    domain: "PathChanger",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to create diagnostics output log"]
+                ))
+                return
+            }
+
+            process.executableURL = URL(fileURLWithPath: PythonPathResolver.path)
             process.arguments = args
-            process.standardOutput = pipe
-            process.standardError = pipe
+            process.standardOutput = outputHandle
+            process.standardError = outputHandle
+            process.environment = ProcessEnvironment.configured()
 
             do {
                 try process.run()
+                try? outputHandle.close()
                 process.waitUntilExit()
 
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let data = (try? Data(contentsOf: outputURL)) ?? Data()
+                try? FileManager.default.removeItem(at: outputURL)
                 let output = String(data: data, encoding: .utf8) ?? ""
 
                 if process.terminationStatus == 0 {
@@ -529,6 +550,8 @@ struct DiagnosticsView: View {
                     continuation.resume(returning: output)
                 }
             } catch {
+                try? outputHandle.close()
+                try? FileManager.default.removeItem(at: outputURL)
                 continuation.resume(throwing: error)
             }
         }

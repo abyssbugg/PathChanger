@@ -242,7 +242,7 @@ enum DeviceError: Error, LocalizedError {
         case .connectionFailed(let reason):
             return "Connection failed: \(reason)"
         case .tunneldNotRunning:
-            return "Tunnel is not running. Start with: sudo python3 -m pymobiledevice3 lockdown start-tunnel"
+            return "Tunnel is not running. Start it from PathChanger."
         case .developerModeDisabled:
             return "Developer Mode is not enabled. Go to Settings > Privacy & Security > Developer Mode on your device."
         case .commandFailed(let reason):
@@ -259,7 +259,7 @@ enum DeviceError: Error, LocalizedError {
     var recoverySuggestion: String? {
         switch self {
         case .tunneldNotRunning:
-            return "Open Terminal and run:\nsudo python3 -m pymobiledevice3 lockdown start-tunnel"
+            return "Open PathChanger Settings and choose Start Tunnel."
         case .developerModeDisabled:
             return "1. Open Settings on your iPhone\n2. Go to Privacy & Security\n3. Scroll down and tap Developer Mode\n4. Enable Developer Mode and restart"
         case .pairingRequired, .trustRequired:
@@ -397,8 +397,7 @@ actor SessionController {
 ///
 /// ```swift
 /// if !deviceManager.isTunneldRunning {
-///     // Show tunnel setup UI
-///     print("Run: sudo python3 -m pymobiledevice3 lockdown start-tunnel")
+///     // Show PathChanger's tunnel controls.
 /// }
 /// ```
 ///

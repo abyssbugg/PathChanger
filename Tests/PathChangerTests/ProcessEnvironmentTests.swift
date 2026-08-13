@@ -10,6 +10,13 @@ import XCTest
 
 final class ProcessEnvironmentTests: XCTestCase {
 
+    func testXCTestHostDisablesAutomaticStartup() {
+        XCTAssertFalse(
+            AppRuntimeEnvironment.allowsAutomaticStartup,
+            "The app host must not start background services while XCTest is running"
+        )
+    }
+
     // MARK: - PATH Configuration Tests
 
     func testApprovedPathDirectoriesContainsHomebrew() {
@@ -26,9 +33,11 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertTrue(paths.contains("/sbin"), "Should include /sbin")
     }
 
-    func testApprovedPathDirectoriesContainsMacPorts() {
+    func testApprovedPathDirectoriesExcludeUnsupportedPythonSources() {
         let paths = ProcessEnvironment.approvedPathDirectories
-        XCTAssertTrue(paths.contains("/opt/local/bin"), "Should include MacPorts")
+        XCTAssertFalse(paths.contains("/opt/local/bin"))
+        XCTAssertFalse(paths.contains("/usr/local/opt/python3/bin"))
+        XCTAssertFalse(paths.contains { $0.contains(".pyenv") })
     }
 
     func testApprovedPathDirectoriesAreAbsolute() {
@@ -51,10 +60,11 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertFalse(env["PATH"]!.isEmpty, "PATH should not be empty")
     }
 
-    func testConfiguredEnvironmentContainsPYTHONPATH() {
+    func testConfiguredEnvironmentRemovesPythonOverrides() {
         let env = ProcessEnvironment.configured()
-        XCTAssertNotNil(env["PYTHONPATH"], "Environment should contain PYTHONPATH")
-        XCTAssertFalse(env["PYTHONPATH"]!.isEmpty, "PYTHONPATH should not be empty")
+        XCTAssertNil(env["PYTHONPATH"])
+        XCTAssertNil(env["PYTHONHOME"])
+        XCTAssertNil(env["VIRTUAL_ENV"])
     }
 
     func testConfiguredEnvironmentIncludesHomebrewPaths() {
@@ -65,11 +75,11 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertTrue(path.contains("/usr/local/bin"), "PATH should include /usr/local/bin")
     }
 
-    func testConfiguredEnvironmentIncludesPyenv() {
+    func testConfiguredEnvironmentExcludesPyenv() {
         let env = ProcessEnvironment.configured()
         let path = env["PATH"]!
 
-        XCTAssertTrue(path.contains(".pyenv/shims"), "PATH should include pyenv shims")
+        XCTAssertFalse(path.contains(".pyenv"))
     }
 
     func testConfiguredEnvironmentPreservesOtherVariables() {
@@ -84,20 +94,11 @@ final class ProcessEnvironmentTests: XCTestCase {
         }
     }
 
-    func testConfiguredEnvironmentWithPreserveExistingPath() {
-        let env = ProcessEnvironment.configured(preserveExistingPath: true)
+    func testConfiguredEnvironmentUsesOnlyApprovedPath() {
+        let env = ProcessEnvironment.configured()
         let path = env["PATH"]!
 
-        // Should still include approved paths
-        XCTAssertTrue(path.contains("/opt/homebrew/bin"), "Should include homebrew")
-    }
-
-    func testConfiguredEnvironmentWithoutPreserveExistingPath() {
-        let env = ProcessEnvironment.configured(preserveExistingPath: false)
-        let path = env["PATH"]!
-
-        // Should have approved paths at the beginning
-        XCTAssertTrue(path.hasPrefix("/opt/homebrew/bin"), "Should start with homebrew")
+        XCTAssertEqual(path, ProcessEnvironment.approvedPathDirectories.joined(separator: ":"))
     }
 
     // MARK: - Minimal Environment Tests
@@ -138,9 +139,9 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertTrue(ProcessEnvironment.isPathApproved("/bin/sh"))
     }
 
-    func testIsPathApprovedForPyenvPath() {
+    func testIsPathApprovedRejectsPyenvPath() {
         let pyenvPath = NSHomeDirectory() + "/.pyenv/shims/python3"
-        XCTAssertTrue(ProcessEnvironment.isPathApproved(pyenvPath))
+        XCTAssertFalse(ProcessEnvironment.isPathApproved(pyenvPath))
     }
 
     func testIsPathApprovedRejectsArbitraryPath() {
@@ -153,6 +154,11 @@ final class ProcessEnvironmentTests: XCTestCase {
         XCTAssertFalse(ProcessEnvironment.isPathApproved("python3"))
         XCTAssertFalse(ProcessEnvironment.isPathApproved("./script"))
         XCTAssertFalse(ProcessEnvironment.isPathApproved("../bin/python3"))
+    }
+
+    func testIsPathApprovedRejectsTraversalOutsideApprovedDirectory() {
+        XCTAssertFalse(ProcessEnvironment.isPathApproved("/usr/bin/../../tmp/malicious"))
+        XCTAssertFalse(ProcessEnvironment.isPathApproved("/opt/homebrew/bin/../malicious"))
     }
 
     // MARK: - Path String Tests
@@ -172,38 +178,6 @@ final class ProcessEnvironmentTests: XCTestCase {
 
         // The configured PATH may include existing path, but pathString should match the prefix
         XCTAssertTrue(configured["PATH"]!.hasPrefix(pathString.components(separatedBy: ":").first!))
-    }
-
-    // MARK: - PYTHONPATH String Tests
-
-    func testPythonPathStringIsNotEmpty() {
-        XCTAssertFalse(ProcessEnvironment.pythonPathString.isEmpty)
-    }
-
-    func testPythonPathStringContainsUserSitePackages() {
-        let pythonPath = ProcessEnvironment.pythonPathString
-        XCTAssertTrue(pythonPath.contains("Library/Python"), "Should include user site-packages")
-    }
-
-    func testPythonPathStringContainsHomebrewSitePackages() {
-        let pythonPath = ProcessEnvironment.pythonPathString
-        XCTAssertTrue(pythonPath.contains("/opt/homebrew/lib/python") ||
-                      pythonPath.contains("/usr/local/lib/python"),
-                      "Should include homebrew site-packages")
-    }
-
-    func testPythonPathStringSupportsMultiplePythonVersions() {
-        let pythonPath = ProcessEnvironment.pythonPathString
-
-        // Should support multiple Python versions
-        let supportedVersions = ["3.9", "3.10", "3.11", "3.12", "3.13"]
-        var foundVersions = 0
-        for version in supportedVersions {
-            if pythonPath.contains(version) {
-                foundVersions += 1
-            }
-        }
-        XCTAssertGreaterThanOrEqual(foundVersions, 3, "Should support at least 3 Python versions")
     }
 
     // MARK: - Keys Tests
@@ -226,8 +200,7 @@ final class ProcessEnvironmentTests: XCTestCase {
         let components = path.components(separatedBy: ":")
 
         for component in components {
-            // User home bin directories (except pyenv) should not be in PATH
-            if component.hasPrefix(NSHomeDirectory()) && !component.contains(".pyenv") {
+            if component.hasPrefix(NSHomeDirectory()) {
                 XCTFail("User-writable directory should not be in PATH: \(component)")
             }
         }

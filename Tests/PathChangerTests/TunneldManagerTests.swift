@@ -28,6 +28,19 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - State Machine Tests
 
+    func testAutoStartAllowedOutsideTests() {
+        XCTAssertTrue(TunneldManager.shouldAutoStart(environment: [:]))
+    }
+
+    func testAutoStartDisabledForXCTestHost() {
+        XCTAssertFalse(TunneldManager.shouldAutoStart(environment: [
+            "XCTestConfigurationFilePath": "/tmp/PathChangerTests.xctestconfiguration",
+        ]))
+        XCTAssertFalse(TunneldManager.shouldAutoStart(environment: [
+            "XCTestBundlePath": "/tmp/PathChangerTests.xctest",
+        ]))
+    }
+
     func testInitialStateIsIdle() {
         let state = manager.state
         XCTAssertEqual(state, .idle)
@@ -189,7 +202,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testConcurrentStartCallsPrevented() async throws {
         try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
-            "This test calls startTunnel(), which uses administrator-privileged AppleScript and cannot run in noninteractive CI."
+            "This test launches a live pymobiledevice3 tunnel and requires a prepared device host."
         )
         // First call should set state to starting
         // Subsequent calls should be ignored
@@ -205,170 +218,22 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(manager.state == .idle || manager.state == .starting || manager.state == .running)
     }
 
-    // MARK: - Security Validation Tests (SEC-001)
+    // MARK: - Tunnel Command Tests
 
-    func testValidCommandPassesValidation() {
-        // Valid USB tunnel command
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let command = "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel > /tmp/log.txt 2>&1 &"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-        if case .failure(let error) = result {
-            XCTFail("Valid command should pass validation: \(error.localizedDescription)")
-        }
+    func testTunnelCommandsUseFixedArguments() {
+        XCTAssertEqual(TunneldManager.arguments(for: .usb), [
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel",
+        ])
+        XCTAssertEqual(TunneldManager.arguments(for: .wifi), [
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi",
+        ])
+        XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
+            "-m", "pymobiledevice3", "remote", "tunneld",
+        ])
     }
 
-    func testValidWiFiCommandPassesValidation() {
-        // Valid WiFi tunnel command
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let command = "\(pythonPath) -m pymobiledevice3 remote start-tunnel -t wifi > /tmp/log.txt 2>&1 &"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-        if case .failure(let error) = result {
-            XCTFail("Valid WiFi command should pass validation: \(error.localizedDescription)")
-        }
-    }
-
-    func testValidDaemonCommandPassesValidation() {
-        // Valid daemon tunnel command
-        let pythonPath = "/usr/local/bin/python3"
-        let command = "\(pythonPath) -m pymobiledevice3 remote tunneld > /tmp/log.txt 2>&1 &"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-        if case .failure(let error) = result {
-            XCTFail("Valid daemon command should pass validation: \(error.localizedDescription)")
-        }
-    }
-
-    func testInvalidPythonPathBlocked() {
-        // Malicious Python path should be rejected
-        let maliciousPath = "/tmp/evil/python3"
-        let command = "\(maliciousPath) -m pymobiledevice3 lockdown start-tunnel"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: maliciousPath)
-
-        guard case .failure(let error) = result else {
-            XCTFail("Invalid Python path should be blocked")
-            return
-        }
-
-        if case .invalidPythonPath = error {
-            // Expected
-        } else {
-            XCTFail("Should return invalidPythonPath error, got: \(error)")
-        }
-    }
-
-    func testDangerousCharactersBlocked() {
-        // Commands with shell injection characters should be blocked
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let dangerousCommands = [
-            "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel; rm -rf /",
-            "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel | cat /etc/passwd",
-            "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel `whoami`",
-            "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel $(whoami)",
-            "\(pythonPath) -m pymobiledevice3 lockdown start-tunnel\nrm -rf /"
-        ]
-
-        for command in dangerousCommands {
-            let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-            guard case .failure(let error) = result else {
-                XCTFail("Dangerous command should be blocked: \(command)")
-                continue
-            }
-
-            if case .dangerousCharacters = error {
-                // Expected
-            } else {
-                XCTFail("Should return dangerousCharacters error for: \(command)")
-            }
-        }
-    }
-
-    func testUnrecognizedCommandBlocked() {
-        // Commands that don't match allowed patterns should be blocked
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let unrecognizedCommands = [
-            "\(pythonPath) -m pymobiledevice3 evil command",
-            "\(pythonPath) -m pymobiledevice3 remote delete-all",
-            "\(pythonPath) -m pymobiledevice3 shell exec"
-        ]
-
-        for command in unrecognizedCommands {
-            let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-            guard case .failure = result else {
-                XCTFail("Unrecognized command should be blocked: \(command)")
-                continue
-            }
-        }
-    }
-
-    func testCommandMustStartWithApprovedPath() {
-        // Command that doesn't start with the claimed Python path should be blocked
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let command = "/usr/bin/python3 -m pymobiledevice3 lockdown start-tunnel"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-        guard case .failure(let error) = result else {
-            XCTFail("Command not starting with claimed path should be blocked")
-            return
-        }
-
-        if case .commandStructureInvalid = error {
-            // Expected
-        } else {
-            XCTFail("Should return commandStructureInvalid error")
-        }
-    }
-
-    func testCommandMustUsePythonModule() {
-        // Commands not using -m pymobiledevice3 should be blocked
-        let pythonPath = "/opt/homebrew/bin/python3"
-        let command = "\(pythonPath) /tmp/evil.py lockdown start-tunnel"
-
-        let result = PrivilegedCommandValidator.validate(command: command, pythonPath: pythonPath)
-
-        guard case .failure(let error) = result else {
-            XCTFail("Command not using -m flag should be blocked")
-            return
-        }
-
-        if case .commandStructureInvalid = error {
-            // Expected
-        } else {
-            XCTFail("Should return commandStructureInvalid error")
-        }
-    }
-
-    func testIsPythonPathAllowedHelper() {
-        // Test the helper function
-        XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/opt/homebrew/bin/python3"))
-        XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/usr/local/bin/python3"))
-        XCTAssertTrue(PrivilegedCommandValidator.isPythonPathAllowed("/usr/bin/python3"))
-        XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed("/tmp/python3"))
-        XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed(""))
-        XCTAssertFalse(PrivilegedCommandValidator.isPythonPathAllowed("/opt/homebrew/bin/python"))
-    }
-
-    func testPrivilegedCommandErrorDescriptions() {
-        // Verify error descriptions are informative
-        let errors: [PrivilegedCommandError] = [
-            .invalidPythonPath("/tmp/evil"),
-            .dangerousCharacters(";"),
-            .unrecognizedCommand("bad command"),
-            .commandStructureInvalid("test reason")
-        ]
-
-        for error in errors {
-            XCTAssertNotNil(error.errorDescription)
-            XCTAssertFalse(error.errorDescription!.isEmpty)
-        }
+    func testAutoModeHasNoDirectTunnelCommand() {
+        XCTAssertNil(TunneldManager.arguments(for: .auto))
     }
 
     // MARK: - Process Management Security Tests (SEC-004)

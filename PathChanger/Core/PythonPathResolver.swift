@@ -19,7 +19,7 @@ enum PythonResolverError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .pythonNotFound:
-            return "Python 3 is not installed or not found in PATH"
+            return "No supported Python 3 executable was found"
         case .pythonNotExecutable(let path):
             return "Python 3 found at '\(path)' but is not executable"
         case .pymobiledevice3NotInstalled:
@@ -34,7 +34,7 @@ enum PythonResolverError: Error, LocalizedError {
     var recoverySuggestion: String? {
         switch self {
         case .pythonNotFound:
-            return "Install Python 3.9+ from https://www.python.org or use Homebrew:\nbrew install python3"
+            return "Install Python 3.9 or later with Homebrew, or enable Apple's /usr/bin/python3"
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
@@ -47,20 +47,25 @@ enum PythonResolverError: Error, LocalizedError {
     }
 }
 
-/// Resolves the Python 3 executable path dynamically
-/// Supports multiple installation methods: system, Homebrew, pyenv, etc.
+/// Resolves the Python 3 executable path using the app's fixed candidate policy.
 enum PythonPathResolver {
 
-    /// Common Python 3 installation paths on macOS
-    private static let searchPaths: [String] = [
-        "/usr/bin/python3",                          // System Python
-        "/usr/local/bin/python3",                    // Homebrew (Intel)
-        "/opt/homebrew/bin/python3",                 // Homebrew (Apple Silicon)
-        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",  // python.org installer
+    /// Homebrew is preferred on both architectures. Apple's Python is the final fallback.
+    static let candidatePaths: [String] = [
+        "/opt/homebrew/bin/python3",
+        "/opt/homebrew/bin/python3.14",
+        "/opt/homebrew/bin/python3.13",
+        "/opt/homebrew/bin/python3.12",
+        "/usr/local/bin/python3",
+        "/usr/local/bin/python3.14",
+        "/usr/local/bin/python3.13",
+        "/usr/local/bin/python3.12",
+        "/usr/bin/python3",
     ]
 
     /// Cached resolved path
     private static var _resolvedPath: String?
+    private static let cacheLock = NSLock()
 
     /// Minimum required Python version (major.minor)
     private static let minimumPythonVersion = (major: 3, minor: 9)
@@ -73,19 +78,40 @@ enum PythonPathResolver {
     /// - Returns: Path to Python 3 executable
     /// - Warning: Does NOT validate installation, use `validateInstallation()` for that
     static var path: String {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
         if let cached = _resolvedPath {
             return cached
         }
 
-        let resolved = resolvePath()
+        let resolved = resolvePath() ?? candidatePaths[candidatePaths.count - 1]
         _resolvedPath = resolved
         return resolved
     }
 
     /// Force re-resolve the Python path (clears cache)
     static func refresh() -> String {
-        _resolvedPath = nil
-        return path
+        let resolved = resolvePath() ?? candidatePaths[candidatePaths.count - 1]
+        cacheLock.lock()
+        _resolvedPath = resolved
+        cacheLock.unlock()
+        return resolved
+    }
+
+    /// Build the installation command for the selected interpreter.
+    static func pymobiledevice3InstallArguments(for pythonPath: String) -> [String] {
+        var arguments = ["-m", "pip", "install", "--upgrade"]
+
+        if pythonPath.hasPrefix("/opt/homebrew/bin/") ||
+           pythonPath.hasPrefix("/usr/local/bin/") {
+            arguments.append("--break-system-packages")
+        } else {
+            arguments.append("--user")
+        }
+
+        arguments.append("pymobiledevice3")
+        return arguments
     }
 
     /// Check if Python 3 is available and executable
@@ -179,50 +205,15 @@ enum PythonPathResolver {
     /// - Returns: Version string (e.g., "6.1.5")
     /// - Throws: PythonResolverError if not installed
     private static func checkPymobiledevice3Installation() async throws -> String {
-        let pythonPath = path
-
-        // First, try using pip to check if pymobiledevice3 is installed
         return try await checkPymobiledevice3WithPip()
     }
 
     /// Check pymobiledevice3 using pip show
     private static func checkPymobiledevice3WithPip() async throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = URL(fileURLWithPath: path)
         process.arguments = ["-m", "pip", "show", "pymobiledevice3"]
-
-        // Set comprehensive PATH to find pymobiledevice3
-        var environment = ProcessInfo.processInfo.environment
-
-        // Add homebrew, pyenv, and system python paths
-        let paths = [
-            "/opt/homebrew/bin",      // Apple Silicon homebrew
-            "/usr/local/bin",         // Intel homebrew
-            "/opt/local/bin",         // MacPorts
-            "/usr/local/opt/python3/bin",  // Manual python install
-            NSHomeDirectory() + "/.pyenv/shims",  // pyenv
-            "/usr/bin",
-            "/bin"
-        ]
-
-        let existingPath = environment["PATH"] ?? ""
-        environment["PATH"] = paths.joined(separator: ":") + ":" + existingPath
-
-        // Add PYTHONPATH for pip packages
-        let pythonPaths = [
-            NSHomeDirectory() + "/Library/Python/3.11/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.10/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.9/lib/python/site-packages",
-            "/opt/homebrew/lib/python3.11/site-packages",
-            "/opt/homebrew/lib/python3.10/site-packages",
-            "/opt/homebrew/lib/python3.9/site-packages",
-            "/usr/local/lib/python3.11/site-packages",
-            "/usr/local/lib/python3.10/site-packages",
-            "/usr/local/lib/python3.9/site-packages"
-        ]
-        environment["PYTHONPATH"] = pythonPaths.joined(separator: ":")
-
-        process.environment = environment
+        process.environment = ProcessEnvironment.configured()
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -241,18 +232,13 @@ enum PythonPathResolver {
                 do {
                     try process.run()
 
-                    // Wait with timeout
-                    var didTimeout = false
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
-                        if process.isRunning {
-                            didTimeout = true
-                            process.terminate()
-                        }
+                    let timeoutDate = Date().addingTimeInterval(5.0)
+                    while process.isRunning && Date() < timeoutDate {
+                        Thread.sleep(forTimeInterval: 0.05)
                     }
 
-                    process.waitUntilExit()
-
-                    if didTimeout {
+                    if process.isRunning {
+                        process.terminate()
                         continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
                         return
                     }
@@ -309,10 +295,18 @@ enum PythonPathResolver {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = ["--version"]
+            process.environment = ProcessEnvironment.configured()
 
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
+
+            defer {
+                try? pipe.fileHandleForReading.close()
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
 
             try process.run()
 
@@ -334,67 +328,10 @@ enum PythonPathResolver {
 
     // MARK: - Private
 
-    private static func resolvePath() -> String {
-        // First try `which python3` to respect user's PATH
-        if let whichPath = resolveViaWhich() {
-            return whichPath
-        }
-
-        // Fall back to searching known paths
-        for searchPath in searchPaths {
-            if FileManager.default.isExecutableFile(atPath: searchPath) {
-                return searchPath
-            }
-        }
-
-        // Ultimate fallback (may not exist, validation will catch this)
-        return "/usr/bin/python3"
-    }
-
-    private static func resolveViaWhich() -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = ["python3"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        defer {
-            // Ensure cleanup of file handles and process
-            try? pipe.fileHandleForReading.close()
-            if process.isRunning {
-                process.terminate()
-            }
-        }
-
-        do {
-            try process.run()
-
-            // Wait with timeout (2 seconds for which command)
-            let timeoutDate = Date().addingTimeInterval(2.0)
-            while process.isRunning && Date() < timeoutDate {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-
-            if process.isRunning {
-                process.terminate()
-                return nil
-            }
-
-            guard process.terminationStatus == 0 else { return nil }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if let path = output, !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        } catch {
-            // Silently fall through to other methods
-        }
-
-        return nil
+    static func resolvePath(
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
+        candidatePaths.first(where: isExecutable)
     }
 
     // MARK: - Timeout Helper

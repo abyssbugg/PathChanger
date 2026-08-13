@@ -14,14 +14,11 @@ final class LocationInjectionIntegrationTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
-            "Location injection tests may invoke pymobiledevice3 against host device services."
-        )
         locationBridge = DevLocationBridge()
 
         // Create test device
         testDevice = Device(
-            id: "test-device-001",
+            id: "0000000000000000000000000000000000000001",
             displayName: "Test iPhone",
             connectionType: .usb,
             productType: "iPhone15,2",
@@ -189,6 +186,10 @@ final class LocationInjectionIntegrationTests: XCTestCase {
     // MARK: - Error Handling Tests
 
     func testGracefulErrorHandling() async throws {
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "Clearing location invokes pymobiledevice3 against host device services."
+        )
+
         /// Test that errors are handled gracefully
         // Try to clear location on non-existent device
         do {
@@ -205,7 +206,7 @@ final class LocationInjectionIntegrationTests: XCTestCase {
     func testLocationInjectionFailsOnIOS18() async throws {
         /// Test that location injection fails on iOS 18+ devices
         let ios18Device = Device(
-            id: "test-ios18-device",
+            id: "0000000000000000000000000000000000000018",
             displayName: "Test iPhone 16",
             connectionType: .usb,
             productType: "iPhone17,1",
@@ -237,9 +238,13 @@ final class LocationInjectionIntegrationTests: XCTestCase {
     }
 
     func testLocationInjectionSucceedsOnIOS17() async throws {
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "Location injection invokes pymobiledevice3 against host device services."
+        )
+
         /// Test that iOS 17 devices don't fail version validation
         let ios17Device = Device(
-            id: "test-ios17-device",
+            id: "0000000000000000000000000000000000000017",
             displayName: "Test iPhone 15",
             connectionType: .usb,
             productType: "iPhone15,2",

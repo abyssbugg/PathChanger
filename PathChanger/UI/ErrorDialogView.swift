@@ -465,7 +465,7 @@ struct StartTunneldSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "terminal.fill")
+            Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.system(size: 48))
                 .foregroundColor(.blue)
 
@@ -477,33 +477,10 @@ struct StartTunneldSheet: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Run this command in Terminal:")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-
-                HStack {
-                    Text("sudo python3 -m pymobiledevice3 remote tunneld")
-                        .font(.system(.body, design: .monospaced))
-                        .padding(8)
-                        .background(Color(.textBackgroundColor))
-                        .cornerRadius(4)
-
-                    Button {
-                        copyToClipboard("sudo python3 -m pymobiledevice3 remote tunneld")
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            .padding()
-            .background(Color.gray.opacity(0.15))
-            .cornerRadius(8)
-
-            Text("Keep the Terminal window open while using PathChanger.")
+            Text("Use Start Tunnel in PathChanger. The selected Python runs with your user account.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
 
             Button("Done") {
                 dismiss()
@@ -514,12 +491,6 @@ struct StartTunneldSheet: View {
         .frame(width: 400)
     }
 
-    private func copyToClipboard(_ text: String) {
-        #if os(macOS)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        #endif
-    }
 }
 
 // MARK: - Developer Mode Guide Sheet
@@ -589,7 +560,7 @@ struct ErrorDialogView_Previews: PreviewProvider {
             error: ErrorHandler.AppError(
                 type: .device,
                 message: "tunneld is not running. This is required for iOS 17+ location injection.",
-                suggestion: "Run in Terminal:\nsudo python3 -m pymobiledevice3 remote tunneld",
+                suggestion: "Use Start Tunnel in PathChanger.",
                 timestamp: Date(),
                 isRecoverable: true,
                 action: .startTunneld

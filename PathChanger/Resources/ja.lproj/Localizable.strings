@@ -143,7 +143,6 @@
 "tunnel.start" = "トンネル開始";
 "tunnel.stop" = "トンネル停止";
 "tunnel.restart" = "トンネル再起動";
-"tunnel.requiresSudo" = "管理者権限が必要です";
 "tunnel.modeUSB" = "USBモード";
 "tunnel.modeWiFi" = "WiFiモード";
 "tunnel.modeDaemon" = "デーモンモード";

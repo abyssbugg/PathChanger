@@ -84,7 +84,7 @@ final class PersistentLocationBridge: ObservableObject {
     private let responseLock = NSLock()
     private var pendingContinuation: CheckedContinuation<BridgeResponse, Error>?
 
-    private var python3Path: String?
+    private var python3Path: String { PythonPathResolver.path }
     private var bridgeScriptPath: String?
 
     private let responseTimeout: TimeInterval = 10.0
@@ -98,20 +98,6 @@ final class PersistentLocationBridge: ObservableObject {
 
     /// Find Python and bridge script paths
     private func findPaths() {
-        // Find python3
-        let pathsToCheck = [
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3"
-        ]
-
-        for path in pathsToCheck {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                python3Path = path
-                break
-            }
-        }
-
         // Find bridge script (in app bundle or workspace)
         let bundlePath = Bundle.main.path(forResource: "location_bridge", ofType: "py")
         let workspacePath = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
@@ -132,7 +118,7 @@ final class PersistentLocationBridge: ObservableObject {
             }
         }
 
-        Logger.debug("[PersistentBridge] Python path: \(python3Path ?? "not found")", category: .device)
+        Logger.debug("[PersistentBridge] Python path: \(python3Path)", category: .device)
         Logger.debug("[PersistentBridge] Bridge script: \(bridgeScriptPath ?? "not found")", category: .device)
     }
 
@@ -145,9 +131,10 @@ final class PersistentLocationBridge: ObservableObject {
             return
         }
 
-        guard let pythonPath = python3Path else {
+        guard PythonPathResolver.isAvailable else {
             throw PersistentBridgeError.pythonNotFound
         }
+        let pythonPath = python3Path
 
         guard let scriptPath = bridgeScriptPath else {
             throw PersistentBridgeError.processStartFailed("Bridge script not found")
@@ -166,27 +153,7 @@ final class PersistentLocationBridge: ObservableObject {
         newProcess.standardOutput = stdout
         newProcess.standardError = stderr
 
-        // Set environment
-        var environment = ProcessInfo.processInfo.environment
-        let paths = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin"
-        ]
-        environment["PATH"] = paths.joined(separator: ":") + ":" + (environment["PATH"] ?? "")
-
-        // Add PYTHONPATH for pymobiledevice3
-        let pythonPaths = [
-            NSHomeDirectory() + "/Library/Python/3.11/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.10/lib/python/site-packages",
-            NSHomeDirectory() + "/Library/Python/3.9/lib/python/site-packages",
-            "/opt/homebrew/lib/python3.11/site-packages",
-            "/opt/homebrew/lib/python3.10/site-packages",
-            "/opt/homebrew/lib/python3.9/site-packages"
-        ]
-        environment["PYTHONPATH"] = pythonPaths.joined(separator: ":")
-        newProcess.environment = environment
+        newProcess.environment = ProcessEnvironment.configured()
 
         // Setup output handler
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in

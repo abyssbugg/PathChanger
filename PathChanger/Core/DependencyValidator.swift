@@ -15,9 +15,6 @@ class DependencyValidator: ObservableObject {
     @Published var errors: [ValidationError] = []
     @Published var installProgress: String = ""
 
-    /// Python the Aug 9 app checks and installs against. Not pyenv, not pip3.
-    nonisolated static let runtimePythonPath = "/usr/bin/python3"
-
     enum ValidationStatus {
         case pending
         case validating
@@ -48,6 +45,7 @@ class DependencyValidator: ObservableObject {
     func validateAll() async {
         validationStatus = .validating
         errors.removeAll()
+        _ = PythonPathResolver.refresh()
 
         // Validate Python first
         await validatePython()
@@ -114,7 +112,7 @@ class DependencyValidator: ObservableObject {
             return ValidationError(
                 type: .pythonMissing,
                 message: "Python 3 is not installed",
-                suggestion: "Install Python 3.9 or later from https://www.python.org or use: brew install python3"
+                suggestion: "Install Python 3.9 or later with Homebrew, or enable Apple's /usr/bin/python3"
             )
         case .pythonNotExecutable(let path):
             return ValidationError(
@@ -194,7 +192,7 @@ class DependencyValidator: ObservableObject {
     }
 
     /// Install the latest pymobiledevice3 into the same interpreter the app checks.
-    /// No version pin. Does not use pip3 or pyenv.
+    /// The package is upgraded without a version pin.
     func installLatestPymobiledevice3() async {
         validationStatus = .installing
         installProgress = "Installing the latest pymobiledevice3…"
@@ -220,15 +218,42 @@ class DependencyValidator: ObservableObject {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: DependencyValidator.runtimePythonPath)
-                process.arguments = ["-m", "pip", "install", "--user", "--upgrade", "pymobiledevice3"]
+                let pythonPath = PythonPathResolver.path
+                process.executableURL = URL(fileURLWithPath: pythonPath)
+                process.arguments = PythonPathResolver.pymobiledevice3InstallArguments(for: pythonPath)
+                process.environment = ProcessEnvironment.configured()
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
+                let outputURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("pathchanger-pip-\(UUID().uuidString).log")
+                guard FileManager.default.createFile(atPath: outputURL.path, contents: nil) else {
+                    continuation.resume(throwing: NSError(
+                        domain: "PathChanger",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Unable to create installer output log"]
+                    ))
+                    return
+                }
+
+                guard let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
+                    continuation.resume(throwing: NSError(
+                        domain: "PathChanger",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Unable to create installer output log"]
+                    ))
+                    return
+                }
+
+                process.standardOutput = outputHandle
+                process.standardError = outputHandle
+
+                defer {
+                    try? outputHandle.close()
+                    try? FileManager.default.removeItem(at: outputURL)
+                }
 
                 do {
                     try process.run()
+                    try? outputHandle.close()
 
                     let timeout = DispatchTime.now() + 600
                     while process.isRunning {
@@ -244,7 +269,7 @@ class DependencyValidator: ObservableObject {
                         Thread.sleep(forTimeInterval: 0.2)
                     }
 
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let data = (try? Data(contentsOf: outputURL)) ?? Data()
                     let output = String(data: data, encoding: .utf8) ?? ""
 
                     if process.terminationStatus == 0 {

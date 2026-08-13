@@ -34,6 +34,9 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
     /// Tunnel process has been successfully launched
     case processLaunched(pid: Int32?)
 
+    /// A process launched by PathChanger exited
+    case processExited(pid: Int32)
+
     /// Tunnel has established connection (RSD parsed)
     case connectionEstablished(info: TunnelInfo)
 
@@ -64,6 +67,8 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return "startRequested(\(mode.rawValue))"
         case .processLaunched(let pid):
             return "processLaunched(pid: \(pid?.description ?? "nil"))"
+        case .processExited(let pid):
+            return "processExited(pid: \(pid))"
         case .connectionEstablished(let info):
             return "connectionEstablished(\(info.rsdAddress):\(info.rsdPort))"
         case .stopRequested:
@@ -89,6 +94,8 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
         case (.startRequested(let m1), .startRequested(let m2)):
             return m1 == m2
         case (.processLaunched(let p1), .processLaunched(let p2)):
+            return p1 == p2
+        case (.processExited(let p1), .processExited(let p2)):
             return p1 == p2
         case (.connectionEstablished(let i1), .connectionEstablished(let i2)):
             return i1 == i2
@@ -384,8 +391,15 @@ final class TunnelStateMachine: ObservableObject {
 
         if shouldDebounce && now.timeIntervalSince(context.lastStateChangeTime) < debounceInterval {
             // Allow critical events through debounce
-            let criticalEvents: [TunnelEvent] = [.stopRequested, .processStopped]
-            if !criticalEvents.contains(event) && !isErrorEvent(event) {
+            let isCriticalEvent: Bool
+            switch event {
+            case .stopRequested, .processStopped, .processExited:
+                isCriticalEvent = true
+            default:
+                isCriticalEvent = false
+            }
+
+            if !isCriticalEvent && !isErrorEvent(event) {
                 Logger.debug("[StateMachine] Event debounced: \(event)", category: .device)
                 return .ignored
             }
@@ -513,6 +527,31 @@ final class TunnelStateMachine: ObservableObject {
                 ]
             )
 
+        case (.starting, .processExited(let pid)):
+            context.removeProcess(pid)
+            let message = "Tunnel process exited"
+            context.lastError = message
+            context.statusMessage = message
+            return .success(
+                newState: .error(message),
+                actions: [
+                    .notifyStateChange(state: .error(message))
+                ]
+            )
+
+        case (.starting, .externalTunnelDetected(let mode)):
+            context.activeMode = mode
+            context.activeProcessIds.removeAll()
+            context.statusMessage = "Tunnel already running (\(mode.rawValue))"
+            return .success(
+                newState: .running,
+                actions: [
+                    .notifyStateChange(state: .running),
+                    .parseRsdInfo,
+                    .startHealthMonitor
+                ]
+            )
+
         case (.starting, .connectionEstablished(let info)):
             context.tunnelInfo = info
             context.statusMessage = "\(context.activeMode?.rawValue ?? "Tunnel") active (RSD: \(info.rsdAddress):\(info.rsdPort))"
@@ -590,6 +629,20 @@ final class TunnelStateMachine: ObservableObject {
                     .notifyStateChange(state: .error(message)),
                     .stopHealthMonitor,
                     shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
+                ]
+            )
+
+        case (.running, .processExited(let pid)):
+            context.removeProcess(pid)
+            let message = "Tunnel process exited"
+            context.lastError = message
+            context.statusMessage = message
+            return .success(
+                newState: .error(message),
+                actions: [
+                    .notifyStateChange(state: .error(message)),
+                    .stopHealthMonitor,
+                    .cleanupResources
                 ]
             )
 
