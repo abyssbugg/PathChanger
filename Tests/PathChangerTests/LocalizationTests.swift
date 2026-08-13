@@ -313,6 +313,6 @@ final class LocalizationTests: XCTestCase {
 
     func testDependencyCommandsAreValid() {
         XCTAssertEqual(L10n.Dependency.brewCommand, "brew install python3")
-        XCTAssertEqual(L10n.Dependency.pipCommand, "pip3 install pymobiledevice3")
+        XCTAssertEqual(L10n.Dependency.pipCommand, "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3")
     }
 }

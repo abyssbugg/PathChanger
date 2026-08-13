@@ -686,7 +686,7 @@ class TunneldManager: ObservableObject {
     func isUSBDeviceConnected() async -> Bool {
         do {
             let output = try await runCommand(python3Path, arguments: [
-                "-m", "pymobiledevice3", "usbmux", "list", "--no-color"
+                "-m", "pymobiledevice3", "usbmux", "list"
             ])
             return output.contains("USB") || output.contains("ConnectionType")
         } catch {

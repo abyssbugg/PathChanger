@@ -335,8 +335,8 @@ struct OnboardingView: View {
                             installed: result.python3Installed,
                             valid: result.pythonVersionValid,
                             version: result.pythonVersion,
-                            installCommand: "brew install python3",
-                            onCopy: { viewModel.copyToClipboard($0) }
+                            installCommand: "PathChanger needs the Mac’s built-in Python 3.9+",
+                            onInstall: nil
                         )
 
                         // pymobiledevice3
@@ -345,8 +345,13 @@ struct OnboardingView: View {
                             installed: result.pymobiledevice3Installed,
                             valid: result.pymobiledevice3VersionValid,
                             version: result.pymobiledevice3Version,
-                            installCommand: "pip3 install pymobiledevice3",
-                            onCopy: { viewModel.copyToClipboard($0) }
+                            installCommand: nil,
+                            onInstall: {
+                                Task {
+                                    await DependencyValidator.shared.installLatestPymobiledevice3()
+                                    await viewModel.checkDependencies()
+                                }
+                            }
                         )
 
                         Button("Re-check Dependencies") {
@@ -468,8 +473,8 @@ struct DependencyCard: View {
     let installed: Bool
     let valid: Bool
     let version: String?
-    let installCommand: String
-    let onCopy: (String) -> Void
+    let installCommand: String?
+    let onInstall: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -495,19 +500,15 @@ struct DependencyCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    HStack {
-                        Text(installCommand)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(8)
-                            .background(Color.secondary.opacity(0.1))
-                            .cornerRadius(4)
-
-                        Button {
-                            onCopy(installCommand)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
+                    if let onInstall {
+                        Button("Install in PathChanger") {
+                            onInstall()
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderedProminent)
+                    } else if let installCommand {
+                        Text(installCommand)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
             }

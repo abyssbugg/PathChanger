@@ -13,6 +13,10 @@ import Foundation
 class DependencyValidator: ObservableObject {
     @Published var validationStatus: ValidationStatus = .pending
     @Published var errors: [ValidationError] = []
+    @Published var installProgress: String = ""
+
+    /// Python the Aug 9 app checks and installs against. Not pyenv, not pip3.
+    nonisolated static let runtimePythonPath = "/usr/bin/python3"
 
     enum ValidationStatus {
         case pending
@@ -146,13 +150,13 @@ class DependencyValidator: ObservableObject {
             return ValidationError(
                 type: .pymobiledevice3Missing,
                 message: "pymobiledevice3 is not installed",
-                suggestion: "Install with: pip3 install pymobiledevice3"
+                suggestion: "Install the latest pymobiledevice3 from PathChanger"
             )
         case .pymobiledevice3VersionTooOld(let version):
             return ValidationError(
                 type: .pymobiledevice3VersionTooOld,
                 message: "pymobiledevice3 version \(version) is too old (minimum: 6.1.5)",
-                suggestion: "Upgrade with: pip3 install --upgrade pymobiledevice3"
+                suggestion: "Install the latest pymobiledevice3 from PathChanger"
             )
         case .pythonNotFound, .pythonNotExecutable, .invalidPythonVersion:
             return ValidationError(
@@ -176,5 +180,87 @@ class DependencyValidator: ObservableObject {
     /// Get recovery suggestion for first error
     var firstErrorSuggestion: String? {
         errors.first?.suggestion
+    }
+
+    /// True when Python is usable and pymobiledevice3 is missing or too old.
+    var canInstallPymobiledevice3: Bool {
+        let pythonBroken = errors.contains {
+            $0.type == .pythonMissing || $0.type == .pythonVersionTooOld || $0.type == .pythonNotExecutable
+        }
+        let pmd3Issue = errors.contains {
+            $0.type == .pymobiledevice3Missing || $0.type == .pymobiledevice3VersionTooOld
+        }
+        return !pythonBroken && pmd3Issue
+    }
+
+    /// Install the latest pymobiledevice3 into the same interpreter the app checks.
+    /// No version pin. Does not use pip3 or pyenv.
+    func installLatestPymobiledevice3() async {
+        validationStatus = .installing
+        installProgress = "Installing the latest pymobiledevice3…"
+
+        do {
+            let output = try await runPipInstallLatest()
+            Logger.info("pymobiledevice3 install finished:\n\(output.suffix(500))", category: .device)
+            installProgress = "Install finished. Rechecking…"
+            await validateAll()
+            if validationStatus == .valid {
+                installProgress = "pymobiledevice3 is ready."
+            } else {
+                installProgress = "Install ran but PathChanger still cannot see pymobiledevice3."
+            }
+        } catch {
+            Logger.error("pymobiledevice3 install failed: \(error.localizedDescription)", category: .device)
+            installProgress = "Install failed: \(error.localizedDescription)"
+            validationStatus = .invalid
+        }
+    }
+
+    private func runPipInstallLatest() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: DependencyValidator.runtimePythonPath)
+                process.arguments = ["-m", "pip", "install", "--user", "--upgrade", "pymobiledevice3"]
+
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+
+                do {
+                    try process.run()
+
+                    let timeout = DispatchTime.now() + 600
+                    while process.isRunning {
+                        if DispatchTime.now() > timeout {
+                            process.terminate()
+                            continuation.resume(throwing: NSError(
+                                domain: "PathChanger",
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Install timed out after 10 minutes"]
+                            ))
+                            return
+                        }
+                        Thread.sleep(forTimeInterval: 0.2)
+                    }
+
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+
+                    if process.terminationStatus == 0 {
+                        continuation.resume(returning: output)
+                    } else {
+                        let snippet = output.split(separator: "\n").suffix(8).joined(separator: "\n")
+                        continuation.resume(throwing: NSError(
+                            domain: "PathChanger",
+                            code: Int(process.terminationStatus),
+                            userInfo: [NSLocalizedDescriptionKey: snippet.isEmpty ? "pip exited \(process.terminationStatus)" : snippet]
+                        ))
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }

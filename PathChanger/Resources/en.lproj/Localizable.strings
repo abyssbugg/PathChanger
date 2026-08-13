@@ -190,4 +190,4 @@
 "dependency.pymobiledevice" = "pymobiledevice3 is required";
 "dependency.installInstructions" = "Installation Instructions";
 "dependency.brewCommand" = "brew install python3";
-"dependency.pipCommand" = "pip3 install pymobiledevice3";
+"dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";

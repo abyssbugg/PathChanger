@@ -284,7 +284,7 @@ struct DiagnosticsView: View {
                 name: "pymobiledevice3",
                 status: .failure,
                 message: "pymobiledevice3 not installed or not working",
-                recoveryAction: "Install: python3 -m pip install -U pymobiledevice3"
+                recoveryAction: "Use PathChanger’s Install pymobiledevice3 button"
             )
         }
     }
@@ -317,7 +317,7 @@ struct DiagnosticsView: View {
     func checkDevice() async -> DiagnosticResult {
         do {
             let output = try await runCommand("/usr/bin/python3", args: [
-                "-m", "pymobiledevice3", "usbmux", "list", "--no-color"
+                "-m", "pymobiledevice3", "usbmux", "list"
             ])
 
             // Check for various device identifiers (supports both USB and WiFi/Network connections)

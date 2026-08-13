@@ -658,7 +658,7 @@ class DeviceManager: ObservableObject {
         do {
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3",
-                "usbmux", "list", "--no-color"
+                "usbmux", "list"
             ])
 
             let baseDevices = parseDeviceListJSON(output, connectionType: ConnectionType.usb)
@@ -714,8 +714,7 @@ class DeviceManager: ObservableObject {
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3",
                 "lockdown", "info",
-                "--udid", udid,
-                "--no-color"
+                "--udid", udid
             ], timeout: 10.0)
 
             var info: [String: String] = [:]
@@ -847,8 +846,7 @@ class DeviceManager: ObservableObject {
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3",
                 "lockdown", "info",
-                "--tunnel", udid,
-                "--no-color"
+                "--tunnel", udid
             ], timeout: 10.0)
 
             var info: [String: String] = [:]
@@ -1000,7 +998,7 @@ class DeviceManager: ObservableObject {
             // Use pymobiledevice3 remote browse to find tunneld devices
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3",
-                "remote", "browse", "--no-color"
+                "remote", "browse"
             ], timeout: 5.0)
 
             // Try JSON parsing first
@@ -1045,9 +1043,9 @@ class DeviceManager: ObservableObject {
         do {
             let args: [String]
             if !viaUSB && isTunneldRunning {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", udid, "--no-color"]
+                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", udid]
             } else {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", udid, "--no-color"]
+                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", udid]
             }
 
             let output = try await runPython(arguments: args, timeout: 10.0)
@@ -1096,9 +1094,9 @@ class DeviceManager: ObservableObject {
         do {
             let args: [String]
             if device.connectionType == .wifi && isTunneldRunning {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", device.id, "-k", "ProductVersion", "--no-color"]
+                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", device.id, "-k", "ProductVersion"]
             } else {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", device.id, "-k", "ProductVersion", "--no-color"]
+                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", device.id, "-k", "ProductVersion"]
             }
 
             _ = try await runPython(arguments: args, timeout: 10.0)
@@ -1121,9 +1119,9 @@ class DeviceManager: ObservableObject {
         do {
             let args: [String]
             if device.connectionType == .wifi {
-                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--tunnel", device.id, "--no-color"]
+                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--tunnel", device.id]
             } else {
-                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--udid", device.id, "--no-color"]
+                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--udid", device.id]
             }
 
             let output = try await runPython(arguments: args, timeout: 15.0)

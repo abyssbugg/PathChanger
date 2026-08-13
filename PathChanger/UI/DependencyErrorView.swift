@@ -9,7 +9,6 @@ import SwiftUI
 
 struct DependencyErrorView: View {
     @ObservedObject var validator: DependencyValidator
-    @State private var copiedToClipboard = false
 
     var body: some View {
         ZStack {
@@ -35,7 +34,7 @@ struct DependencyErrorView: View {
                         .font(.system(size: 28, weight: .bold))
                         .foregroundColor(.white)
 
-                    Text("PathChanger requires additional setup before it can run")
+                    Text("PathChanger needs pymobiledevice3 on this Mac. You can install it here.")
                         .font(.system(size: 14, weight: .regular))
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
@@ -61,58 +60,48 @@ struct DependencyErrorView: View {
                 .background(Color(.sRGBLinear, red: 0.1, green: 0.08, blue: 0.15, opacity: 1.0))
                 .cornerRadius(12)
 
-                // Solution Section
-                if let firstError = validator.errors.first {
+                if validator.canInstallPymobiledevice3 || validator.validationStatus == .installing {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("How to Fix")
+                        Text("Install in PathChanger")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
 
-                        Text(firstError.suggestion)
-                            .font(.system(size: 13, weight: .regular, design: .monospaced))
-                            .foregroundColor(.green)
-                            .padding(12)
-                            .background(Color(.sRGBLinear, red: 0.0, green: 0.15, blue: 0.0, opacity: 1.0))
-                            .cornerRadius(8)
+                        Text("This installs the latest pymobiledevice3 for this app. No Terminal, no browser.")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundColor(.gray)
 
-                        HStack(spacing: 12) {
-                            Button(action: {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(firstError.suggestion, forType: .string)
-                                copiedToClipboard = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                                    copiedToClipboard = false
-                                }
-                            }) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: copiedToClipboard ? "checkmark.circle.fill" : "doc.on.doc")
-                                    Text(copiedToClipboard ? "Copied!" : "Copy Command")
-                                }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(Color.blue)
-                                .cornerRadius(8)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-
-                            Link(destination: URL(string: "https://www.python.org")!) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "link")
-                                    Text("Learn More")
-                                }
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 12)
-                                .background(Color.gray)
-                                .cornerRadius(8)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-
-                            Spacer()
+                        if !validator.installProgress.isEmpty {
+                            Text(validator.installProgress)
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundColor(.white.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+
+                        Button(action: {
+                            Task {
+                                await validator.installLatestPymobiledevice3()
+                            }
+                        }) {
+                            HStack(spacing: 8) {
+                                if validator.validationStatus == .installing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .tint(.white)
+                                    Text("Installing…")
+                                } else {
+                                    Image(systemName: "arrow.down.app")
+                                    Text("Install pymobiledevice3")
+                                }
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(validator.validationStatus == .installing ? Color.gray : Color.blue)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .disabled(validator.validationStatus == .installing)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
@@ -120,7 +109,6 @@ struct DependencyErrorView: View {
                     .cornerRadius(12)
                 }
 
-                // Retry Section
                 VStack(spacing: 12) {
                     Button(action: {
                         Task {
@@ -129,21 +117,17 @@ struct DependencyErrorView: View {
                     }) {
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.clockwise")
-                            Text("Retry Validation")
+                            Text("Check Again")
                         }
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
-                        .background(Color.blue)
+                        .background(Color.blue.opacity(0.7))
                         .cornerRadius(8)
                     }
                     .buttonStyle(PlainButtonStyle())
-
-                    Text("After installing the required dependencies, click above to retry.")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.center)
+                    .disabled(validator.validationStatus == .installing)
                 }
 
                 Spacer()

@@ -38,9 +38,9 @@ enum PythonResolverError: Error, LocalizedError {
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
-            return "Install pymobiledevice3 using:\npip3 install pymobiledevice3"
+            return "Install the latest pymobiledevice3 from PathChanger"
         case .pymobiledevice3VersionTooOld:
-            return "Upgrade pymobiledevice3 using:\npip3 install --upgrade pymobiledevice3"
+            return "Install the latest pymobiledevice3 from PathChanger"
         case .invalidPythonVersion:
             return "Install Python 3.9 or later"
         }
