@@ -134,6 +134,7 @@ class AppState: ObservableObject {
     @Published var isSimulating: Bool = false
     @Published var isPaused: Bool = false
     @Published var simulationSpeed: SimulationSpeed = .walking
+    @Published var activeMode: AppMode = .teleport
 
     // MARK: Route Playback
     @Published var currentRoute: [LocationCoordinate] = []
@@ -407,36 +408,52 @@ class AppState: ObservableObject {
 
     // MARK: Location Control
 
-    func setLocation(_ coordinate: LocationCoordinate) async {
+    func setLocation(
+        _ coordinate: LocationCoordinate,
+        quiet: Bool = false,
+        usePerformanceMode: Bool = false
+    ) async {
         guard let device = selectedDevice else {
             errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
-            ToastManager.shared.error("No device selected")
+            if !quiet {
+                ToastManager.shared.error("No device selected")
+            }
             return
         }
 
-        // Check iOS version and show warning (once per device per session)
-
-
         targetLocation = coordinate
-        statusMessage = "Injecting location..."
+        if !quiet {
+            statusMessage = "Injecting location..."
+        }
 
         do {
-            try await locationBridge.setLocation(coordinate, for: device)
+            try await locationBridge.setLocation(
+                coordinate,
+                for: device,
+                priority: quiet ? .high : .normal,
+                usePerformanceMode: usePerformanceMode
+            )
             currentLocation = coordinate
             isSimulating = true
             lastError = nil
             injectionStats = await locationBridge.getStats()
             errorHandler.clearCurrentError()
 
-            // Show success toast
-            let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
-            statusMessage = "Location spoofed to \(locationStr)"
-            ToastManager.shared.success("Location spoofed successfully!")
+            if !quiet {
+                let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
+                statusMessage = "Location spoofed to \(locationStr)"
+                ToastManager.shared.success("Location spoofed successfully!")
+            }
 
         } catch let error as LocationInjectionError {
+            if case .rateLimited = error, quiet {
+                return
+            }
             errorHandler.handle(error, context: "Location injection")
             isSimulating = false
-            ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            if !quiet {
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
 
             if case .deviceNotFound = error {
                 reliabilityManager.connectionLost()
@@ -444,7 +461,9 @@ class AppState: ObservableObject {
         } catch {
             errorHandler.handle(error, context: "Location injection")
             isSimulating = false
-            ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            if !quiet {
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -473,15 +492,25 @@ class AppState: ObservableObject {
     func startSimulation() async {
         guard canStartSimulation else { return }
 
-        guard let target = targetLocation else {
-            lastError = "No target location selected"
-            return
+        switch SimulationPlanner.plan(
+            mode: activeMode,
+            targetLocation: targetLocation,
+            currentLocation: currentLocation,
+            route: currentRoute,
+            speed: simulationSpeed
+        ) {
+        case .teleport(let coordinate):
+            isPaused = false
+            isSimulating = true
+            await setLocation(coordinate)
+        case .route(let points):
+            await playRoute(points)
+        case .joystick(let start):
+            await startJoystick(at: start)
+        case .failed(let message):
+            lastError = message
+            statusMessage = message
         }
-
-        // Start the simulation and inject location
-        isPaused = false
-        isSimulating = true
-        await setLocation(target)
     }
 
     func pauseSimulation() {
@@ -513,27 +542,99 @@ class AppState: ObservableObject {
         routeProgress = 0
     }
 
-    func startRoutePlayback() async {
-        guard !currentRoute.isEmpty else {
-            lastError = "No route loaded"
-            return
+    func addRouteWaypoint(_ coordinate: LocationCoordinate) {
+        guard coordinate.isValid else { return }
+        currentRoute.append(coordinate)
+        targetLocation = coordinate
+        routeProgress = 0
+        statusMessage = "Spot \(currentRoute.count) added"
+    }
+
+    func removeLastRouteWaypoint() {
+        guard !currentRoute.isEmpty else { return }
+        currentRoute.removeLast()
+        targetLocation = currentRoute.last
+        routeProgress = 0
+        statusMessage = currentRoute.isEmpty ? "All spots cleared" : "\(currentRoute.count) spots remaining"
+    }
+
+    func clearRoute() {
+        simulationTask?.cancel()
+        simulationTask = nil
+        currentRoute = []
+        routeProgress = 0
+        statusMessage = "Spots cleared"
+    }
+
+    func importRoute(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
         }
 
+        do {
+            let coordinates = try GPXParser().parse(fileURL: url).allCoordinates
+            guard coordinates.count >= 2 else {
+                lastError = "GPX file needs at least two points"
+                statusMessage = lastError
+                return
+            }
+            loadRoute(from: coordinates)
+            targetLocation = coordinates.last
+            lastError = nil
+            statusMessage = "Imported \(coordinates.count) points"
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = lastError
+        }
+    }
+
+    func startRoutePlayback() async {
+        guard canStartSimulation else { return }
+
+        switch SimulationPlanner.plan(
+            mode: .route,
+            targetLocation: targetLocation,
+            currentLocation: currentLocation,
+            route: currentRoute,
+            speed: simulationSpeed
+        ) {
+        case .route(let points):
+            await playRoute(points)
+        case .failed(let message):
+            lastError = message
+            statusMessage = message
+        default:
+            lastError = "No route loaded"
+            statusMessage = lastError
+        }
+    }
+
+    private func playRoute(_ points: [LocationCoordinate]) async {
+        simulationTask?.cancel()
+        joystickTask?.cancel()
+        joystickTask = nil
+
+        isPaused = false
+        isSimulating = true
+        routeProgress = 0
+        await locationBridge.setQueueStrategy(.sequential)
+
         simulationTask = Task {
-            let totalPoints = currentRoute.count
-            var currentIndex = 0
+            let totalPoints = points.count
 
-            while currentIndex < totalPoints && !Task.isCancelled {
-                if isPaused {
+            for (index, coordinate) in points.enumerated() {
+                if Task.isCancelled { return }
+
+                while isPaused && !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 100_000_000)
-                    continue
                 }
+                if Task.isCancelled { return }
 
-                let coordinate = currentRoute[currentIndex]
-                await setLocation(coordinate)
-
-                routeProgress = Double(currentIndex + 1) / Double(totalPoints)
-                currentIndex += 1
+                await setLocation(coordinate, quiet: true, usePerformanceMode: true)
+                routeProgress = Double(index + 1) / Double(totalPoints)
 
                 let interval = simulationSpeed.updateInterval
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
@@ -549,6 +650,49 @@ class AppState: ObservableObject {
 
     func updateJoystickDirection(_ direction: CGPoint) {
         joystickDirection = direction
+
+        let engaged = hypot(direction.x, direction.y) >= JoystickMovement.deadZone
+        guard engaged,
+              !isSimulating,
+              joystickTask == nil,
+              canStartSimulation,
+              activeMode == .joystick,
+              (targetLocation ?? currentLocation) != nil else {
+            return
+        }
+
+        Task { await startSimulation() }
+    }
+
+    private func startJoystick(at start: LocationCoordinate) async {
+        simulationTask?.cancel()
+        joystickTask?.cancel()
+        simulationTask = nil
+
+        isPaused = false
+        isSimulating = true
+        await locationBridge.setQueueStrategy(.latestWins)
+        await setLocation(start, quiet: true, usePerformanceMode: true)
+
+        let interval: TimeInterval = 0.1
+        joystickTask = Task {
+            while !Task.isCancelled {
+                if !isPaused {
+                    let current = currentLocation ?? start
+                    let next = JoystickMovement.nextCoordinate(
+                        from: current,
+                        direction: joystickDirection,
+                        speedMetersPerSecond: simulationSpeed.metersPerSecond,
+                        deltaTime: interval
+                    )
+                    if next != current {
+                        await setLocation(next, quiet: true, usePerformanceMode: true)
+                    }
+                }
+
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+        }
     }
 
     // MARK: Speed Control

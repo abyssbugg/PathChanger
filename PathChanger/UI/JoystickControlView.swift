@@ -92,12 +92,23 @@ struct JoystickControlView: View {
                 .frame(width: 140, height: 140)
 
                 // Instructions
-                Text("Drag to move")
+                Text(joystickHint)
                     .font(AppFont.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
             .frame(width: 180)
         }
+    }
+
+    private var joystickHint: String {
+        if appState.currentLocation == nil && appState.targetLocation == nil {
+            return "Tap the map to set a start point"
+        }
+        if appState.isSimulating {
+            return "Drag to move"
+        }
+        return "Press Play or drag to move"
     }
 }
 

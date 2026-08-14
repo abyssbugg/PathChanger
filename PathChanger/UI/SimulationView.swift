@@ -8,6 +8,7 @@
 
 import SwiftUI
 import MapKit
+import UniformTypeIdentifiers
 
 struct SimulationView: View {
     let mode: AppMode
@@ -49,6 +50,12 @@ struct SimulationView: View {
             }
             .padding(.bottom, 30)
         }
+        .onAppear {
+            appState.activeMode = mode
+        }
+        .onChange(of: mode) { _, newMode in
+            appState.activeMode = newMode
+        }
         .onChange(of: appState.currentLocation) { _, newLocation in
             if let location = newLocation {
                 withAnimation {
@@ -58,6 +65,13 @@ struct SimulationView: View {
                     ))
                 }
             }
+        }
+        .fileImporter(
+            isPresented: $appState.showRouteImport,
+            allowedContentTypes: routeFileTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handleRouteImport(result)
         }
     }
 
@@ -85,10 +99,15 @@ struct SimulationView: View {
                     }
                 }
 
+                if mode == .route && appState.currentRoute.count >= 2 {
+                    MapPolyline(coordinates: appState.currentRoute.map(\.clLocationCoordinate2D))
+                        .stroke(.blue, lineWidth: 4)
+                }
+
                 // Route markers if in route mode
                 if mode == .route && !appState.currentRoute.isEmpty {
                     ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
-                        Marker("Point \(index + 1)", coordinate: CLLocationCoordinate2D(latitude: coord.latitude, longitude: coord.longitude))
+                        Marker("Spot \(index + 1)", coordinate: CLLocationCoordinate2D(latitude: coord.latitude, longitude: coord.longitude))
                             .tint(index == 0 ? .green : (index == appState.currentRoute.count - 1 ? .red : .orange))
                     }
                 }
@@ -121,14 +140,24 @@ struct SimulationView: View {
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
 
-        // Set the target location
-        appState.targetLocation = location
-        appState.statusMessage = String(format: "Location set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
-
-        // If a device is selected and not simulating, we can directly apply the location
-        if appState.selectedDevice != nil && !appState.isSimulating {
-            Task {
-                await appState.setLocation(location)
+        switch mode {
+        case .route:
+            guard !appState.isSimulating else {
+                appState.statusMessage = "Stop playback before adding spots"
+                return
+            }
+            appState.addRouteWaypoint(location)
+        case .joystick:
+            appState.targetLocation = location
+            appState.statusMessage = String(format: "Start set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
+            if appState.isSimulating {
+                Task { await appState.setLocation(location, quiet: true, usePerformanceMode: true) }
+            }
+        case .teleport, .settings:
+            appState.targetLocation = location
+            appState.statusMessage = String(format: "Location set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
+            if appState.selectedDevice != nil && !appState.isSimulating {
+                Task { await appState.setLocation(location) }
             }
         }
     }
@@ -324,7 +353,7 @@ struct SimulationView: View {
                 HStack {
                     Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
                         .foregroundStyle(.blue)
-                    Text("\(appState.currentRoute.count) points")
+                    Text("\(appState.currentRoute.count) spots")
                         .font(.caption)
 
                     if appState.isSimulating {
@@ -336,15 +365,40 @@ struct SimulationView: View {
                 .padding(8)
                 .background(.ultraThinMaterial)
                 .clipShape(Capsule())
+            } else {
+                Text("Tap the map to drop spots, then press Play")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
             }
 
-            // Import route button
-            Button {
-                appState.showRouteImport = true
-            } label: {
-                Label("Import GPX", systemImage: "square.and.arrow.down")
+            HStack(spacing: 8) {
+                Button {
+                    appState.showRouteImport = true
+                } label: {
+                    Label("Import GPX", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.isSimulating)
+
+                Button {
+                    appState.removeLastRouteWaypoint()
+                } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
+
+                Button {
+                    appState.clearRoute()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
             }
-            .buttonStyle(.bordered)
         }
     }
 
@@ -496,14 +550,9 @@ struct SimulationView: View {
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
 
-        // Set the target location
-        appState.targetLocation = coordinate
-
-        // Clear search and hide results
         searchService.clearSearch()
         showSearchResults = false
 
-        // Move map to location
         withAnimation {
             position = .region(MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude),
@@ -511,13 +560,42 @@ struct SimulationView: View {
             ))
         }
 
-        appState.statusMessage = "Selected: \(result.name)"
-
-        // If device is selected, apply location immediately
-        if appState.selectedDevice != nil && !appState.isSimulating {
-            Task {
-                await appState.setLocation(coordinate)
+        switch mode {
+        case .route:
+            if !appState.isSimulating {
+                appState.addRouteWaypoint(coordinate)
+                appState.statusMessage = "Spot added: \(result.name)"
             }
+        case .joystick:
+            appState.targetLocation = coordinate
+            appState.statusMessage = "Start set: \(result.name)"
+        case .teleport, .settings:
+            appState.targetLocation = coordinate
+            appState.statusMessage = "Selected: \(result.name)"
+            if appState.selectedDevice != nil && !appState.isSimulating {
+                Task {
+                    await appState.setLocation(coordinate)
+                }
+            }
+        }
+    }
+
+    private var routeFileTypes: [UTType] {
+        var types: [UTType] = [.xml]
+        if let gpx = UTType(filenameExtension: "gpx") {
+            types.insert(gpx, at: 0)
+        }
+        return types
+    }
+
+    private func handleRouteImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            appState.importRoute(from: url)
+        case .failure(let error):
+            appState.lastError = error.localizedDescription
+            appState.statusMessage = error.localizedDescription
         }
     }
 }

@@ -288,24 +288,15 @@ class SimulationStateManager: ObservableObject {
     private func updateJoystickLocation() async {
         guard let current = currentLocation else { return }
 
-        // Normalize direction vector to ensure consistent speed in all directions
-        let dirX = Double(joystickDirection.x)
-        let dirY = Double(joystickDirection.y)
-        let magnitude = sqrt(dirX * dirX + dirY * dirY)
-        let normalizedX = magnitude > 0 ? dirX / max(magnitude, 1.0) : 0
-        let normalizedY = magnitude > 0 ? dirY / max(magnitude, 1.0) : 0
-        let speedFactor = min(magnitude, 1.0) // Allow partial speed for small movements
+        let next = JoystickMovement.nextCoordinate(
+            from: current,
+            direction: joystickDirection,
+            speedMetersPerSecond: simulationSpeed.metersPerSecond,
+            deltaTime: 0.1
+        )
 
-        // Calculate movement based on joystick direction and speed
-        let metersPerUpdate = joystickSpeed * 0.1 * speedFactor // meters per 100ms
-        let latOffset = normalizedY * metersPerUpdate / 111_000 // ~111km per degree
-        let lonOffset = normalizedX * metersPerUpdate / (111_000 * cos(current.latitude * .pi / 180))
-
-        if let newLocation = try? LocationCoordinate(
-            latitude: current.latitude + latOffset,
-            longitude: current.longitude + lonOffset
-        ) {
-            await setLocation(newLocation)
+        if next != current {
+            await setLocation(next)
         }
     }
 

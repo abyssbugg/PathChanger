@@ -109,6 +109,15 @@ else
     echo -e "${YELLOW}⚠ AppIcon.icns not found in Resources${NC}"
 fi
 
+# Step 5.6: Copy persistent location bridge (joystick / multi-spot updates)
+echo -e "${BLUE}Step 5.6: Copying location bridge script...${NC}"
+if [ -f "scripts/location_bridge.py" ]; then
+    cp "scripts/location_bridge.py" "$RESOURCES_DIR/location_bridge.py"
+    echo -e "${GREEN}✓ location_bridge.py copied${NC}"
+else
+    echo -e "${YELLOW}⚠ scripts/location_bridge.py not found${NC}"
+fi
+
 # Step 6: Create PkgInfo
 echo -e "${BLUE}Step 6: Creating PkgInfo...${NC}"
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
