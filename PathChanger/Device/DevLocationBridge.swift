@@ -162,6 +162,11 @@ struct SubprocessCommandValidator {
             return true
         }
 
+        // Absolute path for `developer dvt ls /`
+        if arg.hasPrefix("/"), arg.allSatisfy({ $0.isLetter || $0.isNumber || "/._-".contains($0) }) {
+            return true
+        }
+
         return false
     }
 }

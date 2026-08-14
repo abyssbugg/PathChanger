@@ -295,6 +295,12 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         // Test invalid data
         XCTAssertFalse(SubprocessCommandValidator.isValidDataArgument("malicious"))
         XCTAssertFalse(SubprocessCommandValidator.isValidDataArgument("rm -rf /"))
+
+        XCTAssertTrue(SubprocessCommandValidator.isValidDataArgument("/"))
+        XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure([
+            "-m", "pymobiledevice3", "developer", "dvt", "ls",
+            "--rsd", "fddf:4f3f:cd60::1", "52569", "/",
+        ]))
     }
 
     func testNegativeCoordinatesAllowed() {
