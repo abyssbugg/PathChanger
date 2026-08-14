@@ -237,6 +237,16 @@ class AppState: ObservableObject {
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
 
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [locationBridge] _ in
+            Task {
+                await locationBridge.stopHeldSimulation()
+            }
+        }
+
         guard startBackgroundServices else {
             return
         }

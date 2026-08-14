@@ -1213,7 +1213,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     nonisolated func applicationWillTerminate(_ notification: Notification) {
-        // Handled by TunneldManager's notification observer
+        Task { @MainActor in
+            TunneldManager.shared.stopTunnel()
+        }
     }
 
     nonisolated func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

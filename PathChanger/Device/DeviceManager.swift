@@ -1116,17 +1116,18 @@ class DeviceManager: ObservableObject {
     // MARK: Developer Mode Check
     func checkDeveloperMode(for device: Device) async -> Bool {
         do {
-            let args: [String]
-            if device.connectionType == .wifi {
-                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--tunnel", device.id]
-            } else {
-                args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--udid", device.id]
+            var args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
+            let connection = await MainActor.run {
+                TunneldManager.shared.locationConnectionArguments(for: device.id)
             }
+            args.append(contentsOf: connection)
+            args.append("/")
 
             let output = try await runPython(arguments: args, timeout: 15.0)
-            return !output.contains("DeveloperModeError") && !output.contains("ERROR")
+            return !output.contains("DeveloperModeError")
         } catch {
-            return false
+            // A failed DVT probe is not proof that Developer Mode is off.
+            return true
         }
     }
 

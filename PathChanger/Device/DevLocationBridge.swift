@@ -696,30 +696,8 @@ actor DevLocationBridge {
 
     // MARK: Pre-flight Checks
 
-    /// Perform pre-flight checks to ensure device is ready for location injection
-    /// - Validates iOS version compatibility (iOS 17 or below)
-    /// - Verifies developer mode is enabled
-    /// - Ensures tunnel is running (for WiFi devices)
-    /// - Checks device connectivity
+    /// Reachability + Developer Mode. Only a real DeveloperModeError means DM is off.
     private func performPreflight(for device: Device) async throws {
-        if let version = device.productVersion {
-            if IOSVersionHelper.needsModernIOSCaution(version) {
-                Logger.info(
-                    "iOS \(version) on device \(device.id) — attempting location injection (no version hard-block)",
-                    category: .device,
-                    deviceUDID: device.id,
-                    iosVersion: version
-                )
-            }
-        }
-
-        // Check developer mode
-        let devModeResult = await checkDeveloperMode(for: device)
-        if !devModeResult {
-            throw LocationInjectionError.developerModeRequired
-        }
-
-        // For WiFi devices, ensure tunnel is running
         if device.connectionType == .wifi {
             let isTunnelRunning = await MainActor.run { TunneldManager.shared.isRunning }
             if !isTunnelRunning {
@@ -727,31 +705,22 @@ actor DevLocationBridge {
             }
         }
 
-        // Verify device is reachable
         do {
             let testArgs = await buildDvtArguments(subcommand: "ls", device: device)
-            let _ = try await runPython(arguments: testArgs, timeoutSeconds: 15.0, device: device)
-            Logger.debug("Pre-flight check passed for device \(device.id)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
+            let result = try await runPython(arguments: testArgs, timeoutSeconds: 15.0, device: device)
+            if result.contains("DeveloperModeError") {
+                throw LocationInjectionError.developerModeRequired
+            }
+            Logger.debug(
+                "Pre-flight check passed for device \(device.id)",
+                category: .device,
+                deviceUDID: device.id,
+                iosVersion: device.productVersion
+            )
+        } catch let error as LocationInjectionError {
+            throw error
         } catch {
             throw LocationInjectionError.injectionFailed("Device not reachable: \(error.localizedDescription)")
-        }
-    }
-
-    /// Check if developer mode is enabled on device
-    private func checkDeveloperMode(for device: Device) async -> Bool {
-        do {
-            // Use standard argument format starting with -m pymobiledevice3
-            var args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
-            let connection = await MainActor.run {
-                TunneldManager.shared.locationConnectionArguments(for: device.id)
-            }
-            args.append(contentsOf: connection)
-            args.append("/")
-
-            let result = try await runPython(arguments: args, timeoutSeconds: 15.0, device: device)
-            return !result.contains("DeveloperModeError") && !result.contains("ERROR")
-        } catch {
-            return false
         }
     }
 
@@ -868,14 +837,15 @@ actor DevLocationBridge {
                     // Track timeout state with thread-safe access via resumeLock
                     var didTimeout = false
 
-                    // Timeout handler - protected by resumeLock to prevent data race
-                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                        resumeLock.lock()
-                        defer { resumeLock.unlock() }
+                    if !keepAlive {
+                        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                            resumeLock.lock()
+                            defer { resumeLock.unlock() }
 
-                        if process.isRunning {
-                            didTimeout = true
-                            process.terminate()
+                            if process.isRunning {
+                                didTimeout = true
+                                process.terminate()
+                            }
                         }
                     }
 
