@@ -640,13 +640,18 @@ class TunneldManager: ObservableObject {
         await startTunnel()
     }
 
-    /// Check if USB device is connected
+    /// True only when usbmux lists a USB attachment (not Network).
     func isUSBDeviceConnected() async -> Bool {
+        await usbmuxReportsUSB()
+    }
+
+    private func usbmuxReportsUSB() async -> Bool {
         do {
             let output = try await runCommand(python3Path, arguments: [
                 "-m", "pymobiledevice3", "usbmux", "list"
             ])
-            return output.contains("USB") || output.contains("ConnectionType")
+            return output.contains("\"ConnectionType\": \"USB\"")
+                || output.contains("\"ConnectionType\":\"USB\"")
         } catch {
             return false
         }
@@ -677,6 +682,14 @@ class TunneldManager: ObservableObject {
 
     /// Start the tunnel helper with administrator privileges. Detect/install stay unprivileged.
     private func attemptStart(mode: TunnelMode) async -> PrivilegedStartOutcome {
+        if mode == .usb {
+            let usbVisible = await usbmuxReportsUSB()
+            if !usbVisible {
+                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — pick Wi‑Fi Only to use it."
+                return .failed
+            }
+        }
+
         guard let arguments = Self.arguments(for: mode) else {
             return .failed
         }
@@ -687,6 +700,7 @@ class TunneldManager: ObservableObject {
         }
 
         ensureLogDirectoryExists()
+        try? FileManager.default.removeItem(atPath: logFilePath)
         guard FileManager.default.createFile(atPath: logFilePath, contents: nil) else {
             lastError = "Unable to create tunnel log"
             return .failed
@@ -844,6 +858,7 @@ class TunneldManager: ObservableObject {
     /// Parse RSD info from "--rsd" hint line (most reliable format)
     private func parseRsdHintLine(from content: String) -> (address: String?, port: Int?) {
         let lines = content.components(separatedBy: .newlines)
+        var last: (String, Int)?
         for line in lines {
             if line.contains("--rsd") {
                 let parts = line.components(separatedBy: .whitespaces)
@@ -851,11 +866,14 @@ class TunneldManager: ObservableObject {
                    rsdIndex + 2 < parts.count {
                     let address = parts[rsdIndex + 1]
                     if let port = Int(parts[rsdIndex + 2]) {
-                        Logger.debug("📍 Parsed RSD from hint line: \(address):\(port)", category: .device)
-                        return (address, port)
+                        last = (address, port)
                     }
                 }
             }
+        }
+        if let last {
+            Logger.debug("📍 Parsed latest RSD from hint line: \(last.0):\(last.1)", category: .device)
+            return (last.0, last.1)
         }
         return (nil, nil)
     }
@@ -876,8 +894,8 @@ class TunneldManager: ObservableObject {
                 }
             }
 
-            // Parse RSD Address (multiple formats supported)
-            if (line.contains("RSD Address:") || line.contains("address:")) && rsdAddress == nil {
+            // Parse RSD Address (multiple formats supported) — keep last
+            if line.contains("RSD Address:") || line.contains("address:") {
                 let parts = line.components(separatedBy: ":").dropFirst().joined(separator: ":")
                     .trimmingCharacters(in: .whitespaces)
                 let addressCandidates = parts.components(separatedBy: .whitespaces)
@@ -890,8 +908,8 @@ class TunneldManager: ObservableObject {
                 }
             }
 
-            // Parse RSD Port (multiple formats supported)
-            if (line.contains("RSD Port:") || line.contains("port:") || line.contains("Port:")) && rsdPort == nil {
+            // Parse RSD Port (multiple formats supported) — keep last
+            if line.contains("RSD Port:") || line.contains("port:") || line.contains("Port:") {
                 let parts = line.components(separatedBy: .whitespaces)
                 // Look from the end backwards for a valid port number
                 for part in parts.reversed() {

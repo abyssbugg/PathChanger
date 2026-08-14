@@ -270,8 +270,8 @@ class AppState: ObservableObject {
                     self.tunnelHealthMonitor.startMonitoring()
                     Task { await self.refreshDevices() }
                 } else {
-                    // Stop health monitoring when tunnel is inactive
                     self.tunnelHealthMonitor.stopMonitoring()
+                    Task { await self.locationBridge.stopHeldSimulation() }
                 }
             }
             .store(in: &cancellables)

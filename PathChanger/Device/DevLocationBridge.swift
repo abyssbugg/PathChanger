@@ -606,29 +606,42 @@ actor DevLocationBridge {
 
     /// Clear simulated location (reset to real GPS) with validation
     func clearLocation(for device: Device) async throws {
-        // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
 
-        let arguments = try await buildLocationArguments(subcommand: "clear", device: device)
-
-        // Sanitize arguments
-        let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-
-        let result = try await runPython(arguments: sanitizedArgs, device: device)
+        // Ending the held `simulate-location set` session is the real clear.
+        let hadHeldSession = heldSimulationProcess != nil
         stopHeldSimulation()
+        if hadHeldSession {
+            return
+        }
 
-        // Check for errors
+        let arguments = try await buildLocationArguments(subcommand: "clear", device: device)
+        let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
+        let result = try await runPython(arguments: sanitizedArgs, device: device)
+
         if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
             throw LocationInjectionError.tunneldNotRunning
         }
-
         if result.contains("DeviceNotFoundError") {
             throw LocationInjectionError.deviceNotFound
         }
-
-        if result.contains("ERROR") || result.lowercased().contains("error") {
-            throw LocationInjectionError.clearFailed(result)
+        if result.contains("Traceback") || result.contains("rsd_dependency") {
+            throw LocationInjectionError.clearFailed("The tunnel address is stale. Start Tunnel again, then clear.")
         }
+        if result.contains("DeveloperModeError") {
+            throw LocationInjectionError.developerModeRequired
+        }
+        if result.lowercased().contains("error") && !result.lowercased().contains("warning") {
+            throw LocationInjectionError.clearFailed(Self.shortPythonError(result))
+        }
+    }
+
+    private static func shortPythonError(_ result: String) -> String {
+        if result.contains("Traceback") || result.contains("rsd_dependency") {
+            return "Could not reach the tunnel. Start Tunnel again."
+        }
+        let lines = result.split(whereSeparator: \.isNewline).map(String.init)
+        return lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? "pymobiledevice3 failed"
     }
 
     // MARK: Batch Injection
@@ -759,11 +772,15 @@ actor DevLocationBridge {
             throw LocationInjectionError.tunneldNotRunning
         }
 
-        // Check for generic errors (but ignore warnings)
+        if result.contains("Traceback") || result.contains("rsd_dependency") {
+            stats.recordFailure()
+            throw LocationInjectionError.injectionFailed("Could not reach the tunnel. Start Tunnel again.")
+        }
+
         let lowercased = result.lowercased()
         if lowercased.contains("error") && !lowercased.contains("warning") {
             stats.recordFailure()
-            throw LocationInjectionError.injectionFailed(result)
+            throw LocationInjectionError.injectionFailed(Self.shortPythonError(result))
         }
     }
 
