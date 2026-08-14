@@ -1,0 +1,93 @@
+//
+//  PrivilegedTunnelCommandTests.swift
+//  PathChangerTests
+//
+
+import XCTest
+@testable import PathChanger
+
+final class PrivilegedTunnelCommandTests: XCTestCase {
+
+    func testAllowedArgumentListsMatchFixedTunnelModes() {
+        XCTAssertEqual(PrivilegedTunnelCommand.allowedArgumentLists, [
+            ["-m", "pymobiledevice3", "lockdown", "start-tunnel"],
+            ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi"],
+            ["-m", "pymobiledevice3", "remote", "tunneld"],
+        ])
+    }
+
+    func testStartCommandQuotesHomebrewPythonAndLog() {
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/opt/homebrew/bin/python3.13",
+            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel"],
+            logFilePath: "/Users/datamatics/Library/Logs/PathChanger/tunnel.log"
+        )
+
+        guard case .success(let command) = result else {
+            return XCTFail("expected approved start command")
+        }
+
+        XCTAssertEqual(
+            command,
+            "'/opt/homebrew/bin/python3.13' '-m' 'pymobiledevice3' 'lockdown' 'start-tunnel' > '/Users/datamatics/Library/Logs/PathChanger/tunnel.log' 2>&1 & echo $!"
+        )
+        XCTAssertFalse(command.contains("pip"))
+        XCTAssertFalse(command.contains("sudo"))
+    }
+
+    func testStartCommandRejectsUnknownPython() {
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/Users/datamatics/.pyenv/shims/python3",
+            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel"],
+            logFilePath: "/tmp/tunnel.log"
+        )
+
+        guard case .failure(.unapprovedPythonPath(let path)) = result else {
+            return XCTFail("expected pyenv path to be rejected")
+        }
+        XCTAssertEqual(path, "/Users/datamatics/.pyenv/shims/python3")
+    }
+
+    func testStartCommandRejectsInstallArguments() {
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/usr/bin/python3",
+            arguments: ["-m", "pip", "install", "--upgrade", "pymobiledevice3"],
+            logFilePath: "/tmp/tunnel.log"
+        )
+
+        guard case .failure(.unapprovedArguments) = result else {
+            return XCTFail("expected pip install to be rejected")
+        }
+    }
+
+    func testStartCommandRejectsShellMetacharactersInPath() {
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/opt/homebrew/bin/python3",
+            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel"],
+            logFilePath: "/tmp/tunnel'.log"
+        )
+
+        guard case .failure(.unsafePath) = result else {
+            return XCTFail("expected quoted-path rejection")
+        }
+    }
+
+    func testStopCommandOnlyAcceptsTrackedPids() {
+        let success = PrivilegedTunnelCommand.stopShellCommand(pids: [4242, 4243])
+        guard case .success(let command) = success else {
+            return XCTFail("expected stop command")
+        }
+        XCTAssertEqual(command, "/bin/kill -15 4242 4243; /bin/sleep 0.2; /bin/kill -9 4242 4243")
+
+        let rejected = PrivilegedTunnelCommand.stopShellCommand(pids: [1, 4242])
+        guard case .failure(.unapprovedProcessIds) = rejected else {
+            return XCTFail("expected pid 1 to be rejected")
+        }
+    }
+
+    func testParseLaunchedPid() {
+        XCTAssertEqual(PrivilegedTunnelCommand.parseLaunchedPid(from: "70248\n"), 70248)
+        XCTAssertNil(PrivilegedTunnelCommand.parseLaunchedPid(from: "0"))
+        XCTAssertNil(PrivilegedTunnelCommand.parseLaunchedPid(from: "not-a-pid"))
+    }
+}

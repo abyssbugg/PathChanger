@@ -12,6 +12,7 @@
 import Foundation
 import Combine
 import AppKit
+import Darwin
 
 // MARK: - Tunnel Mode
 
@@ -457,7 +458,7 @@ class TunneldManager: ObservableObject {
         AppRuntimeEnvironment.allowsAutomaticStartup(environment: environment)
     }
 
-    static func arguments(for mode: TunnelMode) -> [String]? {
+    nonisolated static func arguments(for mode: TunnelMode) -> [String]? {
         switch mode {
         case .usb:
             return ["-m", "pymobiledevice3", "lockdown", "start-tunnel"]
@@ -537,28 +538,24 @@ class TunneldManager: ObservableObject {
 
             Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
 
-            let success = await attemptStart(mode: mode)
+            let outcome = await attemptStart(mode: mode)
 
-            if success {
+            if case .cancelled = outcome {
+                if stateMachine.currentState == .starting {
+                    stateMachine.send(.errorOccurred(lastError ?? "Administrator access required"))
+                }
+                return
+            }
+
+            if case .started(let pid) = outcome {
                 // Parse RSD info
                 await parseRsdInfo()
 
-                guard stateMachine.currentState == .starting,
-                      let launchedProcess = tunneldProcess,
-                      launchedProcess.isRunning else {
-                    let failedProcess = tunneldProcess
+                guard stateMachine.currentState == .starting, isProcessRunning(pid: pid) else {
                     if stateMachine.currentState == .starting {
                         lastError = lastError ?? "Tunnel process exited before the connection was established"
-                        if let failedProcess {
-                            stateMachine.send(.processExited(pid: failedProcess.processIdentifier))
-                        } else {
-                            stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
-                        }
+                        stateMachine.send(.processExited(pid: pid))
                     }
-                    if failedProcess?.isRunning == true {
-                        failedProcess?.terminate()
-                    }
-                    tunneldProcess = nil
                     return
                 }
 
@@ -672,70 +669,88 @@ class TunneldManager: ObservableObject {
         return nil
     }
 
-    /// Attempt to start tunnel with specific mode
-    private func attemptStart(mode: TunnelMode) async -> Bool {
+    private enum PrivilegedStartOutcome {
+        case started(Int32)
+        case failed
+        case cancelled
+    }
+
+    /// Start the tunnel helper with administrator privileges. Detect/install stay unprivileged.
+    private func attemptStart(mode: TunnelMode) async -> PrivilegedStartOutcome {
         guard let arguments = Self.arguments(for: mode) else {
-            return false
+            return .failed
         }
 
         guard PythonPathResolver.isAvailable else {
             lastError = "Python is not available at \(python3Path)"
-            return false
+            return .failed
         }
 
         ensureLogDirectoryExists()
         guard FileManager.default.createFile(atPath: logFilePath, contents: nil) else {
             lastError = "Unable to create tunnel log"
-            return false
-        }
-        guard let logHandle = FileHandle(forWritingAtPath: logFilePath) else {
-            lastError = "Unable to open tunnel log"
-            return false
+            return .failed
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: python3Path)
-        process.arguments = arguments
-        process.standardOutput = logHandle
-        process.standardError = logHandle
-        process.environment = ProcessEnvironment.configured()
+        let shellCommand: String
+        switch PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: python3Path,
+            arguments: arguments,
+            logFilePath: logFilePath
+        ) {
+        case .success(let command):
+            shellCommand = command
+        case .failure(let error):
+            lastError = error.localizedDescription
+            Logger.error("SECURITY: Blocked privileged tunnel start — \(error.localizedDescription)", category: .security)
+            return .failed
+        }
 
-        do {
-            try process.run()
-            tunneldProcess = process
-            stateMachine.send(.processLaunched(pid: process.processIdentifier))
-            try? logHandle.close()
+        switch runAdministratorShell(shellCommand) {
+        case .cancelled:
+            lastError = "Administrator access required to start the tunnel"
+            return .cancelled
+        case .failure(let message):
+            lastError = "Failed to start \(mode.rawValue) tunnel: \(message)"
+            return .failed
+        case .success(let output):
+            var pid = PrivilegedTunnelCommand.parseLaunchedPid(from: output)
+            if pid == nil {
+                pid = await discoverPid(for: mode)
+            }
+            guard let pid else {
+                await checkLogForErrors(mode: mode)
+                if lastError == nil {
+                    lastError = "\(mode.rawValue) tunnel started but PathChanger could not read its process id"
+                }
+                return .failed
+            }
+
+            stateMachine.send(.processLaunched(pid: pid))
 
             let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
             try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
 
-            guard process.isRunning else {
+            guard isProcessRunning(pid: pid) else {
                 await checkLogForErrors(mode: mode)
                 if lastError == nil {
-                    lastError = "\(mode.rawValue) tunnel exited with status \(process.terminationStatus)"
+                    lastError = "\(mode.rawValue) tunnel exited after launch"
                 }
-                stateMachine.send(.processExited(pid: process.processIdentifier))
-                tunneldProcess = nil
-                return false
+                stateMachine.send(.processExited(pid: pid))
+                return .failed
             }
 
-            process.terminationHandler = { [weak self] terminatedProcess in
-                Task { @MainActor [weak self] in
-                    guard let self,
-                          self.tunneldProcess === terminatedProcess else {
-                        return
-                    }
+            return .started(pid)
+        }
+    }
 
-                    self.stateMachine.send(.processExited(pid: terminatedProcess.processIdentifier))
-                    self.tunneldProcess = nil
-                }
-            }
-
-            return true
+    private func discoverPid(for mode: TunnelMode) async -> Int32? {
+        do {
+            let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
+            let pids = output.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            return pids.first { $0 > 1 }
         } catch {
-            try? logHandle.close()
-            lastError = "Failed to start \(mode.rawValue) tunnel: \(error.localizedDescription)"
-            return false
+            return nil
         }
     }
 
@@ -745,7 +760,9 @@ class TunneldManager: ObservableObject {
             return
         }
 
-        if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
+        if logContent.contains("requires root privileges") {
+            lastError = "Tunnel start still needs administrator access."
+        } else if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
             lastError = "No device found. Connect device via USB first."
         } else if logContent.contains("not paired") || logContent.contains("PairingError") {
             lastError = "Device not paired. Trust this computer on your device."
@@ -995,7 +1012,7 @@ class TunneldManager: ObservableObject {
     /// - Uses graceful SIGTERM before forced SIGKILL
     /// - Does NOT kill system services (e.g., usbmuxd)
     private func killTrackedTunnelProcesses() {
-        let trackedPids = stateMachine.currentContext.activeProcessIds
+        let trackedPids = Array(stateMachine.currentContext.activeProcessIds).sorted()
         Logger.debug("[SECURITY] Terminating \(trackedPids.count) tracked tunnel processes", category: .security)
 
         guard !trackedPids.isEmpty else {
@@ -1003,69 +1020,58 @@ class TunneldManager: ObservableObject {
             return
         }
 
-        // First pass: Send SIGTERM for graceful shutdown
-        for pid in trackedPids {
-            guard isOwnedProcess(pid: pid) else {
-                Logger.debug("[SECURITY] Skipping PID \(pid) - not owned by current user", category: .security)
-                continue
-            }
-
-            let killProcess = Process()
-            killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-            killProcess.arguments = ["-15", String(pid)] // SIGTERM
-            try? killProcess.run()
-            killProcess.waitUntilExit()
-
-            Logger.debug("[SECURITY] Sent SIGTERM to PID \(pid)", category: .security)
-        }
-
-        // Brief wait for graceful termination
-        usleep(200_000) // 200ms
-
-        // Second pass: Force kill any remaining tracked processes
-        for pid in trackedPids {
-            if isProcessRunning(pid: pid) && isOwnedProcess(pid: pid) {
-                let killProcess = Process()
-                killProcess.executableURL = URL(fileURLWithPath: "/bin/kill")
-                killProcess.arguments = ["-9", String(pid)] // SIGKILL
-                try? killProcess.run()
-                killProcess.waitUntilExit()
-                Logger.debug("[SECURITY] Sent SIGKILL to PID \(pid)", category: .security)
+        switch PrivilegedTunnelCommand.stopShellCommand(pids: trackedPids) {
+        case .failure(let error):
+            Logger.error("SECURITY: Blocked privileged tunnel stop — \(error.localizedDescription)", category: .security)
+        case .success(let command):
+            switch runAdministratorShell(command) {
+            case .cancelled:
+                lastError = "Administrator access required to stop the tunnel"
+            case .failure(let message):
+                lastError = "Failed to stop tunnel: \(message)"
+                Logger.error("Privileged tunnel stop failed: \(message)", category: .security)
+            case .success:
+                Logger.debug("[SECURITY] Elevated stop completed for PIDs \(trackedPids)", category: .security)
             }
         }
 
-        // Process IDs are cleared by state machine when it transitions to idle
         Logger.debug("[SECURITY] Process cleanup complete", category: .security)
     }
 
-    /// Check if process is owned by current user
-    /// Returns false if process doesn't exist or ownership cannot be verified
-    private func isOwnedProcess(pid: Int32) -> Bool {
-        let ps = Process()
-        let pipe = Pipe()
-        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps.arguments = ["-p", String(pid), "-o", "uid="]
-        ps.standardOutput = pipe
-        ps.standardError = FileHandle.nullDevice
+    private enum AdministratorShellResult {
+        case success(String)
+        case failure(String)
+        case cancelled
+    }
 
-        do {
-            try ps.run()
-            ps.waitUntilExit()
-        } catch {
-            return false
+    /// Runs a pre-validated shell command with administrator privileges.
+    private func runAdministratorShell(_ command: String) -> AdministratorShellResult {
+        let source = "do shell script \"\(command)\" with administrator privileges"
+        var errorInfo: NSDictionary?
+        guard let appleScript = NSAppleScript(source: source) else {
+            return .failure("Unable to build the elevation prompt")
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return false }
+        let result = appleScript.executeAndReturnError(&errorInfo)
+        if let errorInfo {
+            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unknown elevation error"
+            let code = errorInfo[NSAppleScript.errorNumber] as? Int ?? 0
+            if code == -128 || message.lowercased().contains("cancel") {
+                return .cancelled
+            }
+            return .failure(message)
+        }
 
-        let processUID = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentUID = String(getuid())
-        return processUID == currentUID
+        return .success(result.stringValue ?? "")
     }
 
     /// Check if a process is still running
     private func isProcessRunning(pid: Int32) -> Bool {
-        return kill(pid, 0) == 0
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        // Root-owned tunnel helpers return EPERM to a user-level existence check.
+        return errno == EPERM
     }
 
     /// Monitor tunnel status periodically
