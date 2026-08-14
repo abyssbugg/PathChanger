@@ -26,7 +26,8 @@ let package = Package(
             exclude: ["Info.plist"],
             resources: [
                 .process("Resources/en.lproj"),
-                .process("Resources/ja.lproj")
+                .process("Resources/ja.lproj"),
+                .process("Resources/Fonts")
             ]
         ),
         // Test target - tests the executable target directly

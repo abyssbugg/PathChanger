@@ -1224,8 +1224,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var updaterController = UpdaterController()
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
-        // Auto-start tunnel when app launches
         Task { @MainActor in
+            Organic.registerFonts()
             await TunneldManager.shared.autoStart()
         }
     }

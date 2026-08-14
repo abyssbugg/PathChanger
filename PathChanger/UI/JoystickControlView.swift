@@ -2,7 +2,7 @@
 //  JoystickControlView.swift
 //  PathChanger
 //
-//  Modern Pro UI - Gaming-style joystick control
+//  On-map joystick from the pth mock.
 //
 
 import SwiftUI
@@ -12,103 +12,56 @@ struct JoystickControlView: View {
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
 
-    private let outerRadius: CGFloat = 60
-    private let innerRadius: CGFloat = 25
+    private let outerRadius: CGFloat = 66
+    private let innerRadius: CGFloat = 23
 
     var body: some View {
-        FloatingControlPanel(title: "Joystick", icon: "gamecontroller.fill") {
-            VStack(spacing: 16) {
-                // Joystick Area
-                ZStack {
-                    // Base
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.black.opacity(0.2), Color.black.opacity(0.1)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: outerRadius * 2, height: outerRadius * 2)
-                        .overlay(
-                            Circle()
-                                .stroke(.white.opacity(0.1), lineWidth: 1)
-                        )
+        ZStack {
+            Circle()
+                .fill(Organic.neutral100.opacity(0.82))
+                .overlay(Circle().stroke(Organic.neutral400, lineWidth: 1))
+                .shadow(color: Organic.neutral900.opacity(0.16), radius: 10, y: 3)
 
-                    // Direction Indicators
-                    ForEach(0..<4) { directionIndex in
-                        Image(systemName: "triangle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary.opacity(0.5))
-                            .rotationEffect(.degrees(Double(directionIndex) * 90))
-                            .offset(y: -outerRadius + 10)
-                            .rotationEffect(.degrees(Double(directionIndex) * 90))
-                    }
+            Circle()
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(Organic.neutral400)
+                .padding(18)
 
-                    // Knob
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.white, Color.gray.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: innerRadius * 2, height: innerRadius * 2)
-                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
-                        .overlay(
-                            Circle()
-                                .stroke(.white, lineWidth: 0.5)
-                        )
-                        .offset(x: knobPosition.x + dragOffset.width, y: knobPosition.y + dragOffset.height)
-                        .gesture(
-                            DragGesture()
-                                .updating($dragOffset) { value, state, _ in
-                                    let maxOffset = outerRadius - innerRadius
-                                    let rawX = value.translation.width
-                                    let rawY = value.translation.height
-
-                                    // Clamp to circular boundary
-                                    let distance = sqrt(rawX * rawX + rawY * rawY)
-                                    let clampedDistance = min(distance, maxOffset)
-                                    let angle = atan2(rawY, rawX)
-                                    let knobX = clampedDistance * cos(angle)
-                                    let knobY = clampedDistance * sin(angle)
-                                    state = CGSize(width: knobX, height: knobY)
-
-                                    // Normalize to unit circle (-1..1 range with magnitude <= 1)
-                                    let normalizedX = knobX / maxOffset
-                                    let normalizedY = -knobY / maxOffset // Invert Y for map coordinates
-                                    appState.updateJoystickDirection(CGPoint(x: normalizedX, y: normalizedY))
-                                }
-                                .onEnded { _ in
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                        knobPosition = .zero
-                                    }
-                                    appState.updateJoystickDirection(.zero)
-                                }
-                        )
-                }
-                .frame(width: 140, height: 140)
-
-                // Instructions
-                Text(joystickHint)
-                    .font(AppFont.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(width: 180)
+            Circle()
+                .fill(Organic.accent600)
+                .frame(width: innerRadius * 2, height: innerRadius * 2)
+                .shadow(color: Organic.neutral900.opacity(0.2), radius: 6, y: 2)
+                .overlay(
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Organic.neutral100)
+                )
+                .offset(x: knobPosition.x + dragOffset.width, y: knobPosition.y + dragOffset.height)
+                .gesture(
+                    DragGesture()
+                        .updating($dragOffset) { value, state, _ in
+                            let maxOffset = outerRadius - innerRadius
+                            let rawX = value.translation.width
+                            let rawY = value.translation.height
+                            let distance = sqrt(rawX * rawX + rawY * rawY)
+                            let clamped = min(distance, maxOffset)
+                            let angle = atan2(rawY, rawX)
+                            let knobX = clamped * cos(angle)
+                            let knobY = clamped * sin(angle)
+                            state = CGSize(width: knobX, height: knobY)
+                            let normalizedX = knobX / maxOffset
+                            let normalizedY = -knobY / maxOffset
+                            appState.updateJoystickDirection(CGPoint(x: normalizedX, y: normalizedY))
+                        }
+                        .onEnded { _ in
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                knobPosition = .zero
+                            }
+                            appState.updateJoystickDirection(.zero)
+                        }
+                )
         }
-    }
-
-    private var joystickHint: String {
-        if appState.currentLocation == nil && appState.targetLocation == nil {
-            return "Tap the map to set a start point"
-        }
-        if appState.isSimulating {
-            return "Drag to move"
-        }
-        return "Press Play or drag to move"
+        .frame(width: 132, height: 132)
     }
 }
 
@@ -116,10 +69,11 @@ struct JoystickControlView: View {
 struct JoystickControlView_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.blue.opacity(0.2).ignoresSafeArea()
+            Organic.neutral200
             JoystickControlView()
                 .environmentObject(AppState())
         }
+        .frame(width: 200, height: 200)
     }
 }
 #endif

@@ -26,7 +26,7 @@ struct PathChangerApp: App {
                 ContentView()
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
-                    .frame(minWidth: 1000, minHeight: 700)
+                    .frame(minWidth: 1100, minHeight: 740)
                     .onAppear {
                         guard AppRuntimeEnvironment.allowsAutomaticStartup else {
                             return
@@ -140,6 +140,7 @@ class AppState: ObservableObject {
     @Published var currentRoute: [LocationCoordinate] = []
     @Published var routeProgress: Double = 0
     @Published var isLoadingRoute: Bool = false
+    @Published var loopRoute: Bool = false
 
     // MARK: Joystick State
     @Published var joystickDirection: CGPoint = .zero
@@ -641,7 +642,11 @@ class AppState: ObservableObject {
             }
 
             if !Task.isCancelled {
-                statusMessage = "Route playback complete"
+                if loopRoute {
+                    await playRoute(points)
+                } else {
+                    statusMessage = "Route playback complete"
+                }
             }
         }
     }

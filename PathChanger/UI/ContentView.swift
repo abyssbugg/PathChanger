@@ -2,15 +2,13 @@
 //  ContentView.swift
 //  PathChanger
 //
-//  Modern Pro UI - Main application view
-//  Based on ProposedDesign with full backend integration
+//  Organic shell from the pth mock: title bar, rail, map, inspector, telemetry.
 //
 
 import SwiftUI
 import MapKit
 import Combine
-
-// MARK: - App Mode
+import AppKit
 
 enum AppMode: String, CaseIterable, Identifiable {
     case teleport = "Teleport"
@@ -39,45 +37,92 @@ enum AppMode: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Content View
-
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedMode: AppMode? = .teleport
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var selectedMode: AppMode = .teleport
+    @State private var showSettings = false
+    @State private var showDeviceMenu = false
+    @State private var railPanel: RailPanel?
+    @State private var mapStyle: MapStyleType = .standard
+    @State private var latitudeInput: String = ""
+    @State private var longitudeInput: String = ""
+    @State private var addressText: String = "Tap the map"
     @State private var currentError: ErrorHandler.AppError?
     @State private var showErrorDialog = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView(selectedMode: $selectedMode)
-                    .navigationTitle("Location Changer")
-                    .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 350)
-            } detail: {
-                if let mode = selectedMode {
-                    switch mode {
-                    case .teleport, .route, .joystick:
-                        SimulationView(mode: mode)
-                    case .settings:
-                        SettingsView()
+        ZStack {
+            Organic.neutral300.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                OrganicTitleBar(
+                    showDeviceMenu: $showDeviceMenu,
+                    showSettings: $showSettings,
+                    onToggleMapStyle: cycleMapStyle,
+                    onRefresh: {
+                        Task {
+                            await appState.refreshDevices()
+                            await appState.checkTunneldStatus()
+                        }
                     }
-                } else {
-                    ContentUnavailableView(
-                        "Select a Mode",
-                        systemImage: "location.slash",
-                        description: Text("Choose a simulation mode from the sidebar")
-                    )
+                )
+                .zIndex(2)
+
+                HStack(spacing: 0) {
+                    OrganicRail(openPanel: $railPanel) { coordinate, name in
+                        applyPlace(coordinate, name: name)
+                    }
+                    .zIndex(1)
+
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) {
+                            SimulationView(
+                                mode: selectedMode,
+                                mapStyle: $mapStyle,
+                                latitudeInput: $latitudeInput,
+                                longitudeInput: $longitudeInput,
+                                addressText: $addressText
+                            )
+                            InspectorPanel(
+                                mode: $selectedMode,
+                                latitudeInput: $latitudeInput,
+                                longitudeInput: $longitudeInput,
+                                address: addressText,
+                                onTeleport: commitTeleport,
+                                onCommitCoords: commitTeleport
+                            )
+                        }
+                        OrganicTelemetryBar(mode: selectedMode)
+                    }
                 }
             }
-            .navigationSplitViewStyle(.balanced)
+            .background(Organic.bg)
+            .clipShape(RoundedRectangle(cornerRadius: 0))
+
+            if showSettings {
+                OrganicSettingsSheet(isPresented: $showSettings, mapStyle: $mapStyle)
+                    .zIndex(30)
+            }
         }
-        .frame(minWidth: 1000, minHeight: 700)
-        // Onboarding sheet
+        .frame(minWidth: 1100, minHeight: 740)
+        .background(Organic.bg)
+        .preferredColorScheme(.light)
+        .onAppear {
+            appState.activeMode = selectedMode
+            Organic.registerFonts()
+            syncCoordFields()
+        }
+        .onChange(of: selectedMode) { _, newMode in
+            if newMode != .settings {
+                appState.activeMode = newMode
+            }
+        }
+        .onChange(of: appState.targetLocation) { _, _ in
+            syncCoordFields()
+        }
         .sheet(isPresented: $appState.showOnboarding) {
             OnboardingView()
         }
-        // Error dialog sheet
         .sheet(isPresented: $showErrorDialog) {
             if let error = currentError {
                 if error.type == .iosVersionUnsupported {
@@ -109,15 +154,56 @@ struct ContentView: View {
                 }
             }
         }
-        // Subscribe to error handler changes
         .onReceive(appState.errorHandler.$currentError) { error in
             if let error = error {
                 currentError = error
                 showErrorDialog = true
             }
         }
-        // Toast notifications
         .withToasts()
+    }
+
+    private func cycleMapStyle() {
+        switch mapStyle {
+        case .standard: mapStyle = .satellite
+        case .satellite: mapStyle = .hybrid
+        case .hybrid: mapStyle = .standard
+        }
+    }
+
+    private func syncCoordFields() {
+        if let location = appState.targetLocation ?? appState.currentLocation {
+            latitudeInput = String(format: "%.6f", location.latitude)
+            longitudeInput = String(format: "%.6f", location.longitude)
+        }
+    }
+
+    private func applyPlace(_ coordinate: LocationCoordinate, name: String) {
+        latitudeInput = String(format: "%.6f", coordinate.latitude)
+        longitudeInput = String(format: "%.6f", coordinate.longitude)
+        addressText = name
+        appState.targetLocation = coordinate
+        LocationFavoritesManager.shared.recordRecent(name: name, coordinate: coordinate)
+        if selectedMode == .route {
+            appState.addRouteWaypoint(coordinate)
+        } else if selectedMode == .teleport {
+            Task { await appState.setLocation(coordinate) }
+        }
+    }
+
+    private func commitTeleport() {
+        guard let lat = Double(latitudeInput), let lon = Double(longitudeInput) else {
+            appState.statusMessage = "Invalid coordinates"
+            return
+        }
+        let coordinate = LocationCoordinate(latitude: lat, longitude: lon)
+        guard coordinate.isValid else {
+            appState.statusMessage = "Coordinates out of range"
+            return
+        }
+        appState.targetLocation = coordinate
+        LocationFavoritesManager.shared.recordRecent(name: addressText, coordinate: coordinate)
+        Task { await appState.setLocation(coordinate) }
     }
 
     private func handleErrorAction(_ action: ErrorHandler.ErrorAction) {
@@ -125,9 +211,7 @@ struct ContentView: View {
         case .retry:
             Task { await appState.refreshDevices() }
         case .openSettings:
-            if let url = URL(string: "x-apple.systempreferences:") {
-                NSWorkspace.shared.open(url)
-            }
+            showSettings = true
         case .startTunneld:
             Task { await TunneldManager.shared.autoStart() }
         case .enableDeveloperMode:
@@ -138,8 +222,6 @@ struct ContentView: View {
     }
 }
 
-// MARK: - iOS 18+ Warning Banner
-
 struct IOS18WarningBanner: View {
     let device: Device
     @State private var isExpanded = false
@@ -148,85 +230,51 @@ struct IOS18WarningBanner: View {
 
     var body: some View {
         if !isDismissed && !AppPreferences.shared.isIOS18WarningDismissed(for: device.id) {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.title3)
-                        .foregroundColor(.orange)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("iOS \(device.iosVersion) — keep the tunnel running")
-                            .font(.subheadline.weight(.semibold))
-
-                        if isExpanded {
-                            Text("PathChanger will try location injection on this iOS version. If the pin snaps back, start the tunnel again and leave PathChanger open.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Organic.accent600)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("iOS \(device.iosVersion) — keep the tunnel running")
+                        .font(Organic.body(13, weight: .semibold))
+                    if isExpanded {
+                        Text("If the pin snaps back, start the tunnel again and leave PathChanger open.")
+                            .font(Organic.body(11))
+                            .foregroundStyle(Organic.neutral600)
                     }
-
-                    Spacer()
-
-                    Button {
-                        withAnimation(.spring(response: 0.3)) {
-                            isExpanded.toggle()
-                        }
-                    } label: {
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-
-                    Button("Learn More") {
-                        showDialog = true
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button {
-                        AppPreferences.shared.setIOS18WarningDismissed(for: device.id)
-                        withAnimation {
-                            isDismissed = true
-                        }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary.opacity(0.6))
-                    }
-                    .buttonStyle(.borderless)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Color.orange.opacity(0.15))
-                .overlay(
-                    Rectangle()
-                        .fill(Color.orange.opacity(0.3))
-                        .frame(height: 1),
-                    alignment: .bottom
-                )
+                Spacer()
+                Button("Learn More") { showDialog = true }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(Organic.accent700)
+                Button {
+                    AppPreferences.shared.setIOS18WarningDismissed(for: device.id)
+                    isDismissed = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .foregroundStyle(Organic.neutral600)
+                }
+                .buttonStyle(.plain)
             }
+            .padding(12)
+            .background(Organic.accent100)
             .sheet(isPresented: $showDialog) {
                 IOS18WarningDialogView(
                     deviceVersion: device.iosVersion,
                     onDismiss: { showDialog = false },
-                    onLearnMore: { url in
-                        NSWorkspace.shared.open(url)
-                    }
+                    onLearnMore: { url in NSWorkspace.shared.open(url) }
                 )
             }
         }
     }
 }
 
-// MARK: - Preview
-
 #if DEBUG
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(AppState())
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(.light)
     }
 }
 #endif

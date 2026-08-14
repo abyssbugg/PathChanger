@@ -118,6 +118,17 @@ else
     echo -e "${YELLOW}⚠ scripts/location_bridge.py not found${NC}"
 fi
 
+# Step 5.7: Copy Organic fonts
+echo -e "${BLUE}Step 5.7: Copying Organic fonts...${NC}"
+mkdir -p "$RESOURCES_DIR/Fonts"
+if [ -d "PathChanger/Resources/Fonts" ]; then
+    cp PathChanger/Resources/Fonts/*.ttf "$RESOURCES_DIR/Fonts/" 2>/dev/null || true
+    cp PathChanger/Resources/Fonts/*.ttf "$RESOURCES_DIR/" 2>/dev/null || true
+    echo -e "${GREEN}✓ Fonts copied${NC}"
+else
+    echo -e "${YELLOW}⚠ Fonts folder not found${NC}"
+fi
+
 # Step 6: Create PkgInfo
 echo -e "${BLUE}Step 6: Creating PkgInfo...${NC}"
 echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"

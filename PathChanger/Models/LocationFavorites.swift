@@ -33,12 +33,25 @@ class LocationFavoritesManager: ObservableObject {
     static let shared = LocationFavoritesManager()
 
     @Published private(set) var favorites: [FavoriteLocation] = []
+    @Published private(set) var recents: [FavoriteLocation] = []
 
     private let storageKey = "PathChanger.Favorites"
+    private let recentsKey = "PathChanger.Recents"
     private let maxFavorites = 50
+    private let maxRecents = 20
 
     init() {
         loadFavorites()
+        loadRecents()
+    }
+
+    func recordRecent(name: String, coordinate: LocationCoordinate) {
+        recents.removeAll { $0.coordinate == coordinate }
+        recents.insert(FavoriteLocation(name: name, coordinate: coordinate), at: 0)
+        if recents.count > maxRecents {
+            recents = Array(recents.prefix(maxRecents))
+        }
+        saveRecents()
     }
 
     // MARK: - Public API
@@ -126,6 +139,17 @@ class LocationFavoritesManager: ObservableObject {
             UserDefaults.standard.set(data, forKey: storageKey)
         } catch {
             Logger.error("Failed to save favorites: \(error.localizedDescription)", category: .general)
+        }
+    }
+
+    private func loadRecents() {
+        guard let data = UserDefaults.standard.data(forKey: recentsKey) else { return }
+        recents = (try? JSONDecoder().decode([FavoriteLocation].self, from: data)) ?? []
+    }
+
+    private func saveRecents() {
+        if let data = try? JSONEncoder().encode(recents) {
+            UserDefaults.standard.set(data, forKey: recentsKey)
         }
     }
 
