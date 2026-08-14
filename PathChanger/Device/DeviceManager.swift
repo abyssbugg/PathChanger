@@ -463,6 +463,7 @@ class DeviceManager: ObservableObject {
 
     // MARK: Connection Mode
     enum ConnectionMode: String, CaseIterable {
+        case random = "Random"
         case auto = "Auto"
         case usb = "USB Only"
         case wifi = "WiFi Only"
@@ -489,6 +490,10 @@ class DeviceManager: ObservableObject {
 
     // MARK: Initialization
     init() {
+        if let raw = UserDefaults.standard.string(forKey: "connectionMode"),
+           let saved = ConnectionMode(rawValue: raw) {
+            connectionMode = saved
+        }
         setupTunnelStateObserver()
         Task {
             await checkTunneldStatus()
@@ -1288,11 +1293,23 @@ class DeviceManager: ObservableObject {
 
     func setConnectionMode(_ mode: ConnectionMode) {
         connectionMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "connectionMode")
         let tunnelMode: TunnelMode
         switch mode {
-        case .auto: tunnelMode = .auto
-        case .usb: tunnelMode = .usb
-        case .wifi: tunnelMode = .wifi
+        case .random:
+            if usbTransportAvailable && wifiTransportAvailable {
+                tunnelMode = Bool.random() ? .usb : .wifi
+            } else if usbTransportAvailable {
+                tunnelMode = .usb
+            } else {
+                tunnelMode = .wifi
+            }
+        case .auto:
+            tunnelMode = .auto
+        case .usb:
+            tunnelMode = .usb
+        case .wifi:
+            tunnelMode = .wifi
         }
         Task { @MainActor in
             let manager = TunneldManager.shared

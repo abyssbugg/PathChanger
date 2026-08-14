@@ -305,19 +305,49 @@ struct SettingsView: View {
     private var connectionModeSection: some View {
         Section("Connection Mode") {
             // Connection Mode Picker
-            Picker("Preferred Connection", selection: Binding(
-                get: { appState.deviceManager.connectionMode },
-                set: { appState.deviceManager.setConnectionMode($0) }
-            )) {
+            Text("Preferred Connection")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
                 ForEach(DeviceManager.ConnectionMode.allCases, id: \.self) { mode in
-                    HStack {
-                        Image(systemName: iconForMode(mode))
-                        Text(mode.rawValue)
+                    Button {
+                        appState.deviceManager.setConnectionMode(mode)
+                    } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: iconForMode(mode))
+                                .font(.title3)
+                            Text(mode.rawValue)
+                                .font(.caption2)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            appState.deviceManager.connectionMode == mode
+                                ? Color.accentColor.opacity(0.2)
+                                : Color.gray.opacity(0.12)
+                        )
+                        .foregroundColor(
+                            appState.deviceManager.connectionMode == mode
+                                ? .accentColor
+                                : .primary
+                        )
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(
+                                    appState.deviceManager.connectionMode == mode
+                                        ? Color.accentColor
+                                        : Color.clear,
+                                    lineWidth: 1.5
+                                )
+                        )
                     }
-                    .tag(mode)
+                    .buttonStyle(.plain)
+                    .help(helpForMode(mode))
                 }
             }
-            .pickerStyle(.segmented)
 
             // Connection Status Indicators
             HStack(spacing: 16) {
@@ -336,12 +366,14 @@ struct SettingsView: View {
             .padding(.vertical, 8)
 
             // Prefer USB Toggle
-            Toggle(isOn: $appState.preferUSBConnection) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Prefer USB when available")
-                    Text("USB connection is more stable but requires a cable")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            if appState.deviceManager.connectionMode == .auto {
+                Toggle(isOn: $appState.preferUSBConnection) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Prefer USB when available")
+                        Text("Used only in Auto. USB Only and Wi‑Fi Only ignore this.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
@@ -360,7 +392,7 @@ struct SettingsView: View {
     private var connectionSummaryText: String {
         switch (appState.isUSBConnected, appState.isWiFiTransportAvailable) {
         case (true, true):
-            return "USB and Wi‑Fi are both available. Auto can use either; pick USB Only or Wi‑Fi Only to test one path."
+            return "USB and Wi‑Fi are both available. Tap Random, Auto, USB Only, or Wi‑Fi Only — each choice is independent."
         case (true, false):
             return "USB only is available."
         case (false, true):
@@ -388,9 +420,23 @@ struct SettingsView: View {
 
     private func iconForMode(_ mode: DeviceManager.ConnectionMode) -> String {
         switch mode {
+        case .random: return "shuffle"
         case .auto: return "arrow.triangle.2.circlepath"
         case .usb: return "cable.connector"
         case .wifi: return "wifi"
+        }
+    }
+
+    private func helpForMode(_ mode: DeviceManager.ConnectionMode) -> String {
+        switch mode {
+        case .random:
+            return "Pick USB or Wi‑Fi at random when both are available."
+        case .auto:
+            return "Choose the best available path. Prefer USB if that toggle is on."
+        case .usb:
+            return "Use the cable only. Wi‑Fi is ignored even if it is available."
+        case .wifi:
+            return "Use Wi‑Fi only. USB is ignored even if the cable is plugged in."
         }
     }
 
