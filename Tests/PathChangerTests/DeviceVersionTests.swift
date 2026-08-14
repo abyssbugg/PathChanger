@@ -207,7 +207,7 @@ final class DeviceVersionTests: XCTestCase {
         )
         XCTAssertTrue(device176.isIOSVersionSupported)
 
-        // iOS 18.0 should NOT be supported
+        // iOS 18 / 27 are allowed; they only raise a caution flag
         let device180 = Device(
             id: "test-device-002",
             displayName: "Test iPhone",
@@ -216,9 +216,20 @@ final class DeviceVersionTests: XCTestCase {
             productVersion: "18.0",
             deviceName: "Test Device"
         )
-        XCTAssertFalse(device180.isIOSVersionSupported)
+        XCTAssertTrue(device180.isIOSVersionSupported)
+        XCTAssertTrue(device180.needsModernIOSCaution)
 
-        // iOS 18.1 should NOT be supported
+        let device270 = Device(
+            id: "test-device-027",
+            displayName: "Test iPhone",
+            connectionType: .usb,
+            productType: "iPhone16,2",
+            productVersion: "27.0",
+            deviceName: "Test Device"
+        )
+        XCTAssertTrue(device270.isIOSVersionSupported)
+        XCTAssertTrue(device270.needsModernIOSCaution)
+
         let device181 = Device(
             id: "test-device-003",
             displayName: "Test iPhone",
@@ -227,7 +238,7 @@ final class DeviceVersionTests: XCTestCase {
             productVersion: "18.1",
             deviceName: "Test Device"
         )
-        XCTAssertFalse(device181.isIOSVersionSupported)
+        XCTAssertTrue(device181.isIOSVersionSupported)
 
         // nil version should be supported (fail open)
         let deviceNilVersion = Device(

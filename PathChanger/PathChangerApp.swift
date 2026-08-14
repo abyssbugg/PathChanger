@@ -398,21 +398,19 @@ class AppState: ObservableObject {
         }
 
         // Check iOS version and show warning (once per device per session)
-        if !device.isIOSVersionSupported {
+        if device.needsModernIOSCaution {
             let versionStr = device.iosVersion
 
-            // Only show toast if we haven't shown it for this device yet
             if !shownIOS18WarningDeviceIds.contains(device.id) {
                 ToastManager.shared.warning(
-                    "iOS \(versionStr) detected - location simulation may not work. Consider downgrading to iOS 17.6.",
+                    "iOS \(versionStr): keep the tunnel running while spoofing.",
                     duration: 5.0
                 )
                 shownIOS18WarningDeviceIds.insert(device.id)
             }
 
-            // Always log the attempt
             Logger.info(
-                "Attempting location injection on unsupported iOS version: \(versionStr)",
+                "Attempting location injection on iOS \(versionStr)",
                 category: .device,
                 deviceUDID: device.id
             )

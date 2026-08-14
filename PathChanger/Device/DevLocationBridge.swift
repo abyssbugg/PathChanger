@@ -219,7 +219,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .outputSizeExceeded:
             return "Subprocess output exceeded safety limit. This may indicate a malicious response."
         case .unsupportedIOSVersion(let version):
-            return "iOS \(version) is not supported for location simulation. iOS 18+ has known compatibility issues with pymobiledevice3's DVT location service."
+            return "Location injection failed on iOS \(version). Keep USB or Wi-Fi tunnel running and retry."
         }
     }
 
@@ -234,7 +234,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .outputSizeExceeded:
             return "If this persists, check pymobiledevice3 installation or report a bug."
         case .unsupportedIOSVersion:
-            return "Recommended solutions:\n1. Downgrade device to iOS 17.6 (most reliable)\n2. Check pymobiledevice3 GitHub for iOS 18 updates\n3. Monitor issue #1387 for community workarounds"
+            return "Start Tunnel from PathChanger, keep the device on USB or the same Wi-Fi, and retry. Do not quit the app while a spoof is active."
         default:
             return nil
         }
@@ -692,13 +692,15 @@ actor DevLocationBridge {
     /// - Ensures tunnel is running (for WiFi devices)
     /// - Checks device connectivity
     private func performPreflight(for device: Device) async throws {
-        // Check iOS version compatibility first (before expensive subprocess calls)
         if let version = device.productVersion {
-            if !ArgumentSanitizer.isIOSVersionSupported(version) {
-                Logger.error("iOS \(version) detected on device \(device.id) - location simulation may fail", category: .device, deviceUDID: device.id, iosVersion: version)
-                throw LocationInjectionError.unsupportedIOSVersion(version)
+            if IOSVersionHelper.needsModernIOSCaution(version) {
+                Logger.info(
+                    "iOS \(version) on device \(device.id) — attempting location injection (no version hard-block)",
+                    category: .device,
+                    deviceUDID: device.id,
+                    iosVersion: version
+                )
             }
-            Logger.debug("iOS version \(version) is supported for location simulation", category: .device, deviceUDID: device.id, iosVersion: version)
         }
 
         // Check developer mode

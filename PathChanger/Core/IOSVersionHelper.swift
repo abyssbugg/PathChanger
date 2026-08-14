@@ -57,17 +57,20 @@ enum IOSVersionHelper {
         return ParsedVersion(major: major, minor: minor, patch: patch)
     }
 
-    /// Check if an iOS version is supported for location simulation.
-    /// Returns true for iOS 17 and below, false for iOS 18+.
-    /// Returns true if parsing fails (fail open for backward compatibility).
-    ///
-    /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Returns: true if supported or unknown, false if unsupported (iOS 18+)
+    /// Check if an iOS version may be used for location simulation.
+    /// PathChanger attempts every parseable iOS version, including 18 and 27.
+    /// Unknown / unparseable strings fail open.
     static func isVersionSupported(_ versionString: String) -> Bool {
+        _ = versionString
+        return true
+    }
+
+    /// True when the version is iOS 18 or newer. Used for caution UI only, not a hard block.
+    static func needsModernIOSCaution(_ versionString: String) -> Bool {
         guard let parsed = parseVersion(versionString) else {
-            return true // Fail open if parsing fails
+            return false
         }
-        return parsed.major <= 17
+        return parsed.major >= 18
     }
 
     /// Extract major version number from a version string.

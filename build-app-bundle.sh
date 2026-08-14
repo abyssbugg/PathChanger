@@ -199,6 +199,19 @@ if [ "$SIGNING_IDENTITY" = "-" ]; then
     echo ""
 fi
 
-echo -e "To install: ${BLUE}cp -R $APP_DIR /Applications/${NC}"
-echo -e "To run:     ${BLUE}open $APP_DIR${NC}"
+# Step 12: Install as the only launchable PathChanger.app
+echo -e "${BLUE}Step 12: Installing the single PathChanger.app...${NC}"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+rm -rf /Applications/PathChanger.app
+cp -R "$APP_DIR" /Applications/PathChanger.app
+# Staging copy in build/ is removed so Spotlight/Dock only see one app.
+rm -rf "$APP_DIR"
+# Sweep leftover FlowDeck / tmp products so rebuilds cannot register extras.
+find /Users/datamatics/Library/Developer/FlowDeck/DerivedData /private/tmp -name 'PathChanger.app' -prune -exec rm -rf {} + 2>/dev/null || true
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -f /Applications/PathChanger.app >/dev/null 2>&1 || true
+fi
+echo -e "${GREEN}✓ Installed /Applications/PathChanger.app (only launchable copy)${NC}"
+echo ""
+echo -e "To run:     ${BLUE}open /Applications/PathChanger.app${NC}"
 echo ""

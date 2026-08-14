@@ -58,13 +58,17 @@ struct Device: Identifiable, Hashable, Equatable {
         return IOSVersionHelper.minorVersion(version)
     }
 
-    /// Whether this device's iOS version is supported for location simulation.
-    /// Returns true for iOS 17 and below, false for iOS 18+.
-    /// Returns true if version cannot be determined (fail open for backward compatibility).
-    /// Uses shared IOSVersionHelper for consistent behavior with ArgumentSanitizer.
+    /// Whether this device's iOS version may be used for location simulation.
+    /// All parseable versions are allowed, including iOS 18 and iOS 27.
     var isIOSVersionSupported: Bool {
         guard let version = productVersion else { return true }
         return IOSVersionHelper.isVersionSupported(version)
+    }
+
+    /// Caution-only: iOS 18+ may be less reliable. Does not block injection.
+    var needsModernIOSCaution: Bool {
+        guard let version = productVersion else { return false }
+        return IOSVersionHelper.needsModernIOSCaution(version)
     }
 
     /// Whether device is connected wirelessly

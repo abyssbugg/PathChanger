@@ -26,7 +26,7 @@ enum ValidationError: Error, LocalizedError {
         case .pathTraversalAttempt(let arg):
             return "Security violation: Path traversal attempt detected in '\(arg)'"
         case .unsupportedIOSVersion(let version):
-            return "iOS version \(version) is not supported. Location simulation may not work on iOS 18+. Please downgrade to iOS 17.6 or check for pymobiledevice3 updates."
+            return "iOS \(version) location injection failed. Keep the tunnel running and retry."
         }
     }
 }
@@ -259,20 +259,13 @@ enum ArgumentSanitizer {
         return (major: parsed.major, minor: parsed.minor, patch: parsed.patch)
     }
 
-    /// Check if an iOS version is supported for location simulation.
-    /// Delegates to IOSVersionHelper for consistent support checking across the codebase.
-    /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Returns: false if iOS 18+, true if iOS 17 or below, true if parsing fails (fail open)
+    /// Check if an iOS version may be used for location simulation.
     static func isIOSVersionSupported(_ versionString: String) -> Bool {
         return IOSVersionHelper.isVersionSupported(versionString)
     }
 
-    /// Validate iOS version and throw error if unsupported.
-    /// - Parameter versionString: Version string like "17.4", "18.0"
-    /// - Throws: ValidationError.unsupportedIOSVersion if iOS 18+
+    /// Kept for callers; no longer rejects iOS 18 / 27.
     static func validateIOSVersion(_ versionString: String) throws {
-        guard isIOSVersionSupported(versionString) else {
-            throw ValidationError.unsupportedIOSVersion(versionString)
-        }
+        _ = versionString
     }
 }

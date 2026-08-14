@@ -51,7 +51,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // iOS 18+ Warning Banner
-            if let device = appState.selectedDevice, !device.isIOSVersionSupported {
+            if let device = appState.selectedDevice, device.needsModernIOSCaution {
                 IOS18WarningBanner(device: device)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -161,11 +161,11 @@ struct IOS18WarningBanner: View {
                         .foregroundColor(.orange)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("iOS \(device.iosVersion) Not Supported")
+                        Text("iOS \(device.iosVersion) — keep the tunnel running")
                             .font(.subheadline.weight(.semibold))
 
                         if isExpanded {
-                            Text("Location simulation may not work on iOS 18+. Downgrade to iOS 17.6 or check for pymobiledevice3 updates.")
+                            Text("PathChanger will try location injection on this iOS version. If the pin snaps back, start the tunnel again and leave PathChanger open.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

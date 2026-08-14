@@ -332,26 +332,13 @@ final class ArgumentSanitizerTests: XCTestCase {
         XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported(""))
     }
 
-    func testIOSVersionUnsupported() {
-        // iOS 18+ should not be supported
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("18.0"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("18.1"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("19.0"))
-        XCTAssertFalse(ArgumentSanitizer.isIOSVersionSupported("20.0"))
-    }
-
-    func testIOSVersionValidationThrows() {
-        // iOS 18+ should throw
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("18.0")) { error in
-            guard case ValidationError.unsupportedIOSVersion(let version) = error else {
-                XCTFail("Expected unsupportedIOSVersion error")
-                return
-            }
-            XCTAssertEqual(version, "18.0")
-        }
-
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("18.1"))
-        XCTAssertThrowsError(try ArgumentSanitizer.validateIOSVersion("19.0"))
+    func testIOSVersion18And27AreAllowed() {
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("18.0"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("18.1"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("19.0"))
+        XCTAssertTrue(ArgumentSanitizer.isIOSVersionSupported("27.0"))
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("18.0"))
+        XCTAssertNoThrow(try ArgumentSanitizer.validateIOSVersion("27.0"))
     }
 
     func testIOSVersionValidationPasses() {

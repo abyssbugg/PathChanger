@@ -374,13 +374,12 @@ struct DiagnosticsView: View {
         let iosVersionDisplay = "iOS \(iosVersion)"
 
         // Check iOS version support before running test
-        if !device.isIOSVersionSupported {
-            // iOS 18+ detected - return warning immediately
+        if device.needsModernIOSCaution {
             return DiagnosticResult(
                 name: "Location Injection",
                 status: .warning,
-                message: "\(iosVersionDisplay) detected - location simulation may not work due to Apple restrictions",
-                recoveryAction: "Downgrade to iOS 17.6 or check https://github.com/doronz88/pymobiledevice3/issues for iOS 18 updates"
+                message: "\(iosVersionDisplay) — PathChanger will attempt injection. Keep the tunnel running.",
+                recoveryAction: "Start Tunnel, then set a location. If the pin snaps back, restart the tunnel."
             )
         }
 

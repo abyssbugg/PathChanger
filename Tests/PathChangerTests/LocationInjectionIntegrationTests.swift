@@ -203,8 +203,7 @@ final class LocationInjectionIntegrationTests: XCTestCase {
 
     // MARK: - iOS 18 Detection Tests
 
-    func testLocationInjectionFailsOnIOS18() async throws {
-        /// Test that location injection fails on iOS 18+ devices
+    func testLocationInjectionDoesNotHardBlockIOS18() async throws {
         let ios18Device = Device(
             id: "0000000000000000000000000000000000000018",
             displayName: "Test iPhone 16",
@@ -214,26 +213,19 @@ final class LocationInjectionIntegrationTests: XCTestCase {
             deviceName: "Test iOS 18 Device"
         )
 
+        XCTAssertTrue(ios18Device.isIOSVersionSupported)
+        XCTAssertTrue(ios18Device.needsModernIOSCaution)
+
         let coordinate = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
 
         do {
             try await locationBridge.setLocation(coordinate, for: ios18Device)
-            XCTFail("Expected unsupportedIOSVersion error to be thrown")
         } catch let error as LocationInjectionError {
-            switch error {
-            case .unsupportedIOSVersion(let version):
-                XCTAssertEqual(version, "18.0")
-                XCTAssertTrue(error.errorDescription?.contains("iOS 18") ?? false)
-                XCTAssertTrue(error.recoverySuggestion?.contains("Downgrade") ?? false)
-                Logger.debug("✅ iOS 18 detection working: \(error.errorDescription ?? "")", category: .device)
-            default:
-                // May also fail for other reasons (device not connected, etc.)
-                // This is acceptable in integration tests
-                Logger.debug("✅ Different error thrown (expected in integration test): \(error)", category: .device)
+            if case .unsupportedIOSVersion = error {
+                XCTFail("iOS 18 must not be hard-blocked")
             }
         } catch {
-            // Other errors are acceptable in integration tests
-            Logger.debug("✅ Non-injection error thrown: \(error)", category: .device)
+            // Other errors (no device) are acceptable
         }
     }
 
@@ -284,13 +276,9 @@ final class LocationInjectionIntegrationTests: XCTestCase {
         // Verify error description
         XCTAssertNotNil(error.errorDescription)
         XCTAssertTrue(error.errorDescription?.contains("iOS 18") ?? false)
-        XCTAssertTrue(error.errorDescription?.contains("not supported") ?? false)
 
-        // Verify recovery suggestion
         XCTAssertNotNil(error.recoverySuggestion)
-        XCTAssertTrue(error.recoverySuggestion?.contains("Downgrade") ?? false)
-        XCTAssertTrue(error.recoverySuggestion?.contains("17.6") ?? false)
-        XCTAssertTrue(error.recoverySuggestion?.contains("pymobiledevice3") ?? false)
+        XCTAssertTrue(error.recoverySuggestion?.contains("tunnel") ?? false)
 
         Logger.debug("✅ iOS 18 error message contains proper guidance", category: .device)
     }

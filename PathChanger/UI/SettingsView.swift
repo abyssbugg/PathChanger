@@ -94,7 +94,7 @@ struct SettingsView: View {
                 HStack {
                     Text("iOS Support")
                     Spacer()
-                    Text("17.0-17.6 (iOS 18+ has limitations)")
+                    Text("iOS 15–27 (keep tunnel running)")
                         .foregroundColor(.secondary)
                 }
 

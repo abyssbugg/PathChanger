@@ -97,7 +97,7 @@ struct ErrorDialogView: View {
         case .permission: return "Permission Required"
         case .network: return "Network Error"
         case .system: return "Error"
-        case .iosVersionUnsupported: return "iOS Version Not Supported"
+        case .iosVersionUnsupported: return "Keep the tunnel running"
         }
     }
 
@@ -241,7 +241,7 @@ struct EnhancedErrorDialogView: View {
         case .permission: return "Permission Required"
         case .network: return "Network Error"
         case .system: return "Error"
-        case .iosVersionUnsupported: return "iOS Version Not Supported"
+        case .iosVersionUnsupported: return "Keep the tunnel running"
         }
     }
 
@@ -292,26 +292,26 @@ struct IOS18WarningDialogView: View {
                 .symbolEffect(.pulse)
 
             // Title
-            Text("iOS \(deviceVersion) Not Supported")
+            Text("iOS \(deviceVersion) — keep the tunnel running")
                 .font(.headline)
 
             // Message
-            Text("Location simulation is not supported on iOS 18 and later due to Apple restrictions.")
+            Text("PathChanger will attempt location injection on this iOS version. If the pin snaps back, restart the tunnel and leave the app open.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
 
             // Downgrade instructions
             VStack(alignment: .leading, spacing: 8) {
-                Label("Recommended Solution:", systemImage: "lightbulb.fill")
+                Label("If spoofing fails:", systemImage: "lightbulb.fill")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.orange)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("1. Downgrade your device to iOS 17.6 or earlier")
-                    Text("2. Check pymobiledevice3 GitHub for iOS 18 updates")
-                    Text("3. Monitor Apple Developer forums for changes")
+                    Text("1. Start Tunnel from PathChanger and enter your Mac password")
+                    Text("2. Use USB or the same Wi-Fi as this Mac")
+                    Text("3. Leave PathChanger open while the spoof is active")
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
