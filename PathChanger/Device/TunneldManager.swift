@@ -984,6 +984,17 @@ class TunneldManager: ObservableObject {
         }
     }
 
+    /// Connection flags for DVT / simulate-location after a tunnel is up.
+    func locationConnectionArguments(for deviceId: String) -> [String] {
+        let info = getRsdInfo(for: deviceId)
+        return LocationConnectionArguments.make(
+            deviceId: deviceId,
+            isDaemonTunneld: activeMode == .daemon,
+            rsdAddress: info?.rsdAddress,
+            rsdPort: info?.rsdPort
+        )
+    }
+
     /// Get RSD info for a specific device by UDID
     /// Returns nil if no tunnel info is available for this device
     func getRsdInfo(for deviceId: String) -> TunnelInfo? {

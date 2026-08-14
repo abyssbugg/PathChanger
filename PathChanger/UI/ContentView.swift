@@ -50,12 +50,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // iOS 18+ Warning Banner
-            if let device = appState.selectedDevice, device.needsModernIOSCaution {
-                IOS18WarningBanner(device: device)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView(selectedMode: $selectedMode)
                     .navigationTitle("Location Changer")

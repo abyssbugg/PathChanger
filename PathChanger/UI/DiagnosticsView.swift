@@ -370,43 +370,20 @@ struct DiagnosticsView: View {
         }
 
         // Get iOS version for display and checking
-        let iosVersion = device.productVersion ?? "Unknown"
-        let iosVersionDisplay = "iOS \(iosVersion)"
-
-        // Check iOS version support before running test
-        if device.needsModernIOSCaution {
-            return DiagnosticResult(
-                name: "Location Injection",
-                status: .warning,
-                message: "\(iosVersionDisplay) — PathChanger will attempt injection. Keep the tunnel running.",
-                recoveryAction: "Start Tunnel, then set a location. If the pin snaps back, restart the tunnel."
-            )
-        }
-
-        // Handle unknown version with warning
         if device.productVersion == nil {
             return DiagnosticResult(
                 name: "Location Injection",
                 status: .warning,
-                message: "iOS version unknown - location simulation may not work on iOS 18+",
+                message: "iOS version unknown — injection will still be attempted",
                 recoveryAction: "Check device iOS version in Settings > General > About"
             )
         }
 
-        // Test with actual simulate-location set command using test coordinates (0.0, 0.0)
+        let iosVersionDisplay = "iOS \(device.productVersion ?? "Unknown")"
+
         do {
             var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set"]
-
-            // Add device connection arguments based on tunnel status
-            if tunneldManager.isRunning, let rsdInfo = tunneldManager.tunnelInfo {
-                args.append(contentsOf: ["--rsd", rsdInfo.rsdAddress, String(rsdInfo.rsdPort)])
-            } else if tunneldManager.isRunning {
-                args.append(contentsOf: ["--tunnel", device.id])
-            } else {
-                args.append(contentsOf: ["--udid", device.id])
-            }
-
-            // Add test coordinates
+            args.append(contentsOf: tunneldManager.locationConnectionArguments(for: device.id))
             args.append(contentsOf: ["--", "0.0", "0.0"])
 
             let output = try await runPython(args: args)

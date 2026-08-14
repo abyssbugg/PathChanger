@@ -76,19 +76,6 @@ struct DeviceCard: View {
                     Image(systemName: "iphone")
                         .font(.title2)
                         .foregroundStyle(isSelected ? .blue : .secondary)
-
-                    // iOS 18+ caution badge (does not block injection)
-                    if device.needsModernIOSCaution {
-                        Circle()
-                            .fill(.orange)
-                            .frame(width: 16, height: 16)
-                            .overlay(
-                                Image(systemName: "exclamationmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(.white)
-                            )
-                            .offset(x: 16, y: -16)
-                    }
                 }
 
                 // Info
@@ -109,16 +96,9 @@ struct DeviceCard: View {
 
                     // iOS version badge (only show if version is known)
                     if device.iosVersion != "Unknown" {
-                        HStack(spacing: 4) {
-                            if device.needsModernIOSCaution {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.orange)
-                            }
-                            Text("iOS \(device.iosVersion)")
-                                .font(.caption2)
-                                .foregroundColor(device.needsModernIOSCaution ? .orange : .secondary)
-                        }
+                        Text("iOS \(device.iosVersion)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
                 }
 

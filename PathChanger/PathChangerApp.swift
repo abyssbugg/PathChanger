@@ -398,23 +398,7 @@ class AppState: ObservableObject {
         }
 
         // Check iOS version and show warning (once per device per session)
-        if device.needsModernIOSCaution {
-            let versionStr = device.iosVersion
 
-            if !shownIOS18WarningDeviceIds.contains(device.id) {
-                ToastManager.shared.warning(
-                    "iOS \(versionStr): keep the tunnel running while spoofing.",
-                    duration: 5.0
-                )
-                shownIOS18WarningDeviceIds.insert(device.id)
-            }
-
-            Logger.info(
-                "Attempting location injection on iOS \(versionStr)",
-                category: .device,
-                deviceUDID: device.id
-            )
-        }
 
         targetLocation = coordinate
         statusMessage = "Injecting location..."

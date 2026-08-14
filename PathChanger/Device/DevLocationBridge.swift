@@ -346,6 +346,18 @@ actor DevLocationBridge {
     // MARK: Statistics
     private(set) var stats = InjectionStats()
 
+    /// `developer dvt simulate-location set` must stay running or iOS snaps back.
+    private var heldSimulationProcess: Process?
+
+    private func retainSimulationProcess(_ process: Process) {
+        heldSimulationProcess = process
+    }
+
+    func stopHeldSimulation() {
+        heldSimulationProcess?.terminate()
+        heldSimulationProcess = nil
+    }
+
     // MARK: - Public API
 
     /// Sets a simulated GPS location on the specified device.
@@ -458,7 +470,11 @@ actor DevLocationBridge {
         // Sanitize all arguments before execution
         let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
 
-        let result = try await runPython(arguments: sanitizedArgs, device: device)
+        let result = try await runPython(
+            arguments: sanitizedArgs,
+            device: device,
+            keepAlive: true
+        )
 
         // Check for common errors
         try parseResult(result)
@@ -541,7 +557,11 @@ actor DevLocationBridge {
                 )
 
                 let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-                let result = try await runPython(arguments: sanitizedArgs, device: queuedRequest.device)
+                let result = try await runPython(
+                    arguments: sanitizedArgs,
+                    device: queuedRequest.device,
+                    keepAlive: true
+                )
                 try parseResult(result)
 
                 stats.recordSuccess(latencyMs: 0) // Queue processing doesn't track individual latency
@@ -556,28 +576,23 @@ actor DevLocationBridge {
     @MainActor
     private func buildLocationArguments(subcommand: String, device: Device, extraArgs: [String] = []) throws -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", subcommand]
-
-        // For iOS 17+, prefer --tunnel with UDID when tunneld is running (queries tunneld API automatically)
-        // This is more reliable than manual --rsd as it handles connection management
-        if TunneldManager.shared.isRunning {
-            try ArgumentSanitizer.validateDeviceUDID(device.id)
-            args.append(contentsOf: ["--tunnel", device.id])
-            Logger.debug("Using --tunnel \(device.id) for location injection", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
-        } else if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
-            // Fallback: Direct RSD if we have cached info but tunneld may have stopped
-            guard ArgumentSanitizer.isValidIPv6Address(tunnelInfo.rsdAddress) else {
-                throw LocationInjectionError.injectionFailed("Invalid RSD address: \(tunnelInfo.rsdAddress)")
+        try ArgumentSanitizer.validateDeviceUDID(device.id)
+        let connection = TunneldManager.shared.locationConnectionArguments(for: device.id)
+        if connection.first == "--rsd", connection.count >= 3 {
+            guard ArgumentSanitizer.isValidIPv6Address(connection[1]) else {
+                throw LocationInjectionError.injectionFailed("Invalid RSD address: \(connection[1])")
             }
-            try ArgumentSanitizer.validatePort(tunnelInfo.rsdPort)
-            args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
-            Logger.debug("Using RSD \(tunnelInfo.rsdAddress):\(tunnelInfo.rsdPort) for device \(device.id)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
-        } else {
-            // No tunnel running - try UDID (may not work on iOS 17+)
-            try ArgumentSanitizer.validateDeviceUDID(device.id)
-            args.append(contentsOf: ["--udid", device.id])
-            Logger.debug("Using UDID for device \(device.id) (tunnel not running)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
+            if let port = Int(connection[2]) {
+                try ArgumentSanitizer.validatePort(port)
+            }
         }
-
+        args.append(contentsOf: connection)
+        Logger.debug(
+            "Location command uses \(connection.joined(separator: " "))",
+            category: .device,
+            deviceUDID: device.id,
+            iosVersion: device.productVersion
+        )
         args.append(contentsOf: extraArgs)
         return args
     }
@@ -595,6 +610,7 @@ actor DevLocationBridge {
         let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
 
         let result = try await runPython(arguments: sanitizedArgs, device: device)
+        stopHeldSimulation()
 
         // Check for errors
         if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
@@ -661,16 +677,10 @@ actor DevLocationBridge {
     @MainActor
     private func buildDvtArguments(subcommand: String, device: Device) -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", subcommand]
-
-        // Prefer --tunnel when tunneld is running
-        if TunneldManager.shared.isRunning {
-            args.append(contentsOf: ["--tunnel", device.id])
-        } else if let tunnelInfo = TunneldManager.shared.getRsdInfo(for: device.id) {
-            args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
-        } else {
-            args.append(contentsOf: ["--udid", device.id])
+        args.append(contentsOf: TunneldManager.shared.locationConnectionArguments(for: device.id))
+        if subcommand == "ls" {
+            args.append("/")
         }
-
         return args
     }
 
@@ -732,18 +742,11 @@ actor DevLocationBridge {
         do {
             // Use standard argument format starting with -m pymobiledevice3
             var args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
-            if device.connectionType == .wifi {
-                let tunnelInfo = await MainActor.run {
-                    TunneldManager.shared.getRsdInfo(for: device.id)
-                }
-                if let tunnelInfo = tunnelInfo {
-                    args.append(contentsOf: ["--rsd", tunnelInfo.rsdAddress, String(tunnelInfo.rsdPort)])
-                } else {
-                    args.append(contentsOf: ["--tunnel", device.id])
-                }
-            } else {
-                args.append(contentsOf: ["--udid", device.id])
+            let connection = await MainActor.run {
+                TunneldManager.shared.locationConnectionArguments(for: device.id)
             }
+            args.append(contentsOf: connection)
+            args.append("/")
 
             let result = try await runPython(arguments: args, timeoutSeconds: 15.0, device: device)
             return !result.contains("DeveloperModeError") && !result.contains("ERROR")
@@ -803,8 +806,18 @@ actor DevLocationBridge {
     /// - Output size limiting (prevents DoS via excessive output)
     /// - Security audit logging with device iOS version context
     /// - Input validation via ArgumentSanitizer (caller's responsibility)
-    private func runPython(arguments: [String], timeoutSeconds: Double? = nil, device: Device? = nil) async throws -> String {
+    private func runPython(
+        arguments: [String],
+        timeoutSeconds: Double? = nil,
+        device: Device? = nil,
+        keepAlive: Bool = false
+    ) async throws -> String {
         let timeout = await MainActor.run { timeoutSeconds ?? AppSettings.shared.commandTimeout }
+
+        if keepAlive {
+            heldSimulationProcess?.terminate()
+            heldSimulationProcess = nil
+        }
 
         // Security: Validate command structure against allowlist (defense-in-depth)
         // This catches any injection attempts that bypass other validation layers
@@ -823,10 +836,9 @@ actor DevLocationBridge {
         let errorPipe = Pipe()
 
         defer {
-            // Ensure cleanup of file handles and process
             try? outputPipe.fileHandleForReading.close()
             try? errorPipe.fileHandleForReading.close()
-            if process.isRunning {
+            if !keepAlive, process.isRunning {
                 process.terminate()
             }
         }
@@ -867,8 +879,27 @@ actor DevLocationBridge {
                         }
                     }
 
-                    // Wait for process completion
-                    process.waitUntilExit()
+                    if keepAlive {
+                        // pymobiledevice3 10.x `simulate-location set` applies the pin
+                        // then waits for Return so the DVT session stays open.
+                        let holdDeadline = Date().addingTimeInterval(min(timeout, 4.0))
+                        while process.isRunning && Date() < holdDeadline {
+                            Thread.sleep(forTimeInterval: 0.1)
+                        }
+
+                        resumeLock.lock()
+                        defer { resumeLock.unlock() }
+                        guard !hasResumed else { return }
+                        hasResumed = true
+
+                        if process.isRunning {
+                            Task { await self.retainSimulationProcess(process) }
+                            continuation.resume(returning: "")
+                            return
+                        }
+                    } else {
+                        process.waitUntilExit()
+                    }
 
                     // Check if we timed out - both read and write are now protected by resumeLock
                     resumeLock.lock()
