@@ -329,7 +329,7 @@ struct SettingsView: View {
 
                 ConnectionStatusBadge(
                     title: "WiFi",
-                    isConnected: appState.isTunneldRunning,
+                    isConnected: appState.isWiFiTransportAvailable,
                     icon: "wifi"
                 )
             }
@@ -346,34 +346,43 @@ struct SettingsView: View {
             }
 
             // Fallback Information
-            if !appState.isTunneldRunning && !appState.isUSBConnected {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.yellow)
-                    Text("No connection available. Connect via USB or start tunneld for WiFi.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.preferUSBConnection && appState.isUSBConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Using USB connection (preferred)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            } else if appState.isTunneldRunning {
-                HStack {
-                    Image(systemName: "wifi")
-                        .foregroundColor(.blue)
-                    Text("Using WiFi connection via tunneld")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
+            HStack {
+                Image(systemName: connectionSummaryIcon)
+                    .foregroundColor(connectionSummaryColor)
+                Text(connectionSummaryText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var connectionSummaryText: String {
+        switch (appState.isUSBConnected, appState.isWiFiTransportAvailable) {
+        case (true, true):
+            return "USB and Wi‑Fi are both available. Auto can use either; pick USB Only or Wi‑Fi Only to test one path."
+        case (true, false):
+            return "USB only is available."
+        case (false, true):
+            return "Wi‑Fi only is available."
+        case (false, false):
+            return "No USB or Wi‑Fi device is visible yet. Plug in the cable or join the same Wi‑Fi, then wait a few seconds."
+        }
+    }
+
+    private var connectionSummaryIcon: String {
+        switch (appState.isUSBConnected, appState.isWiFiTransportAvailable) {
+        case (true, true): return "checkmark.circle.fill"
+        case (false, false): return "exclamationmark.triangle.fill"
+        default: return "info.circle.fill"
+        }
+    }
+
+    private var connectionSummaryColor: Color {
+        switch (appState.isUSBConnected, appState.isWiFiTransportAvailable) {
+        case (true, true): return .green
+        case (false, false): return .yellow
+        default: return .blue
         }
     }
 

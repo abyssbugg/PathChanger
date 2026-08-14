@@ -452,6 +452,14 @@ class DeviceManager: ObservableObject {
     @Published var isScanning: Bool = false
     @Published var lastError: DeviceError?
     @Published var connectionMode: ConnectionMode = .auto
+    /// True when usbmux reports a USB attachment. Independent of tunnel state.
+    @Published private(set) var usbTransportAvailable: Bool = false
+    /// True when usbmux reports a Network/Wi-Fi attachment. Independent of tunnel state.
+    @Published private(set) var wifiTransportAvailable: Bool = false
+
+    private var usbTransportMisses: Int = 0
+    private var wifiTransportMisses: Int = 0
+    private let transportMissThreshold: Int = 3
 
     // MARK: Connection Mode
     enum ConnectionMode: String, CaseIterable {
@@ -660,6 +668,7 @@ class DeviceManager: ObservableObject {
                 "usbmux", "list"
             ])
 
+            applyUsbmuxTransportObservation(output)
             let baseDevices = parseDeviceListJSON(output, connectionType: ConnectionType.usb)
 
             // For each USB device, fetch detailed lockdown info to get DeviceName
@@ -960,10 +969,13 @@ class DeviceManager: ObservableObject {
                         deviceName: deviceName
                     )
 
-                    // Avoid duplicates by UDID
-                    if !devices.contains(where: { $0.id == udid }) {
+                    if let existingIndex = devices.firstIndex(where: { $0.id == udid }) {
+                        if connType == .usb && devices[existingIndex].connectionType != .usb {
+                            devices[existingIndex] = device
+                        }
+                    } else {
                         devices.append(device)
-                        Logger.debug("Found device: \(displayName) [\(udid)]", category: .device)
+                        Logger.debug("Found device: \(displayName) [\(udid)] via \(connType)", category: .device)
                     }
                 }
             }
@@ -1276,8 +1288,71 @@ class DeviceManager: ObservableObject {
 
     func setConnectionMode(_ mode: ConnectionMode) {
         connectionMode = mode
-        Task {
+        let tunnelMode: TunnelMode
+        switch mode {
+        case .auto: tunnelMode = .auto
+        case .usb: tunnelMode = .usb
+        case .wifi: tunnelMode = .wifi
+        }
+        Task { @MainActor in
+            let manager = TunneldManager.shared
+            let previous = manager.preferredMode
+            manager.preferredMode = tunnelMode
+            if previous != tunnelMode, manager.isRunning || manager.isStarting {
+                await manager.restartTunnel()
+            }
             await refreshDevices()
+        }
+    }
+
+    func refreshTransportAvailability() async {
+        do {
+            let output = try await runPython(arguments: [
+                "-m", "pymobiledevice3", "usbmux", "list",
+            ])
+            applyUsbmuxTransportObservation(output)
+        } catch {
+            applyUsbmuxTransportObservation("[]")
+        }
+    }
+
+    /// Update USB/Wi-Fi availability from usbmux JSON. Requires several misses before dropping a link.
+    private func applyUsbmuxTransportObservation(_ output: String) {
+        var sawUSB = false
+        var sawWiFi = false
+
+        if let jsonStart = output.firstIndex(of: "["),
+           let jsonEnd = output.lastIndex(of: "]"),
+           let data = String(output[jsonStart...jsonEnd]).data(using: .utf8),
+           let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            for item in items {
+                let type = (item["ConnectionType"] as? String ?? "").lowercased()
+                if type.contains("usb") {
+                    sawUSB = true
+                } else if type.contains("network") || type.contains("wifi") {
+                    sawWiFi = true
+                }
+            }
+        }
+
+        if sawUSB {
+            usbTransportMisses = 0
+            usbTransportAvailable = true
+        } else {
+            usbTransportMisses += 1
+            if usbTransportMisses >= transportMissThreshold {
+                usbTransportAvailable = false
+            }
+        }
+
+        if sawWiFi {
+            wifiTransportMisses = 0
+            wifiTransportAvailable = true
+        } else {
+            wifiTransportMisses += 1
+            if wifiTransportMisses >= transportMissThreshold {
+                wifiTransportAvailable = false
+            }
         }
     }
 }

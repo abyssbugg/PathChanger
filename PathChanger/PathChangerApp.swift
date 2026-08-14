@@ -161,6 +161,7 @@ class AppState: ObservableObject {
     // MARK: Reliability State
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
     @Published var isUSBConnected: Bool = false
+    @Published var isWiFiTransportAvailable: Bool = false
     @Published var preferUSBConnection: Bool = false
 
     // MARK: Debouncing for UI Stability
@@ -368,6 +369,9 @@ class AppState: ObservableObject {
             simulationEngine.setDevice(first)
         }
 
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+
         connectionStatus = selectedDevice != nil ? .connected : .disconnected
 
         if connectionStatus == .connected {
@@ -377,6 +381,9 @@ class AppState: ObservableObject {
 
     func checkTunneldStatus() async {
         await deviceManager.checkTunneldStatus()
+        await deviceManager.refreshTransportAvailability()
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
         updateTunnelRunning(deviceManager.isTunneldRunning)
 
         if !isTunneldRunning && !TunneldManager.shared.isStarting {
