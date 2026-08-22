@@ -13,8 +13,11 @@ let package = Package(
         .executable(name: "PathChanger", targets: ["PathChanger"])
     ],
     dependencies: [
-        // Sparkle for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+        // Sparkle for auto-updates.
+        // Pinned exactly: a `from:` range let the SwiftPM and Xcode-wrapper lockfiles drift to
+        // different versions (2.8.1 vs 2.9.5), so the framework you shipped depended on which
+        // build path you used. Upgrading is a deliberate, separately testable change.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.8.1")
     ],
     targets: [
         .executableTarget(
@@ -23,7 +26,6 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "PathChanger",
-            exclude: ["Info.plist"],
             resources: [
                 .process("Resources/en.lproj"),
                 .process("Resources/ja.lproj"),

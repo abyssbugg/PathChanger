@@ -9,12 +9,40 @@
 import Foundation
 
 enum AppRuntimeEnvironment {
+
+    /// Whether this process is hosting a test bundle.
+    ///
+    /// Detection is deliberately belt-and-braces. Sniffing environment variables alone is
+    /// not reliable: the SwiftPM runner used by Xcode 16+ / Swift 6 launches the bundle via
+    /// `swiftpm-testing-helper` and sets no `XCTest*` variables at all. That left this guard
+    /// silently open, so the app host was free to start privileged background work — and
+    /// raise an administrator prompt — in the middle of `swift test`.
+    ///
+    /// The class lookup is the authoritative signal, because the test framework is only ever
+    /// linked into a test host. The environment check is retained so the pure, injectable
+    /// form below stays usable from unit tests.
+    static var isHostingTests: Bool {
+        if NSClassFromString("XCTestCase") != nil {
+            return true
+        }
+        return isHostingTests(environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// Pure, injectable form of ``isHostingTests`` for unit testing.
+    static func isHostingTests(environment: [String: String]) -> Bool {
+        environment.keys.contains { key in
+            key.hasPrefix("XCTest")
+                || key.hasPrefix("SWIFT_TESTING")
+                || key.hasPrefix("SWIFTPM_TESTING")
+        }
+    }
+
     static var allowsAutomaticStartup: Bool {
-        allowsAutomaticStartup(environment: ProcessInfo.processInfo.environment)
+        !isHostingTests
     }
 
     static func allowsAutomaticStartup(environment: [String: String]) -> Bool {
-        !environment.keys.contains { $0.hasPrefix("XCTest") }
+        !isHostingTests(environment: environment)
     }
 }
 

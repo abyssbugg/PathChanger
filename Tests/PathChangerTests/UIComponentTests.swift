@@ -8,6 +8,61 @@
 import XCTest
 @testable import PathChanger
 
+// MARK: - Organic Appearance Tests
+
+final class OrganicAppearanceTests: XCTestCase {
+    func testPersistedRawValuesAreStable() {
+        XCTAssertEqual(OrganicAppearance.light.rawValue, "light")
+        XCTAssertEqual(OrganicAppearance.dark.rawValue, "dark")
+    }
+
+    func testPersistedAppearanceFallsBackToLight() {
+        XCTAssertEqual(OrganicAppearance.persisted(nil), .light)
+        XCTAssertEqual(OrganicAppearance.persisted("unknown"), .light)
+        XCTAssertEqual(OrganicAppearance.persisted("dark"), .dark)
+    }
+}
+
+@MainActor
+final class LocationFavoritesMockDataTests: XCTestCase {
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "LocationFavoritesMockDataTests")
+        defaults.removePersistentDomain(forName: "LocationFavoritesMockDataTests")
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: "LocationFavoritesMockDataTests")
+        defaults = nil
+        super.tearDown()
+    }
+
+    func testFreshStoreContainsCanonicalBuiltInPlaces() {
+        let manager = LocationFavoritesManager(defaults: defaults)
+
+        XCTAssertEqual(manager.places.count, 8)
+        XCTAssertEqual(manager.places.first?.name, "Marina Road")
+        XCTAssertTrue(manager.places.contains { $0.name == "Shibuya Crossing" })
+        XCTAssertTrue(manager.places.contains { $0.name == "Opera House" })
+    }
+
+    func testRecentHistoryKeepsNewestFourteenEntries() {
+        let manager = LocationFavoritesManager(defaults: defaults)
+
+        for index in 0..<20 {
+            manager.recordRecent(
+                name: "Place \(index)",
+                coordinate: LocationCoordinate(latitude: Double(index), longitude: Double(index))
+            )
+        }
+
+        XCTAssertEqual(manager.recents.count, 14)
+        XCTAssertEqual(manager.recents.first?.name, "Place 19")
+    }
+}
+
 // MARK: - Toast Manager Tests
 
 @MainActor

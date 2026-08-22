@@ -20,11 +20,21 @@ enum SimulationPlanner {
         targetLocation: LocationCoordinate?,
         currentLocation: LocationCoordinate?,
         route: [LocationCoordinate],
-        speed: SimulationSpeed
+        speed: SimulationSpeed,
+        jumpIndex: Int = 0
     ) -> SimulationStartPlan {
         switch mode {
         case .route:
             return planRoute(route: route, speed: speed)
+        case .twospot:
+            return planTwoSpot(
+                targetLocation: targetLocation,
+                currentLocation: currentLocation,
+                route: route,
+                speed: speed
+            )
+        case .jump:
+            return planJump(targetLocation: targetLocation, route: route, jumpIndex: jumpIndex)
         case .joystick:
             return planJoystick(targetLocation: targetLocation, currentLocation: currentLocation)
         case .teleport, .settings:
@@ -37,6 +47,39 @@ enum SimulationPlanner {
             return .failed("No target location selected")
         }
         return .teleport(target)
+    }
+
+    private static func planJump(
+        targetLocation: LocationCoordinate?,
+        route: [LocationCoordinate],
+        jumpIndex: Int
+    ) -> SimulationStartPlan {
+        let hops = route.filter(\.isValid)
+        if hops.isEmpty {
+            return planTeleport(targetLocation: targetLocation)
+        }
+        guard jumpIndex < hops.count else {
+            return .failed("All hops done — add another or clear")
+        }
+        return .teleport(hops[jumpIndex])
+    }
+
+    private static func planTwoSpot(
+        targetLocation: LocationCoordinate?,
+        currentLocation: LocationCoordinate?,
+        route: [LocationCoordinate],
+        speed: SimulationSpeed
+    ) -> SimulationStartPlan {
+        let stops = route.filter(\.isValid)
+        if stops.count >= 2 {
+            return planRoute(route: Array(stops.prefix(2)), speed: speed)
+        }
+        if let start = currentLocation ?? (stops.count == 2 ? stops.first : nil),
+           let dest = stops.last ?? targetLocation,
+           start != dest {
+            return planRoute(route: [start, dest], speed: speed)
+        }
+        return .failed("Add a start and a destination")
     }
 
     private static func planRoute(route: [LocationCoordinate], speed: SimulationSpeed) -> SimulationStartPlan {
@@ -60,5 +103,27 @@ enum SimulationPlanner {
             return .failed("Tap the map to set a starting location")
         }
         return .joystick(start)
+    }
+}
+
+enum LocationHistoryPolicy {
+    static func shouldRecord(
+        canStartSimulation: Bool,
+        plan: SimulationStartPlan
+    ) -> Bool {
+        guard canStartSimulation else { return false }
+        if case .failed = plan { return false }
+        return true
+    }
+
+    static func coordinate(for plan: SimulationStartPlan) -> LocationCoordinate? {
+        switch plan {
+        case .teleport(let coordinate), .joystick(let coordinate):
+            return coordinate
+        case .route(let points):
+            return points.last
+        case .failed:
+            return nil
+        }
     }
 }

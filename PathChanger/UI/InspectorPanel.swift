@@ -97,20 +97,32 @@ struct InspectorPanel: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    Button("Copy") {
-                        let text = "\(latitudeInput), \(longitudeInput)"
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
+                    Button(appState.copiedFeedback ? "Copied" : "Copy") {
+                        appState.copyCoordinates()
                     }
                     .buttonStyle(.plain)
                     .font(Organic.body(12, weight: .bold))
-                    .foregroundStyle(Organic.accent700)
+                    .foregroundStyle(appState.copiedFeedback ? Organic.sage800 : Organic.accent700)
                     .padding(.horizontal, 12)
                     .frame(height: 30)
-                    .overlay(Capsule().stroke(Organic.accent400, lineWidth: 1))
+                    .background(appState.copiedFeedback ? Organic.sage100 : Color.clear)
+                    .overlay(Capsule().stroke(appState.copiedFeedback ? Organic.sage700 : Organic.accent400, lineWidth: 1))
                 }
                 .padding(.top, 12)
                 .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300.opacity(0.8)).frame(height: 1).padding(.top, -1) }
+
+                if let warning = appState.lastTeleportMessage {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "clock")
+                            .foregroundStyle(Organic.accent700)
+                        Text(warning)
+                            .font(Organic.body(11))
+                            .foregroundStyle(Organic.accent800)
+                    }
+                    .padding(10)
+                    .background(Organic.accent100)
+                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                }
 
                 HStack(spacing: 9) {
                     Button(action: onTeleport) {
@@ -161,9 +173,12 @@ struct InspectorPanel: View {
                             .foregroundStyle(Organic.neutral400)
                     )
                 } else {
-                    VStack(spacing: 6) {
+                    List {
                         ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
                             HStack(spacing: 8) {
+                                Image(systemName: "line.3.horizontal")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(Organic.neutral500)
                                 Text("\(index + 1)")
                                     .font(Organic.body(11, weight: .bold))
                                     .foregroundStyle(Organic.neutral100)
@@ -179,9 +194,7 @@ struct InspectorPanel: View {
                                 }
                                 Spacer()
                                 Button {
-                                    var route = appState.currentRoute
-                                    route.remove(at: index)
-                                    appState.loadRoute(from: route)
+                                    appState.removeRouteWaypoint(at: index)
                                 } label: {
                                     Image(systemName: "xmark")
                                         .font(.system(size: 9, weight: .bold))
@@ -190,16 +203,18 @@ struct InspectorPanel: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .padding(8)
-                            .background(Organic.bg)
-                            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                                    .stroke(Organic.neutral300, lineWidth: 1)
-                            )
+                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                        }
+                        .onMove { source, destination in
+                            guard let from = source.first else { return }
+                            appState.moveRouteWaypoint(from: from, to: destination)
                         }
                     }
-                    .frame(maxHeight: 212)
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: min(212, CGFloat(appState.currentRoute.count) * 52))
                 }
 
                 HStack {
@@ -231,6 +246,20 @@ struct InspectorPanel: View {
             inspectorCard {
                 cardHeader(icon: "play.fill", tint: Organic.accent600, title: "Travel & playback", meta: nil)
                 travelModeGrid(travelModes)
+                OrganicSliderRow(
+                    title: "Speed",
+                    valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
+                    value: $appState.customSpeedMps,
+                    range: 1...30,
+                    step: 0.1,
+                    isAuto: appState.autoSpeed,
+                    onToggleAuto: {
+                        appState.autoSpeed.toggle()
+                        if appState.autoSpeed {
+                            appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
+                        }
+                    }
+                )
                 loopToggle
                 if appState.isSimulating && mode == .route {
                     VStack(spacing: 6) {
@@ -253,7 +282,7 @@ struct InspectorPanel: View {
                 .buttonStyle(.plain)
                 .primaryButtonStyle(isDisabled: !appState.canStartSimulation || appState.currentRoute.count < 2)
                 .padding(.top, 8)
-                Text(appState.currentRoute.count < 2 ? "Add at least two stops on the map" : "Play walks the interpolated path")
+                Text(appState.currentRoute.count < 2 ? "Add at least two stops on the map" : "Drag to reorder. Double-click a stop on the map to remove it.")
                     .font(Organic.body(11))
                     .foregroundStyle(Organic.neutral600)
                     .frame(maxWidth: .infinity)
@@ -269,7 +298,7 @@ struct InspectorPanel: View {
                 cardHeader(icon: "gamecontroller", tint: Organic.accent600, title: "Manual control", meta: appState.isSimulating ? "Live" : "Standby")
                 HStack(spacing: 9) {
                     readout("HEADING", headingText)
-                    readout("SPEED", String(format: "%.1f", appState.isSimulating ? appState.simulationSpeed.metersPerSecond : 0))
+                    readout("SPEED", String(format: "%.1f", appState.isSimulating ? appState.effectiveMetersPerSecond : 0))
                     readout("POSITION", (appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
                 }
             }
@@ -277,19 +306,40 @@ struct InspectorPanel: View {
             inspectorCard {
                 cardHeader(icon: "arrow.right", tint: Organic.sage700, title: "Travel & speed", meta: nil)
                 travelModeGrid(travelModes)
-                safeBanner(
-                    title: "Safe Mode Enabled",
-                    body: "Smooths acceleration so movement looks human."
+                OrganicSliderRow(
+                    title: "Max speed",
+                    valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
+                    value: $appState.customSpeedMps,
+                    range: 1...30,
+                    step: 0.1,
+                    isAuto: appState.autoSpeed,
+                    onToggleAuto: {
+                        appState.autoSpeed.toggle()
+                        if appState.autoSpeed {
+                            appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
+                        }
+                    }
+                )
+                safeToggle(
+                    title: appState.safeModeJoystick ? "Safe Mode Enabled" : "Safe Mode Off",
+                    body: "Smooths acceleration so movement looks human.",
+                    isOn: $appState.safeModeJoystick
                 )
                 Button {
-                    Task { await appState.startSimulation() }
+                    Task {
+                        if appState.isSimulating {
+                            appState.disengageJoystick()
+                        } else {
+                            await appState.startSimulation()
+                        }
+                    }
                 } label: {
-                    Text(appState.isSimulating ? "Engaged" : "Engage")
+                    Text(appState.isSimulating ? "Disengage" : "Engage joystick")
                 }
                 .buttonStyle(.plain)
-                .primaryButtonStyle(isDisabled: !appState.canStartSimulation)
+                .primaryButtonStyle(isDisabled: !appState.canStartSimulation && !appState.isSimulating)
                 .padding(.top, 8)
-                Text("Drag the on-map joystick or press Play")
+                Text("Drag the on-map joystick or use arrow keys")
                     .font(Organic.body(11))
                     .foregroundStyle(Organic.neutral600)
                     .frame(maxWidth: .infinity)
@@ -307,9 +357,38 @@ struct InspectorPanel: View {
                 .tracking(0.3)
                 .foregroundStyle(Organic.neutral600)
             travelModeGrid(modes)
-            safeBanner(
-                title: "Safe Mode Enabled",
-                body: "Mimics natural movement and respects cooldown to avoid detection."
+            OrganicSliderRow(
+                title: "Speed",
+                valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
+                value: $appState.customSpeedMps,
+                range: 1...30,
+                step: 0.1,
+                isAuto: appState.autoSpeed,
+                onToggleAuto: {
+                    appState.autoSpeed.toggle()
+                    if appState.autoSpeed {
+                        appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
+                    }
+                }
+            )
+            OrganicSliderRow(
+                title: "Cooldown",
+                valueLabel: String(format: "%.1f s", appState.cooldownSeconds),
+                value: $appState.cooldownSeconds,
+                range: 0...10,
+                step: 0.5,
+                isAuto: appState.autoCooldown,
+                onToggleAuto: {
+                    appState.autoCooldown.toggle()
+                    if appState.autoCooldown {
+                        appState.cooldownSeconds = appState.mockCooldown(for: appState.simulationSpeed)
+                    }
+                }
+            )
+            safeToggle(
+                title: appState.safeModeTeleport ? "Safe Mode Enabled" : "Safe Mode Off",
+                body: "Mimics natural movement and respects cooldown to avoid detection.",
+                isOn: $appState.safeModeTeleport
             )
         }
     }
@@ -338,10 +417,10 @@ struct InspectorPanel: View {
                     }
                     .padding(8)
                     .background(appState.simulationSpeed == speed ? Organic.accent100 : Organic.bg)
-                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                    .clipShape(Capsule())
                     .overlay(
-                        RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                            .stroke(appState.simulationSpeed == speed ? Organic.accent400 : Organic.neutral300, lineWidth: 1)
+                        Capsule()
+                            .stroke(appState.simulationSpeed == speed ? Organic.accent500 : Organic.neutral300, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -377,7 +456,7 @@ struct InspectorPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
     }
 
-    private func safeBanner(title: String, body: String) -> some View {
+    private func safeToggle(title: String, body: String, isOn: Binding<Bool>) -> some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: "checkmark.shield")
                 .foregroundStyle(Organic.sage700)
@@ -391,12 +470,15 @@ struct InspectorPanel: View {
                     .foregroundStyle(Organic.sage800)
             }
             Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(Organic.sage600)
         }
         .padding(12)
-        .background(Organic.sage100)
+        .background(isOn.wrappedValue ? Organic.sage100 : Organic.neutral200)
         .overlay(
             RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                .stroke(Organic.sage300, lineWidth: 1)
+                .stroke(isOn.wrappedValue ? Organic.sage300 : Organic.neutral400, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
         .padding(.top, 6)
@@ -511,7 +593,7 @@ struct InspectorPanel: View {
         for index in 1..<appState.currentRoute.count {
             meters += RouteInterpolator.haversineDistance(from: appState.currentRoute[index - 1], to: appState.currentRoute[index])
         }
-        let seconds = meters / max(appState.simulationSpeed.metersPerSecond, 0.1)
+        let seconds = meters / max(appState.effectiveMetersPerSecond, 0.1)
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)
@@ -526,10 +608,10 @@ struct InspectorPanel: View {
 
     private func travelSubtitle(_ speed: SimulationSpeed) -> String {
         switch speed {
-        case .walking: return "3 mph"
+        case .walking: return "3.5 mph"
         case .cycling: return "12 mph"
-        case .driving: return "45 mph"
-        case .fast: return "25 mph"
+        case .driving: return "35 mph"
+        case .fast: return "60 mph"
         default: return speed.displayName
         }
     }

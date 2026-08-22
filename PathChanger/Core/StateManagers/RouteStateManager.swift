@@ -2,8 +2,18 @@
 //  RouteStateManager.swift
 //  PathChanger
 //
-//  Domain-specific state manager for route-related state.
-//  Part of AppState decomposition (ARCH-002).
+//  Owns route contents, waypoint editing and playback position.
+//  Part of the AppState decomposition (ARCH-002).
+//
+//  Unlike the device and simulation managers, this type was *richer* than the AppState code
+//  it replaces: named routes, a playback state machine, skip controls, total distance and
+//  ETA all existed here and were tested. Those are kept. What has been added is everything
+//  AppState had and this did not: jump indexing, waypoint editing, and a GPX import that
+//  reads routes and waypoints rather than tracks alone.
+//
+//  Playback itself deliberately does not live here. AppState still drives route playback
+//  until the simulation engine takes it over, so that there is exactly one playback loop in
+//  the codebase at any time.
 //
 
 import Foundation
@@ -46,34 +56,8 @@ enum RoutePlaybackState: Equatable {
 
 // MARK: - Route State Manager
 
-/// Manages route-related state including loading, playback, and progress.
-///
-/// `RouteStateManager` is responsible for:
-/// - Loading and parsing routes
-/// - Controlling route playback
-/// - Tracking playback progress
-/// - Managing route library
-///
-/// ## Thread Safety
-///
-/// This class is marked `@MainActor` for safe SwiftUI integration.
-/// All published properties update on the main thread.
-///
-/// ## Usage
-///
-/// ```swift
-/// @StateObject private var routeState = RouteStateManager()
-///
-/// // Load a route
-/// routeState.loadRoute(from: coordinates)
-///
-/// // Start playback
-/// Task {
-///     await routeState.startPlayback()
-/// }
-/// ```
 @MainActor
-class RouteStateManager: ObservableObject {
+final class RouteStateManager: ObservableObject {
 
     // MARK: Published Properties
 
@@ -104,21 +88,29 @@ class RouteStateManager: ObservableObject {
     /// Reverse direction on loop
     @Published var reverseOnLoop: Bool = false
 
+    /// Index of the next hop in Jump mode
+    @Published var jumpIndex: Int = 0
+
+    /// Whether Jump mode advances automatically
+    @Published var autoJump: Bool = false
+
     // MARK: Dependencies
 
     let routeLibrary: RouteLibraryManager
     weak var simulationStateManager: SimulationStateManager?
 
-    // MARK: Private Properties
-
-    private var playbackTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
 
-    /// Whether route is loaded and ready
+    /// Whether a route is loaded and ready
     var isRouteLoaded: Bool {
         !currentRoute.isEmpty
+    }
+
+    /// Whether the route is currently loading
+    var isLoading: Bool {
+        playbackState == .loading
     }
 
     /// Number of waypoints in route
@@ -162,20 +154,19 @@ class RouteStateManager: ObservableObject {
         progress = 0
         currentIndex = 0
         playbackState = .ready
-
-        // Calculate total distance
-        totalDistance = calculateTotalDistance(coordinates)
+        totalDistance = Geo.totalDistance(of: coordinates)
     }
 
-    /// Load a route from GPX data
-    func loadRoute(from gpxData: Data, name: String? = nil) async throws {
+    /// Load a route from GPX data.
+    ///
+    /// Uses `allCoordinates`, which spans tracks *and* routes. An earlier version read only
+    /// track segments and silently dropped `<rte>` data.
+    func loadRoute(from gpxData: Data, name: String? = nil) throws {
         playbackState = .loading
 
         do {
-            let parser = GPXParser()
-            let parsed = try parser.parse(data: gpxData)
-
-            let coordinates = parsed.tracks.flatMap { $0.segments.flatMap { $0.points.map { $0.coordinate } } }
+            let parsed = try GPXParser().parse(data: gpxData)
+            let coordinates = parsed.allCoordinates
 
             if coordinates.isEmpty {
                 playbackState = .error("No coordinates in GPX file")
@@ -187,6 +178,26 @@ class RouteStateManager: ObservableObject {
             playbackState = .error(error.localizedDescription)
             throw error
         }
+    }
+
+    /// Import a route from a GPX file on disk.
+    /// - Returns: the number of coordinates imported.
+    @discardableResult
+    func importRoute(from url: URL) throws -> Int {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let coordinates = try GPXParser().parse(fileURL: url).allCoordinates
+        guard coordinates.count >= 2 else {
+            throw RouteLibraryError.emptyRoute
+        }
+
+        loadRoute(from: coordinates)
+        return coordinates.count
     }
 
     /// Load a route from the library by ID
@@ -207,66 +218,59 @@ class RouteStateManager: ObservableObject {
         routeName = nil
         progress = 0
         currentIndex = 0
+        jumpIndex = 0
         totalDistance = 0
         estimatedRemainingTime = 0
         playbackState = .idle
     }
 
-    // MARK: Playback Control
+    // MARK: Waypoint Editing
 
-    /// Start route playback
-    func startPlayback() async {
-        guard canStartPlayback else { return }
-        guard let simState = simulationStateManager else {
-            playbackState = .error("Simulation not available")
-            return
+    /// Append a waypoint. Invalid coordinates are ignored.
+    /// - Returns: whether the waypoint was added.
+    @discardableResult
+    func addWaypoint(_ coordinate: LocationCoordinate) -> Bool {
+        guard coordinate.isValid else { return false }
+        currentRoute.append(coordinate)
+        progress = 0
+        totalDistance = Geo.totalDistance(of: currentRoute)
+        if playbackState == .idle {
+            playbackState = .ready
         }
-
-        playbackState = .playing
-
-        playbackTask = Task {
-            var index = currentIndex
-            let total = currentRoute.count
-
-            while index < total && !Task.isCancelled {
-                // Handle pause state
-                while playbackState == .paused && !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                }
-
-                if Task.isCancelled { break }
-
-                // Update location
-                let coordinate = currentRoute[index]
-                await simState.setLocation(coordinate)
-
-                // Update progress
-                currentIndex = index
-                progress = Double(index + 1) / Double(total)
-                updateEstimatedTime()
-
-                index += 1
-
-                // Wait based on speed
-                let interval = simState.simulationSpeed.updateInterval
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-            }
-
-            if !Task.isCancelled {
-                if loopEnabled && index >= total {
-                    // Restart from beginning
-                    if reverseOnLoop {
-                        currentRoute.reverse()
-                    }
-                    currentIndex = 0
-                    progress = 0
-                    await startPlayback()
-                } else {
-                    playbackState = .completed
-                }
-            }
-        }
+        return true
     }
+
+    /// Remove the waypoint at an index, if it exists.
+    @discardableResult
+    func removeWaypoint(at index: Int) -> Bool {
+        guard currentRoute.indices.contains(index) else { return false }
+        currentRoute.remove(at: index)
+        progress = 0
+        totalDistance = Geo.totalDistance(of: currentRoute)
+        return true
+    }
+
+    /// Reorder a waypoint.
+    func moveWaypoint(from source: Int, to destination: Int) {
+        guard currentRoute.indices.contains(source) else { return }
+        let item = currentRoute.remove(at: source)
+        let clamped = min(max(destination, 0), currentRoute.count)
+        currentRoute.insert(item, at: clamped)
+        totalDistance = Geo.totalDistance(of: currentRoute)
+    }
+
+    /// Remove the last waypoint.
+    /// - Returns: the number of waypoints remaining, or nil if there was nothing to remove.
+    @discardableResult
+    func removeLastWaypoint() -> Int? {
+        guard !currentRoute.isEmpty else { return nil }
+        currentRoute.removeLast()
+        progress = 0
+        totalDistance = Geo.totalDistance(of: currentRoute)
+        return currentRoute.count
+    }
+
+    // MARK: Playback Position
 
     /// Pause playback
     func pausePlayback() {
@@ -274,16 +278,14 @@ class RouteStateManager: ObservableObject {
     }
 
     /// Resume playback
-    func resumePlayback() async {
+    func resumePlayback() {
         if playbackState == .paused {
             playbackState = .playing
         }
     }
 
-    /// Stop playback
+    /// Stop playback and rewind to the start
     func stopPlayback() {
-        playbackTask?.cancel()
-        playbackTask = nil
         currentIndex = 0
         progress = 0
 
@@ -314,42 +316,11 @@ class RouteStateManager: ObservableObject {
 
     // MARK: Private Helpers
 
-    private func calculateTotalDistance(_ coordinates: [LocationCoordinate]) -> Double {
-        guard coordinates.count > 1 else { return 0 }
-
-        var total: Double = 0
-        for coordinateIndex in 1..<coordinates.count {
-            total += coordinates[coordinateIndex - 1].distance(to: coordinates[coordinateIndex])
-        }
-        return total
-    }
-
     private func updateEstimatedTime() {
         guard let simState = simulationStateManager else { return }
 
         let remainingPoints = currentRoute.count - currentIndex
         let intervalPerPoint = simState.simulationSpeed.updateInterval
         estimatedRemainingTime = Double(remainingPoints) * intervalPerPoint
-    }
-}
-
-// MARK: - LocationCoordinate Distance Extension
-
-private extension LocationCoordinate {
-    /// Calculate distance to another coordinate in meters using Haversine formula
-    func distance(to other: LocationCoordinate) -> Double {
-        let earthRadius: Double = 6_371_000 // meters
-
-        let lat1 = self.latitude * .pi / 180
-        let lat2 = other.latitude * .pi / 180
-        let deltaLat = (other.latitude - self.latitude) * .pi / 180
-        let deltaLon = (other.longitude - self.longitude) * .pi / 180
-
-        let haversineTerm = sin(deltaLat / 2) * sin(deltaLat / 2) +
-            cos(lat1) * cos(lat2) *
-            sin(deltaLon / 2) * sin(deltaLon / 2)
-        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1 - haversineTerm))
-
-        return earthRadius * angularDistance
     }
 }

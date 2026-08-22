@@ -80,9 +80,12 @@ final class PersistentLocationBridge: ObservableObject {
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
 
+    // This type is `@MainActor`, so `responseBuffer`, `pendingContinuation` and
+    // `timeoutTask` are already serialized by actor isolation. An explicit lock would be
+    // redundant here and cannot be held safely across an `await`.
     private var responseBuffer: String = ""
-    private let responseLock = NSLock()
     private var pendingContinuation: CheckedContinuation<BridgeResponse, Error>?
+    private var timeoutTask: Task<Void, Never>?
 
     private var python3Path: String { PythonPathResolver.path }
     private var bridgeScriptPath: String?
@@ -344,30 +347,27 @@ final class PersistentLocationBridge: ObservableObject {
             throw PersistentBridgeError.processNotRunning
         }
 
-        // Wait for response with timeout
-        return try await withCheckedThrowingContinuation { [weak self] continuation in
-            self?.responseLock.lock()
-            self?.pendingContinuation = continuation
-            self?.responseLock.unlock()
+        // Wait for response with timeout.
+        let timeoutSeconds = responseTimeout
 
-            // Timeout handler
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(self?.responseTimeout ?? 10.0) * 1_000_000_000)
-                self?.responseLock.lock()
-                if let cont = self?.pendingContinuation {
-                    self?.pendingContinuation = nil
-                    self?.responseLock.unlock()
-                    cont.resume(throwing: PersistentBridgeError.timeout)
-                } else {
-                    self?.responseLock.unlock()
-                }
+        return try await withCheckedThrowingContinuation { continuation in
+            self.pendingContinuation = continuation
+
+            self.timeoutTask?.cancel()
+            self.timeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                guard !Task.isCancelled,
+                      let self,
+                      let pending = self.pendingContinuation else { return }
+                self.pendingContinuation = nil
+                self.timeoutTask = nil
+                pending.resume(throwing: PersistentBridgeError.timeout)
             }
         }
     }
 
     /// Handle output from Python process
     private func handleOutput(_ output: String) {
-        responseLock.lock()
         responseBuffer += output
 
         // Check for complete JSON lines
@@ -389,14 +389,13 @@ final class PersistentLocationBridge: ObservableObject {
                 // Resume pending continuation
                 if let continuation = pendingContinuation {
                     pendingContinuation = nil
-                    responseLock.unlock()
+                    timeoutTask?.cancel()
+                    timeoutTask = nil
                     continuation.resume(returning: response)
                     return
                 }
             }
         }
-
-        responseLock.unlock()
     }
 
     /// Handle process termination
@@ -406,13 +405,9 @@ final class PersistentLocationBridge: ObservableObject {
         isRunning = false
 
         // Resume any pending continuation with error
-        responseLock.lock()
         if let continuation = pendingContinuation {
             pendingContinuation = nil
-            responseLock.unlock()
             continuation.resume(throwing: PersistentBridgeError.processNotRunning)
-        } else {
-            responseLock.unlock()
         }
 
         cleanup()
@@ -420,6 +415,9 @@ final class PersistentLocationBridge: ObservableObject {
 
     /// Cleanup resources
     private func cleanup() {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+
         stdinPipe?.fileHandleForWriting.closeFile()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         stderrPipe?.fileHandleForReading.readabilityHandler = nil

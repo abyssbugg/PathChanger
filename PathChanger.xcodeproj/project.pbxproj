@@ -7,16 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02BD873DD4F6EAA3828B4E1A /* JoystickMovementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D716FB6D2AE2EB876A799F20 /* JoystickMovementTests.swift */; };
 		06DEAAB1E91AFDC4B11F2319 /* PythonPathResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8BBD54386908598B430C2B /* PythonPathResolver.swift */; };
 		06EA9356314A667700CF2B3B /* RouteInterpolator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52060578E57F26F354DBD47D /* RouteInterpolator.swift */; };
 		0C4CA0CE5028573FB2720B85 /* RateLimiter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */; };
+		0D397AAB38C8A8AEEA7F9E78 /* SavedPlacesCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6552F4D261085925DB312A5E /* SavedPlacesCard.swift */; };
 		0D7BE3B6FAC0E990F948DB9B /* LocationCoordinate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B798FB0FB801CD2834AF9B7 /* LocationCoordinate.swift */; };
 		0D9EB23A4742302269C1F4F4 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27ECC9466B049C71277C942D /* SettingsView.swift */; };
+		109677A2831711A61EF5B0EC /* AppStateSimulationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2FB65AB327C9C8444D9A291 /* AppStateSimulationTests.swift */; };
 		11A4B1879BABFA966B622EC2 /* CloudSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB641C434CB5B477C9D5669 /* CloudSync.swift */; };
 		181B4E7C5A7F22D78DD7FABA /* SimulationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F78233AAF9375A49216897B /* SimulationEngine.swift */; };
 		18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */; };
 		21FBD8F38DF74B2079C16C02 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B045D6AFD74CFC2E34BA0A /* Constants.swift */; };
 		247D7CBBE1EE4EDC695592FF /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F125981934200A08DECF308 /* AppPreferences.swift */; };
+		272CFF4CAE1A6441D61BA8BA /* OrganicSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */; };
 		28DD5E4A6EAFAE80C8D9B178 /* RouteLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A4FDF07A2E77C95E4A78F0E /* RouteLibrary.swift */; };
 		28FDCA895589DDFF572B95D8 /* TunnelStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41A5F5B26D2CFB171B0BA7ED /* TunnelStateMachineTests.swift */; };
 		2C2D934DE7905790DEFE81C2 /* TunneldManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BFBBD50A80562870376A2E7 /* TunneldManagerTests.swift */; };
@@ -35,11 +39,16 @@
 		5815CA4F07AEB0A9A5C65011 /* ReliabilityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18BFA22E645A1549A4008B1 /* ReliabilityManager.swift */; };
 		5B601ACA4C2E60C824DC46CB /* MultiDeviceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0EFCD26D1D5976DC6DE6E6E /* MultiDeviceCoordinatorTests.swift */; };
 		5C22433A85BD98D6935E54D4 /* PathChangerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BAE4B44E7CD54D79BA2164 /* PathChangerApp.swift */; };
+		603B583E30CEEC01B1B0A51F /* ModeContextCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D38CA5EBAAA4F7FDA646618C /* ModeContextCard.swift */; };
 		64310B8EF040BF3578EA66B9 /* DeviceStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E9BB8ECD67AEDC96F1C5055 /* DeviceStateManager.swift */; };
+		648D7CA000A33E1E81BCE958 /* SimulationPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */; };
+		67D69A133EFCB86C66860028 /* SimulationPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D09E7C72090449021F614E52 /* SimulationPlanner.swift */; };
 		6D6BBC2A0402C908F5F77317 /* LocationConnectionArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C32C189609146072E337C41 /* LocationConnectionArguments.swift */; };
 		708DAB80A76DA9FDDA814759 /* JoystickControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4699ABFB4388859E761CB720 /* JoystickControlView.swift */; };
 		713786D179D60E5460606184 /* UIComponentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16D538B0B2EC61AE280E94D /* UIComponentTests.swift */; };
+		76318C085D1BC1F8E1C2A011 /* JoystickMovement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A9E1B274BF25B31C3050ED6 /* JoystickMovement.swift */; };
 		77D4BE9125000B20EC4E4A06 /* HealthCheckServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */; };
+		783286901D5F56B3AE284B46 /* OrganicChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4339E1F8DF1ECCA9D0EB2B3 /* OrganicChrome.swift */; };
 		78B23D7A27181CAAB8A2BF9E /* LocationSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2F74877F2384499B6704B3D /* LocationSearchService.swift */; };
 		7D4CC23F8602F6E5EF8C24F4 /* UpdaterController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06303B8433AE84457D0DF09E /* UpdaterController.swift */; };
 		7D9D281F6BD5C073D8B111BB /* RouteStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4085B7E872E34E187DA0407 /* RouteStateManager.swift */; };
@@ -71,6 +80,7 @@
 		B748D06CEC329E06A65A5F34 /* MovementPhysics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 664679DD5A4BD37F33172C75 /* MovementPhysics.swift */; };
 		B7DC831DEADB65CAF0588836 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8443F1D12DBFA4C3BD75F5B8 /* Logger.swift */; };
 		B9696539DA6A46F883FF016F /* PythonPathResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5747F7072B9EE61A792EA756 /* PythonPathResolverTests.swift */; };
+		BBA3A384AAFD0A9D60F98CA2 /* InspectorPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245D047994AAE1E18686F840 /* InspectorPanel.swift */; };
 		BD3F13585416AF0A4DD33540 /* DeviceCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E82755A54AB427267400E6EA /* DeviceCacheTests.swift */; };
 		BD6DA3A60796095A04C5B670 /* LocationCoordinateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD27EDD6BC7195035F1D6694 /* LocationCoordinateTests.swift */; };
 		BE3C06A4B507D54ED7F480DE /* DeviceVersionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C5B2AC269C4FF219A045B59 /* DeviceVersionTests.swift */; };
@@ -80,6 +90,7 @@
 		C76C341223E79E32C39253BA /* MovementPhysicsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B57378F3B42D355473160D0 /* MovementPhysicsTests.swift */; };
 		C791D03249246E6CB7298123 /* PersistentLocationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F58022AF3CC771A8D33AEB /* PersistentLocationBridge.swift */; };
 		C81BAA39140121255E9A13A6 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E570F995785AC29A4CE6BAF /* ContentView.swift */; };
+		C8ADB7B6E7243CCEB14C26C0 /* Geo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2710530484ED6BD45F57E3 /* Geo.swift */; };
 		CE87CF4D2C715B4E9FD2556F /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B3F7384D0B783E38A1BE2E2 /* DesignSystem.swift */; };
 		D03C31C2534BAE26B31B9B50 /* DeviceManagerIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C636275D5F772404FAB608B3 /* DeviceManagerIntegrationTests.swift */; };
 		D69DC8B501FA1F56B42B1FBA /* LocalizationHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AF801AB11E75DB1A06BBCC /* LocalizationHelper.swift */; };
@@ -88,6 +99,7 @@
 		DC727E6337321449695EF418 /* ConstantsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46095046F517506D398A080 /* ConstantsTests.swift */; };
 		DEC66ED2198A3C2FBEDD3F68 /* ToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D3DC43F9AE02C06CBDD830 /* ToastView.swift */; };
 		E1FA073C5C26B25717B72D2B /* MapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BA5A1243C1DDA57D70B3B9 /* MapService.swift */; };
+		E2DB9F04E54DA54B0407180F /* MapZoomTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCFFAADD273DE4B9D88C2C23 /* MapZoomTests.swift */; };
 		E67C01B2326C0180DFF788E0 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4F0E3FAA85666E3F272E03C /* OnboardingView.swift */; };
 		E84B20E4859793462207179C /* LocationFavorites.swift in Sources */ = {isa = PBXBuildFile; fileRef = C61225F0E722F0C5FDB308E5 /* LocationFavorites.swift */; };
 		EE306665C79ACB0598996523 /* Device.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369CF0AF5C505C1CB4B320E8 /* Device.swift */; };
@@ -96,6 +108,7 @@
 		EF6A798B6AF2AA770458B70B /* LocalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7624AE8FF0672AB1ABE7A7F3 /* LocalizationTests.swift */; };
 		F6D1F4AAC3B2EB7026FE2999 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B03F2C920F3031835FB6AD0 /* AppSettings.swift */; };
 		F808E8BD8D34A96730D274C1 /* ReliabilityManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */; };
+		FD0FA808E79AF1C382A3034C /* OrganicSlider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00D3BE8087DC76E055EFCAF0 /* OrganicSlider.swift */; };
 		FEA970CFE698EED4AF1057FC /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D1454683CA04A4A9F460648C /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -110,6 +123,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		00D3BE8087DC76E055EFCAF0 /* OrganicSlider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSlider.swift; sourceTree = "<group>"; };
 		0233732745840E4F24A61CC2 /* DependencyErrorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DependencyErrorView.swift; sourceTree = "<group>"; };
 		02AF801AB11E75DB1A06BBCC /* LocalizationHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationHelper.swift; sourceTree = "<group>"; };
 		02C82018B5370288EB8A97BC /* GPXParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXParserTests.swift; sourceTree = "<group>"; };
@@ -120,6 +134,7 @@
 		12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckServerTests.swift; sourceTree = "<group>"; };
 		184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryServiceTests.swift; sourceTree = "<group>"; };
 		1C32C189609146072E337C41 /* LocationConnectionArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConnectionArguments.swift; sourceTree = "<group>"; };
+		245D047994AAE1E18686F840 /* InspectorPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorPanel.swift; sourceTree = "<group>"; };
 		25D3DC43F9AE02C06CBDD830 /* ToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastView.swift; sourceTree = "<group>"; };
 		27ECC9466B049C71277C942D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		28CDB84CF90B6C8667049950 /* PathChangerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PathChangerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -136,15 +151,18 @@
 		4699ABFB4388859E761CB720 /* JoystickControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoystickControlView.swift; sourceTree = "<group>"; };
 		49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationView.swift; sourceTree = "<group>"; };
 		4B798FB0FB801CD2834AF9B7 /* LocationCoordinate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinate.swift; sourceTree = "<group>"; };
+		4F2710530484ED6BD45F57E3 /* Geo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Geo.swift; sourceTree = "<group>"; };
 		52060578E57F26F354DBD47D /* RouteInterpolator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteInterpolator.swift; sourceTree = "<group>"; };
 		5747F7072B9EE61A792EA756 /* PythonPathResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonPathResolverTests.swift; sourceTree = "<group>"; };
 		580777AA59B3BDB9C34C813D /* LocationConnectionArgumentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConnectionArgumentsTests.swift; sourceTree = "<group>"; };
 		5A8BBD54386908598B430C2B /* PythonPathResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonPathResolver.swift; sourceTree = "<group>"; };
+		5A9E1B274BF25B31C3050ED6 /* JoystickMovement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoystickMovement.swift; sourceTree = "<group>"; };
 		5B03F2C920F3031835FB6AD0 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		5B3F7384D0B783E38A1BE2E2 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		5E2EA23209F788806DB32594 /* TunnelHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelHealthMonitor.swift; sourceTree = "<group>"; };
 		5F78233AAF9375A49216897B /* SimulationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationEngine.swift; sourceTree = "<group>"; };
 		6415B5AA220D4AE2A519C8E6 /* TelemetryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryService.swift; sourceTree = "<group>"; };
+		6552F4D261085925DB312A5E /* SavedPlacesCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedPlacesCard.swift; sourceTree = "<group>"; };
 		664679DD5A4BD37F33172C75 /* MovementPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovementPhysics.swift; sourceTree = "<group>"; };
 		66F189F0EB924147C4F4D9F4 /* LoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoggerTests.swift; sourceTree = "<group>"; };
 		674B89DF44658933AB3C15B1 /* ProcessEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessEnvironment.swift; sourceTree = "<group>"; };
@@ -183,20 +201,28 @@
 		BD27EDD6BC7195035F1D6694 /* LocationCoordinateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinateTests.swift; sourceTree = "<group>"; };
 		C126F84BBEAEA9A9457BA427 /* ErrorDialogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorDialogView.swift; sourceTree = "<group>"; };
 		C16D538B0B2EC61AE280E94D /* UIComponentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIComponentTests.swift; sourceTree = "<group>"; };
+		C2FB65AB327C9C8444D9A291 /* AppStateSimulationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateSimulationTests.swift; sourceTree = "<group>"; };
 		C393E96BF361BDCCBAD578B3 /* ProcessEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessEnvironmentTests.swift; sourceTree = "<group>"; };
 		C61225F0E722F0C5FDB308E5 /* LocationFavorites.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationFavorites.swift; sourceTree = "<group>"; };
 		C636275D5F772404FAB608B3 /* DeviceManagerIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceManagerIntegrationTests.swift; sourceTree = "<group>"; };
 		C87292B0A4C87F93B87D5F59 /* FileDescriptorLeakTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDescriptorLeakTests.swift; sourceTree = "<group>"; };
 		C99C9883F9225D235C956CE8 /* AccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTests.swift; sourceTree = "<group>"; };
 		CBD94E214D8CBEA29F664427 /* PrivilegedTunnelCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivilegedTunnelCommandTests.swift; sourceTree = "<group>"; };
+		CCFFAADD273DE4B9D88C2C23 /* MapZoomTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapZoomTests.swift; sourceTree = "<group>"; };
+		D09E7C72090449021F614E52 /* SimulationPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationPlanner.swift; sourceTree = "<group>"; };
+		D38CA5EBAAA4F7FDA646618C /* ModeContextCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeContextCard.swift; sourceTree = "<group>"; };
+		D4339E1F8DF1ECCA9D0EB2B3 /* OrganicChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicChrome.swift; sourceTree = "<group>"; };
 		D6DEAD6405B53114ED236668 /* PerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceTests.swift; sourceTree = "<group>"; };
+		D716FB6D2AE2EB876A799F20 /* JoystickMovementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoystickMovementTests.swift; sourceTree = "<group>"; };
 		D7D2A57DF7CBDBE6AFDE91D4 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		D7D35BB2509926F6556448D6 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridgeSecurityTests.swift; sourceTree = "<group>"; };
+		E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationPlannerTests.swift; sourceTree = "<group>"; };
 		E714C119DB1B67F7A0CB290D /* StateManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateManagerTests.swift; sourceTree = "<group>"; };
 		E7C961C7385901C0ECAD9850 /* TunneldManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunneldManager.swift; sourceTree = "<group>"; };
 		E82755A54AB427267400E6EA /* DeviceCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCacheTests.swift; sourceTree = "<group>"; };
 		F095AAEC88DA76942F63B52A /* LocationInjectionIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectionIntegrationTests.swift; sourceTree = "<group>"; };
+		F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSettingsSheet.swift; sourceTree = "<group>"; };
 		F4B045D6AFD74CFC2E34BA0A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimiter.swift; sourceTree = "<group>"; };
 		FD97D62FEFC2920754C14091 /* MultiDeviceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDeviceCoordinator.swift; sourceTree = "<group>"; };
@@ -257,6 +283,7 @@
 				FEB641C434CB5B477C9D5669 /* CloudSync.swift */,
 				F4B045D6AFD74CFC2E34BA0A /* Constants.swift */,
 				A220D3E5291B39F8E25F46B0 /* DependencyValidator.swift */,
+				4F2710530484ED6BD45F57E3 /* Geo.swift */,
 				0820621D1AAFBA4523C2D6C6 /* HealthCheckServer.swift */,
 				7E015328189185E781E18464 /* IOSVersionHelper.swift */,
 				02AF801AB11E75DB1A06BBCC /* LocalizationHelper.swift */,
@@ -286,9 +313,11 @@
 		7C6AB9868E6CA628F850A40B /* Simulation */ = {
 			isa = PBXGroup;
 			children = (
+				5A9E1B274BF25B31C3050ED6 /* JoystickMovement.swift */,
 				664679DD5A4BD37F33172C75 /* MovementPhysics.swift */,
 				52060578E57F26F354DBD47D /* RouteInterpolator.swift */,
 				5F78233AAF9375A49216897B /* SimulationEngine.swift */,
+				D09E7C72090449021F614E52 /* SimulationPlanner.swift */,
 			);
 			path = Simulation;
 			sourceTree = "<group>";
@@ -334,6 +363,7 @@
 			isa = PBXGroup;
 			children = (
 				C99C9883F9225D235C956CE8 /* AccessibilityTests.swift */,
+				C2FB65AB327C9C8444D9A291 /* AppStateSimulationTests.swift */,
 				3728FC3F30EB53874CDDEBCF /* ArgumentSanitizerTests.swift */,
 				971FF340761CB00E51A1E88B /* CloudSyncTests.swift */,
 				B46095046F517506D398A080 /* ConstantsTests.swift */,
@@ -344,11 +374,13 @@
 				C87292B0A4C87F93B87D5F59 /* FileDescriptorLeakTests.swift */,
 				02C82018B5370288EB8A97BC /* GPXParserTests.swift */,
 				12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */,
+				D716FB6D2AE2EB876A799F20 /* JoystickMovementTests.swift */,
 				7624AE8FF0672AB1ABE7A7F3 /* LocalizationTests.swift */,
 				580777AA59B3BDB9C34C813D /* LocationConnectionArgumentsTests.swift */,
 				BD27EDD6BC7195035F1D6694 /* LocationCoordinateTests.swift */,
 				F095AAEC88DA76942F63B52A /* LocationInjectionIntegrationTests.swift */,
 				66F189F0EB924147C4F4D9F4 /* LoggerTests.swift */,
+				CCFFAADD273DE4B9D88C2C23 /* MapZoomTests.swift */,
 				7B57378F3B42D355473160D0 /* MovementPhysicsTests.swift */,
 				B0EFCD26D1D5976DC6DE6E6E /* MultiDeviceCoordinatorTests.swift */,
 				D6DEAD6405B53114ED236668 /* PerformanceTests.swift */,
@@ -360,6 +392,7 @@
 				3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */,
 				94011219CD024F1686B7D39F /* RouteInterpolatorTests.swift */,
 				36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */,
+				E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */,
 				E714C119DB1B67F7A0CB290D /* StateManagerTests.swift */,
 				184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */,
 				76FDA01BFDC637767F7ACA20 /* TestEnvironment.swift */,
@@ -398,8 +431,14 @@
 				D7D35BB2509926F6556448D6 /* DiagnosticsView.swift */,
 				C126F84BBEAEA9A9457BA427 /* ErrorDialogView.swift */,
 				2F6FAB02B0D5816A07D10CC2 /* FloatingControlPanel.swift */,
+				245D047994AAE1E18686F840 /* InspectorPanel.swift */,
 				4699ABFB4388859E761CB720 /* JoystickControlView.swift */,
+				D38CA5EBAAA4F7FDA646618C /* ModeContextCard.swift */,
 				B4F0E3FAA85666E3F272E03C /* OnboardingView.swift */,
+				D4339E1F8DF1ECCA9D0EB2B3 /* OrganicChrome.swift */,
+				F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */,
+				00D3BE8087DC76E055EFCAF0 /* OrganicSlider.swift */,
+				6552F4D261085925DB312A5E /* SavedPlacesCard.swift */,
 				27ECC9466B049C71277C942D /* SettingsView.swift */,
 				D7D2A57DF7CBDBE6AFDE91D4 /* SidebarView.swift */,
 				49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */,
@@ -491,6 +530,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7EB5A53850CEFA1AEF4D3EA4 /* AccessibilityTests.swift in Sources */,
+				109677A2831711A61EF5B0EC /* AppStateSimulationTests.swift in Sources */,
 				487FDDB005A7849E4D93CAFF /* ArgumentSanitizerTests.swift in Sources */,
 				8AC316D2DD33372899E1B303 /* CloudSyncTests.swift in Sources */,
 				DC727E6337321449695EF418 /* ConstantsTests.swift in Sources */,
@@ -501,11 +541,13 @@
 				EEACEE348956865DC775958F /* FileDescriptorLeakTests.swift in Sources */,
 				2E57354929C5A48ABD1586B4 /* GPXParserTests.swift in Sources */,
 				77D4BE9125000B20EC4E4A06 /* HealthCheckServerTests.swift in Sources */,
+				02BD873DD4F6EAA3828B4E1A /* JoystickMovementTests.swift in Sources */,
 				EF6A798B6AF2AA770458B70B /* LocalizationTests.swift in Sources */,
 				B545DB663CEE8D2CBD8A8724 /* LocationConnectionArgumentsTests.swift in Sources */,
 				BD6DA3A60796095A04C5B670 /* LocationCoordinateTests.swift in Sources */,
 				911BA75081B7DBF05EFA9939 /* LocationInjectionIntegrationTests.swift in Sources */,
 				98BE2CEA41BE6F431698D7DB /* LoggerTests.swift in Sources */,
+				E2DB9F04E54DA54B0407180F /* MapZoomTests.swift in Sources */,
 				C76C341223E79E32C39253BA /* MovementPhysicsTests.swift in Sources */,
 				5B601ACA4C2E60C824DC46CB /* MultiDeviceCoordinatorTests.swift in Sources */,
 				8094E8CF5FB3FB604B8E8AB8 /* PerformanceTests.swift in Sources */,
@@ -517,6 +559,7 @@
 				F808E8BD8D34A96730D274C1 /* ReliabilityManagerTests.swift in Sources */,
 				3E20FE9BA65A334EF17B8324 /* RouteInterpolatorTests.swift in Sources */,
 				7F15CA3E0E06A432171099F8 /* SimulationEngineTests.swift in Sources */,
+				648D7CA000A33E1E81BCE958 /* SimulationPlannerTests.swift in Sources */,
 				902C9F465A9AEE515A1204D3 /* StateManagerTests.swift in Sources */,
 				D7ED8A375FEEB98D53CAD8C9 /* TelemetryServiceTests.swift in Sources */,
 				2DE9A02F94F83E3F9C223AD1 /* TestEnvironment.swift in Sources */,
@@ -551,9 +594,12 @@
 				95A32E6BDBC27112934C39DD /* ErrorDialogView.swift in Sources */,
 				A3407093A0E6AE23584A1615 /* FloatingControlPanel.swift in Sources */,
 				B3C46B9BBEADBB58B7D7A486 /* GPXParser.swift in Sources */,
+				C8ADB7B6E7243CCEB14C26C0 /* Geo.swift in Sources */,
 				87203B3FD684F4C7F99DCFA3 /* HealthCheckServer.swift in Sources */,
 				9675F86C1BE212A5041F7875 /* IOSVersionHelper.swift in Sources */,
+				BBA3A384AAFD0A9D60F98CA2 /* InspectorPanel.swift in Sources */,
 				708DAB80A76DA9FDDA814759 /* JoystickControlView.swift in Sources */,
+				76318C085D1BC1F8E1C2A011 /* JoystickMovement.swift in Sources */,
 				D69DC8B501FA1F56B42B1FBA /* LocalizationHelper.swift in Sources */,
 				6D6BBC2A0402C908F5F77317 /* LocationConnectionArguments.swift in Sources */,
 				0D7BE3B6FAC0E990F948DB9B /* LocationCoordinate.swift in Sources */,
@@ -561,9 +607,13 @@
 				78B23D7A27181CAAB8A2BF9E /* LocationSearchService.swift in Sources */,
 				B7DC831DEADB65CAF0588836 /* Logger.swift in Sources */,
 				E1FA073C5C26B25717B72D2B /* MapService.swift in Sources */,
+				603B583E30CEEC01B1B0A51F /* ModeContextCard.swift in Sources */,
 				B748D06CEC329E06A65A5F34 /* MovementPhysics.swift in Sources */,
 				C496309DCF909FFC3AAD8EC5 /* MultiDeviceCoordinator.swift in Sources */,
 				E67C01B2326C0180DFF788E0 /* OnboardingView.swift in Sources */,
+				783286901D5F56B3AE284B46 /* OrganicChrome.swift in Sources */,
+				272CFF4CAE1A6441D61BA8BA /* OrganicSettingsSheet.swift in Sources */,
+				FD0FA808E79AF1C382A3034C /* OrganicSlider.swift in Sources */,
 				5C22433A85BD98D6935E54D4 /* PathChangerApp.swift in Sources */,
 				C791D03249246E6CB7298123 /* PersistentLocationBridge.swift in Sources */,
 				98886467028A20BDFB4F4A41 /* PrivilegedTunnelCommand.swift in Sources */,
@@ -574,9 +624,11 @@
 				06EA9356314A667700CF2B3B /* RouteInterpolator.swift in Sources */,
 				28DD5E4A6EAFAE80C8D9B178 /* RouteLibrary.swift in Sources */,
 				7D9D281F6BD5C073D8B111BB /* RouteStateManager.swift in Sources */,
+				0D397AAB38C8A8AEEA7F9E78 /* SavedPlacesCard.swift in Sources */,
 				0D9EB23A4742302269C1F4F4 /* SettingsView.swift in Sources */,
 				4A8536E2B4187986013229CD /* SidebarView.swift in Sources */,
 				181B4E7C5A7F22D78DD7FABA /* SimulationEngine.swift in Sources */,
+				67D69A133EFCB86C66860028 /* SimulationPlanner.swift in Sources */,
 				8BE5FC903D34B1168C4E272C /* SimulationStateManager.swift in Sources */,
 				3FD11ED2475492BA41285369 /* SimulationTypes.swift in Sources */,
 				18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */,
@@ -842,8 +894,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.6.0;
+				kind = exactVersion;
+				version = 2.8.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  PathChanger
 //
-//  Organic shell from the pth mock: title bar, rail, map, inspector, telemetry.
+//  Map-first Organic shell from the pctnhc mock.
 //
 
 import SwiftUI
@@ -12,26 +12,46 @@ import AppKit
 
 enum AppMode: String, CaseIterable, Identifiable {
     case teleport = "Teleport"
+    case jump = "Jump"
+    case twospot = "Two-spot"
     case route = "Multi-Spot"
     case joystick = "Joystick"
     case settings = "Settings"
 
     var id: String { rawValue }
 
+    static var mapModes: [AppMode] { [.teleport, .jump, .twospot, .route, .joystick] }
+
+    var glyph: OrganicGlyph {
+        switch self {
+        case .teleport: return .teleport
+        case .jump: return .jump
+        case .twospot: return .twoSpot
+        case .route: return .multiSpot
+        case .joystick: return .joystick
+        case .settings: return .settings
+        }
+    }
+
+    /// Legacy system-symbol name for views outside the canonical map-first shell.
     var icon: String {
         switch self {
-        case .teleport: return "mappin.and.ellipse"
+        case .teleport: return "scope"
+        case .jump: return "plus.viewfinder"
+        case .twospot: return "arrow.left.and.right"
         case .route: return "point.topleft.down.curvedto.point.bottomright.up"
-        case .joystick: return "gamecontroller"
+        case .joystick: return "figure.stand"
         case .settings: return "gear"
         }
     }
 
     var description: String {
         switch self {
-        case .teleport: return "Instantly change location"
-        case .route: return "Follow a path"
-        case .joystick: return "Manual control"
+        case .teleport: return "One hop, then cooldown"
+        case .jump: return "Numbered hops, one at a time"
+        case .twospot: return "Travel between two points"
+        case .route: return "Route through many stops"
+        case .joystick: return "Steer by hand"
         case .settings: return "App settings"
         }
     }
@@ -39,16 +59,26 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tunneldManager: TunneldManager
+    @StateObject private var searchService = LocationSearchService()
+    @ObservedObject private var favorites = LocationFavoritesManager.shared
+
     @State private var selectedMode: AppMode = .teleport
     @State private var showSettings = false
     @State private var showDeviceMenu = false
-    @State private var railPanel: RailPanel?
     @State private var mapStyle: MapStyleType = .standard
     @State private var latitudeInput: String = ""
     @State private var longitudeInput: String = ""
     @State private var addressText: String = "Tap the map"
     @State private var currentError: ErrorHandler.AppError?
     @State private var showErrorDialog = false
+    @State private var cardOpen = false
+    @State private var savedOpen = false
+    @State private var savedTab: SavedTab = .favorites
+    @State private var showSearchResults = false
+    @AppStorage("PathChanger.Appearance") private var appearanceRaw = OrganicAppearance.light.rawValue
+    @AppStorage("dismissedCoach") private var dismissedCoach = false
+    @State private var coachOpen = true
 
     var body: some View {
         ZStack {
@@ -58,7 +88,7 @@ struct ContentView: View {
                 OrganicTitleBar(
                     showDeviceMenu: $showDeviceMenu,
                     showSettings: $showSettings,
-                    onToggleMapStyle: cycleMapStyle,
+                    appearanceRaw: $appearanceRaw,
                     onRefresh: {
                         Task {
                             await appState.refreshDevices()
@@ -68,54 +98,55 @@ struct ContentView: View {
                 )
                 .zIndex(2)
 
-                HStack(spacing: 0) {
-                    OrganicRail(openPanel: $railPanel) { coordinate, name in
-                        applyPlace(coordinate, name: name)
-                    }
-                    .zIndex(1)
+                ZStack(alignment: .topLeading) {
+                    SimulationView(
+                        mode: selectedMode,
+                        mapStyle: $mapStyle,
+                        latitudeInput: $latitudeInput,
+                        longitudeInput: $longitudeInput,
+                        addressText: $addressText,
+                        onPickLocation: applyPlace
+                    )
 
-                    VStack(spacing: 0) {
-                        HStack(spacing: 0) {
-                            SimulationView(
-                                mode: selectedMode,
-                                mapStyle: $mapStyle,
-                                latitudeInput: $latitudeInput,
-                                longitudeInput: $longitudeInput,
-                                addressText: $addressText
-                            )
-                            InspectorPanel(
-                                mode: $selectedMode,
-                                latitudeInput: $latitudeInput,
-                                longitudeInput: $longitudeInput,
-                                address: addressText,
-                                onTeleport: commitTeleport,
-                                onCommitCoords: commitTeleport
-                            )
-                        }
-                        OrganicTelemetryBar(mode: selectedMode)
-                    }
+                    mapChrome
                 }
             }
             .background(Organic.bg)
-            .clipShape(RoundedRectangle(cornerRadius: 0))
 
             if showSettings {
-                OrganicSettingsSheet(isPresented: $showSettings, mapStyle: $mapStyle)
+                OrganicSettingsSheet(
+                    isPresented: $showSettings,
+                    appearanceRaw: $appearanceRaw
+                )
                     .zIndex(30)
             }
         }
-        .frame(minWidth: 1100, minHeight: 740)
+        .frame(minWidth: 1180, minHeight: 760)
         .background(Organic.bg)
-        .preferredColorScheme(.light)
+        .preferredColorScheme(OrganicAppearance.persisted(appearanceRaw).colorScheme)
         .onAppear {
-            appState.activeMode = selectedMode
+            selectedMode = .teleport
+            appState.activeMode = .teleport
+            cardOpen = false
             Organic.registerFonts()
             syncCoordFields()
+            coachOpen = !dismissedCoach
         }
-        .onChange(of: selectedMode) { _, newMode in
+        .onChange(of: selectedMode) { oldMode, newMode in
             if newMode != .settings {
                 appState.activeMode = newMode
             }
+            guard oldMode != newMode else { return }
+            appState.jumpIndex = 0
+            if newMode.maxStops > 0, appState.currentRoute.count > newMode.maxStops {
+                appState.loadRoute(from: Array(appState.currentRoute.prefix(newMode.maxStops)))
+            }
+            if newMode == .joystick {
+                appState.clearRoute()
+            }
+            cardOpen = true
+            savedOpen = false
+            coachOpen = false
         }
         .onChange(of: appState.targetLocation) { _, _ in
             syncCoordFields()
@@ -163,6 +194,283 @@ struct ContentView: View {
         .withToasts()
     }
 
+    private var mapChrome: some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 12) {
+                    searchField
+                    livePill
+                    modePill
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                Spacer().allowsHitTesting(false)
+            }
+            .allowsHitTesting(true)
+
+            if savedOpen {
+                SavedPlacesCard(tab: $savedTab, onSelect: applyPlace, onClose: { savedOpen = false })
+                    .padding(.leading, 16)
+                    .padding(.top, 70)
+                    .zIndex(26)
+            } else if cardOpen {
+                ModeContextCard(
+                    mode: $selectedMode,
+                    latitudeInput: $latitudeInput,
+                    longitudeInput: $longitudeInput,
+                    address: addressText,
+                    onClose: { cardOpen = false },
+                    onMove: performMove,
+                    onCommitCoords: commitTeleport
+                )
+                .padding(.leading, 16)
+                .padding(.top, 70)
+                .zIndex(25)
+            }
+
+            VStack {
+                Spacer().allowsHitTesting(false)
+                HStack {
+                    handleButton
+                    Spacer().allowsHitTesting(false)
+                }
+                Spacer().allowsHitTesting(false)
+            }
+
+            if coachOpen && !cardOpen && !savedOpen {
+                coachToast
+            }
+        }
+    }
+
+    private var searchField: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Organic.neutral500)
+                TextField("Address or 6.447400, 3.390300", text: $searchService.searchText)
+                    .textFieldStyle(.plain)
+                    .font(Organic.body(12, weight: .semibold))
+                    .onChange(of: searchService.searchText) { _, newValue in
+                        showSearchResults = !newValue.isEmpty
+                    }
+                    .onSubmit { commitSearch() }
+                if searchService.isSearching {
+                    ProgressView().controlSize(.mini)
+                }
+                Button(action: commitSearch) {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Organic.neutral100)
+                        .frame(width: 30, height: 30)
+                        .background(Organic.accent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Go to location")
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 6)
+            .frame(height: 42)
+            .background(Organic.neutral100)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+            .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
+
+            if showSearchResults && !searchService.searchResults.isEmpty {
+                VStack(spacing: 1) {
+                    ForEach(searchService.searchResults.prefix(6)) { result in
+                        Button {
+                            applyPlace(result.coordinate, name: result.name)
+                            searchService.clearSearch()
+                            showSearchResults = false
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: "mappin.circle")
+                                    .foregroundStyle(Organic.accent600)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(result.name)
+                                        .font(Organic.body(12, weight: .bold))
+                                        .lineLimit(1)
+                                    Text(result.subtitle)
+                                        .font(Organic.mono(10))
+                                        .foregroundStyle(Organic.neutral600)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(5)
+                .background(Organic.neutral100)
+                .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                        .stroke(Organic.neutral300, lineWidth: 1)
+                )
+                .shadow(color: Organic.shadow.opacity(0.16), radius: 10, y: 4)
+            }
+        }
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var livePill: some View {
+        if appState.isSimulating {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Organic.sage600)
+                    .frame(width: 8, height: 8)
+                Text(appState.simulationStatusText)
+                    .font(Organic.body(12, weight: .bold))
+                    .lineLimit(1)
+                Text((appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                    .font(Organic.mono(11, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                Button("Reset") {
+                    Task { await appState.stopSimulation() }
+                }
+                .buttonStyle(.plain)
+                .font(Organic.body(11, weight: .bold))
+                .foregroundStyle(Organic.accent700)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(Organic.neutral200)
+                .clipShape(Capsule())
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 42)
+            .background(Organic.neutral100)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+            .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
+            .frame(maxWidth: .infinity)
+        } else {
+            Spacer(minLength: 8)
+        }
+    }
+
+    private var modePill: some View {
+        HStack(spacing: 3) {
+            ForEach(AppMode.mapModes) { mode in
+                Button {
+                    if selectedMode == mode {
+                        cardOpen.toggle()
+                        savedOpen = false
+                    } else {
+                        selectedMode = mode
+                    }
+                } label: {
+                    OrganicGlyphView(glyph: mode.glyph, size: 14)
+                        .foregroundStyle(selectedMode == mode && cardOpen ? Organic.neutral100 : Organic.neutral700)
+                        .frame(width: 36, height: 36)
+                        .background(selectedMode == mode && cardOpen ? Organic.accent : Color.clear)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(mode.description)
+            }
+            Rectangle()
+                .fill(Organic.neutral300)
+                .frame(width: 1, height: 22)
+                .padding(.horizontal, 3)
+            Button {
+                savedOpen.toggle()
+                if savedOpen {
+                    cardOpen = false
+                    coachOpen = false
+                }
+            } label: {
+                Image(systemName: "calendar")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(savedOpen ? Organic.accent800 : Organic.neutral600)
+                    .frame(width: 36, height: 36)
+                    .background(savedOpen ? Organic.neutral200 : Color.clear)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Saved & history")
+        }
+        .padding(5)
+        .background(Organic.neutral100)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+        .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
+    }
+
+    private var handleButton: some View {
+        Button {
+            if savedOpen {
+                savedOpen = false
+                cardOpen = true
+            } else if cardOpen {
+                cardOpen = false
+            } else {
+                cardOpen = true
+                coachOpen = false
+            }
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Organic.neutral600)
+                .rotationEffect(.degrees(cardOpen || savedOpen ? 0 : 180))
+                .frame(width: 17, height: 46)
+                .background(Organic.neutral100)
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 10, topTrailingRadius: 10, style: .continuous))
+                .overlay(
+                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 10, topTrailingRadius: 10, style: .continuous)
+                        .stroke(Organic.neutral300, lineWidth: 1)
+                )
+                .shadow(color: Organic.shadow.opacity(0.08), radius: 3, y: 1)
+        }
+        .buttonStyle(.plain)
+        .help(cardOpen || savedOpen ? "Hide panel" : "Show \(selectedMode.cardTitle) panel")
+    }
+
+    private var coachToast: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                HStack(spacing: 10) {
+                    Image(systemName: "lightbulb")
+                        .foregroundStyle(Organic.accent400)
+                    Text(tunneldManager.isRunning
+                         ? "Click the map to set a destination — the card comes to you."
+                         : "Start the tunnel in the title bar, then click the map.")
+                        .font(Organic.body(12, weight: .semibold))
+                        .foregroundStyle(Organic.neutral100)
+                    Button("Got it") {
+                        coachOpen = false
+                        dismissedCoach = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(10, weight: .bold))
+                    .foregroundStyle(Organic.accent400)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Organic.neutral100.opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 10)
+                .padding(.vertical, 9)
+                .background(Organic.neutral900)
+                .clipShape(Capsule())
+                .shadow(color: Organic.shadow.opacity(0.24), radius: 12, y: 6)
+                Spacer()
+            }
+            .padding(.bottom, 20)
+        }
+        .allowsHitTesting(true)
+    }
+
     private func cycleMapStyle() {
         switch mapStyle {
         case .standard: mapStyle = .satellite
@@ -182,12 +490,19 @@ struct ContentView: View {
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
         addressText = name
-        appState.targetLocation = coordinate
-        LocationFavoritesManager.shared.recordRecent(name: name, coordinate: coordinate)
-        if selectedMode == .route {
-            appState.addRouteWaypoint(coordinate)
-        } else if selectedMode == .teleport {
-            Task { await appState.setLocation(coordinate) }
+        appState.stageLocation(coordinate, for: selectedMode)
+
+        cardOpen = true
+        savedOpen = false
+        coachOpen = false
+        showSearchResults = false
+    }
+
+    private func commitSearch() {
+        if let first = searchService.searchResults.first {
+            applyPlace(first.coordinate, name: first.name)
+            searchService.clearSearch()
+            showSearchResults = false
         }
     }
 
@@ -201,9 +516,32 @@ struct ContentView: View {
             appState.statusMessage = "Coordinates out of range"
             return
         }
-        appState.targetLocation = coordinate
-        LocationFavoritesManager.shared.recordRecent(name: addressText, coordinate: coordinate)
-        Task { await appState.setLocation(coordinate) }
+        applyPlace(coordinate, name: addressText)
+    }
+
+    private func performMove() {
+        if appState.isSimulating, selectedMode == .route || selectedMode == .twospot {
+            Task { await appState.stopSimulation() }
+            return
+        }
+        appState.activeMode = selectedMode == .settings ? .teleport : selectedMode
+        let plan = SimulationPlanner.plan(
+            mode: appState.activeMode,
+            targetLocation: appState.targetLocation,
+            currentLocation: appState.currentLocation,
+            route: appState.currentRoute,
+            speed: appState.simulationSpeed,
+            jumpIndex: appState.jumpIndex
+        )
+        if LocationHistoryPolicy.shouldRecord(
+            canStartSimulation: appState.canStartSimulation,
+            plan: plan
+        ), let coordinate = LocationHistoryPolicy.coordinate(for: plan) {
+            let name = coordinate == appState.targetLocation ? addressText : coordinate.formattedShort
+            LocationFavoritesManager.shared.recordRecent(name: name, coordinate: coordinate)
+            LocationFavoritesManager.shared.rememberPlace(name: name, coordinate: coordinate)
+        }
+        Task { await appState.startSimulation() }
     }
 
     private func handleErrorAction(_ action: ErrorHandler.ErrorAction) {
@@ -274,7 +612,6 @@ struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(AppState())
-            .preferredColorScheme(.light)
     }
 }
 #endif

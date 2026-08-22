@@ -115,4 +115,73 @@ final class SimulationPlannerTests: XCTestCase {
 
         XCTAssertEqual(plan, .teleport(tokyo))
     }
+
+    func testJumpTeleportsTheCurrentHop() {
+        let plan = SimulationPlanner.plan(
+            mode: .jump,
+            targetLocation: farther,
+            currentLocation: tokyo,
+            route: [nearby, farther],
+            speed: .walking,
+            jumpIndex: 0
+        )
+
+        XCTAssertEqual(plan, .teleport(nearby))
+    }
+
+    func testJumpAdvancesToTheNextHop() {
+        let plan = SimulationPlanner.plan(
+            mode: .jump,
+            targetLocation: farther,
+            currentLocation: tokyo,
+            route: [nearby, farther],
+            speed: .walking,
+            jumpIndex: 1
+        )
+
+        XCTAssertEqual(plan, .teleport(farther))
+    }
+
+    func testJumpFailsWhenHopsAreDone() {
+        let plan = SimulationPlanner.plan(
+            mode: .jump,
+            targetLocation: farther,
+            currentLocation: tokyo,
+            route: [nearby],
+            speed: .walking,
+            jumpIndex: 1
+        )
+
+        XCTAssertEqual(plan, .failed("All hops done — add another or clear"))
+    }
+
+    func testTwoSpotBuildsARouteFromCurrentAndDestination() {
+        let plan = SimulationPlanner.plan(
+            mode: .twospot,
+            targetLocation: nearby,
+            currentLocation: tokyo,
+            route: [nearby],
+            speed: .walking
+        )
+
+        guard case .route(let points) = plan else {
+            return XCTFail("Expected two-spot route, got \(plan)")
+        }
+
+        XCTAssertGreaterThanOrEqual(points.count, 2)
+        XCTAssertEqual(points.first?.latitude ?? 0, tokyo.latitude, accuracy: 1e-9)
+        XCTAssertEqual(points.last?.latitude ?? 0, nearby.latitude, accuracy: 1e-9)
+    }
+
+    func testTwoSpotRequiresBothEnds() {
+        let plan = SimulationPlanner.plan(
+            mode: .twospot,
+            targetLocation: nil,
+            currentLocation: nil,
+            route: [tokyo],
+            speed: .walking
+        )
+
+        XCTAssertEqual(plan, .failed("Add a start and a destination"))
+    }
 }

@@ -19,10 +19,54 @@ final class SimulationStateManagerTests: XCTestCase {
         XCTAssertFalse(manager.isSimulating)
         XCTAssertFalse(manager.isPaused)
         XCTAssertEqual(manager.simulationSpeed, .walking)
-        XCTAssertEqual(manager.activeMode, .none)
+        XCTAssertEqual(manager.activeMode, .teleport)
         XCTAssertNil(manager.currentLocation)
         XCTAssertNil(manager.targetLocation)
         XCTAssertEqual(manager.joystickDirection, .zero)
+    }
+
+    @MainActor
+    func testSafeModeDefaultsAreOn() async {
+        let manager = SimulationStateManager()
+
+        XCTAssertTrue(manager.safeModeTeleport)
+        XCTAssertTrue(manager.safeModeJoystick)
+        XCTAssertTrue(manager.cooldownReminder)
+        XCTAssertTrue(manager.headerSafeMode)
+        XCTAssertFalse(manager.addGPSDrift)
+    }
+
+    @MainActor
+    func testHeaderSafeModeSetsBothFlags() async {
+        let manager = SimulationStateManager()
+
+        manager.headerSafeMode = false
+        XCTAssertFalse(manager.safeModeTeleport)
+        XCTAssertFalse(manager.safeModeJoystick)
+
+        manager.headerSafeMode = true
+        XCTAssertTrue(manager.safeModeTeleport)
+        XCTAssertTrue(manager.safeModeJoystick)
+    }
+
+    @MainActor
+    func testEffectiveSpeedFollowsAutoSpeedFlag() async {
+        let manager = SimulationStateManager()
+
+        manager.autoSpeed = true
+        manager.setSpeed(.cycling)
+        XCTAssertEqual(manager.effectiveMetersPerSecond, SimulationSpeed.cycling.presetMetersPerSecond)
+
+        manager.autoSpeed = false
+        manager.customSpeedMps = 9.9
+        XCTAssertEqual(manager.effectiveMetersPerSecond, 9.9)
+    }
+
+    @MainActor
+    func testCooldownIsZeroBeforeAnyTeleport() async {
+        let manager = SimulationStateManager()
+
+        XCTAssertEqual(manager.cooldownRemaining, 0)
     }
 
     @MainActor
@@ -55,15 +99,26 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testUpdateJoystickDirectionChangesMode() async {
+    func testUpdateJoystickDirectionStoresVector() async {
         let manager = SimulationStateManager()
-
-        XCTAssertEqual(manager.activeMode, .none)
 
         manager.updateJoystickDirection(CGPoint(x: 0.5, y: 0.5))
 
-        XCTAssertEqual(manager.activeMode, .joystick)
         XCTAssertEqual(manager.joystickDirection, CGPoint(x: 0.5, y: 0.5))
+
+        // Deciding whether a stick movement should start a simulation needs the planner,
+        // so it belongs to the composition root rather than to this manager.
+        XCTAssertEqual(manager.activeMode, .teleport)
+    }
+
+    @MainActor
+    func testResetJoystickClearsVector() async {
+        let manager = SimulationStateManager()
+
+        manager.updateJoystickDirection(CGPoint(x: 0.4, y: -0.6))
+        manager.resetJoystick()
+
+        XCTAssertEqual(manager.joystickDirection, .zero)
     }
 
     @MainActor
@@ -76,11 +131,26 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testActiveSimulationModeProperties() {
-        XCTAssertEqual(ActiveSimulationMode.none.icon, "circle.slash")
-        XCTAssertEqual(ActiveSimulationMode.teleport.icon, "location.fill")
-        XCTAssertEqual(ActiveSimulationMode.route.icon, "point.topleft.down.curvedto.point.bottomright.up")
-        XCTAssertEqual(ActiveSimulationMode.joystick.icon, "gamecontroller.fill")
+    func testSetSpeedUpdatesCooldownWhenAutomatic() async {
+        let manager = SimulationStateManager()
+
+        manager.autoCooldown = true
+        manager.setSpeed(.driving)
+
+        XCTAssertEqual(manager.cooldownSeconds, SimulationSpeed.driving.defaultCooldownSeconds)
+    }
+
+    @MainActor
+    func testAppModeCoversEveryUserFacingMode() {
+        // `AppMode` replaced a four-case `ActiveSimulationMode` that could not represent
+        // Jump or Two-spot. Guard against that regression.
+        let modes = Set(AppMode.allCases)
+        XCTAssertTrue(modes.contains(.teleport))
+        XCTAssertTrue(modes.contains(.jump))
+        XCTAssertTrue(modes.contains(.twospot))
+        XCTAssertTrue(modes.contains(.route))
+        XCTAssertTrue(modes.contains(.joystick))
+        XCTAssertEqual(AppMode.mapModes.count, 5)
     }
 }
 

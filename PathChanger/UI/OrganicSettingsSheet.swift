@@ -9,46 +9,77 @@ import SwiftUI
 
 struct OrganicSettingsSheet: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var tunneldManager: TunneldManager
     @Binding var isPresented: Bool
-    @Binding var mapStyle: MapStyleType
+    @Binding var appearanceRaw: String
 
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
     @AppStorage("autoReconnectDevice") private var autoReconnect: Bool = true
     @AppStorage("keepLocationCentered") private var keepCentered: Bool = true
-    @AppStorage("addGPSDrift") private var addGPSDrift: Bool = false
-    @AppStorage("smoothTurns") private var smoothTurns: Bool = true
-    @AppStorage("cooldownReminder") private var cooldownReminder: Bool = true
+    @AppStorage("cooldownReminder") private var cooldownReminderStorage: Bool = true
     @AppStorage("unitsMetric") private var unitsMetric: Bool = true
+    @AppStorage("showStreetLabels") private var showStreetLabels: Bool = true
 
     var body: some View {
-        ZStack {
-            Organic.neutral900.opacity(0.28)
+        ZStack(alignment: .trailing) {
+            Organic.shadow.opacity(0.38)
                 .ignoresSafeArea()
                 .onTapGesture { isPresented = false }
 
             VStack(spacing: 0) {
                 HStack {
                     Text("Settings")
-                        .font(Organic.heading(25))
+                        .font(Organic.heading(20))
                     Spacer()
                     Button { isPresented = false } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Organic.neutral700)
-                            .frame(width: 28, height: 28)
-                            .background(Organic.neutral200)
-                            .clipShape(Circle())
+                            .foregroundStyle(Organic.neutral600)
+                            .frame(width: 26, height: 26)
                     }
                     .buttonStyle(.plain)
+                    .help("Close")
                 }
-                .padding(.horizontal, 22)
-                .padding(.top, 18)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 16)
+                .padding(.top, 15)
+                .padding(.bottom, 12)
                 .overlay(alignment: .bottom) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        section("Appearance") {
+                            HStack(spacing: 2) {
+                                ForEach(OrganicAppearance.allCases) { appearance in
+                                    Button {
+                                        appearanceRaw = appearance.rawValue
+                                    } label: {
+                                        HStack(spacing: 7) {
+                                            OrganicGlyphView(glyph: appearance == .light ? .sun : .moon, size: 14)
+                                            Text(appearance == .light ? "Light" : "Dark")
+                                        }
+                                        .font(Organic.body(11.5, weight: .bold))
+                                        .foregroundStyle(
+                                            selectedAppearance == appearance
+                                                ? Organic.accent800
+                                                : Organic.neutral700
+                                        )
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 32)
+                                        .background(
+                                            selectedAppearance == appearance
+                                                ? Organic.neutral100
+                                                : Color.clear
+                                        )
+                                        .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(3)
+                            .background(Organic.neutral300)
+                            .clipShape(Capsule())
+                            .padding(.vertical, 12)
+                        }
+
                         section("Connection") {
                             row("Paired device", appState.selectedDevice.map { "\($0.displayName) · iOS \($0.iosVersion)" } ?? "None") {
                                 Button("Forget") { appState.selectedDevice = nil }
@@ -60,36 +91,37 @@ struct OrganicSettingsSheet: View {
                                     .overlay(Capsule().stroke(Organic.accent400, lineWidth: 1))
                             }
                             Divider().foregroundStyle(Organic.neutral300)
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Preferred connection")
-                                    .font(Organic.body(13, weight: .semibold))
-                                HStack(spacing: 6) {
-                                    ForEach(DeviceManager.ConnectionMode.allCases, id: \.self) { mode in
-                                        Button(mode.rawValue) {
-                                            appState.deviceManager.setConnectionMode(mode)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .font(Organic.body(11.5, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .frame(height: 28)
-                                        .background(appState.deviceManager.connectionMode == mode ? Organic.neutral100 : Color.clear)
-                                        .clipShape(Capsule())
-                                    }
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Update frequency")
+                                        .font(Organic.body(13, weight: .semibold))
+                                    Text("How often location is pushed to the device")
+                                        .font(Organic.body(11.5))
+                                        .foregroundStyle(Organic.neutral600)
                                 }
-                                .padding(3)
-                                .background(Organic.neutral300)
-                                .clipShape(Capsule())
+                                Spacer()
+                                segmentedPicker(
+                                    options: [("1 Hz", 1.0), ("5 Hz", 5.0), ("10 Hz", 10.0)],
+                                    selection: appState.updateFrequencyHz,
+                                    action: { appState.updateFrequencyHz = $0 }
+                                )
                             }
                             .padding(.vertical, 12)
                             Divider().foregroundStyle(Organic.neutral300)
-                            toggleRow("Reconnect automatically", "Re-pair when the device is plugged back in", $autoReconnect)
+                            toggleRow("Reconnect automatically", "Re-handshake when the device or transport switches", $autoReconnect)
                         }
 
                         section("Movement") {
-                            segmentedRow("Units", left: "Metric", right: "Imperial", leftSelected: unitsMetric) { unitsMetric = $0 }
+                            segmentedRow("Units", left: "km", right: "mi", leftSelected: unitsMetric) { unitsMetric = $0 }
                             segmentedModes
-                            toggleRow("Add GPS drift for realism", "Subtle natural jitter so movement looks human", $addGPSDrift)
-                            toggleRow("Smooth turns", "Ease around corners instead of snapping", $smoothTurns)
+                            toggleRow("Add GPS drift for realism", "Subtle natural jitter so movement looks human", Binding(
+                                get: { appState.addGPSDrift },
+                                set: { appState.addGPSDrift = $0 }
+                            ))
+                            toggleRow("Smooth turns", "Ease around corners instead of snapping", Binding(
+                                get: { appState.smoothTurns },
+                                set: { appState.smoothTurns = $0 }
+                            ))
                         }
 
                         section("Map") {
@@ -97,69 +129,84 @@ struct OrganicSettingsSheet: View {
                                 Text("Basemap")
                                     .font(Organic.body(13, weight: .semibold))
                                 Spacer()
-                                HStack(spacing: 2) {
-                                    ForEach(MapStyleType.allCases) { style in
-                                        Button(style.rawValue) { mapStyle = style }
-                                            .buttonStyle(.plain)
-                                            .font(Organic.body(11.5, weight: .bold))
-                                            .padding(.horizontal, 10)
-                                            .frame(height: 28)
-                                            .background(mapStyle == style ? Organic.neutral100 : Color.clear)
-                                            .clipShape(Capsule())
+                                segmentedRowButtons(
+                                    left: "Day",
+                                    right: "Night",
+                                    leftSelected: selectedAppearance == .light,
+                                    onPick: {
+                                        appearanceRaw = $0
+                                            ? OrganicAppearance.light.rawValue
+                                            : OrganicAppearance.dark.rawValue
                                     }
-                                }
-                                .padding(3)
-                                .background(Organic.neutral300)
-                                .clipShape(Capsule())
+                                )
                             }
                             .padding(.vertical, 12)
+                            toggleRow("Street labels", "Draw road names over the basemap", $showStreetLabels)
                             toggleRow("Show coordinates overlay", nil, $showCoordinatesOnMap)
-                            toggleRow("Keep location centered", "Pan the map to follow the pin while moving", $keepCentered)
+                            toggleRow("Keep location centred", "Pan the map to follow the pin while moving", $keepCentered)
                         }
 
                         section("Safety") {
-                            toggleRow("Cooldown reminder", "iOS may rate-limit rapid jumps. We'll suggest a pause between teleports.", $cooldownReminder)
+                            toggleRow("Safe Mode", "Clamps speed to 12 m/s and confirms absurd jumps", Binding(
+                                get: { appState.headerSafeMode },
+                                set: { appState.headerSafeMode = $0 }
+                            ))
+                            toggleRow("Cooldown reminder", "iOS may rate-limit rapid jumps. We suggest a pause between teleports.", Binding(
+                                get: { appState.cooldownReminder },
+                                set: { appState.cooldownReminder = $0; cooldownReminderStorage = $0 }
+                            ))
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Cooldown window")
+                                        .font(Organic.body(13, weight: .semibold))
+                                }
+                                Spacer()
+                                Text(cooldownText)
+                                    .font(Organic.mono(12))
+                                    .foregroundStyle(Organic.neutral700)
+                            }
+                            .padding(.vertical, 12)
                         }
 
-                        section("About") {
-                            HStack(spacing: 13) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(.system(size: 19))
-                                    .foregroundStyle(Organic.neutral100)
-                                    .frame(width: 38, height: 38)
-                                    .background(Organic.accent600)
-                                    .clipShape(Circle())
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("PathChanger 1.0.0")
-                                        .font(Organic.body(13.5, weight: .bold))
-                                    Text("iOS 15–27 · keep the tunnel running")
-                                        .font(Organic.body(11.5))
-                                        .foregroundStyle(Organic.neutral600)
-                                }
-                            }
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Organic.surface)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
-                                    .stroke(Organic.neutral300, lineWidth: 1)
+                        section("Saved Data") {
+                            savedDataRow(
+                                "Built-in places",
+                                detail: "\(LocationFavoritesManager.shared.places.count) shown",
+                                actionLabel: "Restore",
+                                action: LocationFavoritesManager.shared.restoreBuiltInPlaces
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
-                            .padding(.top, 8)
+                            Divider().foregroundStyle(Organic.neutral300)
+                            savedDataRow(
+                                "Location history",
+                                detail: historyDetail,
+                                actionLabel: "Clear",
+                                action: LocationFavoritesManager.shared.clearRecents
+                            )
+                            Divider().foregroundStyle(Organic.neutral300)
+                            savedDataRow(
+                                "Favorites",
+                                detail: "\(LocationFavoritesManager.shared.favorites.count) saved points",
+                                actionLabel: "Clear",
+                                action: LocationFavoritesManager.shared.clearFavorites
+                            )
                         }
+
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 22)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
                 }
             }
-            .frame(width: 620, height: 620)
-            .background(Organic.bg)
-            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusLG, style: .continuous))
+            .frame(width: 432)
+            .frame(maxHeight: .infinity)
+            .background(Organic.neutral100)
+            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: Organic.radiusLG, style: .continuous)
-                    .stroke(Organic.neutral400, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
+                    .stroke(Organic.neutral300, lineWidth: 1)
             )
-            .shadow(color: Organic.neutral900.opacity(0.22), radius: 32, y: 12)
+            .shadow(color: Organic.shadow.opacity(0.55), radius: 32, x: -10)
+            .padding(14)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
         }
     }
 
@@ -201,6 +248,80 @@ struct OrganicSettingsSheet: View {
         .padding(.vertical, 12)
     }
 
+    private func savedDataRow(
+        _ title: String,
+        detail: String,
+        actionLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Organic.body(13, weight: .semibold))
+                Text(detail)
+                    .font(Organic.body(11.5))
+                    .foregroundStyle(Organic.neutral600)
+            }
+            Spacer()
+            Button(actionLabel, action: action)
+                .buttonStyle(.plain)
+                .font(Organic.body(11.5, weight: .bold))
+                .foregroundStyle(Organic.accent700)
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .overlay(Capsule().stroke(Organic.accent400, lineWidth: 1))
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func segmentedPicker(
+        options: [(String, Double)],
+        selection: Double,
+        action: @escaping (Double) -> Void
+    ) -> some View {
+        HStack(spacing: 2) {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                Button(option.0) { action(option.1) }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(11, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .frame(height: 24)
+                    .background(selection == option.1 ? Organic.neutral100 : Color.clear)
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(3)
+        .background(Organic.neutral300)
+        .clipShape(Capsule())
+    }
+
+    private func segmentedRowButtons(
+        left: String,
+        right: String,
+        leftSelected: Bool,
+        onPick: @escaping (Bool) -> Void
+    ) -> some View {
+        HStack(spacing: 2) {
+            Button(left) { onPick(true) }
+                .buttonStyle(.plain)
+                .font(Organic.body(11.5, weight: .bold))
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(leftSelected ? Organic.neutral100 : Color.clear)
+                .clipShape(Capsule())
+            Button(right) { onPick(false) }
+                .buttonStyle(.plain)
+                .font(Organic.body(11.5, weight: .bold))
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(!leftSelected ? Organic.neutral100 : Color.clear)
+                .clipShape(Capsule())
+        }
+        .padding(3)
+        .background(Organic.neutral300)
+        .clipShape(Capsule())
+    }
+
     private func segmentedRow(_ title: String, left: String, right: String, leftSelected: Bool, onPick: @escaping (Bool) -> Void) -> some View {
         HStack {
             Text(title).font(Organic.body(13, weight: .semibold))
@@ -234,8 +355,8 @@ struct OrganicSettingsSheet: View {
                 .font(Organic.body(13, weight: .semibold))
             Spacer()
             HStack(spacing: 2) {
-                ForEach([SimulationSpeed.walking, .cycling, .driving, .fast], id: \.self) { speed in
-                    Button(speed == .fast ? "Transit" : speed.displayName) {
+                ForEach([SimulationSpeed.walking, .running, .cycling, .driving], id: \.self) { speed in
+                    Button(settingsTravelLabel(speed)) {
                         appState.setSpeed(speed)
                     }
                     .buttonStyle(.plain)
@@ -251,5 +372,29 @@ struct OrganicSettingsSheet: View {
             .clipShape(Capsule())
         }
         .padding(.vertical, 12)
+    }
+
+    private var selectedAppearance: OrganicAppearance {
+        OrganicAppearance.persisted(appearanceRaw)
+    }
+
+    private var cooldownText: String {
+        let seconds = max(0, Int(appState.cooldownSeconds.rounded()))
+        return String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
+    }
+
+    private var historyDetail: String {
+        let count = LocationFavoritesManager.shared.recents.count
+        return "\(count) \(count == 1 ? "entry" : "entries") · newest 14 kept"
+    }
+
+    private func settingsTravelLabel(_ speed: SimulationSpeed) -> String {
+        switch speed {
+        case .walking: return "Walk"
+        case .running: return "Run"
+        case .cycling: return "Cycle"
+        case .driving: return "Drive"
+        default: return speed.displayName
+        }
     }
 }

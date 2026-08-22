@@ -15,74 +15,47 @@ struct SimulationView: View {
     @Binding var latitudeInput: String
     @Binding var longitudeInput: String
     @Binding var addressText: String
+    var onPickLocation: ((LocationCoordinate, String) -> Void)?
 
     @EnvironmentObject var appState: AppState
-    @StateObject private var searchService = LocationSearchService()
-    @ObservedObject private var favorites = LocationFavoritesManager.shared
-
     @State private var position: MapCameraPosition = .region(
         MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            center: CLLocationCoordinate2D(latitude: 6.4474, longitude: 3.3903),
             span: MKCoordinateSpan(latitudeDelta: 0.06, longitudeDelta: 0.06)
         )
     )
-    @State private var showSearchResults: Bool = false
+    @State private var currentRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 6.4474, longitude: 3.3903),
+        span: MKCoordinateSpan(latitudeDelta: 0.06, longitudeDelta: 0.06)
+    )
     @AppStorage("keepLocationCentered") private var keepCentered: Bool = true
+    @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             mapView
+                .toolbar(.hidden)
+                .mapControlVisibility(.hidden)
+                .clipped()
 
             VStack {
-                topSearch
                 Spacer()
-            }
-            .padding(16)
-
-            VStack {
-                HStack {
+                HStack(alignment: .bottom) {
+                    if mode == .joystick {
+                        JoystickControlView()
+                            .padding(.leading, 24)
+                            .padding(.bottom, 24)
+                    }
                     Spacer()
                     zoomStack
-                }
-                Spacer()
-            }
-            .padding(16)
-
-            if mode == .joystick {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        JoystickControlView()
-                            .padding(28)
-                    }
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 20)
                 }
             }
 
             VStack {
                 Spacer()
-                HStack {
-                    HStack(spacing: 8) {
-                        Capsule().fill(Organic.neutral700).frame(width: 34, height: 3)
-                        Text("500 m")
-                            .font(Organic.body(10.5))
-                            .foregroundStyle(Organic.neutral700)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(Organic.neutral100.opacity(0.75))
-                    .clipShape(Capsule())
-                    Spacer()
-                    Text("© PathChanger Maps · OSM")
-                        .font(Organic.body(10.5))
-                        .foregroundStyle(Organic.neutral600)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Organic.neutral100.opacity(0.75))
-                        .clipShape(Capsule())
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+                mapFooter
             }
         }
         .onAppear {
@@ -93,12 +66,11 @@ struct SimulationView: View {
         }
         .onChange(of: appState.currentLocation) { _, newLocation in
             guard keepCentered, let location = newLocation else { return }
-            withAnimation {
-                position = .region(MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
-                    span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
-                ))
-            }
+            withAnimation { focus(location) }
+        }
+        .onChange(of: appState.targetLocation) { _, newLocation in
+            guard let location = newLocation, !appState.isSimulating else { return }
+            withAnimation { focus(location) }
         }
         .fileImporter(
             isPresented: $appState.showRouteImport,
@@ -122,17 +94,17 @@ struct SimulationView: View {
                                 .fill(Organic.accent600)
                                 .frame(width: 15, height: 15)
                                 .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
-                                .shadow(color: Organic.neutral900.opacity(0.2), radius: 6, y: 2)
+                                .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
                         }
                     }
                 }
 
-                if mode == .route && appState.currentRoute.count >= 2 {
-                    MapPolyline(coordinates: appState.currentRoute.map(\.clLocationCoordinate2D))
-                        .stroke(Organic.sage700, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [1, 4]))
+                if mode.showsRouteList && appState.currentRoute.count >= 2 {
+                    MapPolyline(coordinates: polylineCoordinates)
+                        .stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round, dash: [1, 5]))
                 }
 
-                if mode == .route {
+                if mode.showsRouteList {
                     ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
                         Annotation("Spot \(index + 1)", coordinate: coord.clLocationCoordinate2D) {
                             Text("\(index + 1)")
@@ -141,12 +113,19 @@ struct SimulationView: View {
                                 .frame(width: 22, height: 22)
                                 .background(index == 0 ? Organic.sage600 : Organic.accent600)
                                 .clipShape(Circle())
-                                .shadow(color: Organic.neutral900.opacity(0.18), radius: 4, y: 1)
+                                .shadow(color: Organic.shadow.opacity(0.18), radius: 4, y: 1)
+                                .onTapGesture(count: 2) {
+                                    appState.removeRouteWaypoint(at: index)
+                                }
                         }
                     }
                 }
             }
             .mapStyle(mapStyle.style)
+            .mapControlVisibility(.hidden)
+            .onMapCameraChange(frequency: .onEnd) { context in
+                currentRegion = context.region
+            }
             .onTapGesture { screenPoint in
                 if let coordinate = proxy.convert(screenPoint, from: .local) {
                     handleMapTap(at: coordinate)
@@ -155,107 +134,41 @@ struct SimulationView: View {
         }
     }
 
-    private var topSearch: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(Organic.neutral600)
-                    TextField("Search a place or paste coordinates", text: $searchService.searchText)
-                        .textFieldStyle(.plain)
-                        .font(Organic.body(12.5))
-                        .onChange(of: searchService.searchText) { _, newValue in
-                            showSearchResults = !newValue.isEmpty
-                        }
-                        .onSubmit {
-                            if let first = searchService.searchResults.first {
-                                selectSearchResult(first)
-                            }
-                        }
-                    if searchService.isSearching {
-                        ProgressView().scaleEffect(0.6)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 36)
-                .background(Organic.neutral100)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-                .shadow(color: Organic.neutral900.opacity(0.08), radius: 4, y: 1)
-
-                if showSearchResults && !searchService.searchResults.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(searchService.searchResults.prefix(5)) { result in
-                            Button {
-                                selectSearchResult(result)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(result.name)
-                                        .font(Organic.body(13, weight: .medium))
-                                        .foregroundStyle(Organic.text)
-                                    Text(result.subtitle)
-                                        .font(Organic.body(11))
-                                        .foregroundStyle(Organic.neutral600)
-                                        .lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .background(Organic.neutral100)
-                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
-                            .stroke(Organic.neutral300, lineWidth: 1)
-                    )
-                    .shadow(color: Organic.neutral900.opacity(0.16), radius: 10, y: 4)
-                    .padding(.top, 4)
-                }
-            }
-            .frame(maxWidth: 340)
-
-            Button {
-                toggleStar()
-            } label: {
-                Image(systemName: currentIsFavorite ? "star.fill" : "star")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(currentIsFavorite ? Organic.accent600 : Organic.neutral700)
-                    .frame(width: 36, height: 36)
-                    .background(Organic.neutral100)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(Organic.neutral300, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .disabled(appState.targetLocation == nil && appState.currentLocation == nil)
-
+    private var mapFooter: some View {
+        HStack {
             Spacer()
+            if showCoordinatesOnMap, let location = appState.currentLocation ?? appState.targetLocation {
+                Text(String(format: "%.6f, %.6f", location.latitude, location.longitude))
+                    .font(Organic.mono(10.5))
+                    .foregroundStyle(Organic.neutral700)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Organic.neutral100.opacity(0.75))
+                    .clipShape(Capsule())
+            }
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .padding(.trailing, 60)
+    }
+
+    private func focus(_ location: LocationCoordinate) {
+        position = .region(MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
+            span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+        ))
     }
 
     private var zoomStack: some View {
-        VStack(spacing: 8) {
-            VStack(spacing: 0) {
-                Button("+") { zoom(0.6) }
-                    .buttonStyle(.plain)
-                    .font(Organic.body(16))
-                    .foregroundStyle(Organic.neutral700)
-                    .frame(width: 32, height: 30)
-                Rectangle().fill(Organic.neutral300).frame(height: 1)
-                Button("−") { zoom(1.6) }
-                    .buttonStyle(.plain)
-                    .font(Organic.body(16))
-                    .foregroundStyle(Organic.neutral700)
-                    .frame(width: 32, height: 30)
-            }
-            .background(Organic.neutral100)
-            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                    .stroke(Organic.neutral300, lineWidth: 1)
-            )
+        VStack(spacing: 7) {
+            Text(scaleLabel)
+                .font(Organic.body(10, weight: .bold))
+                .foregroundStyle(Organic.neutral700)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Organic.neutral100.opacity(0.86))
+                .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+                .clipShape(Capsule())
 
             Button {
                 if let location = appState.currentLocation ?? appState.targetLocation {
@@ -265,38 +178,72 @@ struct SimulationView: View {
                     ))
                 }
             } label: {
-                Image(systemName: "location.north.circle")
+                Image(systemName: "dot.viewfinder")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Organic.neutral700)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 36, height: 36)
                     .background(Organic.neutral100)
                     .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
                             .stroke(Organic.neutral300, lineWidth: 1)
                     )
+                    .shadow(color: Organic.shadow.opacity(0.08), radius: 3, y: 1)
             }
             .buttonStyle(.plain)
+            .help("Center on device")
+
+            VStack(spacing: 0) {
+                Button { zoom(0.8) } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Organic.neutral700)
+                        .frame(width: 36, height: 34)
+                }
+                .buttonStyle(.plain)
+                Rectangle().fill(Organic.neutral300).frame(height: 1)
+                Button { zoom(1.25) } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Organic.neutral700)
+                        .frame(width: 36, height: 34)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Organic.neutral100)
+            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                    .stroke(Organic.neutral300, lineWidth: 1)
+            )
+            .shadow(color: Organic.shadow.opacity(0.08), radius: 3, y: 1)
         }
+        .frame(width: 36)
+        .fixedSize()
     }
 
-    private var currentIsFavorite: Bool {
-        guard let location = appState.targetLocation ?? appState.currentLocation else { return false }
-        return favorites.isFavorite(location)
+    private var scaleLabel: String {
+        let meters = currentRegion.span.latitudeDelta * 111_000 * 0.18
+        if meters >= 1000 {
+            return String(format: "%.0f km", meters / 1000)
+        }
+        return "\(max(10, Int(meters.rounded()))) m"
     }
 
-    private func toggleStar() {
-        guard let location = appState.targetLocation ?? appState.currentLocation else { return }
-        favorites.toggleFavorite(name: addressText, coordinate: location)
+    private var polylineCoordinates: [CLLocationCoordinate2D] {
+        var points = appState.currentRoute.map(\.clLocationCoordinate2D)
+        if mode == .twospot, let start = appState.currentLocation {
+            points.insert(start.clLocationCoordinate2D, at: 0)
+        }
+        return points
     }
 
     private func zoom(_ factor: Double) {
-        if let location = appState.currentLocation ?? appState.targetLocation {
-            position = .region(MKCoordinateRegion(
-                center: location.clLocationCoordinate2D,
-                span: MKCoordinateSpan(latitudeDelta: 0.02 * factor, longitudeDelta: 0.02 * factor)
-            ))
-        }
+        let center = currentRegion.center
+        let span = MapZoom.scaled(currentRegion.span, factor: factor)
+        let region = MKCoordinateRegion(center: center, span: span)
+        currentRegion = region
+        position = .region(region)
     }
 
     private func handleMapTap(at coordinate: CLLocationCoordinate2D) {
@@ -310,59 +257,12 @@ struct SimulationView: View {
         latitudeInput = String(format: "%.6f", coordinate.latitude)
         longitudeInput = String(format: "%.6f", coordinate.longitude)
         addressText = location.formattedShort
-        favorites.recordRecent(name: addressText, coordinate: location)
-
-        switch mode {
-        case .route:
-            guard !appState.isSimulating else {
-                appState.statusMessage = "Stop playback before adding spots"
-                return
-            }
-            appState.addRouteWaypoint(location)
-        case .joystick:
-            appState.targetLocation = location
-            appState.statusMessage = String(format: "Start set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
-            if appState.isSimulating {
-                Task { await appState.setLocation(location, quiet: true, usePerformanceMode: true) }
-            }
-        case .teleport, .settings:
-            appState.targetLocation = location
-            appState.statusMessage = String(format: "Location set: %.4f, %.4f", coordinate.latitude, coordinate.longitude)
-            if appState.selectedDevice != nil && !appState.isSimulating {
-                Task { await appState.setLocation(location) }
-            }
-        }
-    }
-
-    private func selectSearchResult(_ result: LocationSearchResult) {
-        let coordinate = result.coordinate
-        latitudeInput = String(format: "%.6f", coordinate.latitude)
-        longitudeInput = String(format: "%.6f", coordinate.longitude)
-        addressText = result.name
-        searchService.clearSearch()
-        showSearchResults = false
-        favorites.recordRecent(name: result.name, coordinate: coordinate)
-
-        withAnimation {
-            position = .region(MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude),
-                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-            ))
+        if let onPickLocation {
+            onPickLocation(location, addressText)
+            return
         }
 
-        switch mode {
-        case .route:
-            if !appState.isSimulating {
-                appState.addRouteWaypoint(coordinate)
-            }
-        case .joystick:
-            appState.targetLocation = coordinate
-        case .teleport, .settings:
-            appState.targetLocation = coordinate
-            if appState.selectedDevice != nil && !appState.isSimulating {
-                Task { await appState.setLocation(coordinate) }
-            }
-        }
+        appState.stageLocation(location, for: mode)
     }
 
     private var routeFileTypes: [UTType] {
@@ -385,6 +285,18 @@ struct SimulationView: View {
     }
 }
 
+enum MapZoom {
+    static let minDelta = 0.0008
+    static let maxDelta = 80.0
+
+    static func scaled(_ span: MKCoordinateSpan, factor: Double) -> MKCoordinateSpan {
+        MKCoordinateSpan(
+            latitudeDelta: min(maxDelta, max(minDelta, span.latitudeDelta * factor)),
+            longitudeDelta: min(maxDelta, max(minDelta, span.longitudeDelta * factor))
+        )
+    }
+}
+
 enum MapStyleType: String, CaseIterable, Identifiable {
     case standard = "Standard"
     case satellite = "Satellite"
@@ -394,7 +306,7 @@ enum MapStyleType: String, CaseIterable, Identifiable {
 
     var style: MapStyle {
         switch self {
-        case .standard: return .standard(elevation: .realistic)
+        case .standard: return .standard(elevation: .flat, emphasis: .muted)
         case .satellite: return .imagery
         case .hybrid: return .hybrid
         }

@@ -97,4 +97,48 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(state.joystickDirection.x, direction.x, accuracy: 1e-9)
         XCTAssertEqual(state.joystickDirection.y, direction.y, accuracy: 1e-9)
     }
+
+    func testStageTeleportUpdatesTargetWithoutStartingSimulation() {
+        let state = makeState()
+
+        state.stageLocation(first, for: .teleport)
+
+        XCTAssertEqual(state.targetLocation, first)
+        XCTAssertEqual(state.currentRoute, [first])
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertNil(state.currentLocation)
+    }
+
+    func testStageJumpAppendsWithoutStartingSimulation() {
+        let state = makeState()
+
+        state.stageLocation(first, for: .jump)
+        state.stageLocation(second, for: .jump)
+
+        XCTAssertEqual(state.currentRoute, [first, second])
+        XCTAssertEqual(state.targetLocation, second)
+        XCTAssertFalse(state.isSimulating)
+    }
+
+    func testHistoryEligibilityRequiresConnectionAndValidPlan() {
+        let accepted = SimulationStartPlan.teleport(first)
+        let rejected = SimulationStartPlan.failed("No target")
+
+        XCTAssertTrue(LocationHistoryPolicy.shouldRecord(canStartSimulation: true, plan: accepted))
+        XCTAssertFalse(LocationHistoryPolicy.shouldRecord(canStartSimulation: false, plan: accepted))
+        XCTAssertFalse(LocationHistoryPolicy.shouldRecord(canStartSimulation: true, plan: rejected))
+    }
+
+    func testMockTravelSpeedsAndCooldownsMatchCanonicalValues() {
+        let state = makeState()
+
+        XCTAssertEqual(state.mockMetersPerSecond(for: .walking), 1.6)
+        XCTAssertEqual(state.mockCooldown(for: .walking), 20)
+        XCTAssertEqual(state.mockMetersPerSecond(for: .cycling), 5.4)
+        XCTAssertEqual(state.mockCooldown(for: .cycling), 30)
+        XCTAssertEqual(state.mockMetersPerSecond(for: .fast), 11.2)
+        XCTAssertEqual(state.mockCooldown(for: .fast), 45)
+        XCTAssertEqual(state.mockMetersPerSecond(for: .driving), 15.6)
+        XCTAssertEqual(state.mockCooldown(for: .driving), 60)
+    }
 }

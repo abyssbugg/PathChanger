@@ -392,12 +392,14 @@ class DeviceSelectionViewModel: ObservableObject {
 
     private let coordinator: MultiDeviceCoordinator
 
-    @MainActor
-    init(coordinator: MultiDeviceCoordinator = .shared) {
-        self.coordinator = coordinator
+    init(coordinator: MultiDeviceCoordinator? = nil) {
+        // Resolve `.shared` inside the initializer body: as a default argument it would be
+        // evaluated in the caller's (possibly nonisolated) context.
+        let resolved = coordinator ?? .shared
+        self.coordinator = resolved
 
         // Sync selection with coordinator
-        coordinator.$selectedDeviceIds
+        resolved.$selectedDeviceIds
             .assign(to: &$selectedIds)
     }
 

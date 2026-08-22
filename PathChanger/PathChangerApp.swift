@@ -8,6 +8,7 @@
 
 import SwiftUI
 import Combine
+import AppKit
 
 @main
 struct PathChangerApp: App {
@@ -33,12 +34,7 @@ struct PathChangerApp: App {
                         }
 
                         Task {
-                            // Validate dependencies before starting tunnel
                             await dependencyValidator.validateAll()
-
-                            if dependencyValidator.isValid {
-                                await tunneldManager.autoStart()
-                            }
                         }
                     }
             }
@@ -120,31 +116,143 @@ struct PathChangerApp: App {
 /// Global application state with full simulation control
 @MainActor
 class AppState: ObservableObject {
-    // MARK: Device State
-    @Published var selectedDevice: Device?
-    @Published var availableDevices: [Device] = []
-    @Published var isTunneldRunning: Bool = false
-    @Published var connectionStatus: ConnectionStatus = .disconnected
 
-    // MARK: Location State
-    @Published var currentLocation: LocationCoordinate?
-    @Published var targetLocation: LocationCoordinate?
+    // MARK: Domain State Managers
+    //
+    // AppState is becoming a composition root (ARCH-002). Device state has moved to
+    // `device`; the properties below forward to it so views and tests keep working
+    // unchanged. Views can migrate to observing the manager directly, one at a time.
+    let device: DeviceStateManager
+    let route: RouteStateManager
+    let simulation: SimulationStateManager
 
-    // MARK: Simulation State
-    @Published var isSimulating: Bool = false
-    @Published var isPaused: Bool = false
-    @Published var simulationSpeed: SimulationSpeed = .walking
-    @Published var activeMode: AppMode = .teleport
+    // MARK: Device State (forwarded to `device`)
+    var selectedDevice: Device? {
+        get { device.selectedDevice }
+        set { device.selectedDevice = newValue }
+    }
+    var availableDevices: [Device] {
+        get { device.availableDevices }
+        set { device.availableDevices = newValue }
+    }
+    var isTunneldRunning: Bool {
+        get { device.isTunneldRunning }
+        set { device.isTunneldRunning = newValue }
+    }
+    var connectionStatus: ConnectionStatus {
+        get { device.connectionStatus }
+        set { device.connectionStatus = newValue }
+    }
 
-    // MARK: Route Playback
-    @Published var currentRoute: [LocationCoordinate] = []
-    @Published var routeProgress: Double = 0
-    @Published var isLoadingRoute: Bool = false
-    @Published var loopRoute: Bool = false
+    // MARK: Location State (forwarded to `simulation`)
+    var currentLocation: LocationCoordinate? {
+        get { simulation.currentLocation }
+        set { simulation.currentLocation = newValue }
+    }
+    var targetLocation: LocationCoordinate? {
+        get { simulation.targetLocation }
+        set { simulation.targetLocation = newValue }
+    }
 
-    // MARK: Joystick State
-    @Published var joystickDirection: CGPoint = .zero
-    @Published var joystickSpeed: Double = 5.0
+    // MARK: Simulation State (forwarded to `simulation`)
+    var isSimulating: Bool {
+        get { simulation.isSimulating }
+        set { simulation.isSimulating = newValue }
+    }
+    var isPaused: Bool {
+        get { simulation.isPaused }
+        set { simulation.isPaused = newValue }
+    }
+    var simulationSpeed: SimulationSpeed {
+        get { simulation.simulationSpeed }
+        set { simulation.simulationSpeed = newValue }
+    }
+    var activeMode: AppMode {
+        get { simulation.activeMode }
+        set { simulation.activeMode = newValue }
+    }
+    var autoSpeed: Bool {
+        get { simulation.autoSpeed }
+        set { simulation.autoSpeed = newValue }
+    }
+    var autoCooldown: Bool {
+        get { simulation.autoCooldown }
+        set { simulation.autoCooldown = newValue }
+    }
+    var customSpeedMps: Double {
+        get { simulation.customSpeedMps }
+        set { simulation.customSpeedMps = newValue }
+    }
+    var cooldownSeconds: Double {
+        get { simulation.cooldownSeconds }
+        set { simulation.cooldownSeconds = newValue }
+    }
+    var updateFrequencyHz: Double {
+        get { simulation.updateFrequencyHz }
+        set { simulation.updateFrequencyHz = newValue }
+    }
+    var safeModeTeleport: Bool {
+        get { simulation.safeModeTeleport }
+        set { simulation.safeModeTeleport = newValue }
+    }
+    var safeModeJoystick: Bool {
+        get { simulation.safeModeJoystick }
+        set { simulation.safeModeJoystick = newValue }
+    }
+    var addGPSDrift: Bool {
+        get { simulation.addGPSDrift }
+        set { simulation.addGPSDrift = newValue }
+    }
+    var smoothTurns: Bool {
+        get { simulation.smoothTurns }
+        set { simulation.smoothTurns = newValue }
+    }
+    var cooldownReminder: Bool {
+        get { simulation.cooldownReminder }
+        set { simulation.cooldownReminder = newValue }
+    }
+    var lastTeleportMessage: String? {
+        get { simulation.lastTeleportMessage }
+        set { simulation.lastTeleportMessage = newValue }
+    }
+
+    @Published var copiedFeedback: Bool = false
+
+    // Jump-mode state lives with the route it indexes into.
+    var jumpIndex: Int {
+        get { route.jumpIndex }
+        set { route.jumpIndex = newValue }
+    }
+    var autoJump: Bool {
+        get { route.autoJump }
+        set { route.autoJump = newValue }
+    }
+
+
+    // MARK: Route Playback (forwarded to `route`)
+    var currentRoute: [LocationCoordinate] {
+        get { route.currentRoute }
+        set { route.currentRoute = newValue }
+    }
+    var routeProgress: Double {
+        get { route.progress }
+        set { route.progress = newValue }
+    }
+    var isLoadingRoute: Bool { route.isLoading }
+    var loopRoute: Bool {
+        get { route.loopEnabled }
+        set { route.loopEnabled = newValue }
+    }
+
+    // MARK: Joystick State (forwarded to `simulation`)
+    var joystickDirection: CGPoint {
+        get { simulation.joystickDirection }
+        set { simulation.joystickDirection = newValue }
+    }
+    var joystickSpeed: Double {
+        get { simulation.joystickSpeed }
+        set { simulation.joystickSpeed = newValue }
+    }
 
     // MARK: UI State
     @Published var showLocationInput: Bool = false
@@ -153,35 +261,48 @@ class AppState: ObservableObject {
     @Published var lastError: String?
     @Published var statusMessage: String?
 
-    // MARK: Statistics
-    @Published var injectionStats: InjectionStats = InjectionStats()
+    // MARK: Statistics (forwarded to `simulation`)
+    var injectionStats: InjectionStats {
+        get { simulation.injectionStats }
+        set { simulation.injectionStats = newValue }
+    }
 
     // MARK: iOS 18+ Warning State
     /// Tracks device IDs that have already shown the iOS 18+ toast in this session
     private var shownIOS18WarningDeviceIds: Set<String> = []
 
-    // MARK: Reliability State
-    @Published var recoveryState: ConnectionRecoveryState = .disconnected
-    @Published var isUSBConnected: Bool = false
-    @Published var isWiFiTransportAvailable: Bool = false
-    @Published var preferUSBConnection: Bool = false
-
-    // MARK: Debouncing for UI Stability
-    private var lastTunnelStateChange: Date = .distantPast
-    private var lastUSBStateChange: Date = .distantPast
-    private let stateDebounceInterval: TimeInterval = 2.5  // Increased from 0.5 to reduce flickering
+    // MARK: Reliability State (forwarded to `device`)
+    var recoveryState: ConnectionRecoveryState {
+        get { device.recoveryState }
+        set { device.recoveryState = newValue }
+    }
+    var isUSBConnected: Bool {
+        get { device.isUSBConnected }
+        set { device.isUSBConnected = newValue }
+    }
+    var isWiFiTransportAvailable: Bool {
+        get { device.isWiFiTransportAvailable }
+        set { device.isWiFiTransportAvailable = newValue }
+    }
+    var preferUSBConnection: Bool {
+        get { device.preferUSBConnection }
+        set { device.preferUSBConnection = newValue }
+    }
 
     // MARK: Shared Managers
-    let deviceManager = DeviceManager()
     let simulationEngine: SimulationEngine
-    let reliabilityManager = ReliabilityManager()
-    let errorHandler = ErrorHandler()
-    let usbFallbackManager = USBFallbackManager()
-    let routeLibrary = RouteLibraryManager()
-    let tunnelHealthMonitor = TunnelHealthMonitor()
+    let errorHandler: ErrorHandler
+
+    var routeLibrary: RouteLibraryManager { route.routeLibrary }
+
+    // Forwarded so existing call sites keep resolving.
+    var deviceManager: DeviceManager { device.deviceManager }
+    var reliabilityManager: ReliabilityManager { device.reliabilityManager }
+    var usbFallbackManager: USBFallbackManager { device.usbFallbackManager }
+    var tunnelHealthMonitor: TunnelHealthMonitor { device.tunnelHealthMonitor }
 
     // MARK: Private
-    private let locationBridge = DevLocationBridge()
+    private let locationBridge: DevLocationBridge
     private var simulationTask: Task<Void, Never>?
     private var joystickTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
@@ -189,52 +310,60 @@ class AppState: ObservableObject {
     // MARK: Computed Properties
 
     var canStartSimulation: Bool {
-        selectedDevice != nil && isTunneldRunning
+        simulation.canStartSimulation
     }
 
     var simulationStatusText: String {
-        if !isTunneldRunning {
-            return "Tunnel not running"
-        }
-        if selectedDevice == nil {
-            return "No device selected"
-        }
-        if isSimulating {
-            return isPaused ? "Paused" : "Simulating..."
-        }
-        return "Ready"
-    }
-
-    // MARK: Debounced State Updates
-
-    private func updateTunnelRunning(_ newValue: Bool, force: Bool = false) {
-        let now = Date()
-        let shouldUpdate = force || now.timeIntervalSince(lastTunnelStateChange) >= stateDebounceInterval
-
-        guard shouldUpdate else { return }
-
-        if isTunneldRunning != newValue {
-            isTunneldRunning = newValue
-            lastTunnelStateChange = now
-        }
-    }
-
-    private func updateUSBConnected(_ newValue: Bool, force: Bool = false) {
-        let now = Date()
-        let shouldUpdate = force || now.timeIntervalSince(lastUSBStateChange) >= stateDebounceInterval
-
-        guard shouldUpdate else { return }
-
-        if isUSBConnected != newValue {
-            isUSBConnected = newValue
-            lastUSBStateChange = now
-        }
+        simulation.statusText
     }
 
     // MARK: Initialization
 
     init(startBackgroundServices: Bool = true) {
-        self.simulationEngine = SimulationEngine(locationBridge: locationBridge)
+        let sharedBridge = DevLocationBridge()
+        let sharedErrorHandler = ErrorHandler()
+
+        self.locationBridge = sharedBridge
+        self.errorHandler = sharedErrorHandler
+        self.device = DeviceStateManager(startBackgroundServices: startBackgroundServices)
+        self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
+        self.simulation = SimulationStateManager(
+            locationBridge: sharedBridge,
+            errorHandler: sharedErrorHandler
+        )
+        self.simulationEngine = SimulationEngine(locationBridge: sharedBridge)
+
+        // Cross-manager references.
+        simulation.setDeviceStateManager(device)
+        route.setSimulationStateManager(simulation)
+
+        // Re-publish the managers' changes so views observing AppState still update.
+        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange] {
+            publisher
+                .sink { [weak self] in self?.objectWillChange.send() }
+                .store(in: &cancellables)
+        }
+
+        simulation.onStatusMessage = { [weak self] message in
+            self?.statusMessage = message
+        }
+
+        device.onDeviceSelected = { [weak self] selected in
+            self?.simulationEngine.setDevice(selected)
+        }
+
+        device.onConnectionLost = { [weak self] in
+            self?.statusMessage = "Connection lost, attempting to reconnect..."
+        }
+
+        device.onReconnectionFailed = { [weak self] reason in
+            self?.lastError = reason
+        }
+
+        device.onTunnelActiveChanged = { [weak self] isActive in
+            guard let self, !isActive else { return }
+            Task { await self.locationBridge.stopHeldSimulation() }
+        }
 
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
@@ -260,60 +389,10 @@ class AppState: ObservableObject {
             await refreshDevices()
         }
 
-        // Sync with TunneldManager
-        TunneldManager.shared.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                guard let self = self else { return }
-                self.updateTunnelRunning(state.isActive, force: true)
-
-                if state.isActive {
-                    // Start health monitoring when tunnel is active
-                    self.tunnelHealthMonitor.startMonitoring()
-                    Task { await self.refreshDevices() }
-                } else {
-                    self.tunnelHealthMonitor.stopMonitoring()
-                    Task { await self.locationBridge.stopHeldSimulation() }
-                }
-            }
-            .store(in: &cancellables)
-
-        // Auto-refresh
-        Timer.publish(every: 5.0, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                Task { await self?.checkTunneldStatus() }
-            }
-            .store(in: &cancellables)
-
-        setupReliabilityManager()
         setupErrorHandler()
-        setupUSBFallback()
     }
 
     // MARK: Manager Setup
-
-    private func setupReliabilityManager() {
-        reliabilityManager.onReconnect = { [weak self] in
-            guard let self = self else { return false }
-            await self.refreshDevices()
-            return self.selectedDevice != nil && self.isTunneldRunning
-        }
-
-        reliabilityManager.onConnectionLost = { [weak self] in
-            Task { @MainActor in
-                self?.connectionStatus = .disconnected
-                self?.statusMessage = "Connection lost, attempting to reconnect..."
-            }
-        }
-
-        reliabilityManager.onReconnectionFailed = { [weak self] reason in
-            Task { @MainActor in
-                self?.lastError = reason
-                self?.connectionStatus = .error
-            }
-        }
-    }
 
     private func setupErrorHandler() {
         errorHandler.$currentError
@@ -327,84 +406,18 @@ class AppState: ObservableObject {
             .store(in: &cancellables)
     }
 
-    private func setupUSBFallback() {
-        usbFallbackManager.$isUSBConnected
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] connected in
-                self?.updateUSBConnected(connected)
-            }
-            .store(in: &cancellables)
-
-        usbFallbackManager.$preferUSB
-            .assign(to: &$preferUSBConnection)
-    }
-
-    // MARK: Device Management
+    // MARK: Device Management (delegated to `device`)
 
     func refreshDevices() async {
-        await deviceManager.refreshDevices()
-
-        // Deduplicate devices by UDID and ensure no duplicates in the list
-        var seenUDIDs = Set<String>()
-        var uniqueDevices: [Device] = []
-
-        for device in deviceManager.devices {
-            if !seenUDIDs.contains(device.id) {
-                uniqueDevices.append(device)
-                seenUDIDs.insert(device.id)
-            }
-        }
-
-        // Only update if devices actually changed
-        let currentDeviceIds = Set(availableDevices.map { $0.id })
-        let newDeviceIds = Set(uniqueDevices.map { $0.id })
-
-        if currentDeviceIds != newDeviceIds {
-            availableDevices = uniqueDevices
-        } else {
-            // Update device info if same devices but with new data
-            availableDevices = uniqueDevices
-        }
-
-        if selectedDevice == nil, let first = availableDevices.first {
-            selectedDevice = first
-            simulationEngine.setDevice(first)
-        }
-
-        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
-        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
-
-        connectionStatus = selectedDevice != nil ? .connected : .disconnected
-
-        if connectionStatus == .connected {
-            reliabilityManager.connectionEstablished()
-        }
+        await device.refreshDevices()
     }
 
     func checkTunneldStatus() async {
-        await deviceManager.checkTunneldStatus()
-        await deviceManager.refreshTransportAvailability()
-        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
-        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
-        updateTunnelRunning(deviceManager.isTunneldRunning)
-
-        if !isTunneldRunning && !TunneldManager.shared.isStarting {
-            await TunneldManager.shared.autoStart()
-            updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
-        }
-
-        if !isTunneldRunning {
-            usbFallbackManager.wirelessFailed()
-        } else {
-            usbFallbackManager.wirelessRestored()
-        }
+        await device.checkTunneldStatus()
     }
 
-    func selectDevice(_ device: Device) {
-        selectedDevice = device
-        simulationEngine.setDevice(device)
-        connectionStatus = .connected
-        reliabilityManager.connectionEstablished()
+    func selectDevice(_ selected: Device) {
+        device.selectDevice(selected)
     }
 
     // MARK: Location Control
@@ -414,78 +427,15 @@ class AppState: ObservableObject {
         quiet: Bool = false,
         usePerformanceMode: Bool = false
     ) async {
-        guard let device = selectedDevice else {
-            errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
-            if !quiet {
-                ToastManager.shared.error("No device selected")
-            }
-            return
-        }
-
-        targetLocation = coordinate
-        if !quiet {
-            statusMessage = "Injecting location..."
-        }
-
-        do {
-            try await locationBridge.setLocation(
-                coordinate,
-                for: device,
-                priority: quiet ? .high : .normal,
-                usePerformanceMode: usePerformanceMode
-            )
-            currentLocation = coordinate
-            isSimulating = true
-            lastError = nil
-            injectionStats = await locationBridge.getStats()
-            errorHandler.clearCurrentError()
-
-            if !quiet {
-                let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
-                statusMessage = "Location spoofed to \(locationStr)"
-                ToastManager.shared.success("Location spoofed successfully!")
-            }
-
-        } catch let error as LocationInjectionError {
-            if case .rateLimited = error, quiet {
-                return
-            }
-            errorHandler.handle(error, context: "Location injection")
-            isSimulating = false
-            if !quiet {
-                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
-            }
-
-            if case .deviceNotFound = error {
-                reliabilityManager.connectionLost()
-            }
-        } catch {
-            errorHandler.handle(error, context: "Location injection")
-            isSimulating = false
-            if !quiet {
-                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
-            }
-        }
+        await simulation.setLocation(
+            coordinate,
+            quiet: quiet,
+            usePerformanceMode: usePerformanceMode
+        )
     }
 
     func clearLocation() async {
-        guard let device = selectedDevice else {
-            errorHandler.handle(message: "No device selected", type: .device)
-            return
-        }
-
-        do {
-            try await locationBridge.clearLocation(for: device)
-            currentLocation = nil
-            targetLocation = nil
-            isSimulating = false
-            isPaused = false
-            lastError = nil
-            statusMessage = "Location cleared"
-            errorHandler.clearCurrentError()
-        } catch {
-            errorHandler.handle(error, context: "Clear location")
-        }
+        await simulation.clearLocation()
     }
 
     // MARK: Simulation Control
@@ -498,12 +448,16 @@ class AppState: ObservableObject {
             targetLocation: targetLocation,
             currentLocation: currentLocation,
             route: currentRoute,
-            speed: simulationSpeed
+            speed: simulationSpeed,
+            jumpIndex: jumpIndex
         ) {
         case .teleport(let coordinate):
             isPaused = false
             isSimulating = true
             await setLocation(coordinate)
+            if activeMode == .jump, currentLocation == coordinate {
+                jumpIndex = min(jumpIndex + 1, currentRoute.count)
+            }
         case .route(let points):
             await playRoute(points)
         case .joystick(let start):
@@ -515,11 +469,11 @@ class AppState: ObservableObject {
     }
 
     func pauseSimulation() {
-        isPaused = true
+        simulation.pauseSimulation()
     }
 
     func resumeSimulation() {
-        isPaused = false
+        simulation.resumeSimulation()
     }
 
     func stopSimulation() async {
@@ -539,53 +493,92 @@ class AppState: ObservableObject {
     // MARK: Route Playback
 
     func loadRoute(from coordinates: [LocationCoordinate]) {
-        currentRoute = coordinates
-        routeProgress = 0
+        route.loadRoute(from: coordinates)
+    }
+
+    /// Updates only local planning state. Device injection remains exclusively in
+    /// `startSimulation`, which is invoked by the explicit Move action.
+    func stageLocation(_ coordinate: LocationCoordinate, for mode: AppMode) {
+        guard coordinate.isValid else { return }
+        targetLocation = coordinate
+
+        switch mode {
+        case .teleport, .settings:
+            loadRoute(from: [coordinate])
+        case .jump:
+            guard !isSimulating else { return }
+            guard currentRoute.count < mode.maxStops else {
+                statusMessage = "Jump holds 12 stops"
+                return
+            }
+            addRouteWaypoint(coordinate)
+        case .twospot:
+            loadRoute(from: [coordinate])
+        case .route:
+            guard !isSimulating else { return }
+            guard currentRoute.count < mode.maxStops else {
+                statusMessage = "Multi-spot holds 24 stops"
+                return
+            }
+            addRouteWaypoint(coordinate)
+        case .joystick:
+            routeProgress = 0
+            statusMessage = String(
+                format: "Start set: %.4f, %.4f",
+                coordinate.latitude,
+                coordinate.longitude
+            )
+        }
+
+        isPaused = false
     }
 
     func addRouteWaypoint(_ coordinate: LocationCoordinate) {
-        guard coordinate.isValid else { return }
-        currentRoute.append(coordinate)
+        guard route.addWaypoint(coordinate) else { return }
         targetLocation = coordinate
-        routeProgress = 0
         statusMessage = "Spot \(currentRoute.count) added"
     }
 
-    func removeLastRouteWaypoint() {
-        guard !currentRoute.isEmpty else { return }
-        currentRoute.removeLast()
+    func removeRouteWaypoint(at index: Int) {
+        guard route.removeWaypoint(at: index) else { return }
         targetLocation = currentRoute.last
-        routeProgress = 0
-        statusMessage = currentRoute.isEmpty ? "All spots cleared" : "\(currentRoute.count) spots remaining"
+    }
+
+    func moveRouteWaypoint(from source: Int, to destination: Int) {
+        route.moveWaypoint(from: source, to: destination)
+    }
+
+    func removeLastRouteWaypoint() {
+        guard let remaining = route.removeLastWaypoint() else { return }
+        targetLocation = currentRoute.last
+        statusMessage = remaining == 0 ? "All spots cleared" : "\(remaining) spots remaining"
     }
 
     func clearRoute() {
         simulationTask?.cancel()
         simulationTask = nil
-        currentRoute = []
-        routeProgress = 0
+        route.clearRoute()
         statusMessage = "Spots cleared"
     }
 
-    func importRoute(from url: URL) {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer {
-            if accessed {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
+    var cooldownRemaining: TimeInterval {
+        simulation.cooldownRemaining
+    }
 
+    var headerSafeMode: Bool {
+        get { simulation.headerSafeMode }
+        set { simulation.headerSafeMode = newValue }
+    }
+
+    func importRoute(from url: URL) {
         do {
-            let coordinates = try GPXParser().parse(fileURL: url).allCoordinates
-            guard coordinates.count >= 2 else {
-                lastError = "GPX file needs at least two points"
-                statusMessage = lastError
-                return
-            }
-            loadRoute(from: coordinates)
-            targetLocation = coordinates.last
+            let count = try route.importRoute(from: url)
+            targetLocation = currentRoute.last
             lastError = nil
-            statusMessage = "Imported \(coordinates.count) points"
+            statusMessage = "Imported \(count) points"
+        } catch RouteLibraryError.emptyRoute {
+            lastError = "GPX file needs at least two points"
+            statusMessage = lastError
         } catch {
             lastError = error.localizedDescription
             statusMessage = lastError
@@ -637,7 +630,7 @@ class AppState: ObservableObject {
                 await setLocation(coordinate, quiet: true, usePerformanceMode: true)
                 routeProgress = Double(index + 1) / Double(totalPoints)
 
-                let interval = simulationSpeed.updateInterval
+                let interval = 1.0 / max(updateFrequencyHz, 1)
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
 
@@ -679,15 +672,19 @@ class AppState: ObservableObject {
         await locationBridge.setQueueStrategy(.latestWins)
         await setLocation(start, quiet: true, usePerformanceMode: true)
 
-        let interval: TimeInterval = 0.1
+        let interval: TimeInterval = 1.0 / max(updateFrequencyHz, 1)
         joystickTask = Task {
             while !Task.isCancelled {
                 if !isPaused {
                     let current = currentLocation ?? start
+                    var direction = joystickDirection
+                    if smoothTurns, safeModeJoystick {
+                        direction = smoothedDirection(direction)
+                    }
                     let next = JoystickMovement.nextCoordinate(
                         from: current,
-                        direction: joystickDirection,
-                        speedMetersPerSecond: simulationSpeed.metersPerSecond,
+                        direction: direction,
+                        speedMetersPerSecond: effectiveMetersPerSecond,
                         deltaTime: interval
                     )
                     if next != current {
@@ -700,10 +697,50 @@ class AppState: ObservableObject {
         }
     }
 
+    func disengageJoystick() {
+        joystickTask?.cancel()
+        joystickTask = nil
+        isSimulating = false
+        isPaused = false
+        simulation.resetJoystick()
+        statusMessage = "Joystick disengaged"
+    }
+
+    var effectiveMetersPerSecond: Double {
+        simulation.effectiveMetersPerSecond
+    }
+
+    // These forward to `SimulationSpeed`, which now owns the preset tables. They remain as
+    // methods so existing call sites and tests keep working; they will be removed when
+    // AppState is decomposed and views read the speed data directly.
+    func mockMetersPerSecond(for speed: SimulationSpeed) -> Double {
+        speed.presetMetersPerSecond
+    }
+
+    func mockCooldown(for speed: SimulationSpeed) -> Double {
+        speed.defaultCooldownSeconds
+    }
+
     // MARK: Speed Control
 
     func setSpeed(_ speed: SimulationSpeed) {
-        simulationSpeed = speed
+        simulation.setSpeed(speed)
+    }
+
+    func copyCoordinates() {
+        let location = targetLocation ?? currentLocation
+        let text = location.map { String(format: "%.6f, %.6f", $0.latitude, $0.longitude) } ?? ""
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedFeedback = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            copiedFeedback = false
+        }
+    }
+
+    private func smoothedDirection(_ raw: CGPoint) -> CGPoint {
+        simulation.smoothedDirection(raw)
     }
 }
 

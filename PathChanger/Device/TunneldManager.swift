@@ -14,6 +14,18 @@ import Combine
 import AppKit
 import Darwin
 
+enum TunnelStartTrigger {
+    case applicationLaunch
+    case statusPoll
+    case explicitUserAction
+}
+
+enum TunnelStartPolicy {
+    nonisolated static func mayElevate(for trigger: TunnelStartTrigger) -> Bool {
+        trigger == .explicitUserAction
+    }
+}
+
 // MARK: - Tunnel Mode
 
 /// Available tunnel connection modes for iOS 17+ devices.
@@ -475,6 +487,12 @@ class TunneldManager: ObservableObject {
     func autoStart() async {
         guard Self.shouldAutoStart() else {
             Logger.debug("Skipping tunnel auto-start: automatic startup is disallowed", category: .device)
+            return
+        }
+
+        let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
+        guard userEnabled else {
+            Logger.debug("Skipping tunnel auto-start: user disabled it in Settings", category: .device)
             return
         }
 
@@ -1110,9 +1128,15 @@ class TunneldManager: ObservableObject {
         // Set up health monitor failure notifications
         healthMonitor.setFailureNotificationHandler { [weak self] in
             Task { @MainActor in
-                Logger.error("🔴 Health monitor detected critical failure - initiating auto-recovery", category: .device)
-                // Attempt automatic restart
-                await self?.restartTunnel()
+                guard let self else { return }
+                if self.isRunning || self.isStarting {
+                    Logger.error("Health monitor flagged a failure, but a tunnel is still active — not elevating again", category: .device)
+                    return
+                }
+                let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
+                guard userEnabled, Self.shouldAutoStart() else { return }
+                Logger.error("Tunnel process is gone — starting once", category: .device)
+                await self.startTunnel()
             }
         }
 
@@ -1138,6 +1162,9 @@ class TunneldManager: ObservableObject {
     /// Run a command and return output with timeout protection and size limiting
     private func runCommand(_ command: String, arguments: [String], timeout: TimeInterval? = nil) async throws -> String {
         let effectiveTimeout = timeout ?? AppSettings.shared.commandTimeout
+        // Hoisted so the Sendable closure below captures a plain Int rather than reaching
+        // back into main-actor-isolated static storage.
+        let maxOutputSize = TunneldManager.maxOutputSize
 
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
@@ -1190,8 +1217,8 @@ class TunneldManager: ObservableObject {
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
                     // Security: Check output size limit (consistent with DevLocationBridge)
-                    if data.count > TunneldManager.maxOutputSize {
-                        Logger.error("[SECURITY] Subprocess output exceeded limit: \(data.count) bytes (max: \(TunneldManager.maxOutputSize))", category: .security)
+                    if data.count > maxOutputSize {
+                        Logger.error("[SECURITY] Subprocess output exceeded limit: \(data.count) bytes (max: \(maxOutputSize))", category: .security)
                         continuation.resume(throwing: NSError(domain: "TunneldManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "Output exceeded safety limit (\(data.count) bytes)"]))
                         return
                     }
@@ -1226,7 +1253,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             Organic.registerFonts()
-            await TunneldManager.shared.autoStart()
+            if TunnelStartPolicy.mayElevate(for: .applicationLaunch) {
+                await TunneldManager.shared.autoStart()
+            }
         }
     }
 

@@ -239,7 +239,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .outputSizeExceeded:
             return "If this persists, check pymobiledevice3 installation or report a bug."
         case .unsupportedIOSVersion:
-            return "Start Tunnel from PathChanger, keep the device on USB or the same Wi-Fi, and retry. Do not quit the app while a spoof is active."
+            return "Start Tunnel from PathChanger, keep the device on USB or the same Wi-Fi, and retry. Keep the tunnel running and the app open while a spoof is active."
         default:
             return nil
         }
@@ -879,12 +879,26 @@ actor DevLocationBridge {
                             Thread.sleep(forTimeInterval: 0.1)
                         }
 
+                        // Only claim the continuation when we are actually going to resume it.
+                        // A process that has already exited (every failure case: no device,
+                        // tunnel down, DVT error) must fall through to the output-parsing path
+                        // below so the caller receives the error instead of hanging forever.
+                        var alreadyResumed = false
+                        var holdsSession = false
                         resumeLock.lock()
-                        defer { resumeLock.unlock() }
-                        guard !hasResumed else { return }
-                        hasResumed = true
+                        if hasResumed {
+                            alreadyResumed = true
+                        } else if process.isRunning {
+                            hasResumed = true
+                            holdsSession = true
+                        }
+                        resumeLock.unlock()
 
-                        if process.isRunning {
+                        if alreadyResumed {
+                            return
+                        }
+
+                        if holdsSession {
                             Task { await self.retainSimulationProcess(process) }
                             continuation.resume(returning: "")
                             return

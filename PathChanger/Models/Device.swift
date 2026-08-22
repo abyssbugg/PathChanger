@@ -30,6 +30,18 @@ struct Device: Identifiable, Hashable, Equatable {
     let deviceName: String?
 
     /// Computed property for model name (derived from productType)
+    /// Compact title for the Organic chrome (no duplicated iOS version).
+    var chromeTitle: String {
+        let raw = (deviceName ?? displayName).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = raw.range(of: " (iOS ") {
+            return String(raw[..<range.lowerBound])
+        }
+        if raw.hasPrefix("iOS Device") {
+            return modelName
+        }
+        return raw.isEmpty ? modelName : raw
+    }
+
     var modelName: String {
         guard let productType = productType else { return "iPhone" }
         return Device.modelNameFrom(productType: productType)

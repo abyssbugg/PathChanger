@@ -28,6 +28,12 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - State Machine Tests
 
+    func testTunnelElevationRequiresExplicitUserAction() {
+        XCTAssertFalse(TunnelStartPolicy.mayElevate(for: .applicationLaunch))
+        XCTAssertFalse(TunnelStartPolicy.mayElevate(for: .statusPoll))
+        XCTAssertTrue(TunnelStartPolicy.mayElevate(for: .explicitUserAction))
+    }
+
     func testAutoStartAllowedOutsideTests() {
         XCTAssertTrue(TunneldManager.shouldAutoStart(environment: [:]))
     }

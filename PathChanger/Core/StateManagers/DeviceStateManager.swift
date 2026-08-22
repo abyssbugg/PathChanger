@@ -2,125 +2,126 @@
 //  DeviceStateManager.swift
 //  PathChanger
 //
-//  Domain-specific state manager for device-related state.
-//  Part of AppState decomposition (ARCH-002).
+//  Owns device discovery, selection, tunnel status and transport fallback.
+//  Extracted from AppState (ARCH-002).
+//
+//  This is a behaviour-preserving move: the logic here came out of AppState, which is the
+//  version that actually ran. The previous contents of this file were an earlier, unwired
+//  decomposition that had drifted — notably it used a 0.3s tunnel debounce where AppState
+//  used 2.5s to stop the connection indicator flickering, and its `checkTunneldStatus`
+//  called `TunneldManager.autoStart()` on every poll. That call is deliberately not carried
+//  over: it can raise an administrator prompt, and it was inert only because
+//  `TunnelStartPolicy.mayElevate(for: .statusPoll)` returns false.
 //
 
 import Foundation
 import Combine
 import SwiftUI
 
-// MARK: - Device State Manager
-
-/// Manages device-related state including selection, connection, and tunnel status.
-///
-/// `DeviceStateManager` is responsible for:
-/// - Device discovery and selection
-/// - Connection state tracking
-/// - Tunnel status monitoring
-/// - USB fallback management
-///
-/// ## Thread Safety
-///
-/// This class is marked `@MainActor` for safe SwiftUI integration.
-/// All published properties update on the main thread.
-///
-/// ## Usage
-///
-/// ```swift
-/// @StateObject private var deviceState = DeviceStateManager()
-///
-/// // Access selected device
-/// if let device = deviceState.selectedDevice {
-///     print("Selected: \(device.name)")
-/// }
-///
-/// // Refresh devices
-/// Task {
-///     await deviceState.refreshDevices()
-/// }
-/// ```
 @MainActor
-class DeviceStateManager: ObservableObject {
+final class DeviceStateManager: ObservableObject {
 
-    // MARK: Published Properties
+    // MARK: Published State
 
-    /// Currently selected device for location spoofing
     @Published var selectedDevice: Device?
-
-    /// All available devices discovered
     @Published var availableDevices: [Device] = []
-
-    /// Whether the tunneld daemon is running
     @Published var isTunneldRunning: Bool = false
-
-    /// Current connection status
     @Published var connectionStatus: ConnectionStatus = .disconnected
-
-    /// Whether USB connection is active
     @Published var isUSBConnected: Bool = false
-
-    /// User preference for USB connection
+    @Published var isWiFiTransportAvailable: Bool = false
     @Published var preferUSBConnection: Bool = false
-
-    /// Connection recovery state
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
 
-    // MARK: Internal Managers
+    // MARK: Owned Collaborators
 
     let deviceManager: DeviceManager
     let reliabilityManager: ReliabilityManager
     let usbFallbackManager: USBFallbackManager
+    let tunnelHealthMonitor: TunnelHealthMonitor
+
+    // MARK: Callbacks
+    //
+    // Callbacks rather than direct references, so this type stays independent of the
+    // simulation and error-presentation layers.
+
+    /// Fires when the active device changes, so the simulation engine can follow it.
+    var onDeviceSelected: ((Device) -> Void)?
+
+    /// Fires when the tunnel becomes active or inactive.
+    var onTunnelActiveChanged: ((Bool) -> Void)?
+
+    /// Fires when the connection drops, for user-facing messaging.
+    var onConnectionLost: (() -> Void)?
+
+    /// Fires when automatic reconnection gives up, carrying the reason.
+    var onReconnectionFailed: ((String) -> Void)?
 
     // MARK: Debouncing
 
     private var lastTunnelStateChange: Date = .distantPast
     private var lastUSBStateChange: Date = .distantPast
-    private let stateDebounceInterval: TimeInterval = AppConstants.Tunnel.stateDebounceInterval
-
-    // MARK: Private Properties
+    private let stateDebounceInterval: TimeInterval = 2.5
 
     private var cancellables = Set<AnyCancellable>()
-    private var statusCheckTimer: AnyCancellable?
+
+    // MARK: Computed
+
+    /// Whether a device is ready to receive location updates.
+    var isDeviceReady: Bool {
+        selectedDevice != nil && isTunneldRunning
+    }
 
     // MARK: Initialization
 
+    // Collaborators are resolved inside the body rather than as default arguments: a default
+    // argument is evaluated in the caller's context, which is nonisolated, and these types
+    // are main-actor isolated.
     init(
-        deviceManager: DeviceManager,
-        reliabilityManager: ReliabilityManager,
-        usbFallbackManager: USBFallbackManager
+        deviceManager: DeviceManager? = nil,
+        reliabilityManager: ReliabilityManager? = nil,
+        usbFallbackManager: USBFallbackManager? = nil,
+        tunnelHealthMonitor: TunnelHealthMonitor? = nil,
+        startBackgroundServices: Bool = true
     ) {
-        self.deviceManager = deviceManager
-        self.reliabilityManager = reliabilityManager
-        self.usbFallbackManager = usbFallbackManager
+        self.deviceManager = deviceManager ?? DeviceManager()
+        self.reliabilityManager = reliabilityManager ?? ReliabilityManager()
+        self.usbFallbackManager = usbFallbackManager ?? USBFallbackManager()
+        self.tunnelHealthMonitor = tunnelHealthMonitor ?? TunnelHealthMonitor()
 
-        setupBindings()
+        guard startBackgroundServices else { return }
+
+        observeTunnelState()
+        startStatusPolling()
         setupReliabilityManager()
         setupUSBFallback()
-        startStatusChecks()
     }
 
     // MARK: Setup
 
-    private func setupBindings() {
-        // Sync with TunneldManager state
+    private func observeTunnelState() {
         TunneldManager.shared.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                guard let self = self else { return }
+                guard let self else { return }
                 self.updateTunnelRunning(state.isActive, force: true)
 
                 if state.isActive {
+                    self.tunnelHealthMonitor.startMonitoring()
                     Task { await self.refreshDevices() }
+                } else {
+                    self.tunnelHealthMonitor.stopMonitoring()
                 }
+
+                self.onTunnelActiveChanged?(state.isActive)
             }
             .store(in: &cancellables)
+    }
 
-        // Sync recovery state from reliability manager
-        reliabilityManager.$recoveryState
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                self?.recoveryState = state
+    private func startStatusPolling() {
+        Timer.publish(every: 5.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { await self?.checkTunneldStatus() }
             }
             .store(in: &cancellables)
     }
@@ -135,14 +136,23 @@ class DeviceStateManager: ObservableObject {
         reliabilityManager.onConnectionLost = { [weak self] in
             Task { @MainActor in
                 self?.connectionStatus = .disconnected
+                self?.onConnectionLost?()
             }
         }
 
-        reliabilityManager.onReconnectionFailed = { [weak self] _ in
+        reliabilityManager.onReconnectionFailed = { [weak self] reason in
             Task { @MainActor in
                 self?.connectionStatus = .error
+                self?.onReconnectionFailed?(reason)
             }
         }
+
+        reliabilityManager.$recoveryState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.recoveryState = state
+            }
+            .store(in: &cancellables)
     }
 
     private func setupUSBFallback() {
@@ -157,17 +167,9 @@ class DeviceStateManager: ObservableObject {
             .assign(to: &$preferUSBConnection)
     }
 
-    private func startStatusChecks() {
-        statusCheckTimer = Timer.publish(every: 5.0, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                Task { await self?.checkTunneldStatus() }
-            }
-    }
-
     // MARK: Debounced Updates
 
-    func updateTunnelRunning(_ newValue: Bool, force: Bool = false) {
+    private func updateTunnelRunning(_ newValue: Bool, force: Bool = false) {
         let now = Date()
         let shouldUpdate = force || now.timeIntervalSince(lastTunnelStateChange) >= stateDebounceInterval
 
@@ -193,37 +195,29 @@ class DeviceStateManager: ObservableObject {
 
     // MARK: Device Management
 
-    /// Refresh available devices from all sources
+    /// Refresh available devices from all transports.
     func refreshDevices() async {
         await deviceManager.refreshDevices()
 
-        // Deduplicate devices by UDID
+        // Deduplicate by UDID: discovery can report the same device over USB and tunnel.
         var seenUDIDs = Set<String>()
         var uniqueDevices: [Device] = []
 
-        for device in deviceManager.devices {
-            if !seenUDIDs.contains(device.id) {
-                uniqueDevices.append(device)
-                seenUDIDs.insert(device.id)
-            }
+        for device in deviceManager.devices where !seenUDIDs.contains(device.id) {
+            uniqueDevices.append(device)
+            seenUDIDs.insert(device.id)
         }
 
-        // Only update if devices changed
-        let currentDeviceIds = Set(availableDevices.map { $0.id })
-        let newDeviceIds = Set(uniqueDevices.map { $0.id })
+        availableDevices = uniqueDevices
 
-        if currentDeviceIds != newDeviceIds {
-            availableDevices = uniqueDevices
-        } else {
-            availableDevices = uniqueDevices
-        }
-
-        // Auto-select first device if none selected
         if selectedDevice == nil, let first = availableDevices.first {
-            selectDevice(first)
+            selectedDevice = first
+            onDeviceSelected?(first)
         }
 
-        // Update connection status
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+
         connectionStatus = selectedDevice != nil ? .connected : .disconnected
 
         if connectionStatus == .connected {
@@ -231,17 +225,19 @@ class DeviceStateManager: ObservableObject {
         }
     }
 
-    /// Check tunneld daemon status
+    /// Poll tunnel and transport availability.
     func checkTunneldStatus() async {
         await deviceManager.checkTunneldStatus()
+        await deviceManager.refreshTransportAvailability()
+
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
         updateTunnelRunning(deviceManager.isTunneldRunning)
 
-        if !isTunneldRunning && !TunneldManager.shared.isStarting {
-            await TunneldManager.shared.autoStart()
-            updateTunnelRunning(TunneldManager.shared.isRunning, force: true)
+        if TunneldManager.shared.isRunning {
+            updateTunnelRunning(true, force: true)
         }
 
-        // Notify USB fallback manager
         if !isTunneldRunning {
             usbFallbackManager.wirelessFailed()
         } else {
@@ -249,23 +245,16 @@ class DeviceStateManager: ObservableObject {
         }
     }
 
-    /// Select a device for location spoofing
+    /// Make a device active.
     func selectDevice(_ device: Device) {
         selectedDevice = device
+        onDeviceSelected?(device)
         connectionStatus = .connected
         reliabilityManager.connectionEstablished()
     }
 
-    /// Notify that connection was lost
+    /// Report that the connection was lost, starting the recovery cycle.
     func connectionLost() {
         reliabilityManager.connectionLost()
-        connectionStatus = .disconnected
-    }
-
-    // MARK: Computed Properties
-
-    /// Whether a device is ready for simulation
-    var isDeviceReady: Bool {
-        selectedDevice != nil && isTunneldRunning
     }
 }

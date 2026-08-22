@@ -31,6 +31,15 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2024 PathChanger. All rights reserved.</string>
 
+	<!-- Usage descriptions. Previously these lived only in PathChanger/Info.plist, which is
+	     excluded from both the SwiftPM target and the Xcode wrapper and therefore never
+	     shipped. NSAppleEventsUsageDescription is required for the privileged tunnel path,
+	     which uses NSAppleScript, to work under the hardened runtime. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>PathChanger needs to run a privileged command to start and stop the device tunnel.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>PathChanger uses your location to show your current position on the map.</string>
+
 	<!-- Sparkle Auto-Update Configuration -->
 	<key>SUFeedURL</key>
 	<string>https://github.com/abyssbugg/PathChanger/releases/latest/download/appcast.xml</string>

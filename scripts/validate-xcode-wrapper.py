@@ -13,7 +13,10 @@ PROJECT_SPEC = ROOT / "project.yml"
 PROJECT_FILE = ROOT / "PathChanger.xcodeproj" / "project.pbxproj"
 PACKAGE_FILE = ROOT / "Package.swift"
 SHIPPED_PLIST = ROOT / "Resources" / "Info.plist"
-EXCLUDED_PLIST = ROOT / "PathChanger" / "Info.plist"
+# There used to be a second, unused Info.plist at PathChanger/Info.plist that was excluded
+# from both build definitions. It has been removed; this path is retained only so the check
+# below can assert it does not come back.
+REMOVED_DUPLICATE_PLIST = ROOT / "PathChanger" / "Info.plist"
 ENTITLEMENTS = ROOT / "Resources" / "PathChanger.entitlements"
 APP_ENTRY = ROOT / "PathChanger" / "PathChangerApp.swift"
 TEST_ROOT = ROOT / "Tests" / "PathChangerTests"
@@ -44,7 +47,6 @@ def validate_required_paths() -> None:
     required_files = [
         PACKAGE_FILE,
         SHIPPED_PLIST,
-        EXCLUDED_PLIST,
         ENTITLEMENTS,
         APP_ENTRY,
         LOCALIZATION_ROOT / "en.lproj" / "Localizable.strings",
@@ -54,6 +56,11 @@ def validate_required_paths() -> None:
     for path in required_files:
         require(path.is_file(), f"Missing required file: {path.relative_to(ROOT)}")
     require(TEST_ROOT.is_dir(), f"Missing required directory: {TEST_ROOT.relative_to(ROOT)}")
+    require(
+        not REMOVED_DUPLICATE_PLIST.exists(),
+        "PathChanger/Info.plist must not be reintroduced: Resources/Info.plist is the only "
+        "shipped plist, and a second one silently diverges",
+    )
 
 
 def validate_package() -> None:
@@ -67,7 +74,10 @@ def validate_package() -> None:
             'path: "Tests/PathChangerTests"',
         ],
     )
-    require('exclude: ["Info.plist"]' in package, "Package.swift must continue excluding PathChanger/Info.plist")
+    require(
+        'exclude: ["Info.plist"]' not in package,
+        "Package.swift should no longer exclude PathChanger/Info.plist: that file has been removed",
+    )
 
 
 def validate_app_entry() -> None:
@@ -84,6 +94,9 @@ def validate_shipped_plist() -> None:
     require_nonempty_string(shipped, "CFBundleVersion")
     require_nonempty_string(shipped, "SUFeedURL")
     require_nonempty_string(shipped, "SUPublicEDKey")
+    # The privileged tunnel path uses NSAppleScript, which needs this declared to work under
+    # the hardened runtime.
+    require_nonempty_string(shipped, "NSAppleEventsUsageDescription")
 
 
 def validate_project_spec() -> None:

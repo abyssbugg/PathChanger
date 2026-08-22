@@ -590,14 +590,13 @@ class DeviceManager: ObservableObject {
     func checkTunneldStatus() async {
         do {
             // Check for new lockdown tunnel first (iOS 17.4+ method)
-            let lockdownOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 lockdown start-tunnel"])
-            if !lockdownOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let startTunnelOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3.*start-tunnel"])
+            if !startTunnelOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateTunnelRunning(true)
                 return
             }
 
-            // Fall back to checking legacy tunneld - with small delay to avoid race conditions
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 0.1s delay to let process state stabilize
+            try? await Task.sleep(nanoseconds: 100_000_000)
             let tunneldOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
             let isTunnelRunning = !tunneldOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             updateTunnelRunning(isTunnelRunning)

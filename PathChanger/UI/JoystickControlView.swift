@@ -6,11 +6,13 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct JoystickControlView: View {
     @EnvironmentObject var appState: AppState
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
+    @State private var keyMonitor: Any?
 
     private let outerRadius: CGFloat = 66
     private let innerRadius: CGFloat = 23
@@ -20,7 +22,7 @@ struct JoystickControlView: View {
             Circle()
                 .fill(Organic.neutral100.opacity(0.82))
                 .overlay(Circle().stroke(Organic.neutral400, lineWidth: 1))
-                .shadow(color: Organic.neutral900.opacity(0.16), radius: 10, y: 3)
+                .shadow(color: Organic.shadow.opacity(0.16), radius: 10, y: 3)
 
             Circle()
                 .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -30,7 +32,7 @@ struct JoystickControlView: View {
             Circle()
                 .fill(Organic.accent600)
                 .frame(width: innerRadius * 2, height: innerRadius * 2)
-                .shadow(color: Organic.neutral900.opacity(0.2), radius: 6, y: 2)
+                .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
                 .overlay(
                     Image(systemName: "plus")
                         .font(.system(size: 16, weight: .bold))
@@ -62,6 +64,38 @@ struct JoystickControlView: View {
                 )
         }
         .frame(width: 132, height: 132)
+        .focusable()
+        .onAppear { installKeyMonitor() }
+        .onDisappear { removeKeyMonitor() }
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
+            let mapping: [UInt16: CGPoint] = [
+                126: CGPoint(x: 0, y: 1),
+                125: CGPoint(x: 0, y: -1),
+                123: CGPoint(x: -1, y: 0),
+                124: CGPoint(x: 1, y: 0)
+            ]
+            guard let direction = mapping[event.keyCode] else { return event }
+            if event.type == .keyDown {
+                if !appState.isSimulating {
+                    Task { await appState.startSimulation() }
+                }
+                appState.updateJoystickDirection(direction)
+            } else {
+                appState.updateJoystickDirection(.zero)
+            }
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
     }
 }
 

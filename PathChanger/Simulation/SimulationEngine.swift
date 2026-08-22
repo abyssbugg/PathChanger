@@ -151,6 +151,35 @@ enum SimulationSpeed: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Product-tuned speed used by the spoofing presets and shown in the UI.
+    ///
+    /// Deliberately distinct from ``metersPerSecond``, which is the raw physical speed the
+    /// route interpolator uses. The two genuinely differ and cannot be merged: this table is
+    /// not monotonic (`fast` is a city preset at 11.2 m/s, slower than `driving` at 15.6),
+    /// whereas ``metersPerSecond`` is ordered by design and asserted to be so in
+    /// `SimulationEngineTests`. Whether the presets should be re-tuned to match is a product
+    /// decision, not a refactor.
+    var presetMetersPerSecond: Double {
+        switch self {
+        case .walking: return 1.6
+        case .cycling: return 5.4
+        case .driving: return 15.6
+        case .fast: return 11.2
+        default: return metersPerSecond
+        }
+    }
+
+    /// Cooldown applied between teleports when safe mode is enabled, in seconds.
+    var defaultCooldownSeconds: Double {
+        switch self {
+        case .walking: return 20
+        case .cycling: return 30
+        case .fast: return 45
+        case .driving: return 60
+        default: return 20
+        }
+    }
+
     /// Icon for UI
     var icon: String {
         switch self {

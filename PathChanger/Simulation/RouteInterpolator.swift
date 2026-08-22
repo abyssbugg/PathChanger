@@ -78,19 +78,7 @@ struct RouteInterpolator {
     /// Returns 0 if either coordinate is invalid
     static func haversineDistance(from: LocationCoordinate, to: LocationCoordinate) -> Double {
         guard from.isValid, to.isValid else { return 0 }
-
-        let earthRadiusMeters = 6371000.0
-
-        let lat1 = from.latitude * .pi / 180
-        let lat2 = to.latitude * .pi / 180
-        let dLat = (to.latitude - from.latitude) * .pi / 180
-        let dLon = (to.longitude - from.longitude) * .pi / 180
-        let haversineTerm = sin(dLat/2) * sin(dLat/2) +
-                cos(lat1) * cos(lat2) *
-                sin(dLon/2) * sin(dLon/2)
-        let angularDistance = 2 * atan2(sqrt(haversineTerm), sqrt(1-haversineTerm))
-
-        return earthRadiusMeters * angularDistance
+        return Geo.distance(from: from, to: to)
     }
 
     /// Move a coordinate by distance and bearing
@@ -104,24 +92,10 @@ struct RouteInterpolator {
         guard from.isValid else { return from }
         guard distanceMeters >= 0, distanceMeters < maxDistanceMeters else { return from }
 
-        // Normalize bearing to 0-360
-        let normalizedBearing = bearingDegrees.truncatingRemainder(dividingBy: 360)
-        let bearing = (normalizedBearing < 0 ? normalizedBearing + 360 : normalizedBearing) * .pi / 180
-
-        let earthRadiusMeters = 6371000.0
-        let angularDistance = distanceMeters / earthRadiusMeters
-
-        let lat1 = from.latitude * .pi / 180
-        let lon1 = from.longitude * .pi / 180
-
-        let lat2 = asin(sin(lat1) * cos(angularDistance) +
-                       cos(lat1) * sin(angularDistance) * cos(bearing))
-        let lon2 = lon1 + atan2(sin(bearing) * sin(angularDistance) * cos(lat1),
-                                cos(angularDistance) - sin(lat1) * sin(lat2))
-
-        let result = LocationCoordinate(
-            latitude: lat2 * 180 / .pi,
-            longitude: lon2 * 180 / .pi
+        let result = Geo.move(
+            from: from,
+            distanceMeters: distanceMeters,
+            bearingDegrees: bearingDegrees
         )
 
         // Verify result is valid (edge case: near poles)
@@ -132,15 +106,6 @@ struct RouteInterpolator {
     /// Returns 0 if either coordinate is invalid
     static func bearing(from: LocationCoordinate, to: LocationCoordinate) -> Double {
         guard from.isValid, to.isValid else { return 0 }
-
-        let lat1 = from.latitude * .pi / 180
-        let lat2 = to.latitude * .pi / 180
-        let dLon = (to.longitude - from.longitude) * .pi / 180
-
-        let yComponent = sin(dLon) * cos(lat2)
-        let xComponent = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-
-        let bearing = atan2(yComponent, xComponent) * 180 / .pi
-        return (bearing + 360).truncatingRemainder(dividingBy: 360)
+        return Geo.bearing(from: from, to: to)
     }
 }

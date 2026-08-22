@@ -456,11 +456,14 @@ extension GPXParser: XMLParserDelegate {
 
 /// Writer for creating GPX files
 class GPXWriter {
-    private static let dateFormatter: ISO8601DateFormatter = {
+    // Computed rather than a stored static: a stored non-Sendable formatter is a hard error
+    // under the Swift 6 language mode, and this is called once per export so the allocation
+    // cost is irrelevant.
+    private static var dateFormatter: ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
-    }()
+    }
 
     /// Create GPX string from coordinates
     static func createGPX(from coordinates: [LocationCoordinate], name: String = "Route") -> String {

@@ -2,124 +2,91 @@
 //  SimulationStateManager.swift
 //  PathChanger
 //
-//  Domain-specific state manager for simulation-related state.
-//  Part of AppState decomposition (ARCH-002).
+//  Owns simulation state and the policy applied to every location injection:
+//  safe-mode cooldown, GPS drift, turn smoothing and speed selection.
+//  Part of the AppState decomposition (ARCH-002).
+//
+//  This replaces an earlier unwired version that could not represent the app's behaviour.
+//  That version modelled modes with a four-case `ActiveSimulationMode` (none/teleport/
+//  route/joystick), which has no way to express Jump or Two-spot, and its
+//  `startSimulation()` teleported to `targetLocation` directly instead of going through
+//  `SimulationPlanner`. It also had no cooldown, GPS drift, turn smoothing, performance
+//  mode or queue-strategy switching. `AppMode` is now the single mode type and
+//  `ActiveSimulationMode` has been removed.
+//
+//  Playback loops deliberately do not live here. AppState still owns `playRoute` and
+//  `startJoystick` until the simulation engine takes them over, so that exactly one
+//  playback implementation exists at any time.
 //
 
 import Foundation
 import Combine
 import SwiftUI
 
-// MARK: - Simulation Mode
-
-/// Available simulation modes
-enum ActiveSimulationMode: String, CaseIterable {
-    case none = "None"
-    case teleport = "Teleport"
-    case route = "Route"
-    case joystick = "Joystick"
-
-    var icon: String {
-        switch self {
-        case .none: return "circle.slash"
-        case .teleport: return "location.fill"
-        case .route: return "point.topleft.down.curvedto.point.bottomright.up"
-        case .joystick: return "gamecontroller.fill"
-        }
-    }
-}
-
-// MARK: - Simulation State Manager
-
-/// Manages simulation-related state including modes, playback, and joystick control.
-///
-/// `SimulationStateManager` is responsible for:
-/// - Tracking active simulation mode
-/// - Managing simulation start/stop/pause
-/// - Controlling joystick input
-/// - Tracking simulation statistics
-///
-/// ## Thread Safety
-///
-/// This class is marked `@MainActor` for safe SwiftUI integration.
-/// All published properties update on the main thread.
-///
-/// ## Usage
-///
-/// ```swift
-/// @StateObject private var simState = SimulationStateManager()
-///
-/// // Check simulation status
-/// if simState.isSimulating {
-///     print("Mode: \(simState.activeMode)")
-/// }
-///
-/// // Start simulation
-/// await simState.startSimulation()
-/// ```
 @MainActor
-class SimulationStateManager: ObservableObject {
+final class SimulationStateManager: ObservableObject {
 
-    // MARK: Published Properties
+    // MARK: Published State
 
-    /// Whether simulation is currently active
     @Published var isSimulating: Bool = false
-
-    /// Whether simulation is paused
     @Published var isPaused: Bool = false
-
-    /// Current simulation speed
     @Published var simulationSpeed: SimulationSpeed = .walking
+    @Published var activeMode: AppMode = .teleport
 
-    /// Active simulation mode
-    @Published var activeMode: ActiveSimulationMode = .none
-
-    /// Current location being simulated
     @Published var currentLocation: LocationCoordinate?
-
-    /// Target location for teleport mode
     @Published var targetLocation: LocationCoordinate?
 
-    /// Joystick direction vector (-1 to 1 on each axis)
-    @Published var joystickDirection: CGPoint = .zero
+    // MARK: Movement Tuning
 
-    /// Joystick speed multiplier
+    @Published var autoSpeed: Bool = true
+    @Published var autoCooldown: Bool = true
+    @Published var customSpeedMps: Double = 1.6
+    @Published var cooldownSeconds: Double = 20
+    @Published var updateFrequencyHz: Double = 5
+
+    // MARK: Safe Mode
+
+    @Published var safeModeTeleport: Bool = true
+    @Published var safeModeJoystick: Bool = true
+    @Published var addGPSDrift: Bool = false
+    @Published var smoothTurns: Bool = true
+    @Published var cooldownReminder: Bool = true
+    @Published var lastTeleportMessage: String?
+
+    // MARK: Joystick
+
+    @Published var joystickDirection: CGPoint = .zero
     @Published var joystickSpeed: Double = 5.0
 
-    /// Injection statistics
+    // MARK: Statistics
+
     @Published var injectionStats: InjectionStats = InjectionStats()
-
-    /// Last error message
-    @Published var lastError: String?
-
-    /// Status message for UI
-    @Published var statusMessage: String?
 
     // MARK: Dependencies
 
-    private let locationBridge: DevLocationBridge
+    let locationBridge: DevLocationBridge
     private let errorHandler: ErrorHandler
     weak var deviceStateManager: DeviceStateManager?
 
-    // MARK: Private Properties
+    /// Reports user-facing status text. Owned by the composition root so that route,
+    /// device and simulation messages all land in one place.
+    var onStatusMessage: ((String?) -> Void)?
 
-    private var simulationTask: Task<Void, Never>?
-    private var joystickTask: Task<Void, Never>?
-    private var cancellables = Set<AnyCancellable>()
+    // MARK: Private
 
-    // MARK: Computed Properties
+    private var lastTeleportAt: Date?
+    private var smoothedJoystickHeading: Double?
 
-    /// Whether simulation can be started
+    // MARK: Computed
+
     var canStartSimulation: Bool {
         deviceStateManager?.isDeviceReady ?? false
     }
 
-    /// Human-readable simulation status
     var statusText: String {
         guard let deviceState = deviceStateManager else {
             return "Initializing..."
         }
-
         if !deviceState.isTunneldRunning {
             return "Tunnel not running"
         }
@@ -132,178 +99,218 @@ class SimulationStateManager: ObservableObject {
         return "Ready"
     }
 
-    // MARK: Initialization
-
-    init(
-        locationBridge: DevLocationBridge = DevLocationBridge(),
-        errorHandler: ErrorHandler = ErrorHandler()
-    ) {
-        self.locationBridge = locationBridge
-        self.errorHandler = errorHandler
-
-        setupErrorHandling()
+    /// Speed actually applied to movement: the preset when auto, otherwise the custom value.
+    var effectiveMetersPerSecond: Double {
+        autoSpeed ? simulationSpeed.presetMetersPerSecond : customSpeedMps
     }
 
-    /// Set the device state manager reference
+    /// Seconds left before another safe-mode teleport is permitted.
+    var cooldownRemaining: TimeInterval {
+        guard let last = lastTeleportAt else { return 0 }
+        return max(0, cooldownSeconds - Date().timeIntervalSince(last))
+    }
+
+    /// Combined safe-mode switch used by the title bar.
+    var headerSafeMode: Bool {
+        get { safeModeTeleport && safeModeJoystick }
+        set {
+            safeModeTeleport = newValue
+            safeModeJoystick = newValue
+        }
+    }
+
+    // MARK: Initialization
+
+    // Dependencies are resolved inside the body: default arguments are evaluated in the
+    // caller's context, which is nonisolated, and these types are main-actor isolated.
+    init(
+        locationBridge: DevLocationBridge? = nil,
+        errorHandler: ErrorHandler? = nil
+    ) {
+        self.locationBridge = locationBridge ?? DevLocationBridge()
+        self.errorHandler = errorHandler ?? ErrorHandler()
+    }
+
     func setDeviceStateManager(_ manager: DeviceStateManager) {
         self.deviceStateManager = manager
     }
 
-    // MARK: Setup
-
-    private func setupErrorHandling() {
-        errorHandler.$currentError
-            .compactMap { $0 }
-            .sink { [weak self] error in
-                self?.lastError = error.message
-                if let suggestion = error.suggestion {
-                    self?.lastError? += "\n\n\(suggestion)"
-                }
-            }
-            .store(in: &cancellables)
-    }
-
     // MARK: Location Control
 
-    /// Set a specific location on the device
-    func setLocation(_ coordinate: LocationCoordinate) async {
-        guard let device = deviceStateManager?.selectedDevice else {
+    /// Apply a coordinate to the selected device.
+    ///
+    /// - Parameters:
+    ///   - quiet: suppresses toasts, status text and the cooldown gate. Used by the route
+    ///     and joystick loops, which update continuously.
+    ///   - usePerformanceMode: routes through the persistent Python bridge.
+    func setLocation(
+        _ coordinate: LocationCoordinate,
+        quiet: Bool = false,
+        usePerformanceMode: Bool = false
+    ) async {
+        guard let targetDevice = deviceStateManager?.selectedDevice else {
             errorHandler.handle(message: "No device selected", type: .device, action: .checkConnection)
+            if !quiet {
+                ToastManager.shared.error("No device selected")
+            }
             return
         }
 
+        var coordinate = coordinate
+        if !quiet, safeModeTeleport, cooldownReminder, let last = lastTeleportAt {
+            let wait = cooldownSeconds - Date().timeIntervalSince(last)
+            if wait > 0.05 {
+                lastTeleportMessage = String(format: "Cooldown %.1fs — wait before the next jump", wait)
+                onStatusMessage?(lastTeleportMessage)
+                return
+            }
+        }
+
+        if addGPSDrift, (safeModeTeleport && !quiet) || (quiet && safeModeJoystick) {
+            coordinate = Self.drifted(coordinate)
+        }
+
         targetLocation = coordinate
+        if !quiet {
+            onStatusMessage?("Injecting location...")
+        }
 
         do {
-            try await locationBridge.setLocation(coordinate, for: device)
+            try await locationBridge.setLocation(
+                coordinate,
+                for: targetDevice,
+                priority: quiet ? .high : .normal,
+                usePerformanceMode: usePerformanceMode
+            )
             currentLocation = coordinate
             isSimulating = true
-            lastError = nil
             injectionStats = await locationBridge.getStats()
             errorHandler.clearCurrentError()
+
+            if !quiet {
+                lastTeleportAt = Date()
+                lastTeleportMessage = nil
+                let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
+                onStatusMessage?("Location spoofed to \(locationStr)")
+                ToastManager.shared.success("Location spoofed successfully!")
+            }
         } catch let error as LocationInjectionError {
+            if case .rateLimited = error, quiet {
+                return
+            }
             errorHandler.handle(error, context: "Location injection")
+            isSimulating = false
+            if !quiet {
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
 
             if case .deviceNotFound = error {
                 deviceStateManager?.connectionLost()
             }
         } catch {
             errorHandler.handle(error, context: "Location injection")
+            isSimulating = false
+            if !quiet {
+                ToastManager.shared.error("Injection failed: \(error.localizedDescription)")
+            }
         }
     }
 
-    /// Clear the simulated location
+    /// Clear the simulated location on the selected device.
     func clearLocation() async {
-        guard let device = deviceStateManager?.selectedDevice else {
+        guard let targetDevice = deviceStateManager?.selectedDevice else {
             errorHandler.handle(message: "No device selected", type: .device)
             return
         }
 
         do {
-            try await locationBridge.clearLocation(for: device)
+            try await locationBridge.clearLocation(for: targetDevice)
             currentLocation = nil
             targetLocation = nil
             isSimulating = false
             isPaused = false
-            activeMode = .none
-            lastError = nil
-            statusMessage = "Location cleared"
+            onStatusMessage?("Location cleared")
             errorHandler.clearCurrentError()
         } catch {
             errorHandler.handle(error, context: "Clear location")
         }
     }
 
-    // MARK: Simulation Control
-
-    /// Start simulation with current target location
-    func startSimulation() async {
-        guard canStartSimulation else { return }
-
-        guard let target = targetLocation else {
-            lastError = "No target location selected"
-            return
-        }
-
-        isPaused = false
-        isSimulating = true
-        activeMode = .teleport
-        await setLocation(target)
+    /// Release the held DVT session without clearing state.
+    func stopHeldSimulation() async {
+        await locationBridge.stopHeldSimulation()
     }
 
-    /// Pause the current simulation
+    /// Choose how queued updates are drained.
+    func setQueueStrategy(_ strategy: QueueProcessingStrategy) async {
+        await locationBridge.setQueueStrategy(strategy)
+    }
+
+    // MARK: Playback Flags
+
     func pauseSimulation() {
         isPaused = true
     }
 
-    /// Resume a paused simulation
     func resumeSimulation() {
         isPaused = false
     }
 
-    /// Stop and reset the simulation
-    func stopSimulation() async {
-        simulationTask?.cancel()
-        joystickTask?.cancel()
-        simulationTask = nil
-        joystickTask = nil
+    // MARK: Joystick
 
-        isPaused = false
-        isSimulating = false
-        activeMode = .none
-        joystickDirection = .zero
-
-        await clearLocation()
-    }
-
-    // MARK: Joystick Control
-
-    /// Update joystick direction
+    /// Store the current stick vector. Deciding whether that should start a simulation is
+    /// the composition root's job, because it needs the planner.
     func updateJoystickDirection(_ direction: CGPoint) {
         joystickDirection = direction
-
-        if direction != .zero && activeMode != .joystick {
-            activeMode = .joystick
-        }
     }
 
-    /// Start joystick mode
-    func startJoystickMode() {
-        guard canStartSimulation else { return }
-
-        activeMode = .joystick
-        isSimulating = true
-        isPaused = false
-
-        joystickTask = Task {
-            while !Task.isCancelled && activeMode == .joystick {
-                if !isPaused && joystickDirection != .zero {
-                    await updateJoystickLocation()
-                }
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
-        }
+    func resetJoystick() {
+        joystickDirection = .zero
+        smoothedJoystickHeading = nil
     }
 
-    private func updateJoystickLocation() async {
-        guard let current = currentLocation else { return }
-
-        let next = JoystickMovement.nextCoordinate(
-            from: current,
-            direction: joystickDirection,
-            speedMetersPerSecond: simulationSpeed.metersPerSecond,
-            deltaTime: 0.1
-        )
-
-        if next != current {
-            await setLocation(next)
+    /// Blend a raw stick vector toward the previous heading to soften turns.
+    func smoothedDirection(_ raw: CGPoint) -> CGPoint {
+        let magnitude = hypot(raw.x, raw.y)
+        guard magnitude > 0.05 else {
+            smoothedJoystickHeading = nil
+            return raw
         }
+        let heading = atan2(raw.x, raw.y)
+        if let previous = smoothedJoystickHeading {
+            var delta = heading - previous
+            while delta > .pi { delta -= 2 * .pi }
+            while delta < -.pi { delta += 2 * .pi }
+            let blended = previous + delta * 0.35
+            smoothedJoystickHeading = blended
+            return CGPoint(x: sin(blended) * magnitude, y: cos(blended) * magnitude)
+        }
+        smoothedJoystickHeading = heading
+        return raw
     }
 
-    // MARK: Speed Control
+    // MARK: Speed
 
-    /// Set simulation speed
     func setSpeed(_ speed: SimulationSpeed) {
         simulationSpeed = speed
+        if autoSpeed {
+            customSpeedMps = speed.presetMetersPerSecond
+        }
+        if autoCooldown {
+            cooldownSeconds = speed.defaultCooldownSeconds
+        }
+    }
+
+    // MARK: Helpers
+
+    /// Nudge a coordinate by a metre or two so repeated pins are not pixel-identical.
+    static func drifted(_ coordinate: LocationCoordinate) -> LocationCoordinate {
+        let meters = Double.random(in: 0.4...2.2)
+        let bearing = Double.random(in: 0..<360)
+        return RouteInterpolator.moveCoordinate(
+            from: coordinate,
+            distanceMeters: meters,
+            bearingDegrees: bearing
+        )
     }
 }
