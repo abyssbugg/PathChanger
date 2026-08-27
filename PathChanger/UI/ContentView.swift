@@ -441,9 +441,9 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "lightbulb")
                         .foregroundStyle(Organic.accent400)
-                    Text(tunneldManager.isRunning
+                    Text(appState.canStartSimulation
                          ? "Click the map to set a destination — the card comes to you."
-                         : "Start the tunnel in the title bar, then click the map.")
+                         : "Connect a device or start the tunnel, then click the map.")
                         .font(Organic.body(12, weight: .semibold))
                         .foregroundStyle(Organic.neutral100)
                     Button("Got it") {
@@ -551,7 +551,7 @@ struct ContentView: View {
         case .openSettings:
             showSettings = true
         case .startTunneld:
-            Task { await TunneldManager.shared.autoStart() }
+            Task { await appState.startSelectedTunnel() }
         case .enableDeveloperMode:
             break
         case .checkConnection:

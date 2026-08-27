@@ -230,6 +230,12 @@ final class MovementPhysicsEngineTests: XCTestCase {
         let target = LocationCoordinate(latitude: 35.68, longitude: 139.65)
         engine.setTarget(target)
         engine.isMoving = true
+        // A zero-velocity engine moves only ~2.75cm during the first ten 100ms ticks,
+        // while Walking intentionally adds up to 5cm of GPS jitter per tick. The old test
+        // therefore failed randomly whenever noise outweighed the movement it was trying
+        // to assert. Start at a realistic walking velocity so this tests route direction,
+        // not the random-number generator.
+        engine.setVelocity(1.0)
 
         let initialDistance = distanceBetween(engine.state.position, target)
 
@@ -246,16 +252,7 @@ final class MovementPhysicsEngineTests: XCTestCase {
 
     // Helper function
     private func distanceBetween(_ a: LocationCoordinate, _ b: LocationCoordinate) -> Double {
-        let R = 6371000.0
-        let dLat = (b.latitude - a.latitude) * .pi / 180
-        let dLon = (b.longitude - a.longitude) * .pi / 180
-        let lat1 = a.latitude * .pi / 180
-        let lat2 = b.latitude * .pi / 180
-
-        let aa = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(aa), sqrt(1-aa))
-
-        return R * c
+        Geo.distance(from: a, to: b)
     }
 }
 

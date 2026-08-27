@@ -154,6 +154,155 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 }
 
+// MARK: - Device State Manager Direct Transport Tests
+
+@MainActor
+final class DeviceStateManagerDirectTransportTests: XCTestCase {
+
+    func testDirectWiFiDeviceIsReadyWithoutTunnel() {
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        manager.selectedDevice = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "Wi-Fi iPhone",
+            connectionType: .wifi
+        )
+        manager.wifiDirectDeviceIds = ["00008130-000C5144019A001C"]
+        manager.isWiFiTransportAvailable = true
+        manager.isTunneldRunning = false
+
+        XCTAssertTrue(
+            manager.isDeviceReady,
+            "A Network device discovered by usbmux is a valid direct Wi-Fi path"
+        )
+    }
+
+    func testDirectUSBDeviceIsReadyWithoutTunnel() {
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        manager.selectedDevice = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "USB iPhone",
+            connectionType: .usb
+        )
+        manager.usbDirectDeviceIds = ["00008130-000C5144019A001C"]
+        manager.isUSBConnected = true
+        manager.isTunneldRunning = false
+
+        XCTAssertTrue(manager.isDeviceReady)
+    }
+
+    func testUnreachableDeviceStillRequiresTunnel() {
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        manager.selectedDevice = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "Unavailable iPhone",
+            connectionType: .wifi
+        )
+        manager.isWiFiTransportAvailable = false
+        manager.isTunneldRunning = false
+
+        XCTAssertFalse(manager.isDeviceReady)
+    }
+
+    func testAnotherWiFiDeviceDoesNotMakeSelectedDeviceReady() {
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        manager.selectedDevice = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "Selected iPhone",
+            connectionType: .wifi
+        )
+        manager.wifiDirectDeviceIds = ["00008130-1111111111111111"]
+        manager.isWiFiTransportAvailable = true
+        manager.isTunneldRunning = false
+
+        XCTAssertFalse(
+            manager.isDeviceReady,
+            "Transport availability must belong to the selected UDID"
+        )
+    }
+}
+
+// MARK: - Device Manager Deduplication Tests
+
+@MainActor
+final class DeviceManagerDeduplicationTests: XCTestCase {
+
+    func testDeduplicatesWifiEndpointIdentifiersIntoSinglePhysicalDevice() {
+        let manager = DeviceManager()
+        manager.stopAutoRefresh()
+
+        let canonical = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "🖇️ (iOS 27.0)",
+            connectionType: .wifi,
+            productType: "iPhone16,2",
+            productVersion: "27.0",
+            deviceName: "🖇️"
+        )
+
+        let variants: [Device] = [
+            canonical,
+            Device(
+                id: "192.168.8.138",
+                displayName: "🖇️ (iOS 27.0)",
+                connectionType: .wifi,
+                productType: "iPhone16,2",
+                productVersion: "27.0",
+                deviceName: "🖇️"
+            ),
+            Device(
+                id: "2c0f:f5c0:600:ac13:1839:d9a8:fd2b:a7ad",
+                displayName: "🖇️ (iOS 27.0)",
+                connectionType: .wifi,
+                productType: "iPhone16,2",
+                productVersion: "27.0",
+                deviceName: "🖇️"
+            ),
+            Device(
+                id: "2c0f:f5c0:600:ac13:e2ea:c420:fa6c:3",
+                displayName: "🖇️ (iOS 27.0)",
+                connectionType: .wifi,
+                productType: "iPhone16,2",
+                productVersion: "27.0",
+                deviceName: "🖇️"
+            ),
+        ]
+
+        let deduped = manager.deduplicatedDevicesForTesting(variants)
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.id, canonical.id)
+        XCTAssertEqual(deduped.first?.productType, canonical.productType)
+        XCTAssertEqual(deduped.first?.productVersion, canonical.productVersion)
+    }
+
+    func testKeepsDistinctDevicesWhenIdentityDiffers() {
+        let manager = DeviceManager()
+        manager.stopAutoRefresh()
+
+        let first = Device(
+            id: "00008130-000C5144019A001C",
+            displayName: "Phone A (iOS 27.0)",
+            connectionType: .wifi,
+            productType: "iPhone16,2",
+            productVersion: "27.0",
+            deviceName: "Phone A"
+        )
+        let second = Device(
+            id: "00008120-000A111122223333",
+            displayName: "Phone B (iOS 27.0)",
+            connectionType: .wifi,
+            productType: "iPhone16,2",
+            productVersion: "27.0",
+            deviceName: "Phone B"
+        )
+
+        let deduped = manager.deduplicatedDevicesForTesting([first, second])
+
+        XCTAssertEqual(deduped.count, 2)
+        XCTAssertEqual(Set(deduped.map(\.id)), Set([first.id, second.id]))
+    }
+}
+
 // MARK: - Route State Manager Tests
 
 final class RouteStateManagerTests: XCTestCase {

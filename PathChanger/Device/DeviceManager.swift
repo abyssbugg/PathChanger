@@ -456,6 +456,9 @@ class DeviceManager: ObservableObject {
     @Published private(set) var usbTransportAvailable: Bool = false
     /// True when usbmux reports a Network/Wi-Fi attachment. Independent of tunnel state.
     @Published private(set) var wifiTransportAvailable: Bool = false
+    /// Exact UDIDs currently reported on each direct usbmux transport.
+    @Published private(set) var usbDirectDeviceIds: Set<String> = []
+    @Published private(set) var wifiDirectDeviceIds: Set<String> = []
 
     private var usbTransportMisses: Int = 0
     private var wifiTransportMisses: Int = 0
@@ -471,6 +474,13 @@ class DeviceManager: ObservableObject {
 
     // MARK: Device Cache (PERF-003)
     private let deviceCache = DeviceCache()
+
+    lazy var preparationService = DevicePreparationService { [weak self] arguments, timeout in
+        guard let self else {
+            throw DeviceError.commandFailed("Device manager is unavailable")
+        }
+        return try await self.runPython(arguments: arguments, timeout: timeout)
+    }
 
     // MARK: Private Properties
     private let sessionController = SessionController()
@@ -517,11 +527,11 @@ class DeviceManager: ObservableObject {
                     case .idle, .error:
                         Logger.info("🔄 Tunnel disconnected - invalidating device cache", category: .device)
                         await self.deviceCache.invalidateAll()
-                        // Also clear selected device if tunnel is down
-                        if self.selectedDevice != nil && !TunneldManager.shared.isRunning {
-                            self.selectedDevice = nil
-                            self.connectionState = .disconnected
-                        }
+                        // Do not clear the selected device merely because an optional
+                        // RemoteXPC tunnel stopped. usbmux may still expose the same phone
+                        // directly over USB or Network/Wi-Fi. Refreshing below reconciles
+                        // the real transports and only drops a device that actually vanished.
+                        await self.refreshDevices()
                     case .running:
                         // Tunnel connected - trigger a fresh device discovery
                         Logger.info("🔄 Tunnel connected - refreshing devices", category: .device)
@@ -554,6 +564,26 @@ class DeviceManager: ObservableObject {
     func stopAutoRefresh() {
         autoRefreshEnabled = false
         refreshTask?.cancel()
+    }
+
+    // MARK: Wi-Fi Preparation
+
+    /// Bootstrap a trusted USB device for repeatable Network/Wi-Fi discovery.
+    func prepareWiFi(for device: Device) async throws {
+        guard DevicePreparationPlanner.canPrepareWiFi(
+            deviceId: device.id,
+            usbDeviceIds: usbDirectDeviceIds
+        ) else {
+            throw DeviceError.connectionFailed(
+                "Connect the trusted device by USB once to prepare Wi-Fi pairing."
+            )
+        }
+
+        try await preparationService.prepareWiFi(deviceId: device.id)
+        UserDefaults.standard.set(device.id, forKey: "lastPreparedDeviceUDID")
+
+        await refreshTransportAvailability()
+        await refreshDevices()
     }
 
     // MARK: Cache Management (PERF-003)
@@ -622,13 +652,22 @@ class DeviceManager: ObservableObject {
 
         // Discover devices from multiple sources in parallel
         async let usbDevicesTask = discoverUSBDevices()
+        async let mobdev2DevicesTask = discoverMobdev2Devices()
         async let tunnelDevicesTask = discoverTunneldAPIDevices()
 
         let usbDevices = await usbDevicesTask
+        let mobdev2Devices = await mobdev2DevicesTask
         let tunnelDevices = await tunnelDevicesTask
+        let knownWiFiDevices = connectionMode == .usb ? [] : discoverKnownRemotePairingDevices()
 
-        // Merge devices, preferring tunnel devices for more complete info
+        // Merge devices, preferring live usbmux/tunnel devices over offline pairing records.
         var deviceMap: [String: Device] = [:]
+        for device in knownWiFiDevices {
+            deviceMap[device.id] = device
+        }
+        for device in mobdev2Devices {
+            deviceMap[device.id] = device
+        }
         for device in usbDevices {
             deviceMap[device.id] = device
         }
@@ -636,7 +675,11 @@ class DeviceManager: ObservableObject {
             deviceMap[device.id] = device
         }
 
-        let discoveredDevices = Array(deviceMap.values)
+        let discoveredDevices = deduplicatePhysicalDevices(Array(deviceMap.values))
+        Logger.debug(
+            "Device discovery collapsed \(deviceMap.count) raw entries to \(discoveredDevices.count) canonical device(s)",
+            category: .device
+        )
 
         // Only update if there's a change to prevent UI flickering
         let currentIds = Set(devices.map { $0.id })
@@ -662,6 +705,171 @@ class DeviceManager: ObservableObject {
         }
 
         lastError = nil
+    }
+
+    /// Collapse multiple discovery identifiers (UDID + IPv4/IPv6 endpoint IDs) that
+    /// represent the same physical phone into one canonical device record.
+    private func deduplicatePhysicalDevices(_ devices: [Device]) -> [Device] {
+        guard !devices.isEmpty else { return [] }
+
+        let udidDevices = devices.filter { ArgumentSanitizer.isValidDeviceUDID($0.id) }
+        let udidByFingerprint: [String: String] = Dictionary(
+            uniqueKeysWithValues: udidDevices.compactMap { device in
+                guard let fingerprint = physicalFingerprint(for: device) else { return nil }
+                return (fingerprint, device.id)
+            }
+        )
+        let soleUDID = udidDevices.count == 1 ? udidDevices[0] : nil
+
+        var mergedByCanonicalId: [String: Device] = [:]
+        var firstSeenOrder: [String: Int] = [:]
+
+        for (index, device) in devices.enumerated() {
+            let canonicalId: String = {
+                if ArgumentSanitizer.isValidDeviceUDID(device.id) {
+                    return device.id
+                }
+                if let fingerprint = physicalFingerprint(for: device),
+                   let matchedUDID = udidByFingerprint[fingerprint] {
+                    return matchedUDID
+                }
+                if let soleUDID, resembles(device, soleUDID) {
+                    return soleUDID.id
+                }
+                return device.id
+            }()
+
+            if firstSeenOrder[canonicalId] == nil {
+                firstSeenOrder[canonicalId] = index
+            }
+
+            let remapped = remapDevice(device, to: canonicalId)
+            if let existing = mergedByCanonicalId[canonicalId] {
+                mergedByCanonicalId[canonicalId] = mergeDevice(existing, with: remapped)
+            } else {
+                mergedByCanonicalId[canonicalId] = remapped
+            }
+        }
+
+        return mergedByCanonicalId
+            .sorted { (lhs, rhs) in
+                let leftOrder = firstSeenOrder[lhs.key] ?? Int.max
+                let rightOrder = firstSeenOrder[rhs.key] ?? Int.max
+                return leftOrder < rightOrder
+            }
+            .map(\.value)
+    }
+
+    private func physicalFingerprint(for device: Device) -> String? {
+        let identityName = (device.deviceName ?? device.displayName)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let productType = (device.productType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let productVersion = (device.productVersion ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        guard !identityName.isEmpty || !productType.isEmpty || !productVersion.isEmpty else {
+            return nil
+        }
+        return "\(identityName)|\(productType)|\(productVersion)"
+    }
+
+    private func resembles(_ lhs: Device, _ rhs: Device) -> Bool {
+        if let lhsName = lhs.deviceName, let rhsName = rhs.deviceName,
+           !lhsName.isEmpty, !rhsName.isEmpty, lhsName == rhsName {
+            return true
+        }
+        return lhs.displayName == rhs.displayName
+            || (lhs.productType == rhs.productType && lhs.productVersion == rhs.productVersion)
+    }
+
+    private func remapDevice(_ device: Device, to id: String) -> Device {
+        Device(
+            id: id,
+            displayName: device.displayName,
+            connectionType: device.connectionType,
+            productType: device.productType,
+            productVersion: device.productVersion,
+            deviceName: device.deviceName
+        )
+    }
+
+    private func mergeDevice(_ preferred: Device, with candidate: Device) -> Device {
+        let isPreferredGeneric = preferred.displayName == "Paired iOS Device"
+            || preferred.displayName == "iOS Device"
+        let displayName = isPreferredGeneric ? candidate.displayName : preferred.displayName
+
+        let deviceName = preferred.deviceName ?? candidate.deviceName
+        let productType = preferred.productType ?? candidate.productType
+        let productVersion = preferred.productVersion ?? candidate.productVersion
+        let connectionType: ConnectionType = preferred.connectionType == .usb || candidate.connectionType == .usb
+            ? .usb
+            : preferred.connectionType
+
+        return Device(
+            id: preferred.id,
+            displayName: displayName,
+            connectionType: connectionType,
+            productType: productType,
+            productVersion: productVersion,
+            deviceName: deviceName
+        )
+    }
+
+    #if DEBUG
+    func deduplicatedDevicesForTesting(_ devices: [Device]) -> [Device] {
+        deduplicatePhysicalDevices(devices)
+    }
+    #endif
+
+    /// Discover devices known to pymobiledevice3 even before Bonjour/usbmux advertises
+    /// them. Only filenames are read; pairing secrets never leave the record.
+    private func discoverKnownRemotePairingDevices() -> [Device] {
+        let recordsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pymobiledevice3", isDirectory: true)
+
+        guard let filenames = try? FileManager.default.contentsOfDirectory(atPath: recordsDirectory.path) else {
+            return []
+        }
+
+        return filenames.compactMap { filename in
+            guard let deviceId = DevicePreparationPlanner.remotePairingDeviceId(from: filename) else {
+                return nil
+            }
+            return Device(
+                id: deviceId,
+                displayName: "Paired iOS Device",
+                connectionType: .wifi,
+                productType: nil,
+                productVersion: nil,
+                deviceName: nil
+            )
+        }
+    }
+
+    /// Discover paired Network devices over Apple's `_apple-mobdev2._tcp` Bonjour service.
+    ///
+    /// This is independent of usbmux and is the supported pymobiledevice3 bridge for devices
+    /// visible to CoreDevice/FlowDeck while usbmux has not created a Network entry.
+    private func discoverMobdev2Devices() async -> [Device] {
+        guard connectionMode != .usb else { return [] }
+
+        let recordsPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pymobiledevice3", isDirectory: true)
+            .path
+        let arguments = DevicePreparationPlanner.mobdev2BrowseArguments(
+            pairingRecordsPath: recordsPath
+        )
+
+        do {
+            let output = try await runPython(arguments: arguments, timeout: 10)
+            return parseDeviceListJSON(output, connectionType: .wifi)
+        } catch {
+            Logger.debug(
+                "mobdev2 discovery failed: \(error.localizedDescription)",
+                category: .device
+            )
+            return []
+        }
     }
 
     // MARK: USB Device Discovery (pymobiledevice3 usbmux list)
@@ -1149,7 +1357,7 @@ class DeviceManager: ObservableObject {
 
     // MARK: Python Command Execution
     /// Run Python command with proper timeout protection
-    private func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
+    func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -1336,6 +1544,8 @@ class DeviceManager: ObservableObject {
     private func applyUsbmuxTransportObservation(_ output: String) {
         var sawUSB = false
         var sawWiFi = false
+        var observedUSBDeviceIds = Set<String>()
+        var observedWiFiDeviceIds = Set<String>()
 
         if let jsonStart = output.firstIndex(of: "["),
            let jsonEnd = output.lastIndex(of: "]"),
@@ -1343,10 +1553,14 @@ class DeviceManager: ObservableObject {
            let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             for item in items {
                 let type = (item["ConnectionType"] as? String ?? "").lowercased()
+                let deviceId = item["UniqueDeviceID"] as? String
+                    ?? item["Identifier"] as? String
                 if type.contains("usb") {
                     sawUSB = true
+                    if let deviceId { observedUSBDeviceIds.insert(deviceId) }
                 } else if type.contains("network") || type.contains("wifi") {
                     sawWiFi = true
+                    if let deviceId { observedWiFiDeviceIds.insert(deviceId) }
                 }
             }
         }
@@ -1354,20 +1568,24 @@ class DeviceManager: ObservableObject {
         if sawUSB {
             usbTransportMisses = 0
             usbTransportAvailable = true
+            usbDirectDeviceIds = observedUSBDeviceIds
         } else {
             usbTransportMisses += 1
             if usbTransportMisses >= transportMissThreshold {
                 usbTransportAvailable = false
+                usbDirectDeviceIds = []
             }
         }
 
         if sawWiFi {
             wifiTransportMisses = 0
             wifiTransportAvailable = true
+            wifiDirectDeviceIds = observedWiFiDeviceIds
         } else {
             wifiTransportMisses += 1
             if wifiTransportMisses >= transportMissThreshold {
                 wifiTransportAvailable = false
+                wifiDirectDeviceIds = []
             }
         }
     }

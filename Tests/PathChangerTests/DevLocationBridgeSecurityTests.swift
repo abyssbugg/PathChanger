@@ -10,6 +10,21 @@ import XCTest
 
 final class DevLocationBridgeSecurityTests: XCTestCase {
 
+    func testConnectionArgumentsClassifyTunnelDependency() {
+        XCTAssertFalse(DevLocationBridge.connectionRequiresTunnel([
+            "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+            "set", "--udid", "00008130-000C5144019A001C",
+        ]))
+        XCTAssertTrue(DevLocationBridge.connectionRequiresTunnel([
+            "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+            "set", "--rsd", "fd00::1", "58783",
+        ]))
+        XCTAssertTrue(DevLocationBridge.connectionRequiresTunnel([
+            "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+            "set", "--tunnel", "00008130-000C5144019A001C",
+        ]))
+    }
+
     // MARK: - Output Size Limit Tests
 
     func testMaxOutputSizeLimitIsConfigured() {

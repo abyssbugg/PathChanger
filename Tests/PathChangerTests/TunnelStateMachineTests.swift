@@ -112,7 +112,7 @@ final class TunnelStateMachineTests: XCTestCase {
 
         let result = stateMachine.send(.processLaunched(pid: 12345))
 
-        if case .success(let newState, _) = result {
+        if case .success(let newState, let actions) = result {
             // Still starting until connection established
             XCTAssertEqual(newState, .starting)
             XCTAssertTrue(stateMachine.currentContext.activeProcessIds.contains(12345))
@@ -176,13 +176,18 @@ final class TunnelStateMachineTests: XCTestCase {
 
         let result = stateMachine.send(.errorOccurred("Device not found"))
 
-        if case .success(let newState, _) = result {
+        if case .success(let newState, let actions) = result {
             if case .error(let message) = newState {
                 XCTAssertEqual(message, "Device not found")
                 XCTAssertEqual(stateMachine.lastError, "Device not found")
             } else {
                 XCTFail("Expected error state")
             }
+            XCTAssertFalse(actions.contains(where: {
+                if case .scheduleRecovery = $0 { return true }
+                return false
+            }))
+            XCTAssertTrue(actions.contains(.cleanupResources))
         } else {
             XCTFail("Expected success transition")
         }
@@ -265,11 +270,39 @@ final class TunnelStateMachineTests: XCTestCase {
             } else {
                 XCTFail("Expected error state")
             }
-            // Should schedule recovery for first failure
-            XCTAssertTrue(actions.contains(where: {
+            // Tunnel startup is privileged and may only follow an explicit user action.
+            // A background health check must leave the manager in an honest error state,
+            // not schedule a fake recovery that transitions to `.starting` without
+            // launching anything (and without permission to raise an admin prompt).
+            XCTAssertFalse(actions.contains(where: {
                 if case .scheduleRecovery = $0 { return true }
                 return false
             }))
+            XCTAssertTrue(actions.contains(.cleanupResources))
+        } else {
+            XCTFail("Expected success transition")
+        }
+    }
+
+    func testRunningToErrorOnErrorOccurredDoesNotScheduleRecovery() {
+        // Set up running state
+        stateMachine.send(.startRequested(mode: .usb))
+        let info = TunnelInfo(rsdAddress: "127.0.0.1", rsdPort: 50000, mode: .usb, interface: nil, processId: nil)
+        stateMachine.send(.connectionEstablished(info: info))
+
+        let result = stateMachine.send(.errorOccurred("Lost tunnel connectivity"))
+
+        if case .success(let newState, let actions) = result {
+            if case .error(let message) = newState {
+                XCTAssertEqual(message, "Lost tunnel connectivity")
+            } else {
+                XCTFail("Expected error state")
+            }
+            XCTAssertFalse(actions.contains(where: {
+                if case .scheduleRecovery = $0 { return true }
+                return false
+            }))
+            XCTAssertTrue(actions.contains(.cleanupResources))
         } else {
             XCTFail("Expected success transition")
         }

@@ -29,6 +29,8 @@ final class DeviceStateManager: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .disconnected
     @Published var isUSBConnected: Bool = false
     @Published var isWiFiTransportAvailable: Bool = false
+    @Published var usbDirectDeviceIds: Set<String> = []
+    @Published var wifiDirectDeviceIds: Set<String> = []
     @Published var preferUSBConnection: Bool = false
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
 
@@ -68,7 +70,27 @@ final class DeviceStateManager: ObservableObject {
 
     /// Whether a device is ready to receive location updates.
     var isDeviceReady: Bool {
-        selectedDevice != nil && isTunneldRunning
+        selectedDevice != nil && (selectedDirectTransportAvailable || isTunneldRunning)
+    }
+
+    /// Whether usbmux currently exposes the selected device over its own transport.
+    ///
+    /// `ConnectionType.network` devices can carry DVT directly via `--udid`; the installed
+    /// reference app has been verified doing exactly this on iOS 27 with the USB cable
+    /// disconnected. A RemoteXPC tunnel is an alternative, not a prerequisite.
+    var selectedDirectTransportAvailable: Bool {
+        guard let selectedDevice else { return false }
+        switch selectedDevice.connectionType {
+        case .usb:
+            return usbDirectDeviceIds.contains(selectedDevice.id)
+        case .wifi:
+            return wifiDirectDeviceIds.contains(selectedDevice.id)
+        }
+    }
+
+    /// True only when the selected device is not reachable directly through usbmux.
+    var requiresTunnelForSelectedDevice: Bool {
+        selectedDevice != nil && !selectedDirectTransportAvailable
     }
 
     // MARK: Initialization
@@ -130,7 +152,7 @@ final class DeviceStateManager: ObservableObject {
         reliabilityManager.onReconnect = { [weak self] in
             guard let self = self else { return false }
             await self.refreshDevices()
-            return self.selectedDevice != nil && self.isTunneldRunning
+            return self.isDeviceReady
         }
 
         reliabilityManager.onConnectionLost = { [weak self] in
@@ -210,13 +232,21 @@ final class DeviceStateManager: ObservableObject {
 
         availableDevices = uniqueDevices
 
-        if selectedDevice == nil, let first = availableDevices.first {
+        if let selectedDevice,
+           let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
+            // A known pairing placeholder may become a live USB or Network device. Keep
+            // the selection but replace its stale connection type and metadata.
+            self.selectedDevice = updated
+            onDeviceSelected?(updated)
+        } else if selectedDevice == nil, let first = availableDevices.first {
             selectedDevice = first
             onDeviceSelected?(first)
         }
 
         updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
+        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
 
         connectionStatus = selectedDevice != nil ? .connected : .disconnected
 
@@ -228,17 +258,32 @@ final class DeviceStateManager: ObservableObject {
     /// Poll tunnel and transport availability.
     func checkTunneldStatus() async {
         await deviceManager.checkTunneldStatus()
+        let tunnelManager = TunneldManager.shared
+        if deviceManager.isTunneldRunning && !tunnelManager.isRunning {
+            // Only auto-adopt from a neutral state. If adoption previously failed and put
+            // the manager in `.error`, retrying here every poll causes a visible
+            // "Connecting…" loop without a new privileged launch.
+            if case .idle = tunnelManager.state {
+                await tunnelManager.adoptRunningTunnelIfPresent()
+            }
+        }
         await deviceManager.refreshTransportAvailability()
 
         updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
+        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
         updateTunnelRunning(deviceManager.isTunneldRunning)
 
-        if TunneldManager.shared.isRunning {
+        if tunnelManager.isRunning {
             updateTunnelRunning(true, force: true)
+        } else if case .error = tunnelManager.state {
+            // The process list can be stale for a short period after failure. Honor the
+            // authoritative manager error state so UI readiness does not stick "connected".
+            updateTunnelRunning(false, force: true)
         }
 
-        if !isTunneldRunning {
+        if !isTunneldRunning && !isWiFiTransportAvailable {
             usbFallbackManager.wirelessFailed()
         } else {
             usbFallbackManager.wirelessRestored()

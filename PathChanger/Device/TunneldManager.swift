@@ -175,6 +175,38 @@ struct TunnelInfo: Equatable {
     var connectionString: String {
         "--rsd \(rsdAddress) \(rsdPort)"
     }
+
+    /// A tunnel is usable only when it produced a real RSD endpoint.
+    /// `127.0.0.1:0` was previously manufactured when parsing failed, which marked the
+    /// UI "Tunnel live" even though no connection could use it.
+    var isUsable: Bool {
+        !rsdAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && rsdPort > 0
+            && rsdPort <= 65_535
+    }
+}
+
+@MainActor
+enum TunnelStartupWaiter {
+
+    /// Poll until a usable RSD endpoint appears, the process exits, or the timeout expires.
+    static func wait(
+        timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.25,
+        processIsRunning: () -> Bool,
+        readInfo: () async -> TunnelInfo?
+    ) async -> TunnelInfo? {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while processIsRunning() {
+            if let info = await readInfo(), info.isUsable {
+                return info
+            }
+            guard Date() < deadline else { return nil }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+        return nil
+    }
 }
 
 // MARK: - Tunneld Manager
@@ -470,21 +502,30 @@ class TunneldManager: ObservableObject {
         AppRuntimeEnvironment.allowsAutomaticStartup(environment: environment)
     }
 
-    nonisolated static func arguments(for mode: TunnelMode) -> [String]? {
+    nonisolated static func arguments(for mode: TunnelMode, deviceId: String? = nil) -> [String]? {
+        let base: [String]?
         switch mode {
         case .usb:
-            return ["-m", "pymobiledevice3", "lockdown", "start-tunnel"]
+            base = ["-m", "pymobiledevice3", "lockdown", "start-tunnel"]
         case .wifi:
-            return ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi"]
+            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi"]
         case .daemon:
-            return ["-m", "pymobiledevice3", "remote", "tunneld"]
+            base = ["-m", "pymobiledevice3", "remote", "tunneld"]
         case .auto:
-            return nil
+            base = nil
         }
+
+        guard var arguments = base else { return nil }
+        if mode != .daemon,
+           let deviceId,
+           ArgumentSanitizer.isValidDeviceUDID(deviceId) {
+            arguments += ["--udid", deviceId]
+        }
+        return arguments
     }
 
     /// Start tunnel automatically - called on app launch
-    func autoStart() async {
+    func autoStart(deviceId: String? = nil) async {
         guard Self.shouldAutoStart() else {
             Logger.debug("Skipping tunnel auto-start: automatic startup is disallowed", category: .device)
             return
@@ -503,13 +544,48 @@ class TunneldManager: ObservableObject {
         }
 
         // Try to start tunnel with preferred mode
-        await startTunnel()
+        await startTunnel(deviceId: deviceId)
+    }
+
+    /// Adopt a tunnel process that survived an app relaunch without requesting elevation.
+    ///
+    /// The RSD tunnel is a root-owned child and can outlive the UI process. Discovery and
+    /// log parsing are read-only; if both process and usable endpoint exist, rebuild the
+    /// state-machine context so all DVT commands use `--rsd` immediately.
+    func adoptRunningTunnelIfPresent() async {
+        guard case .idle = state else { return }
+        guard let mode = await detectRunningTunnel() else { return }
+
+        stateMachine.reset()
+        guard case .success = stateMachine.send(.startRequested(mode: mode)) else { return }
+
+        await parseRsdInfo()
+        let pid = await discoverPid(for: mode)
+
+        guard let parsed = tunnelInfo, parsed.isUsable else {
+            stateMachine.send(.errorOccurred("Existing tunnel has no usable RSD endpoint"))
+            return
+        }
+
+        let adopted = TunnelInfo(
+            rsdAddress: parsed.rsdAddress,
+            rsdPort: parsed.rsdPort,
+            mode: mode,
+            interface: parsed.interface,
+            processId: pid
+        )
+        tunnelInfo = adopted
+        stateMachine.send(.connectionEstablished(info: adopted))
     }
 
     /// Start tunnel with preferred mode (with auto-fallback)
-    func startTunnel() async {
+    func startTunnel(deviceId: String? = nil) async {
         // Check state via state machine
         guard !stateMachine.isActive && !stateMachine.isTransitioning else {
+            Logger.debug(
+                "Ignoring startTunnel request because state is already \(stateMachine.currentState)",
+                category: .device
+            )
             return
         }
 
@@ -535,11 +611,22 @@ class TunneldManager: ObservableObject {
         }
 
         if let runningMode = await detectRunningTunnel() {
-            guard stateMachine.currentState == .starting else {
+            await parseRsdInfo()
+            if let existingInfo = stateMachine.currentContext.tunnelInfo ?? tunnelInfo, existingInfo.isUsable {
+                guard stateMachine.currentState == .starting else {
+                    return
+                }
+                Logger.info(
+                    "Adopting existing \(runningMode.rawValue) tunnel with usable endpoint",
+                    category: .device
+                )
+                stateMachine.send(.externalTunnelDetected(mode: runningMode))
                 return
             }
-            stateMachine.send(.externalTunnelDetected(mode: runningMode))
-            return
+            Logger.error(
+                "Detected existing \(runningMode.rawValue) process without usable RSD endpoint; attempting fresh start",
+                category: .device
+            )
         }
 
         // Another caller or a stop request may have changed the reserved state.
@@ -556,7 +643,7 @@ class TunneldManager: ObservableObject {
 
             Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
 
-            let outcome = await attemptStart(mode: mode)
+            let outcome = await attemptStart(mode: mode, deviceId: deviceId)
 
             if case .cancelled = outcome {
                 if stateMachine.currentState == .starting {
@@ -566,33 +653,29 @@ class TunneldManager: ObservableObject {
             }
 
             if case .started(let pid) = outcome {
-                // Parse RSD info
-                await parseRsdInfo()
+                let startupTimeout = min(AppSettings.shared.tunnelTimeout, 30)
+                let info = await TunnelStartupWaiter.wait(
+                    timeout: startupTimeout,
+                    processIsRunning: { self.isProcessRunning(pid: pid) },
+                    readInfo: {
+                        await self.parseRsdInfo()
+                        return self.stateMachine.currentContext.tunnelInfo ?? self.tunnelInfo
+                    }
+                )
 
-                guard stateMachine.currentState == .starting, isProcessRunning(pid: pid) else {
-                    if stateMachine.currentState == .starting {
+                guard stateMachine.currentState == .starting else { return }
+                guard let info else {
+                    if isProcessRunning(pid: pid) {
+                        lastError = "Tunnel did not provide a usable RSD endpoint within \(Int(startupTimeout)) seconds"
+                        stateMachine.send(.errorOccurred(lastError!))
+                    } else {
+                        await checkLogForErrors(mode: mode)
                         lastError = lastError ?? "Tunnel process exited before the connection was established"
                         stateMachine.send(.processExited(pid: pid))
                     }
                     return
                 }
-
-                // Connection established - state machine handles the rest
-                if let info = stateMachine.currentContext.tunnelInfo {
-                    stateMachine.send(.connectionEstablished(info: info))
-                } else if let info = tunnelInfo {
-                    stateMachine.send(.connectionEstablished(info: info))
-                } else {
-                    // Create minimal info if not parsed
-                    let info = TunnelInfo(
-                        rsdAddress: "127.0.0.1",
-                        rsdPort: 0,
-                        mode: mode,
-                        interface: nil,
-                        processId: stateMachine.currentContext.activeProcessIds.first
-                    )
-                    stateMachine.send(.connectionEstablished(info: info))
-                }
+                stateMachine.send(.connectionEstablished(info: info))
                 return
             }
 
@@ -616,10 +699,10 @@ class TunneldManager: ObservableObject {
     }
 
     /// Start tunnel with specific mode
-    func startTunnel(mode: TunnelMode) async {
+    func startTunnel(mode: TunnelMode, deviceId: String? = nil) async {
         let previousMode = preferredMode
         preferredMode = mode
-        await startTunnel()
+        await startTunnel(deviceId: deviceId)
 
         // Direct access via state machine
         let running = stateMachine.isActive
@@ -699,7 +782,7 @@ class TunneldManager: ObservableObject {
     }
 
     /// Start the tunnel helper with administrator privileges. Detect/install stay unprivileged.
-    private func attemptStart(mode: TunnelMode) async -> PrivilegedStartOutcome {
+    private func attemptStart(mode: TunnelMode, deviceId: String?) async -> PrivilegedStartOutcome {
         if mode == .usb {
             let usbVisible = await usbmuxReportsUSB()
             if !usbVisible {
@@ -708,7 +791,7 @@ class TunneldManager: ObservableObject {
             }
         }
 
-        guard let arguments = Self.arguments(for: mode) else {
+        guard let arguments = Self.arguments(for: mode, deviceId: deviceId) else {
             return .failed
         }
 
@@ -1129,31 +1212,37 @@ class TunneldManager: ObservableObject {
         healthMonitor.setFailureNotificationHandler { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                if self.isRunning || self.isStarting {
-                    Logger.error("Health monitor flagged a failure, but a tunnel is still active — not elevating again", category: .device)
+                if self.isRunning {
+                    Logger.error(
+                        "Tunnel health failed — leaving running state and requiring explicit restart",
+                        category: .device
+                    )
+                    self.stateMachine.send(.healthCheckFailed)
+                    return
+                }
+                if self.isStarting {
+                    Logger.error(
+                        "Tunnel health failed while startup is still in progress",
+                        category: .device
+                    )
                     return
                 }
                 let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
-                guard userEnabled, Self.shouldAutoStart() else { return }
-                Logger.error("Tunnel process is gone — starting once", category: .device)
-                await self.startTunnel()
+                guard userEnabled else { return }
+                Logger.error(
+                    "Tunnel process is gone — waiting for explicit user restart",
+                    category: .device
+                )
             }
         }
 
         // Start health monitoring
         healthMonitor.startMonitoring()
 
-        monitorTask = Task {
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
-                    // Health check logic here
-                    Logger.debug("✓ Health check passed", category: .device)
-                } catch {
-                    return
-                }
-            }
-        }
+        // TunnelHealthMonitor owns the real 2-second liveness checks. The previous
+        // parallel task logged "✓ Health check passed" unconditionally every 5 seconds,
+        // even while the real monitor reported 55+ consecutive failures.
+        monitorTask = nil
     }
 
     /// Maximum output size from subprocess (1 MB) - prevents DoS via excessive output

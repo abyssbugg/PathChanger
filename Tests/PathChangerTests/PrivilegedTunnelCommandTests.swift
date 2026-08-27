@@ -16,6 +16,38 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         ])
     }
 
+    func testStartCommandAcceptsValidatedDeviceTarget() {
+        let udid = "00008130-000C5144019A001C"
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/usr/bin/python3",
+            arguments: [
+                "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi",
+                "--udid", udid,
+            ],
+            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+        )
+
+        guard case .success(let command) = result else {
+            return XCTFail("expected a validated per-device tunnel command")
+        }
+        XCTAssertTrue(command.contains("'--udid' '\(udid)'"))
+    }
+
+    func testStartCommandRejectsMalformedDeviceTarget() {
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: "/usr/bin/python3",
+            arguments: [
+                "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi",
+                "--udid", "not-a-udid",
+            ],
+            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+        )
+
+        guard case .failure(.unapprovedArguments) = result else {
+            return XCTFail("expected malformed target rejection")
+        }
+    }
+
     func testStartCommandQuotesHomebrewPythonAndLog() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: "/opt/homebrew/bin/python3.13",
@@ -29,10 +61,29 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
 
         XCTAssertEqual(
             command,
-            "'/opt/homebrew/bin/python3.13' '-m' 'pymobiledevice3' 'lockdown' 'start-tunnel' > '/Users/datamatics/Library/Logs/PathChanger/tunnel.log' 2>&1 & echo $!"
+            "HOME='\(NSHomeDirectory())' '/opt/homebrew/bin/python3.13' '-m' 'pymobiledevice3' 'lockdown' 'start-tunnel' > '/Users/datamatics/Library/Logs/PathChanger/tunnel.log' 2>&1 & echo $!"
         )
         XCTAssertFalse(command.contains("pip"))
         XCTAssertFalse(command.contains("sudo"))
+    }
+
+    func testEveryElevatedTunnelCommandPreservesPairingRecordHome() {
+        for arguments in PrivilegedTunnelCommand.allowedArgumentLists {
+            let result = PrivilegedTunnelCommand.startShellCommand(
+                pythonPath: "/usr/bin/python3",
+                arguments: arguments,
+                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+            )
+
+            guard case .success(let command) = result else {
+                return XCTFail("expected an approved command for \(arguments)")
+            }
+
+            XCTAssertTrue(
+                command.hasPrefix("HOME='\(NSHomeDirectory())' "),
+                "Elevated pymobiledevice3 must read the logged-in user's iOS pairing records"
+            )
+        }
     }
 
     func testStartCommandRejectsUnknownPython() {

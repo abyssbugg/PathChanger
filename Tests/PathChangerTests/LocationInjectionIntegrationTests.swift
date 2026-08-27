@@ -27,6 +27,34 @@ final class LocationInjectionIntegrationTests: XCTestCase {
         )
     }
 
+    func testDirectWiFiDoesNotRequireRemoteTunnel() async throws {
+        try PathChangerTestEnvironment.skipDeviceIntegrationTestsUnlessEnabled(
+            "Direct Wi-Fi injection invokes pymobiledevice3 against host device services."
+        )
+        let directWiFiDevice = Device(
+            id: "0000000000000000000000000000000000000027",
+            displayName: "Direct Wi-Fi iPhone",
+            connectionType: .wifi,
+            productType: "iPhone16,2",
+            productVersion: "27.0",
+            deviceName: "Direct Wi-Fi iPhone"
+        )
+
+        do {
+            try await locationBridge.setLocation(
+                LocationCoordinate(latitude: 6.4544, longitude: 3.4022),
+                for: directWiFiDevice
+            )
+        } catch let error as LocationInjectionError {
+            if case .tunneldNotRunning = error {
+                XCTFail(
+                    "A Network device discovered by usbmux must use direct --udid instead of requiring tunneld"
+                )
+            }
+            // Device-not-found / injection errors are expected for this synthetic UDID.
+        }
+    }
+
     override func tearDown() async throws {
         locationBridge = nil
         testDevice = nil

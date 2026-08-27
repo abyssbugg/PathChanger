@@ -353,14 +353,29 @@ actor DevLocationBridge {
 
     /// `developer dvt simulate-location set` must stay running or iOS snaps back.
     private var heldSimulationProcess: Process?
+    private var heldSimulationRequiresTunnel: Bool = false
 
-    private func retainSimulationProcess(_ process: Process) {
+    private func retainSimulationProcess(_ process: Process, requiresTunnel: Bool) {
         heldSimulationProcess = process
+        heldSimulationRequiresTunnel = requiresTunnel
     }
 
     func stopHeldSimulation() {
         heldSimulationProcess?.terminate()
         heldSimulationProcess = nil
+        heldSimulationRequiresTunnel = false
+    }
+
+    /// Stop only sessions whose connection disappears with the RemoteXPC tunnel.
+    func stopTunnelDependentSimulation() async {
+        if heldSimulationRequiresTunnel {
+            stopHeldSimulation()
+        }
+        await PersistentLocationBridge.shared.stopIfUsingTunnel()
+    }
+
+    static func connectionRequiresTunnel(_ arguments: [String]) -> Bool {
+        arguments.contains("--rsd") || arguments.contains("--tunnel")
     }
 
     // MARK: - Public API
@@ -478,7 +493,8 @@ actor DevLocationBridge {
         let result = try await runPython(
             arguments: sanitizedArgs,
             device: device,
-            keepAlive: true
+            keepAlive: true,
+            heldSessionRequiresTunnel: Self.connectionRequiresTunnel(sanitizedArgs)
         )
 
         // Check for common errors
@@ -565,7 +581,8 @@ actor DevLocationBridge {
                 let result = try await runPython(
                     arguments: sanitizedArgs,
                     device: queuedRequest.device,
-                    keepAlive: true
+                    keepAlive: true,
+                    heldSessionRequiresTunnel: Self.connectionRequiresTunnel(sanitizedArgs)
                 )
                 try parseResult(result)
 
@@ -716,12 +733,10 @@ actor DevLocationBridge {
 
     /// Reachability + Developer Mode. Only a real DeveloperModeError means DM is off.
     private func performPreflight(for device: Device) async throws {
-        if device.connectionType == .wifi {
-            let isTunnelRunning = await MainActor.run { TunneldManager.shared.isRunning }
-            if !isTunnelRunning {
-                throw LocationInjectionError.tunneldNotRunning
-            }
-        }
+        // A `ConnectionType.wifi` device may be a Network transport reported directly by
+        // usbmux. That path supports DVT with `--udid` and requires no RemoteXPC tunnel.
+        // Do not hard-block it here; `buildDvtArguments` selects RSD/tunneld when valid
+        // tunnel info exists and otherwise falls back to the verified direct `--udid` path.
 
         do {
             let testArgs = await buildDvtArguments(subcommand: "ls", device: device)
@@ -801,13 +816,15 @@ actor DevLocationBridge {
         arguments: [String],
         timeoutSeconds: Double? = nil,
         device: Device? = nil,
-        keepAlive: Bool = false
+        keepAlive: Bool = false,
+        heldSessionRequiresTunnel: Bool = false
     ) async throws -> String {
         let timeout = await MainActor.run { timeoutSeconds ?? AppSettings.shared.commandTimeout }
 
         if keepAlive {
             heldSimulationProcess?.terminate()
             heldSimulationProcess = nil
+            heldSimulationRequiresTunnel = false
         }
 
         // Security: Validate command structure against allowlist (defense-in-depth)
@@ -899,8 +916,16 @@ actor DevLocationBridge {
                         }
 
                         if holdsSession {
-                            Task { await self.retainSimulationProcess(process) }
-                            continuation.resume(returning: "")
+                            Task {
+                                await self.retainSimulationProcess(
+                                    process,
+                                    requiresTunnel: heldSessionRequiresTunnel
+                                )
+                                // Resume only after actor-isolated ownership has been stored.
+                                // Otherwise the caller can immediately clear/replace a session
+                                // before `heldSimulationProcess` points at it.
+                                continuation.resume(returning: "")
+                            }
                             return
                         }
                     } else {

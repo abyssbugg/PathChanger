@@ -109,6 +109,7 @@ struct PathChangerApp: App {
                 .environmentObject(appState)
         }
     }
+
 }
 
 // MARK: - App State
@@ -362,7 +363,7 @@ class AppState: ObservableObject {
 
         device.onTunnelActiveChanged = { [weak self] isActive in
             guard let self, !isActive else { return }
-            Task { await self.locationBridge.stopHeldSimulation() }
+            Task { await self.locationBridge.stopTunnelDependentSimulation() }
         }
 
         // Check if onboarding is needed
@@ -418,6 +419,72 @@ class AppState: ObservableObject {
 
     func selectDevice(_ selected: Device) {
         device.selectDevice(selected)
+    }
+
+    /// Prepare the selected trusted USB device for cold-start Wi-Fi discovery.
+    func prepareSelectedDeviceForWiFi() async {
+        guard let selectedDevice else {
+            statusMessage = "Connect and select an iOS device first"
+            return
+        }
+
+        statusMessage = "Enabling Wi-Fi connections…"
+        do {
+            try await deviceManager.prepareWiFi(for: selectedDevice)
+            deviceManager.setConnectionMode(.wifi)
+            statusMessage = "Wi-Fi pairing ready — the cable can now be disconnected"
+            await refreshDevices()
+        } catch {
+            errorHandler.handle(error, context: "Prepare Wi-Fi")
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    /// Start the selected tunnel mode against the selected device, when available.
+    func startSelectedTunnel() async {
+        await TunneldManager.shared.startTunnel(deviceId: tunnelTargetDeviceId())
+    }
+
+    /// Resolve the best device ID for tunnel startup.
+    ///
+    /// Wi‑Fi discovery can surface transport endpoints (IPv4/IPv6) alongside the actual
+    /// device UDID. `remote start-tunnel` must receive a UDID; endpoint IDs make
+    /// pymobiledevice3 report "Device is not connected".
+    func tunnelTargetDeviceId() -> String? {
+        guard let selectedDevice else { return nil }
+
+        if ArgumentSanitizer.isValidDeviceUDID(selectedDevice.id) {
+            return selectedDevice.id
+        }
+
+        // Prefer a matching discovered device that carries a real UDID.
+        if let matched = availableDevices.first(where: {
+            guard ArgumentSanitizer.isValidDeviceUDID($0.id) else { return false }
+            return $0.deviceName == selectedDevice.deviceName
+                || ($0.displayName == selectedDevice.displayName
+                    && $0.productType == selectedDevice.productType
+                    && $0.productVersion == selectedDevice.productVersion)
+        }) {
+            return matched.id
+        }
+
+        // If exactly one UDID is currently visible, it is the safest fallback.
+        let visibleUDIDs = Set(
+            availableDevices
+                .map(\.id)
+                .filter { ArgumentSanitizer.isValidDeviceUDID($0) }
+        )
+        if visibleUDIDs.count == 1 {
+            return visibleUDIDs.first
+        }
+
+        // Final fallback: a previously prepared device UDID from Wi‑Fi bootstrap.
+        if let preparedUDID = UserDefaults.standard.string(forKey: "lastPreparedDeviceUDID"),
+           ArgumentSanitizer.isValidDeviceUDID(preparedUDID) {
+            return preparedUDID
+        }
+
+        return selectedDevice.id
     }
 
     // MARK: Location Control

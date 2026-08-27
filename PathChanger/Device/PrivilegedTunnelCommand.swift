@@ -40,7 +40,18 @@ enum PrivilegedTunnelCommand {
     }
 
     static func isApprovedArgumentList(_ arguments: [String]) -> Bool {
-        allowedArgumentLists.contains(arguments)
+        if allowedArgumentLists.contains(arguments) {
+            return true
+        }
+
+        // USB and Wi-Fi tunnel commands may target one validated device. The dynamic
+        // suffix is accepted only when the entire base argv is already allowlisted.
+        guard arguments.count >= 2,
+              arguments[arguments.count - 2] == "--udid",
+              ArgumentSanitizer.isValidDeviceUDID(arguments.last ?? "") else {
+            return false
+        }
+        return allowedArgumentLists.contains(Array(arguments.dropLast(2)))
     }
 
     /// Start command. stdout of the shell is the new PID (`echo $!`).
@@ -61,6 +72,15 @@ enum PrivilegedTunnelCommand {
         guard let quotedLog = posixSingleQuote(logFilePath) else {
             return .failure(.unsafePath(logFilePath))
         }
+        // Remote pairing records live at ~/.pymobiledevice3. `do shell script ... with
+        // administrator privileges` switches the effective user to root, and Python's
+        // Path.home() therefore resolves to /var/root unless HOME is explicitly preserved.
+        // Without this prefix an already-paired iOS 27 device is invisible to
+        // `remote start-tunnel -t wifi`, which loops with "No tunnel services discovered".
+        let homeDirectory = NSHomeDirectory()
+        guard let quotedHome = posixSingleQuote(homeDirectory) else {
+            return .failure(.unsafePath(homeDirectory))
+        }
 
         var quotedTokens = [quotedPython]
         for argument in arguments {
@@ -70,7 +90,7 @@ enum PrivilegedTunnelCommand {
             quotedTokens.append(quoted)
         }
 
-        let launch = quotedTokens.joined(separator: " ")
+        let launch = "HOME=\(quotedHome) " + quotedTokens.joined(separator: " ")
         return .success("\(launch) > \(quotedLog) 2>&1 & echo $!")
     }
 

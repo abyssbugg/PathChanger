@@ -479,7 +479,10 @@ struct ModeContextCard: View {
 
     private var canMove: Bool {
         if appState.cooldownRemaining > 0.05 { return false }
-        if !tunneldManager.isRunning || appState.selectedDevice == nil { return false }
+        // A device exposed directly by usbmux over USB or Network/Wi-Fi is ready without
+        // RemoteXPC. The old app worked over Wi-Fi through this exact `--udid` path; gating
+        // only on `tunneldManager.isRunning` disabled every mode in the fixed build.
+        if !appState.canStartSimulation { return false }
         switch mode {
         case .teleport: return appState.targetLocation != nil
         case .jump: return !appState.currentRoute.isEmpty && appState.jumpIndex < appState.currentRoute.count

@@ -179,7 +179,7 @@ struct OrganicTitleBar: View {
             if tunneldManager.isRunning {
                 tunneldManager.stopTunnel()
             } else if !tunneldManager.isStarting {
-                Task { await tunneldManager.startTunnel() }
+                Task { await appState.startSelectedTunnel() }
             }
         } label: {
             HStack(spacing: 8) {
@@ -197,7 +197,7 @@ struct OrganicTitleBar: View {
             .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .help(tunneldManager.isRunning ? "Stop tunnel" : "Start tunnel")
+        .help(connectionHelp)
     }
 
     private var devicePopover: some View {
@@ -265,11 +265,11 @@ struct OrganicTitleBar: View {
             .padding(6)
 
             Button {
-                Task { await appState.refreshDevices() }
+                Task { await appState.prepareSelectedDeviceForWiFi() }
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "plus")
-                    Text("Pair a new device")
+                    Text("Prepare Wi-Fi")
                         .font(Organic.body(12, weight: .bold))
                 }
                 .foregroundStyle(Organic.accent700)
@@ -305,9 +305,11 @@ struct OrganicTitleBar: View {
     }
 
     private var deviceSubtitle: String {
-        let version = appState.selectedDevice.map { "iOS \($0.iosVersion)" } ?? "No iOS device"
         let link = transportIsUSB ? "USB-C" : "Wi-Fi"
-        return "\(version) · trusted · \(link)"
+        guard let device = appState.selectedDevice else {
+            return "No iOS device · \(link)"
+        }
+        return "iOS \(device.iosVersion) · trusted · \(link)"
     }
 
     private var transportIsUSB: Bool {
@@ -322,31 +324,51 @@ struct OrganicTitleBar: View {
     private var tunnelLabel: String {
         if tunneldManager.isStarting { return "Connecting…" }
         if tunneldManager.isRunning { return "Tunnel live" }
+        if case .error = tunneldManager.state { return "Tunnel error" }
         return "Start tunnel"
     }
 
     private var tunnelDot: Color {
         if tunneldManager.isStarting { return Organic.accent600 }
         if tunneldManager.isRunning { return Organic.sage600 }
+        if case .error = tunneldManager.state { return Organic.accent600 }
         return Organic.neutral100.opacity(0.75)
     }
 
     private var tunnelInk: Color {
         if tunneldManager.isRunning { return Organic.sage800 }
         if tunneldManager.isStarting { return Organic.neutral700 }
+        if case .error = tunneldManager.state { return Organic.accent800 }
         return Organic.neutral100
     }
 
     private var tunnelFill: Color {
         if tunneldManager.isRunning { return Organic.sage100 }
         if tunneldManager.isStarting { return Organic.neutral200 }
+        if case .error = tunneldManager.state { return Organic.accent100 }
         return Organic.accent
     }
 
     private var tunnelStroke: Color {
         if tunneldManager.isRunning { return Organic.sage300 }
         if tunneldManager.isStarting { return Organic.neutral400 }
+        if case .error = tunneldManager.state { return Organic.accent300 }
         return Color.clear
+    }
+
+    private var directTransportReady: Bool {
+        appState.device.selectedDirectTransportAvailable
+    }
+
+    private var connectionHelp: String {
+        if tunneldManager.isRunning { return "Stop RemoteXPC tunnel" }
+        if case .error = tunneldManager.state { return "Retry RemoteXPC tunnel start" }
+        if directTransportReady {
+            return appState.selectedDevice?.isWireless == true
+                ? "Direct Wi-Fi connection ready. Click to start RemoteXPC tunnel."
+                : "Direct USB connection ready. Click to start RemoteXPC tunnel."
+        }
+        return "Start RemoteXPC tunnel"
     }
 }
 

@@ -46,6 +46,7 @@
 		6D6BBC2A0402C908F5F77317 /* LocationConnectionArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C32C189609146072E337C41 /* LocationConnectionArguments.swift */; };
 		708DAB80A76DA9FDDA814759 /* JoystickControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4699ABFB4388859E761CB720 /* JoystickControlView.swift */; };
 		713786D179D60E5460606184 /* UIComponentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16D538B0B2EC61AE280E94D /* UIComponentTests.swift */; };
+		73983667BDC349E6C97E03C0 /* DevicePreparationPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E770D046E82792E2CABE4F9 /* DevicePreparationPlanner.swift */; };
 		76318C085D1BC1F8E1C2A011 /* JoystickMovement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A9E1B274BF25B31C3050ED6 /* JoystickMovement.swift */; };
 		77D4BE9125000B20EC4E4A06 /* HealthCheckServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */; };
 		783286901D5F56B3AE284B46 /* OrganicChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4339E1F8DF1ECCA9D0EB2B3 /* OrganicChrome.swift */; };
@@ -147,6 +148,7 @@
 		38BAE4B44E7CD54D79BA2164 /* PathChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathChangerApp.swift; sourceTree = "<group>"; };
 		38BB7E490DFFCFE40EED55CD /* SimulationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationTypes.swift; sourceTree = "<group>"; };
 		3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReliabilityManagerTests.swift; sourceTree = "<group>"; };
+		3E770D046E82792E2CABE4F9 /* DevicePreparationPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePreparationPlanner.swift; sourceTree = "<group>"; };
 		41A5F5B26D2CFB171B0BA7ED /* TunnelStateMachineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelStateMachineTests.swift; sourceTree = "<group>"; };
 		4699ABFB4388859E761CB720 /* JoystickControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoystickControlView.swift; sourceTree = "<group>"; };
 		49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationView.swift; sourceTree = "<group>"; };
@@ -327,6 +329,7 @@
 			children = (
 				8CF4709757DA06B9797D0B95 /* CompanionHostService.swift */,
 				88D78C1666D06A2CC95C2FED /* DeviceManager.swift */,
+				3E770D046E82792E2CABE4F9 /* DevicePreparationPlanner.swift */,
 				0E310520845BC420D1E96BEF /* DevLocationBridge.swift */,
 				1C32C189609146072E337C41 /* LocationConnectionArguments.swift */,
 				FD97D62FEFC2920754C14091 /* MultiDeviceCoordinator.swift */,
@@ -588,6 +591,7 @@
 				EE306665C79ACB0598996523 /* Device.swift in Sources */,
 				C67B5B49F5319E51F57F058C /* DeviceListView.swift in Sources */,
 				2D3C4C1247B53DE297D324FD /* DeviceManager.swift in Sources */,
+				73983667BDC349E6C97E03C0 /* DevicePreparationPlanner.swift in Sources */,
 				64310B8EF040BF3578EA66B9 /* DeviceStateManager.swift in Sources */,
 				EE70C465AA4259AE7798BC28 /* DiagnosticsView.swift in Sources */,
 				A0802A0EC31793A75B698A2E /* Documentation.docc in Sources */,

@@ -574,8 +574,11 @@ final class TunnelStateMachine: ObservableObject {
                 actions: [
                     .logTransition(from: .starting, to: .error(message), event: event),
                     .notifyStateChange(state: .error(message)),
-                    .cleanupResources,
-                    shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .cleanupResources
+                    // Tunnel launch is privileged and must follow an explicit user action.
+                    // Automatic recovery only moved `.error` back to `.starting`; the
+                    // launchProcess action cannot elevate, so the UI stayed in a permanent
+                    // Connecting loop with no process behind it.
+                    .cleanupResources
                 ]
             )
 
@@ -621,6 +624,7 @@ final class TunnelStateMachine: ObservableObject {
         case (.running, .healthCheckFailed):
             let message = "Health check failed"
             context.lastError = message
+            context.statusMessage = message
             context.isRecovering = true
             return .success(
                 newState: .error(message),
@@ -628,7 +632,12 @@ final class TunnelStateMachine: ObservableObject {
                     .logTransition(from: .running, to: .error(message), event: event),
                     .notifyStateChange(state: .error(message)),
                     .stopHealthMonitor,
-                    shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
+                    // Tunnel launch is privileged and may only follow an explicit user
+                    // action. Scheduling recovery here moved the state to `.starting`
+                    // without launching a process (the action handler intentionally cannot
+                    // elevate), leaving the UI stuck at "Connecting…". Stay in an honest
+                    // error state and let the user choose when to restart.
+                    .cleanupResources
                 ]
             )
 
@@ -649,13 +658,17 @@ final class TunnelStateMachine: ObservableObject {
         case (.running, .errorOccurred(let message)):
             context.lastError = message
             context.statusMessage = "Error: \(message)"
+            context.isRecovering = false
             return .success(
                 newState: .error(message),
                 actions: [
                     .logTransition(from: .running, to: .error(message), event: event),
                     .notifyStateChange(state: .error(message)),
                     .stopHealthMonitor,
-                    shouldAttemptRecovery() ? .scheduleRecovery(delay: recoveryDelay()) : .terminateProcesses
+                    // Launching the tunnel requires an explicit privileged action from the
+                    // user. Scheduling recovery here can move the UI back to `.starting`
+                    // without a real launch, creating a persistent "Connecting…" loop.
+                    .cleanupResources
                 ]
             )
 

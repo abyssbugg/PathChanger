@@ -18,6 +18,213 @@ final class TunneldManagerTests: XCTestCase {
         manager = TunneldManager.shared
     }
 
+    func testTunnelCommandsTargetSelectedDeviceWhenProvided() {
+        let udid = "00008130-000C5144019A001C"
+
+        XCTAssertEqual(TunneldManager.arguments(for: .usb, deviceId: udid), [
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--udid", udid,
+        ])
+        XCTAssertEqual(TunneldManager.arguments(for: .wifi, deviceId: udid), [
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--udid", udid,
+        ])
+        XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
+            "-m", "pymobiledevice3", "remote", "tunneld",
+        ])
+    }
+
+    func testWiFiPreparationRequiresMatchingUSBDevice() {
+        let selected = "00008130-000C5144019A001C"
+
+        XCTAssertTrue(DevicePreparationPlanner.canPrepareWiFi(
+            deviceId: selected,
+            usbDeviceIds: [selected]
+        ))
+        XCTAssertFalse(DevicePreparationPlanner.canPrepareWiFi(
+            deviceId: selected,
+            usbDeviceIds: ["00008130-1111111111111111"]
+        ))
+        XCTAssertFalse(DevicePreparationPlanner.canPrepareWiFi(
+            deviceId: selected,
+            usbDeviceIds: []
+        ))
+    }
+
+    func testRemotePairingRecordFilenameYieldsKnownDeviceId() {
+        XCTAssertEqual(
+            DevicePreparationPlanner.remotePairingDeviceId(
+                from: "remote_00008130-000C5144019A001C.plist"
+            ),
+            "00008130-000C5144019A001C"
+        )
+        XCTAssertNil(
+            DevicePreparationPlanner.remotePairingDeviceId(from: "00008130-000C5144019A001C.plist")
+        )
+        XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "remote_not-a-udid.plist"))
+        XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "notes.txt"))
+    }
+
+    func testMobdev2DiscoveryUsesUserPairingRecords() {
+        XCTAssertEqual(
+            DevicePreparationPlanner.mobdev2BrowseArguments(
+                pairingRecordsPath: "/Users/test/.pymobiledevice3"
+            ),
+            [
+                "-m", "pymobiledevice3", "bonjour", "mobdev2",
+                "--timeout", "5", "--pair-records", "/Users/test/.pymobiledevice3",
+            ]
+        )
+    }
+
+    func testWiFiPreparationRunsCommandsInOrder() async throws {
+        let udid = "00008130-000C5144019A001C"
+        var calls: [[String]] = []
+        let service = DevicePreparationService { arguments, _ in
+            calls.append(arguments)
+            return ""
+        }
+
+        try await service.prepareWiFi(deviceId: udid)
+
+        XCTAssertEqual(calls, DevicePreparationPlanner.wifiBootstrapCommands(deviceId: udid))
+        XCTAssertEqual(service.phase, .ready)
+    }
+
+    func testWiFiPreparationStopsAtFirstFailure() async {
+        let udid = "00008130-000C5144019A001C"
+        var calls: [[String]] = []
+        let service = DevicePreparationService { arguments, _ in
+            calls.append(arguments)
+            throw DeviceError.commandFailed("bootstrap failed")
+        }
+
+        do {
+            try await service.prepareWiFi(deviceId: udid)
+            XCTFail("expected preparation to fail")
+        } catch {
+            // Expected.
+        }
+
+        XCTAssertEqual(calls.count, 1)
+        guard case .failed(let message) = service.phase else {
+            return XCTFail("expected failed phase")
+        }
+        XCTAssertTrue(message.contains("bootstrap failed"))
+    }
+
+    func testWiFiPreparationCommandsMatchPymobiledevice3ColdStartFlow() {
+        let udid = "00008130-000C5144019A001C"
+
+        XCTAssertEqual(DevicePreparationPlanner.wifiBootstrapCommands(deviceId: udid), [
+            [
+                "-m", "pymobiledevice3", "lockdown", "wifi-connections",
+                "--state", "on", "--udid", udid,
+            ],
+            [
+                "-m", "pymobiledevice3", "lockdown", "remotepairing",
+                "--pair", "--udid", udid,
+            ],
+        ])
+    }
+
+    func testTunnelInfoRequiresUsableRSDPort() {
+        let placeholder = TunnelInfo(
+            rsdAddress: "127.0.0.1",
+            rsdPort: 0,
+            mode: .wifi,
+            interface: nil,
+            processId: 42
+        )
+        let usable = TunnelInfo(
+            rsdAddress: "fd00::1",
+            rsdPort: 58783,
+            mode: .wifi,
+            interface: "utun9",
+            processId: 42
+        )
+
+        XCTAssertFalse(placeholder.isUsable)
+        XCTAssertTrue(usable.isUsable)
+    }
+
+    func testStartupWaitsUntilUsableTunnelInfoArrives() async {
+        let expected = TunnelInfo(
+            rsdAddress: "fd00::1",
+            rsdPort: 58783,
+            mode: .wifi,
+            interface: "utun9",
+            processId: 42
+        )
+        var attempts = 0
+
+        let result = await TunnelStartupWaiter.wait(
+            timeout: 1,
+            pollInterval: 0.01,
+            processIsRunning: { true },
+            readInfo: {
+                attempts += 1
+                return attempts >= 3 ? expected : nil
+            }
+        )
+
+        XCTAssertEqual(result, expected)
+        XCTAssertGreaterThanOrEqual(attempts, 3)
+    }
+
+    func testStartupStopsWaitingWhenProcessExits() async {
+        var reads = 0
+
+        let result = await TunnelStartupWaiter.wait(
+            timeout: 1,
+            pollInterval: 0.01,
+            processIsRunning: { false },
+            readInfo: {
+                reads += 1
+                return nil
+            }
+        )
+
+        XCTAssertNil(result)
+        XCTAssertEqual(reads, 0)
+    }
+
+    func testDeadTunnelProcessClearsRunningState() async throws {
+        // Drive the manager's real state machine without launching or elevating anything.
+        // The fake PID cannot exist, so TunnelHealthMonitor will report three consecutive
+        // process-liveness failures. The manager must consume that report and leave
+        // `.running`; otherwise the UI lies with "Tunnel live" forever.
+        let mirror = Mirror(reflecting: manager as TunneldManager)
+        guard let stateMachine = mirror.children.first(where: { $0.label == "stateMachine" })?.value
+            as? TunnelStateMachine else {
+            return XCTFail("could not access TunneldManager's state machine")
+        }
+
+        stateMachine.reset()
+        #if DEBUG
+        stateMachine.testModeEnabled = true
+        defer { stateMachine.testModeEnabled = false }
+        #endif
+        stateMachine.send(.startRequested(mode: .wifi))
+        stateMachine.send(.connectionEstablished(info: TunnelInfo(
+            rsdAddress: "127.0.0.1",
+            rsdPort: 49152,
+            mode: .wifi,
+            interface: nil,
+            processId: Int32.max
+        )))
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(stateMachine.isActive)
+
+        // Health checks run immediately and then every two seconds; three failures are
+        // critical. Seven seconds leaves margin for scheduler variance.
+        try await Task.sleep(nanoseconds: 7_000_000_000)
+
+        XCTAssertFalse(
+            stateMachine.isActive,
+            "A dead tunnel process must not leave the UI in 'Tunnel live'"
+        )
+    }
+
     override func tearDown() async throws {
         // Clean up any running tunnels after each test
         await manager.stopTunnel()

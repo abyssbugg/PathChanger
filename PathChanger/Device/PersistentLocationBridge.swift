@@ -24,6 +24,12 @@ final class PersistentLocationBridge: ObservableObject {
         var rsd_port: Int?
     }
 
+    /// Stop the persistent bridge only when its cached connection was RSD/tunnel-backed.
+    func stopIfUsingTunnel() async {
+        guard usesTunnelTransport else { return }
+        await stop()
+    }
+
     /// Response from Python bridge
     private struct BridgeResponse: Codable {
         let success: Bool
@@ -92,6 +98,7 @@ final class PersistentLocationBridge: ObservableObject {
 
     private let responseTimeout: TimeInterval = 10.0
     private var responseTimeAccumulator: TimeInterval = 0
+    private var usesTunnelTransport: Bool = false
 
     // MARK: - Initialization
 
@@ -251,6 +258,7 @@ final class PersistentLocationBridge: ObservableObject {
         request.udid = device.id
         request.rsd_address = rsdInfo?.rsdAddress
         request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
+        usesTunnelTransport = rsdInfo != nil
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let response = try await sendCommand(request)
@@ -433,5 +441,6 @@ final class PersistentLocationBridge: ObservableObject {
         requestCount = 0
         averageResponseTime = 0
         responseTimeAccumulator = 0
+        usesTunnelTransport = false
     }
 }
