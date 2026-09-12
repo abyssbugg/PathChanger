@@ -31,7 +31,7 @@
 |---|---|---|
 | Stage 1 source baseline | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Accepted source tree before documentation landing |
 | Stage 1 integration | `stage1/integration` at `ea5a3b5a…` | Immutable historical integration ref |
-| Stage 1 completion tag | `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to cleanup receipt `43096c8b…` |
+| Stage 1 evidence-repository completion tag | `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to cleanup receipt `43096c8b…` |
 | Documentation branch | `docs/product-contract` | Contains the atomic contract, plan, correction, and execution-record commits |
 | Documentation integration | Fast-forwarded to `main` through `0d300bc…`; this commit records completion | No squash, rebase, amend, or cherry-pick |
 | Root checkout role | Recovery checkout only | Product implementation occurs in external worktrees |
