@@ -10,7 +10,7 @@
 
 **Product contract:** `PRODUCT_REQUIREMENTS.md`
 
-**Plan status:** Owner-authorized for Git operations in Task 0–1 and Task 19. Task 0 complete: local/origin `main`, `stage1/integration`, and root worktree all at `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` (merge(stage1): integrate WP-1.1 test enablement); Stage 1 closure tag `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` with cleanup receipt `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d`; docs/product-contract worktree created at `cd0d0fe49f714453bc2de6a3bcde520c017feaa5` with commits `e44905e` and `cd0d0fe`. Task 1 documentation validation and atomic commits in progress.
+**Plan status:** Owner-authorized for subagent-driven execution and all Git operations explicitly named in this plan. Task 0 is complete: Stage 1 closed, source `main` normalized to `ea5a3b5a1b222729a0a8d186dee51610d8485e4b`, and completion tag `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` resolves to cleanup receipt `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d`. Task 1 is complete through the reviewed documentation integration; this execution-record commit preserves that fact without rewriting earlier commits. Canonical Stage 2 remains unauthorized as a separate audit program. Privilege/elevation and physical-device mutation remain reserved gates.
 
 ---
 
@@ -25,20 +25,19 @@
 7. Never mix documentation, generated project changes, domain-state changes, transport changes, mode behavior, and GUI changes in one commit.
 8. Keep Stage 0 and Stage 1 tags and accepted commits immutable. Do not rebase, squash, amend, or cherry-pick them into a replacement history.
 
-## Current repository facts to verify again at execution
+## Recorded baseline and current execution refs
 
-| Ref/state | Execution-time value | Meaning |
+| Ref/state | Recorded value | Meaning |
 |---|---|---|
-| Checked-out branch | `stage1/wp-1.2-signing` | Current authoring checkout; do not implement here |
-| Checked-out HEAD | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Same tree as `stage1/integration` and normalized `main` |
-| Normalized `main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Stage 1 closure baseline, docs worktree base |
-| Stage 1 closure tag | `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d` (cleanup receipt) |
-| Local `main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Same as live `origin/main` after Stage 1 close |
-| Live `origin/main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Synchronized; confirmed no further mutation |
-| Root untracked docs | `CLAUDE.md`, `PRODUCT_REQUIREMENTS.md`, this plan | Copies preserved; updates applied; worktree commit pending |
-| Existing worktrees | Repository root + `docs-product-contract` | Docs branch at `cd0d0fe49f714453bc2de6a3bcde520c017feaa5` |
+| Stage 1 source baseline | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Accepted source tree before documentation landing |
+| Stage 1 integration | `stage1/integration` at `ea5a3b5a…` | Immutable historical integration ref |
+| Stage 1 completion tag | `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to cleanup receipt `43096c8b…` |
+| Documentation branch | `docs/product-contract` | Contains the atomic contract, plan, correction, and execution-record commits |
+| Documentation integration | Fast-forwarded to `main` through `0d300bc…`; this commit records completion | No squash, rebase, amend, or cherry-pick |
+| Root checkout role | Recovery checkout only | Product implementation occurs in external worktrees |
+| Implementation worktree root | `$HOME/.config/superpowers/worktrees/PathChanger/` | Required external location |
 
-If any value differs, stop history operations, reconcile the new graph, and update this section before implementing.
+At every later task, verify live refs and worktrees afresh. If they differ from the expected accepted head, stop history operations and reconcile before implementing.
 
 ## Clean Git-history design
 
@@ -151,9 +150,9 @@ git commit -m "docs: add five-mode reliability implementation plan"
 
 Expected: both commits contain documentation only. Review `git show --stat --oneline HEAD~2..HEAD` and `git diff --check HEAD~2..HEAD` before any merge or push.
 
-- [ ] **Step 5: Integrate documentation without rewriting history**
+- [x] **Step 5: Integrate documentation without rewriting history**
 
-Merge `docs/product-contract` to normalized `main` using the merge method approved for execution. Do not amend either documentation commit. Pending owner approval after corrective commit verification.
+`docs/product-contract` was fast-forwarded to normalized `main` through `0d300bc935dbe8d10aea60f4c82d52efc57f97d5`; this execution-record commit follows without rewriting history.
 
 ## Task 2: Create the isolated feature integration worktree
 

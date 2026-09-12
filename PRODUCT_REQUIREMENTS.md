@@ -1,6 +1,6 @@
 # PathChanger Product Requirements
 
-> **Status:** Owner-approved product contract under the authorized five-mode persistence implementation plan. This document defines required behavior and acceptance outcomes that are binding for all engineering decisions. It does not itself authorize privileged commands, physical-device mutation, or Git writes outside the plan's Task 0–1 and Task 19 governance sections.
+> **Status:** Owner-approved product contract under the authorized five-mode persistence implementation plan. This document defines required behavior and acceptance outcomes that are binding for all engineering decisions. It does not itself authorize privileged commands or physical-device mutation. The owner separately authorized execution of the implementation plan and all Git operations explicitly named by it; the plan’s reserved human gates remain binding.
 
 ## 1. Product objective and priority
 
