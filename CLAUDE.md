@@ -14,7 +14,7 @@ PathChanger is a macOS 14+ SwiftUI application that simulates location on truste
 |---|---|
 | **User instructions** | Define current intent and final approval. Explicit safety and scope decisions have highest authority. |
 | **`PRODUCT_REQUIREMENTS.md`** | Defines the stable functional contract, five-mode behavior, persistence semantics, connection recovery, state truth, and acceptance matrix. It does not itself authorize privileged or physical-device execution. |
-| **Accepted governance contracts** | Define authorized files, branches, commands, evidence, review, and acceptance gates for a governed run. A contract may narrow execution scope but may not silently weaken the product requirements or broaden user authorization. **Stage 1 (WP-1.0 and WP-1.1) is closed.** Stage 2 authorization is pending owner decision. The five-mode persistence implementation plan document is owner-authorized for the Git operations listed in its Task 0–1 and Task 19 sections. |
+| **Accepted governance contracts** | Define authorized files, branches, commands, evidence, review, and acceptance gates for a governed run. A contract may narrow execution scope but may not silently weaken the product requirements or broaden user authorization. **Stage 1 (WP-1.0, WP-1.1, and WP-1.2) is closed.** Stage 2 remains explicitly unauthorized. The five-mode persistence product contract and implementation plan are owner-authorized for the Git operations listed in Task 0–1 and Task 19 sections. |
 | **Accepted evidence records** | Establish completed gates, verified findings, and owner decisions. The private `abyssbugg/PathChanger-Evidence` repository is authoritative when a task references a governed run. |
 | **`PRODUCT_REQUIREMENTS.md`** | Owner-approved product contract under the authorized five-mode implementation plan. It is binding for all engineering decisions in this repository. |
 | **Repository evidence** | Files, Git state, worktrees, processes, remotes, and fresh command output establish current observed state. |
@@ -474,4 +474,3 @@ For governed work, preserve the required sequence: implementation/evidence → f
 ```
 
 Stop at any gate when scope, authority, safety, evidence, artifact identity, or repository state differs from the accepted plan.
-

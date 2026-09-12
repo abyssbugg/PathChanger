@@ -10,7 +10,7 @@
 
 **Product contract:** `PRODUCT_REQUIREMENTS.md`
 
-**Plan status:** Owner-authorized for Git operations in Task 0–1 and Task 19. Task 0 baseline state recorded: local/remote `main`, `stage1/integration`, and root worktree all at `ea5a3b5a` (merge(stage1): integrate WP-1.1 test enablement); Stage 1 completion tag `43096c8b`; docs/product-contract worktree exists at `ea5a3b5a`. Documentation files (`CLAUDE.md`, `PRODUCT_REQUIREMENTS.md`, this plan) remain uncommitted in root authoring copies until Task 1 commits are pushed. Task 1 worktree creation is complete; proceeding to documentation validation and atomic commits.
+**Plan status:** Owner-authorized for Git operations in Task 0–1 and Task 19. Task 0 complete: local/origin `main`, `stage1/integration`, and root worktree all at `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` (merge(stage1): integrate WP-1.1 test enablement); Stage 1 closure tag `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` with cleanup receipt `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d`; docs/product-contract worktree created at `cd0d0fe49f714453bc2de6a3bcde520c017feaa5` with commits `e44905e` and `cd0d0fe`. Task 1 documentation validation and atomic commits in progress.
 
 ---
 
@@ -27,16 +27,16 @@
 
 ## Current repository facts to verify again at execution
 
-| Ref/state | Planning-time value | Meaning |
+| Ref/state | Execution-time value | Meaning |
 |---|---|---|
 | Checked-out branch | `stage1/wp-1.2-signing` | Current authoring checkout; do not implement here |
-| Checked-out HEAD | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Same tree as `stage1/integration` |
-| Accepted source integration | `stage1/integration` at `ea5a3b5a…` | Intended implementation base after Stage 1 closes |
-| Stage 1 baseline tag | `stage1-baseline-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to `8fb3ec1d…` |
-| Local `main` | `a22b889f…` | Ahead of current remote main |
-| Live `origin/main` | `6fe69661…` | Must not be overwritten until Stage 1 closing decision |
-| Uncommitted guidance | `CLAUDE.md`, `PRODUCT_REQUIREMENTS.md`, this plan | Preserve exact hashes until documentation landing |
-| Existing worktrees | Only repository root | New implementation worktree must be external |
+| Checked-out HEAD | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Same tree as `stage1/integration` and normalized `main` |
+| Normalized `main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Stage 1 closure baseline, docs worktree base |
+| Stage 1 closure tag | `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` | Resolves to `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d` (cleanup receipt) |
+| Local `main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Same as live `origin/main` after Stage 1 close |
+| Live `origin/main` | `ea5a3b5a1b222729a0a8d186dee51610d8485e4b` | Synchronized; confirmed no further mutation |
+| Root untracked docs | `CLAUDE.md`, `PRODUCT_REQUIREMENTS.md`, this plan | Copies preserved; updates applied; worktree commit pending |
+| Existing worktrees | Repository root + `docs-product-contract` | Docs branch at `cd0d0fe49f714453bc2de6a3bcde520c017feaa5` |
 
 If any value differs, stop history operations, reconcile the new graph, and update this section before implementing.
 
@@ -59,7 +59,7 @@ If any value differs, stop history operations, reconcile the new graph, and upda
 - Inspect only: Git refs, tags, worktrees, and remotes
 - Do not modify product files
 
-- [ ] **Step 1: Reconcile current refs without mutating them**
+- [x] **Step 1: Reconcile current refs without mutating them**
 
 Run:
 
@@ -71,7 +71,7 @@ git ls-remote --heads origin
 git show-ref --tags
 ```
 
-Expected: the graph is either identical to the planning-time table or explicitly reconciled before proceeding.
+Verified: repository facts table updated to execution-time state. All refs synchronized; docs worktree created; existing commits e44905e and cd0d0fe confirmed.
 
 - [x] **Step 2: Complete the accepted Stage 1 closing sequence**
 
@@ -108,7 +108,7 @@ Record the exact `main` commit/tree, Stage 1 integration commit/tree, remote hea
 - Create: `docs/superpowers/plans/2026-09-12-five-mode-persistence-reliability.md`
 - Do not modify product source
 
-- [ ] **Step 1: Preserve the validated authoring copies**
+- [x] **Step 1: Preserve the validated authoring copies**
 
 Before copying, record and compare their SHA-256 values. At planning time:
 
@@ -117,7 +117,7 @@ CLAUDE.md: e1b64fe73a1c4d2048735d417e26550a1922c537e780cebe7d6d53b678c56b47
 PRODUCT_REQUIREMENTS.md: e416a8f45848a227692f648e1b2c191249737fa213b44aa3e58b21c179febe54
 ```
 
-Recompute because this plan changes after that snapshot. Preserve the repository-root copies until the documentation branch is accepted.
+Recomputed after plan updates: verified at execution; documentation authority table updated for WP-1.2 closure and Stage 2 authorization state. Root copies preserved and updated; worktree copies synchronized.
 
 - [x] **Step 2: Create a global documentation worktree**
 
@@ -151,9 +151,9 @@ git commit -m "docs: add five-mode reliability implementation plan"
 
 Expected: both commits contain documentation only. Review `git show --stat --oneline HEAD~2..HEAD` and `git diff --check HEAD~2..HEAD` before any merge or push.
 
-- [x] **Step 5: Integrate documentation without rewriting history**
+- [ ] **Step 5: Integrate documentation without rewriting history**
 
-Merge `docs/product-contract` to normalized `main` using the merge method approved for execution. Do not amend either documentation commit.
+Merge `docs/product-contract` to normalized `main` using the merge method approved for execution. Do not amend either documentation commit. Pending owner approval after corrective commit verification.
 
 ## Task 2: Create the isolated feature integration worktree
 
@@ -1226,4 +1226,3 @@ This plan is complete only when:
 9. packaging and runtime resolution fail closed and are reproducible;
 10. the final requirements ledger has no failed or silently waived core requirement;
 11. default `main`, tags, remote, worktrees, and source tree are reconciled and clean.
-

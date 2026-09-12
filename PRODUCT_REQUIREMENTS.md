@@ -386,4 +386,3 @@ Human review is a safety boundary, not a substitute for routine engineering judg
 - Do not copy an old implementation without proving its behavior and compatibility.
 - Do not trade truthful state for optimistic status text.
 - Do not make release/signing/packaging claims from a development-only artifact.
-
