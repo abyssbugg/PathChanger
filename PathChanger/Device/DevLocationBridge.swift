@@ -431,6 +431,20 @@ actor DevLocationBridge: LocationInjecting {
     private func retainSimulationProcess(_ process: Process, requiresTunnel: Bool) {
         heldSimulationProcess = process
         heldSimulationRequiresTunnel = requiresTunnel
+        process.terminationHandler = { [weak self] terminatedProcess in
+            Task { await self?.heldSimulationProcessTerminated(terminatedProcess) }
+        }
+    }
+
+    private func heldSimulationProcessTerminated(_ process: Process) {
+        guard heldSimulationProcess === process else { return }
+        if let heldSessionDeviceID {
+            generationTracker.markLost(stableDeviceID: heldSessionDeviceID)
+        }
+        heldSimulationProcess = nil
+        heldSimulationRequiresTunnel = false
+        heldSessionDeviceID = nil
+        emit(.processTerminated(exitCode: process.terminationStatus))
     }
 
     func stopHeldSimulation() {
