@@ -642,7 +642,12 @@ actor DevLocationBridge: LocationInjecting {
         // Use persistent bridge for high-frequency/performance mode
         if usePersistentBridge && usePerformanceMode {
             do {
-                try await setLocationViaPersistentBridge(coordinate, for: device)
+                try await setLocationViaPersistentBridge(
+                    coordinate,
+                    for: device,
+                    requestID: applicationRequest?.id ?? UUID(),
+                    sessionGeneration: applicationSession?.generation
+                )
                 let latencyMs = Date().timeIntervalSince(startTime) * 1000
                 stats.recordSuccess(latencyMs: latencyMs)
                 return
@@ -686,8 +691,18 @@ actor DevLocationBridge: LocationInjecting {
 
     /// Set location using the persistent bridge (high-performance mode)
     /// This reuses a long-running Python process for significantly reduced latency
-    private func setLocationViaPersistentBridge(_ coordinate: LocationCoordinate, for device: Device) async throws {
-        try await PersistentLocationBridge.shared.setLocation(coordinate, for: device)
+    private func setLocationViaPersistentBridge(
+        _ coordinate: LocationCoordinate,
+        for device: Device,
+        requestID: UUID,
+        sessionGeneration: UInt64?
+    ) async throws {
+        try await PersistentLocationBridge.shared.setLocation(
+            coordinate,
+            for: device,
+            requestID: requestID,
+            sessionGeneration: sessionGeneration
+        )
     }
 
     /// Enable or disable persistent bridge mode
