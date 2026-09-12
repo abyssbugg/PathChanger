@@ -111,18 +111,6 @@ struct InspectorPanel: View {
                 .padding(.top, 12)
                 .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300.opacity(0.8)).frame(height: 1).padding(.top, -1) }
 
-                if let warning = appState.lastTeleportMessage {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "clock")
-                            .foregroundStyle(Organic.accent700)
-                        Text(warning)
-                            .font(Organic.body(11))
-                            .foregroundStyle(Organic.accent800)
-                    }
-                    .padding(10)
-                    .background(Organic.accent100)
-                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-                }
 
                 HStack(spacing: 9) {
                     Button(action: onTeleport) {
@@ -307,7 +295,7 @@ struct InspectorPanel: View {
                 cardHeader(icon: "arrow.right", tint: Organic.sage700, title: "Travel & speed", meta: nil)
                 travelModeGrid(travelModes)
                 OrganicSliderRow(
-                    title: "Max speed",
+                    title: "Stick speed",
                     valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
                     value: $appState.customSpeedMps,
                     range: 1...30,
@@ -319,11 +307,6 @@ struct InspectorPanel: View {
                             appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
                         }
                     }
-                )
-                safeToggle(
-                    title: appState.safeModeJoystick ? "Safe Mode Enabled" : "Safe Mode Off",
-                    body: "Smooths acceleration so movement looks human.",
-                    isOn: $appState.safeModeJoystick
                 )
                 Button {
                     Task {
@@ -370,25 +353,6 @@ struct InspectorPanel: View {
                         appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
                     }
                 }
-            )
-            OrganicSliderRow(
-                title: "Cooldown",
-                valueLabel: String(format: "%.1f s", appState.cooldownSeconds),
-                value: $appState.cooldownSeconds,
-                range: 0...10,
-                step: 0.5,
-                isAuto: appState.autoCooldown,
-                onToggleAuto: {
-                    appState.autoCooldown.toggle()
-                    if appState.autoCooldown {
-                        appState.cooldownSeconds = appState.mockCooldown(for: appState.simulationSpeed)
-                    }
-                }
-            )
-            safeToggle(
-                title: appState.safeModeTeleport ? "Safe Mode Enabled" : "Safe Mode Off",
-                body: "Mimics natural movement and respects cooldown to avoid detection.",
-                isOn: $appState.safeModeTeleport
             )
         }
     }

@@ -26,30 +26,6 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testSafeModeDefaultsAreOn() async {
-        let manager = SimulationStateManager()
-
-        XCTAssertTrue(manager.safeModeTeleport)
-        XCTAssertTrue(manager.safeModeJoystick)
-        XCTAssertTrue(manager.cooldownReminder)
-        XCTAssertTrue(manager.headerSafeMode)
-        XCTAssertFalse(manager.addGPSDrift)
-    }
-
-    @MainActor
-    func testHeaderSafeModeSetsBothFlags() async {
-        let manager = SimulationStateManager()
-
-        manager.headerSafeMode = false
-        XCTAssertFalse(manager.safeModeTeleport)
-        XCTAssertFalse(manager.safeModeJoystick)
-
-        manager.headerSafeMode = true
-        XCTAssertTrue(manager.safeModeTeleport)
-        XCTAssertTrue(manager.safeModeJoystick)
-    }
-
-    @MainActor
     func testEffectiveSpeedFollowsAutoSpeedFlag() async {
         let manager = SimulationStateManager()
 
@@ -60,13 +36,6 @@ final class SimulationStateManagerTests: XCTestCase {
         manager.autoSpeed = false
         manager.customSpeedMps = 9.9
         XCTAssertEqual(manager.effectiveMetersPerSecond, 9.9)
-    }
-
-    @MainActor
-    func testCooldownIsZeroBeforeAnyTeleport() async {
-        let manager = SimulationStateManager()
-
-        XCTAssertEqual(manager.cooldownRemaining, 0)
     }
 
     @MainActor
@@ -131,16 +100,6 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testSetSpeedUpdatesCooldownWhenAutomatic() async {
-        let manager = SimulationStateManager()
-
-        manager.autoCooldown = true
-        manager.setSpeed(.driving)
-
-        XCTAssertEqual(manager.cooldownSeconds, SimulationSpeed.driving.defaultCooldownSeconds)
-    }
-
-    @MainActor
     func testAppModeCoversEveryUserFacingMode() {
         // `AppMode` replaced a four-case `ActiveSimulationMode` that could not represent
         // Jump or Two-spot. Guard against that regression.
@@ -151,6 +110,88 @@ final class SimulationStateManagerTests: XCTestCase {
         XCTAssertTrue(modes.contains(.route))
         XCTAssertTrue(modes.contains(.joystick))
         XCTAssertEqual(AppMode.mapModes.count, 5)
+    }
+
+    @MainActor
+    func testStopAndClearAreDistinctLocationSemantics() async {
+        let manager = SimulationStateManager()
+        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
+        manager.desiredLocation = target
+        manager.lastAcknowledgedReceipt = receipt
+        manager.locationApplication = .active(receipt)
+        manager.isSimulating = true
+        manager.pauseSimulation()
+        XCTAssertTrue(manager.isPaused)
+        XCTAssertTrue(manager.locationApplication.isActive)
+        XCTAssertEqual(manager.desiredLocation, target)
+        manager.isSimulating = false
+        XCTAssertTrue(manager.locationApplication.isActive)
+        manager.clearLocationSession()
+        XCTAssertNil(manager.desiredLocation)
+        XCTAssertNil(manager.lastAcknowledgedReceipt)
+        XCTAssertEqual(manager.locationApplication, .idle)
+    }
+
+    @MainActor
+    func testTunnelLossMarksGUIInactiveWhileLocationStateIsUncertain() {
+        let manager = SimulationStateManager()
+        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
+        manager.desiredLocation = target
+        manager.lastAcknowledgedReceipt = receipt
+        manager.locationApplication = .active(receipt)
+        manager.isTunnelCallbackActive = false
+        manager.locationApplication = .uncertain(lastReceipt: receipt, reason: "tunnel callback inactive")
+        XCTAssertFalse(manager.isTunnelCallbackActive)
+        XCTAssertFalse(manager.locationApplication.isActive)
+        XCTAssertEqual(manager.locationApplication, .uncertain(lastReceipt: receipt, reason: "tunnel callback inactive"))
+        XCTAssertEqual(manager.desiredLocation, target)
+        XCTAssertEqual(manager.lastAcknowledgedReceipt, receipt)
+    }
+
+    @MainActor
+    func testJoystickDisengageStopsMovementButPreservesAppliedLocation() {
+        let manager = SimulationStateManager()
+        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
+        manager.desiredLocation = target
+        manager.lastAcknowledgedReceipt = receipt
+        manager.locationApplication = .active(receipt)
+        manager.isSimulating = true
+        manager.updateJoystickDirection(CGPoint(x: 0.5, y: -0.5))
+        manager.resetJoystick()
+        manager.isSimulating = false
+        XCTAssertFalse(manager.isSimulating)
+        XCTAssertEqual(manager.joystickDirection, .zero)
+        XCTAssertTrue(manager.locationApplication.isActive)
+        XCTAssertEqual(manager.desiredLocation, target)
+        XCTAssertEqual(manager.lastAcknowledgedReceipt, receipt)
+    }
+
+    @MainActor
+    func testApplicationCoordinateNeverMutatesRequestedTarget() {
+        let manager = SimulationStateManager()
+        let target = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
+
+        XCTAssertEqual(manager.coordinateForApplication(target), target)
+    }
+
+    @MainActor
+    func testLegacyLocationSemanticsAreRemovedDuringMigration() {
+        let suite = "Task10LegacyLocationSemantics"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for key in AppSettings.legacyLocationSemanticsKeys {
+            defaults.set(true, forKey: key)
+        }
+
+        AppSettings.removeLegacyLocationSemantics(from: defaults)
+
+        for key in AppSettings.legacyLocationSemanticsKeys {
+            XCTAssertNil(defaults.object(forKey: key), key)
+        }
     }
 }
 

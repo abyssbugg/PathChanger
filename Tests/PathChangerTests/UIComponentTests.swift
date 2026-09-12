@@ -445,3 +445,23 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.tunnelTimeout, AppConstants.Timeout.defaultTunnelTimeout)
     }
 }
+
+
+final class LegacyLocationSemanticsPresentationTests: XCTestCase {
+    func testActiveOrganicUIOmitsRetiredSafeModeCooldownAndDriftControls() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paths = [
+            "PathChanger/UI/OrganicChrome.swift",
+            "PathChanger/UI/OrganicSettingsSheet.swift",
+        ]
+
+        for path in paths {
+            let source = try String(contentsOf: repositoryRoot.appendingPathComponent(path))
+            XCTAssertFalse(source.localizedCaseInsensitiveContains("Safe Mode"), path)
+            XCTAssertFalse(source.localizedCaseInsensitiveContains("cooldown"), path)
+            XCTAssertFalse(source.localizedCaseInsensitiveContains("GPS drift"), path)
+        }
+    }
+}

@@ -129,17 +129,13 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertFalse(LocationHistoryPolicy.shouldRecord(canStartSimulation: true, plan: rejected))
     }
 
-    func testMockTravelSpeedsAndCooldownsMatchCanonicalValues() {
+    func testMockTravelSpeedsMatchCanonicalValues() {
         let state = makeState()
 
         XCTAssertEqual(state.mockMetersPerSecond(for: .walking), 1.6)
-        XCTAssertEqual(state.mockCooldown(for: .walking), 20)
         XCTAssertEqual(state.mockMetersPerSecond(for: .cycling), 5.4)
-        XCTAssertEqual(state.mockCooldown(for: .cycling), 30)
         XCTAssertEqual(state.mockMetersPerSecond(for: .fast), 11.2)
-        XCTAssertEqual(state.mockCooldown(for: .fast), 45)
         XCTAssertEqual(state.mockMetersPerSecond(for: .driving), 15.6)
-        XCTAssertEqual(state.mockCooldown(for: .driving), 60)
     }
 
     func testTunnelTargetUsesSelectedUDIDWhenAlreadyCanonical() {
@@ -197,5 +193,19 @@ final class AppStateSimulationTests: XCTestCase {
         ]
 
         XCTAssertEqual(state.tunnelTargetDeviceId(), udid)
+    }
+
+    // MARK: - Task 3: Location Session Model Tests
+
+    @MainActor
+    func testCooldownCannotCreateFalseActiveState() {
+        let state = makeState()
+        let target = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
+
+        state.locationSessionCoordinator.select(target, mode: .teleport)
+
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, target)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
     }
 }

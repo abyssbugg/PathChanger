@@ -261,22 +261,6 @@ struct ModeContextCard: View {
                     }
                 }
             )
-            if mode.showsCooldown {
-                OrganicSliderRow(
-                    title: "Cooldown",
-                    valueLabel: String(format: "%.0fs", appState.cooldownSeconds),
-                    value: $appState.cooldownSeconds,
-                    range: 0...90,
-                    step: 1,
-                    isAuto: appState.autoCooldown,
-                    onToggleAuto: {
-                        appState.autoCooldown.toggle()
-                        if appState.autoCooldown {
-                            appState.cooldownSeconds = appState.mockCooldown(for: appState.simulationSpeed)
-                        }
-                    }
-                )
-            }
             if mode == .route || mode == .twospot {
                 HStack(spacing: 9) {
                     Text("Repeat")
@@ -335,28 +319,25 @@ struct ModeContextCard: View {
 
     private var toggleBlock: some View {
         VStack(spacing: 1) {
-            if mode == .route || mode == .twospot || mode == .joystick {
-                toggleRow(
-                    "Realistic pace",
-                    "Vary speed and drift like a real journey",
-                    Binding(get: { appState.addGPSDrift }, set: { appState.addGPSDrift = $0 })
+            if mode == .joystick {
+                toggleLine(
+                    "Smooth corners",
+                    Binding(get: { appState.smoothTurns }, set: { appState.smoothTurns = $0 })
                 )
             }
             if mode == .jump {
-                toggleRow(
-                    "Auto jump after cooldown",
-                    "Walks the hop list on its own",
-                    $appState.autoJump
+                toggleLine(
+                    "Auto jump after each applied waypoint",
+                    Binding(get: { appState.autoJump }, set: { appState.autoJump = $0 })
                 )
             }
         }
     }
 
-    private func toggleRow(_ title: String, _ sub: String, _ value: Binding<Bool>) -> some View {
+    private func toggleLine(_ title: String, _ value: Binding<Bool>) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(Organic.body(12, weight: .semibold))
-                Text(sub).font(Organic.body(10)).foregroundStyle(Organic.neutral600)
             }
             Spacer()
             Toggle("", isOn: value).labelsHidden().tint(Organic.accent600)
@@ -375,9 +356,6 @@ struct ModeContextCard: View {
             }
             if mode == .jump {
                 metricRow(system: "arrow.up.right", title: "Hop", value: "\(min(appState.jumpIndex, appState.currentRoute.count))/\(appState.currentRoute.count)")
-            }
-            if mode.showsCooldown {
-                metricRow(system: "hourglass", title: "Cooldown", value: cooldownLabel)
             }
         }
         .padding(.top, 8)
@@ -402,12 +380,7 @@ struct ModeContextCard: View {
 
     @ViewBuilder
     private var notesBlock: some View {
-        if appState.cooldownRemaining > 0.05 {
-            note("Cooling down — \(Self.hms(appState.cooldownRemaining)) left", sage: true)
-        }
-        if (appState.safeModeTeleport || appState.safeModeJoystick), appState.customSpeedMps > 12 {
-            note("Safe Mode will clamp movement to 12 m/s.", sage: false)
-        }
+        EmptyView()
     }
 
     private func note(_ text: String, sage: Bool) -> some View {
@@ -478,7 +451,6 @@ struct ModeContextCard: View {
     }
 
     private var canMove: Bool {
-        if appState.cooldownRemaining > 0.05 { return false }
         // A device exposed directly by usbmux over USB or Network/Wi-Fi is ready without
         // RemoteXPC. The old app worked over Wi-Fi through this exact `--udid` path; gating
         // only on `tunneldManager.isRunning` disabled every mode in the fixed build.
@@ -494,9 +466,6 @@ struct ModeContextCard: View {
     }
 
     private var moveLabel: String {
-        if appState.cooldownRemaining > 0.05 {
-            return Self.hms(appState.cooldownRemaining)
-        }
         if appState.isSimulating, mode == .route || mode == .twospot {
             return "Stop"
         }
@@ -507,13 +476,8 @@ struct ModeContextCard: View {
     }
 
     private var moveIcon: String {
-        if appState.cooldownRemaining > 0.05 { return "snowflake" }
         if appState.isSimulating, mode == .route || mode == .twospot { return "stop.fill" }
         return "play.fill"
-    }
-
-    private var cooldownLabel: String {
-        appState.cooldownRemaining > 0.05 ? Self.hms(appState.cooldownRemaining) : "—"
     }
 
     private var headingText: String {
@@ -677,6 +641,5 @@ extension AppMode {
 
     var showsRouteList: Bool { self == .jump || self == .twospot || self == .route }
     var showsMotion: Bool { self == .teleport || self == .jump || self == .twospot || self == .route }
-    var showsCooldown: Bool { self == .teleport || self == .jump }
     var showsDistance: Bool { self == .teleport || self == .jump || self == .twospot || self == .route }
 }

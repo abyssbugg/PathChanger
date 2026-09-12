@@ -47,7 +47,7 @@ enum AppMode: String, CaseIterable, Identifiable {
 
     var description: String {
         switch self {
-        case .teleport: return "One hop, then cooldown"
+        case .teleport: return "One acknowledged hop"
         case .jump: return "Numbered hops, one at a time"
         case .twospot: return "Travel between two points"
         case .route: return "Route through many stops"

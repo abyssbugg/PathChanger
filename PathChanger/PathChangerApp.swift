@@ -176,45 +176,17 @@ class AppState: ObservableObject {
         get { simulation.autoSpeed }
         set { simulation.autoSpeed = newValue }
     }
-    var autoCooldown: Bool {
-        get { simulation.autoCooldown }
-        set { simulation.autoCooldown = newValue }
-    }
     var customSpeedMps: Double {
         get { simulation.customSpeedMps }
         set { simulation.customSpeedMps = newValue }
-    }
-    var cooldownSeconds: Double {
-        get { simulation.cooldownSeconds }
-        set { simulation.cooldownSeconds = newValue }
     }
     var updateFrequencyHz: Double {
         get { simulation.updateFrequencyHz }
         set { simulation.updateFrequencyHz = newValue }
     }
-    var safeModeTeleport: Bool {
-        get { simulation.safeModeTeleport }
-        set { simulation.safeModeTeleport = newValue }
-    }
-    var safeModeJoystick: Bool {
-        get { simulation.safeModeJoystick }
-        set { simulation.safeModeJoystick = newValue }
-    }
-    var addGPSDrift: Bool {
-        get { simulation.addGPSDrift }
-        set { simulation.addGPSDrift = newValue }
-    }
     var smoothTurns: Bool {
         get { simulation.smoothTurns }
         set { simulation.smoothTurns = newValue }
-    }
-    var cooldownReminder: Bool {
-        get { simulation.cooldownReminder }
-        set { simulation.cooldownReminder = newValue }
-    }
-    var lastTeleportMessage: String? {
-        get { simulation.lastTeleportMessage }
-        set { simulation.lastTeleportMessage = newValue }
     }
 
     @Published var copiedFeedback: Bool = false
@@ -648,14 +620,6 @@ class AppState: ObservableObject {
         statusMessage = "Spots cleared"
     }
 
-    var cooldownRemaining: TimeInterval {
-        simulation.cooldownRemaining
-    }
-
-    var headerSafeMode: Bool {
-        get { simulation.headerSafeMode }
-        set { simulation.headerSafeMode = newValue }
-    }
 
     func importRoute(from url: URL) {
         do {
@@ -765,7 +729,7 @@ class AppState: ObservableObject {
                 if !isPaused {
                     let current = currentLocation ?? start
                     var direction = joystickDirection
-                    if smoothTurns, safeModeJoystick {
+                    if smoothTurns {
                         direction = smoothedDirection(direction)
                     }
                     let next = JoystickMovement.nextCoordinate(
@@ -802,10 +766,6 @@ class AppState: ObservableObject {
     // AppState is decomposed and views read the speed data directly.
     func mockMetersPerSecond(for speed: SimulationSpeed) -> Double {
         speed.presetMetersPerSecond
-    }
-
-    func mockCooldown(for speed: SimulationSpeed) -> Double {
-        speed.defaultCooldownSeconds
     }
 
     // MARK: Speed Control
