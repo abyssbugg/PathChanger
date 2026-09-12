@@ -58,6 +58,9 @@ final class DeviceStateManager: ObservableObject {
     /// Fires when automatic reconnection gives up, carrying the reason.
     var onReconnectionFailed: ((String) -> Void)?
 
+    /// Publishes typed transport/device changes to the location-session coordinator.
+    var onLocationSessionLoss: ((LocationSessionLossEvent) -> Void)?
+
     // MARK: Debouncing
 
     private var lastTunnelStateChange: Date = .distantPast
@@ -65,6 +68,7 @@ final class DeviceStateManager: ObservableObject {
     private let stateDebounceInterval: TimeInterval = 2.5
 
     private var cancellables = Set<AnyCancellable>()
+    private var isResolvingRecoverySession = false
 
     // MARK: Computed
 
@@ -132,6 +136,7 @@ final class DeviceStateManager: ObservableObject {
                     Task { await self.refreshDevices() }
                 } else {
                     self.tunnelHealthMonitor.stopMonitoring()
+                    self.onLocationSessionLoss?(.tunnelHealthLost)
                 }
 
                 self.onTunnelActiveChanged?(state.isActive)
@@ -158,6 +163,9 @@ final class DeviceStateManager: ObservableObject {
         reliabilityManager.onConnectionLost = { [weak self] in
             Task { @MainActor in
                 self?.connectionStatus = .disconnected
+                if let stableDeviceID = self?.selectedDevice?.id {
+                    self?.onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: stableDeviceID))
+                }
                 self?.onConnectionLost?()
             }
         }
@@ -234,11 +242,17 @@ final class DeviceStateManager: ObservableObject {
 
         if let selectedDevice,
            let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
-            // A known pairing placeholder may become a live USB or Network device. Keep
-            // the selection but replace its stale connection type and metadata.
+            let transportChanged = updated.connectionType != selectedDevice.connectionType
             self.selectedDevice = updated
             onDeviceSelected?(updated)
-        } else if selectedDevice == nil, let first = availableDevices.first {
+            if transportChanged && !isResolvingRecoverySession {
+                onLocationSessionLoss?(.endpointReplaced)
+            }
+        } else if let selectedDevice {
+            self.selectedDevice = nil
+            connectionStatus = .disconnected
+            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: selectedDevice.id))
+        } else if let first = availableDevices.first {
             selectedDevice = first
             onDeviceSelected?(first)
         }
@@ -290,6 +304,54 @@ final class DeviceStateManager: ObservableObject {
         }
     }
 
+    /// Resolves the same stable device over a currently verified transport and advances generation.
+    func establishRecoverySession(
+        previous: LocationSessionIdentity
+    ) async throws -> LocationSessionIdentity {
+        isResolvingRecoverySession = true
+        defer { isResolvingRecoverySession = false }
+        await refreshDevices()
+
+        guard let device = availableDevices.first(where: { $0.id == previous.stableDeviceID }) else {
+            throw DeviceError.deviceNotFound
+        }
+
+        let transport: LocationTransport
+        let endpointClass: LocationEndpointClass
+        if preferUSBConnection && usbDirectDeviceIds.contains(device.id) {
+            transport = .usb
+            endpointClass = .direct
+        } else if wifiDirectDeviceIds.contains(device.id) {
+            transport = .wifi
+            endpointClass = .direct
+        } else if usbDirectDeviceIds.contains(device.id) {
+            transport = .usb
+            endpointClass = .direct
+        } else if isTunneldRunning,
+                  TunneldManager.shared.getRsdInfo(for: device.id) != nil {
+            transport = .wifi
+            endpointClass = .remoteServiceDiscovery
+        } else {
+            throw DeviceError.connectionFailed("No verified transport is available")
+        }
+
+        self.selectedDevice = Device(
+            id: device.id,
+            displayName: device.displayName,
+            connectionType: transport == .usb ? .usb : .wifi,
+            productType: device.productType,
+            productVersion: device.productVersion
+        )
+        onDeviceSelected?(self.selectedDevice!)
+
+        return LocationSessionIdentity(
+            stableDeviceID: previous.stableDeviceID,
+            transport: transport,
+            endpointClass: endpointClass,
+            generation: previous.generation &+ 1
+        )
+    }
+
     /// Make a device active.
     func selectDevice(_ device: Device) {
         selectedDevice = device
@@ -300,6 +362,9 @@ final class DeviceStateManager: ObservableObject {
 
     /// Report that the connection was lost, starting the recovery cycle.
     func connectionLost() {
+        if let stableDeviceID = selectedDevice?.id {
+            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: stableDeviceID))
+        }
         reliabilityManager.connectionLost()
     }
 }

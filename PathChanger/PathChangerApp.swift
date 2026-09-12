@@ -293,6 +293,7 @@ class AppState: ObservableObject {
     // MARK: Shared Managers
     let simulationEngine: SimulationEngine
     let errorHandler: ErrorHandler
+    let locationSessionCoordinator: LocationSessionCoordinator
 
     var routeLibrary: RouteLibraryManager { route.routeLibrary }
 
@@ -306,6 +307,9 @@ class AppState: ObservableObject {
     private let locationBridge: DevLocationBridge
     private var simulationTask: Task<Void, Never>?
     private var joystickTask: Task<Void, Never>?
+    private var locationRecoveryTask: Task<Void, Never>?
+    private var bridgeEventTask: Task<Void, Never>?
+    private var persistentBridgeEventTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -323,9 +327,11 @@ class AppState: ObservableObject {
     init(startBackgroundServices: Bool = true) {
         let sharedBridge = DevLocationBridge()
         let sharedErrorHandler = ErrorHandler()
+        let sessionCoordinator = LocationSessionCoordinator(injector: sharedBridge)
 
         self.locationBridge = sharedBridge
         self.errorHandler = sharedErrorHandler
+        self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(startBackgroundServices: startBackgroundServices)
         self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
         self.simulation = SimulationStateManager(
@@ -366,6 +372,10 @@ class AppState: ObservableObject {
             Task { await self.locationBridge.stopTunnelDependentSimulation() }
         }
 
+        device.onLocationSessionLoss = { [weak self] event in
+            self?.handleLocationSessionLoss(event)
+        }
+
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
@@ -374,8 +384,9 @@ class AppState: ObservableObject {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [locationBridge] _ in
-            Task {
+        ) { [locationBridge, sessionCoordinator] _ in
+            Task { @MainActor in
+                sessionCoordinator.submit(.appCancelled)
                 await locationBridge.stopHeldSimulation()
             }
         }
@@ -384,10 +395,19 @@ class AppState: ObservableObject {
             return
         }
 
-        Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await checkTunneldStatus()
-            await refreshDevices()
+        bridgeEventTask = Task { [weak self, locationBridge] in
+            let events = await locationBridge.events()
+            for await event in events {
+                guard !Task.isCancelled else { break }
+                await self?.handleLocationBridgeEvent(event, heldSubprocessSource: true)
+            }
+        }
+        persistentBridgeEventTask = Task { [weak self] in
+            let events = await PersistentLocationBridge.shared.events()
+            for await event in events {
+                guard !Task.isCancelled else { break }
+                await self?.handleLocationBridgeEvent(event, heldSubprocessSource: false)
+            }
         }
 
         setupErrorHandler()
@@ -808,6 +828,63 @@ class AppState: ObservableObject {
 
     private func smoothedDirection(_ raw: CGPoint) -> CGPoint {
         simulation.smoothedDirection(raw)
+    }
+
+    private func handleLocationBridgeEvent(
+        _ event: LocationBridgeEvent,
+        heldSubprocessSource: Bool
+    ) {
+        switch event {
+        case .sessionReady(let identity):
+            locationSessionCoordinator.connectionReady(identity)
+        case .sessionLost(_, let reason):
+            handleLocationSessionLoss(.bridgeTerminated(exitCode: -1), reason: reason)
+        case .processTerminated(let exitCode):
+            if heldSubprocessSource {
+                handleLocationSessionLoss(.heldProcessExited)
+            } else {
+                handleLocationSessionLoss(.bridgeTerminated(exitCode: exitCode))
+            }
+        case .receipt(let receipt):
+            _ = locationSessionCoordinator.accept(receipt)
+        }
+    }
+
+    private func handleLocationSessionLoss(
+        _ event: LocationSessionLossEvent,
+        reason: String? = nil
+    ) {
+        if let reason {
+            locationSessionCoordinator.connectionLost(reason: reason)
+        } else {
+            locationSessionCoordinator.submit(event)
+        }
+
+        if case .appCancelled = event {
+            locationRecoveryTask?.cancel()
+            locationRecoveryTask = nil
+            return
+        }
+        guard locationSessionCoordinator.state.desiredLocation != nil,
+              locationRecoveryTask == nil else { return }
+
+        let strategy = reliabilityManager.strategy
+        locationRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.locationSessionCoordinator.recover(
+                strategy: strategy,
+                establishSession: { [weak self] _, previous in
+                    guard let self, let previous else {
+                        throw LocationSessionTransitionError.noReadySession
+                    }
+                    return try await self.device.establishRecoverySession(previous: previous)
+                }
+            )
+            if let result, result != .recoveryCancelled {
+                self.lastError = String(describing: result)
+            }
+            self.locationRecoveryTask = nil
+        }
     }
 }
 
