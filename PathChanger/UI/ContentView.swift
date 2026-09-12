@@ -55,6 +55,17 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .settings: return "App settings"
         }
     }
+
+    var locationMode: LocationMode? {
+        switch self {
+        case .teleport: return .teleport
+        case .jump: return .jumpTeleport
+        case .twospot: return .twoSpot
+        case .route: return .multiSpot
+        case .joystick: return .joystick
+        case .settings: return nil
+        }
+    }
 }
 
 struct ContentView: View {
