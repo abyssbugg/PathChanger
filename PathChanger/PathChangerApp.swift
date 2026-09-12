@@ -283,6 +283,8 @@ class AppState: ObservableObject {
     private var simulationTask: Task<Void, Never>?
     private var routePlaybackID: UUID?
     private var joystickTask: Task<Void, Never>?
+    private var joystickDeliveryID: UUID?
+    private let automaticRecoveryEnabled: Bool
     private var locationRecoveryTask: Task<Void, Never>?
     private var bridgeEventTask: Task<Void, Never>?
     private var persistentBridgeEventTask: Task<Void, Never>?
@@ -316,6 +318,7 @@ class AppState: ObservableObject {
         self.locationBridge = sharedBridge
         self.locationInjector = resolvedInjector
         self.routeDelay = routeDelay
+        self.automaticRecoveryEnabled = startBackgroundServices
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(startBackgroundServices: startBackgroundServices)
@@ -566,7 +569,7 @@ class AppState: ObservableObject {
             pendingApplicationModes[request.id] = mode
             let receipt = try await locationInjector.apply(request)
             guard !Task.isCancelled else {
-                _ = locationSessionCoordinator.reject(requestID: request.id, error: CancellationError())
+                _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                 pendingApplicationModes.removeValue(forKey: request.id)
                 return nil
             }
@@ -854,33 +857,62 @@ class AppState: ObservableObject {
         simulationTask?.cancel()
         joystickTask?.cancel()
         simulationTask = nil
+        routePlaybackID = nil
+        joystickTask = nil
+        joystickDeliveryID = nil
 
         isPaused = false
-        isSimulating = true
+        isSimulating = false
         await locationBridge.setQueueStrategy(.latestWins)
-        await setLocation(start, quiet: true, usePerformanceMode: true)
 
+        guard await applyPlannedLocation(start, mode: .joystick) != nil,
+              locationSessionCoordinator.state.application.isActive else {
+            return
+        }
+        locationSessionCoordinator.beginMovement(.joystick)
+
+        let deliveryID = UUID()
+        joystickDeliveryID = deliveryID
         let interval: TimeInterval = 1.0 / max(updateFrequencyHz, 1)
-        joystickTask = Task {
-            while !Task.isCancelled {
-                if !isPaused {
-                    let current = currentLocation ?? start
-                    var direction = joystickDirection
-                    if smoothTurns {
-                        direction = smoothedDirection(direction)
-                    }
-                    let next = JoystickMovement.nextCoordinate(
-                        from: current,
-                        direction: direction,
-                        speedMetersPerSecond: effectiveMetersPerSecond,
-                        deltaTime: interval
-                    )
-                    if next != current {
-                        await setLocation(next, quiet: true, usePerformanceMode: true)
-                    }
+        joystickTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, self.joystickDeliveryID == deliveryID {
+                guard !self.isPaused else {
+                    await self.routeDelay(interval)
+                    continue
                 }
-
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                var direction = self.joystickDirection
+                guard hypot(direction.x, direction.y) >= JoystickMovement.deadZone else {
+                    await self.routeDelay(interval)
+                    continue
+                }
+                if self.smoothTurns {
+                    direction = self.smoothedDirection(direction)
+                }
+                guard let acknowledged = self.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate else {
+                    await self.routeDelay(interval)
+                    continue
+                }
+                let next = JoystickMovement.nextCoordinate(
+                    from: acknowledged,
+                    direction: direction,
+                    speedMetersPerSecond: self.effectiveMetersPerSecond,
+                    deltaTime: interval
+                )
+                if next != acknowledged {
+                    let receipt = await self.applyPlannedLocation(next, mode: .joystick)
+                    if receipt == nil,
+                       case .ready = self.locationSessionCoordinator.state.connection {
+                        await self.routeDelay(interval)
+                        continue
+                    }
+                    guard self.locationSessionCoordinator.state.connection.isReady else { break }
+                }
+                await self.routeDelay(interval)
+            }
+            if self.joystickDeliveryID == deliveryID {
+                self.joystickTask = nil
+                self.joystickDeliveryID = nil
             }
         }
     }
@@ -888,10 +920,17 @@ class AppState: ObservableObject {
     func disengageJoystick() {
         joystickTask?.cancel()
         joystickTask = nil
+        joystickDeliveryID = nil
+        if case .applying(let requestID, _) = locationSessionCoordinator.state.application {
+            _ = locationSessionCoordinator.cancelPendingApplication(requestID: requestID)
+            pendingApplicationModes.removeValue(forKey: requestID)
+        }
         isSimulating = false
         isPaused = false
         simulation.resetJoystick()
-        statusMessage = "Joystick disengaged"
+        joystickDirection = .zero
+        locationSessionCoordinator.completeMovement()
+        statusMessage = "Joystick disengaged; location held"
     }
 
     var effectiveMetersPerSecond: Double {
@@ -927,6 +966,10 @@ class AppState: ObservableObject {
         simulation.smoothedDirection(raw)
     }
 
+    func submitLocationBridgeEvent(_ event: LocationBridgeEvent) {
+        handleLocationBridgeEvent(event, heldSubprocessSource: false)
+    }
+
     private func handleLocationBridgeEvent(
         _ event: LocationBridgeEvent,
         heldSubprocessSource: Bool
@@ -954,6 +997,17 @@ class AppState: ObservableObject {
         _ event: LocationSessionLossEvent,
         reason: String? = nil
     ) {
+        simulationTask?.cancel()
+        joystickTask?.cancel()
+        simulationTask = nil
+        routePlaybackID = nil
+        joystickTask = nil
+        joystickDeliveryID = nil
+        isSimulating = false
+        isPaused = false
+        simulation.resetJoystick()
+        joystickDirection = .zero
+
         if let reason {
             locationSessionCoordinator.connectionLost(reason: reason)
         } else {
@@ -965,7 +1019,8 @@ class AppState: ObservableObject {
             locationRecoveryTask = nil
             return
         }
-        guard locationSessionCoordinator.state.desiredLocation != nil,
+        guard automaticRecoveryEnabled,
+              locationSessionCoordinator.state.desiredLocation != nil,
               locationRecoveryTask == nil else { return }
 
         let strategy = reliabilityManager.strategy

@@ -452,6 +452,7 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let paths = [
             "PathChanger/UI/OrganicChrome.swift",
             "PathChanger/UI/OrganicSettingsSheet.swift",

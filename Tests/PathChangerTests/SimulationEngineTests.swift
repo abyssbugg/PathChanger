@@ -595,7 +595,7 @@ final class SimulationEngineStateTests: XCTestCase {
         await engine.stop()
 
         XCTAssertEqual(engine.state, .idle)
-        XCTAssertNil(engine.currentCoordinate)
+        XCTAssertEqual(engine.currentCoordinate, location)
         XCTAssertEqual(engine.routeProgress, 0)
         XCTAssertEqual(engine.elapsedTime, 0)
     }

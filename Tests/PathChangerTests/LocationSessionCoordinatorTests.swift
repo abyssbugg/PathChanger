@@ -38,11 +38,8 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
     coordinator.select(coordinate, mode: .teleport)
     
-    let error = try XCTAssertThrowsError(coordinator.beginApplication())
-    XCTAssert(error is LocationSessionTransitionError)
-    guard case .noReadySession = error as? LocationSessionTransitionError else {
-      XCTFail("Expected .noReadySession error")
-      return
+    XCTAssertThrowsError(try coordinator.beginApplication()) { error in
+      XCTAssertEqual(error as? LocationSessionTransitionError, .noReadySession)
     }
   }
   
@@ -55,10 +52,8 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     )
     coordinator.connectionReady(identity)
     
-    let error = try XCTAssertThrowsError(coordinator.beginApplication())
-    guard case .noDesiredLocation = error as? LocationSessionTransitionError else {
-      XCTFail("Expected .noDesiredLocation error")
-      return
+    XCTAssertThrowsError(try coordinator.beginApplication()) { error in
+      XCTAssertEqual(error as? LocationSessionTransitionError, .noDesiredLocation)
     }
   }
   
@@ -120,6 +115,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -133,12 +131,8 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     // Wait for clear to enter blocking state
     try await fakeInjector.waitForClearEntered()
     
-    let error = try XCTAssertThrowsError(coordinator.beginApplication())
-    guard case .beginApplicationDuringClearing = error as? LocationSessionTransitionError else {
-      XCTFail("Expected .beginApplicationDuringClearing error")
-      await fakeInjector.releaseClear()
-      _ = await clearTask.value
-      return
+    XCTAssertThrowsError(try coordinator.beginApplication()) { error in
+      XCTAssertEqual(error as? LocationSessionTransitionError, .beginApplicationDuringClearing)
     }
     
     await fakeInjector.releaseClear()
@@ -164,6 +158,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -195,6 +192,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: UUID(),
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -260,6 +260,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .queued
     )
@@ -301,6 +304,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .failed(code: "Device error")
     )
@@ -368,6 +374,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -402,6 +411,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -435,6 +447,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -479,6 +494,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -542,6 +560,9 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       requestID: request.id,
       session: UUID(),
       coordinate: coordinate,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      sessionGeneration: identity.generation,
       completedAt: Date(),
       outcome: .applied
     )
@@ -556,5 +577,21 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     let error = coordinator.accept(receipt)
     XCTAssertEqual(error, .staleGeneration)
     XCTAssertFalse(coordinator.state.application.isActive)
+  }
+
+
+  func test_cancelPendingApplication_restoresLastAcknowledgedReceipt() throws {
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(stableDeviceID: "device-123", transport: .usb, endpointClass: .direct, generation: 1)
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .joystick)
+    let first = try coordinator.beginApplication()
+    let receipt = LocationInjectionReceipt(requestID: first.id, session: UUID(), coordinate: coordinate, transport: .usb, endpointClass: .direct, sessionGeneration: 1, completedAt: Date(), outcome: .applied)
+    XCTAssertNil(coordinator.accept(receipt))
+    coordinator.select(LocationCoordinate(latitude: 38, longitude: -123), mode: .joystick)
+    let pending = try coordinator.beginApplication()
+    XCTAssertNil(coordinator.cancelPendingApplication(requestID: pending.id))
+    XCTAssertEqual(coordinator.state.application, .active(receipt: receipt))
+    XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt, receipt)
   }
 }

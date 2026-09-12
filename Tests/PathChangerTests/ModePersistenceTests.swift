@@ -124,4 +124,112 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
         XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
     }
+
+
+    private func makeJoystickState(
+        injector: FakeLocationInjector
+    ) -> (AppState, LocationSessionIdentity) {
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            routeDelay: { _ in }
+        )
+        state.selectedDevice = Device(id: "joystick-device", displayName: "Joystick Device", connectionType: .usb)
+        state.isTunneldRunning = true
+        state.activeMode = .joystick
+        state.simulationSpeed = .walking
+        state.stageLocation(first, for: .joystick)
+        state.joystickDirection = CGPoint(x: 0, y: 1)
+        let session = LocationSessionIdentity(
+            stableDeviceID: "joystick-device",
+            transport: .usb,
+            endpointClass: .direct,
+            generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+        return (state, session)
+    }
+
+    func testJoystickEngagesOnlyAfterStartCoordinateReceipt() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeJoystickState(injector: fake)
+
+        let engagement = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+
+        await fake.releaseNextApplication(session: session)
+        await engagement.value
+
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .moving(.joystick))
+        await fake.waitUntilApplicationPending()
+        state.disengageJoystick()
+        await fake.releaseNextApplication(session: session)
+    }
+
+    func testRapidJoystickInputKeepsOneApplyInFlightAndUsesLatestDirectionNext() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeJoystickState(injector: fake)
+        let engagement = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await engagement.value
+
+        await fake.waitUntilApplicationPending()
+        state.updateJoystickDirection(CGPoint(x: 1, y: 0))
+        state.updateJoystickDirection(CGPoint(x: 0, y: -1))
+        state.updateJoystickDirection(CGPoint(x: -1, y: 0))
+        var applyCalls = await fake.calls().compactMap { call -> LocationApplicationRequest? in
+            if case .apply(let request) = call { return request }
+            return nil
+        }
+        XCTAssertEqual(applyCalls.count, 2)
+
+        await fake.releaseNextApplication(session: session)
+        await fake.waitUntilApplicationPending()
+        applyCalls = await fake.calls().compactMap { call -> LocationApplicationRequest? in
+            if case .apply(let request) = call { return request }
+            return nil
+        }
+        XCTAssertEqual(applyCalls.count, 3)
+        XCTAssertLessThan(applyCalls[2].coordinate.longitude, applyCalls[1].coordinate.longitude)
+
+        let held = state.currentLocation
+        state.disengageJoystick()
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.joystick))
+        XCTAssertEqual(state.currentLocation, held)
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        await fake.releaseNextApplication(session: session)
+    }
+
+    func testJoystickTransportLossCancelsMovementAndPreservesLocationTruth() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeJoystickState(injector: fake)
+        let engagement = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await engagement.value
+        let receipt = state.locationSessionCoordinator.state.lastAcknowledgedReceipt
+        await fake.waitUntilApplicationPending()
+        let desiredBeforeLoss = state.locationSessionCoordinator.state.desiredLocation
+
+        state.submitLocationBridgeEvent(.sessionLost(session, reason: "tunnel callback inactive"))
+
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertEqual(state.joystickDirection, .zero)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, desiredBeforeLoss)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
+        if case .uncertain(let lastReceipt, _) = state.locationSessionCoordinator.state.application {
+            XCTAssertEqual(lastReceipt, receipt)
+        } else {
+            XCTFail("transport loss must make application state uncertain")
+        }
+        await fake.releaseNextApplication(session: session)
+    }
 }

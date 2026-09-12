@@ -153,6 +153,16 @@ final class LocationSessionCoordinator: ObservableObject {
     }
   }
 
+  /// Cancel only an in-flight proposal and restore the last acknowledged truth.
+  @discardableResult
+  func cancelPendingApplication(requestID: UUID? = nil) -> LocationSessionTransitionError? {
+    guard let pendingRequest else { return .noPendingRequest }
+    if let requestID, requestID != pendingRequest.id { return .requestMismatch }
+    self.pendingRequest = nil
+    state.application = state.lastAcknowledgedReceipt.map(LocationApplicationPhase.active) ?? .idle
+    return nil
+  }
+
   /// Reject a request by ID, setting application to failed with error text.
   /// Returns requestMismatch if the ID doesn't match the pending request.
   @discardableResult

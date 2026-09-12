@@ -230,7 +230,12 @@ final class LocationBridgeScriptTests: XCTestCase {
 
     /// Test that the bridge script exists in the expected location
     func testBridgeScriptExists() {
-        let workspacePath = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let workspacePath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/location_bridge.py")
+            .path
 
         // Check if script exists (may be in workspace or bundle)
         let scriptExists = FileManager.default.fileExists(atPath: workspacePath)
@@ -246,7 +251,12 @@ final class LocationBridgeScriptTests: XCTestCase {
 
     /// Test that the bridge script is valid Python
     func testBridgeScriptSyntax() throws {
-        let workspacePath = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let workspacePath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/location_bridge.py")
+            .path
 
         guard FileManager.default.fileExists(atPath: workspacePath) else {
             throw XCTSkip("Bridge script not found, skipping syntax check")
@@ -271,14 +281,24 @@ final class LocationBridgeScriptTests: XCTestCase {
     }
 
     func testBridgeProtocolCarriesRequestIdentity() throws {
-        let path = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/location_bridge.py")
+            .path
         let source = try String(contentsOfFile: path, encoding: .utf8)
         XCTAssertTrue(source.contains("request_id"))
         XCTAssertTrue(source.contains("session_generation"))
     }
 
     func testPythonCacheInvalidationRebuildsService() throws {
-        let script = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("scripts/location_bridge.py")
+            .path
         let code = """
 import importlib.util
 spec = importlib.util.spec_from_file_location("location_bridge", r"\(script)")
