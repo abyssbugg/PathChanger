@@ -54,8 +54,31 @@ struct LocationInjectionReceipt: Equatable, Sendable {
     let requestID: UUID
     let session: UUID
     let coordinate: LocationCoordinate
+    let transport: LocationTransport
+    let endpointClass: LocationEndpointClass
+    let sessionGeneration: UInt64
     let completedAt: Date
     let outcome: LocationInjectionOutcome
+
+    init(
+        requestID: UUID,
+        session: UUID,
+        coordinate: LocationCoordinate,
+        transport: LocationTransport = .usb,
+        endpointClass: LocationEndpointClass = .direct,
+        sessionGeneration: UInt64 = 1,
+        completedAt: Date,
+        outcome: LocationInjectionOutcome
+    ) {
+        self.requestID = requestID
+        self.session = session
+        self.coordinate = coordinate
+        self.transport = transport
+        self.endpointClass = endpointClass
+        self.sessionGeneration = sessionGeneration
+        self.completedAt = completedAt
+        self.outcome = outcome
+    }
 }
 
 // MARK: - LocationConnectionPhase

@@ -5,11 +5,11 @@ import XCTest
 final class LocationSessionCoordinatorTests: XCTestCase {
   
   var coordinator: LocationSessionCoordinator!
-  fileprivate var fakeInjector: FakeLocationInjecting!
+  fileprivate var fakeInjector: FakeLocationInjector!
   
   override func setUp() {
     super.setUp()
-    fakeInjector = FakeLocationInjecting()
+    fakeInjector = FakeLocationInjector()
     coordinator = LocationSessionCoordinator(injector: fakeInjector)
   }
   
@@ -525,7 +525,7 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     }
   }
   
-  func test_accept_withStaleGeneration_remainsKnownRedUntilTask6AddsReceiptMetadata() throws {
+  func testAcceptRejectsReceiptFromStaleGeneration() throws {
     let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
     coordinator.select(coordinate, mode: .teleport)
     
@@ -546,75 +546,15 @@ final class LocationSessionCoordinatorTests: XCTestCase {
       outcome: .applied
     )
     
-    // This test documents that receipt has no generation metadata.
-    // Task 6 must add receipt generation metadata before stale receipts
-    // can be rejected. Until then, this code path is untestable.
-    XCTFail("Task 6 must add receipt generation metadata before stale receipts can be rejected")
-  }
-}
+    coordinator.connectionReady(LocationSessionIdentity(
+      stableDeviceID: identity.stableDeviceID,
+      transport: identity.transport,
+      endpointClass: identity.endpointClass,
+      generation: 2
+    ))
 
-// MARK: - Fake Injector (Deterministic Actor, No Sleeps)
-
-fileprivate actor FakeLocationInjecting: LocationInjecting {
-  private var shouldFailClear = false
-  private var shouldBlockClear = false
-  var clearWasCalled = false
-  
-  private var capturedTarget: LocationInjectionTarget?
-  private var capturedSession: LocationSessionIdentity?
-  private var clearEnteredContinuation: CheckedContinuation<Void, Never>?
-  private var clearReleaseContinuation: CheckedContinuation<Void, Never>?
-  
-  func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
-    let receipt = LocationInjectionReceipt(
-      requestID: request.id,
-      session: UUID(),
-      coordinate: request.coordinate,
-      completedAt: Date(),
-      outcome: .applied
-    )
-    return receipt
-  }
-  
-  func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
-    self.clearWasCalled = true
-    self.capturedTarget = target
-    self.capturedSession = session
-    
-    if shouldBlockClear {
-      // Signal that we've entered clear
-      if let continuation = clearEnteredContinuation {
-        clearEnteredContinuation = nil
-        continuation.resume()
-      }
-      
-      // Wait for release signal
-      _ = await withCheckedContinuation { continuation in
-        self.clearReleaseContinuation = continuation
-      }
-    }
-    
-    if shouldFailClear {
-      throw NSError(domain: "FakeInjectorError", code: -1, userInfo: nil)
-    }
-  }
-  
-  nonisolated func waitForClearEntered() async throws {
-    try await Task.sleep(nanoseconds: 100_000_000) // 100ms to ensure actor is entered
-  }
-  
-  func setShouldFailClear(_ value: Bool) {
-    self.shouldFailClear = value
-  }
-  
-  func setShouldBlockClear(_ value: Bool) {
-    self.shouldBlockClear = value
-  }
-  
-  func releaseClear() {
-    if let continuation = clearReleaseContinuation {
-      clearReleaseContinuation = nil
-      continuation.resume()
-    }
+    let error = coordinator.accept(receipt)
+    XCTAssertEqual(error, .staleGeneration)
+    XCTAssertFalse(coordinator.state.application.isActive)
   }
 }
