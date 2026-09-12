@@ -99,6 +99,16 @@ final class LocationSessionCoordinator: ObservableObject {
     guard receipt.coordinate == pendingRequest.coordinate else {
       return .coordinateMismatch
     }
+
+    guard let currentReadySession,
+          receipt.sessionGeneration == currentReadySession.generation else {
+      return .staleGeneration
+    }
+
+    guard receipt.transport == currentReadySession.transport,
+          receipt.endpointClass == currentReadySession.endpointClass else {
+      return .requestMismatch
+    }
     
     // Validate outcome
     switch receipt.outcome {
