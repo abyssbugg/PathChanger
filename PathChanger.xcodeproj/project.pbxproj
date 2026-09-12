@@ -61,6 +61,7 @@
 		8094E8CF5FB3FB604B8E8AB8 /* PerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6DEAD6405B53114ED236668 /* PerformanceTests.swift */; };
 		854DE358B8B918242A379DFB /* ProcessEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 674B89DF44658933AB3C15B1 /* ProcessEnvironment.swift */; };
 		87203B3FD684F4C7F99DCFA3 /* HealthCheckServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0820621D1AAFBA4523C2D6C6 /* HealthCheckServer.swift */; };
+		8A07B5BED02C8DA46DA431DA /* DevLocationBridgeReceiptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CF6F112EA75CACD56F3214B /* DevLocationBridgeReceiptTests.swift */; };
 		8AC316D2DD33372899E1B303 /* CloudSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 971FF340761CB00E51A1E88B /* CloudSyncTests.swift */; };
 		8B65B49EBE68A45B73C7DD6B /* PrivilegedTunnelCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBD94E214D8CBEA29F664427 /* PrivilegedTunnelCommandTests.swift */; };
 		8BE5FC903D34B1168C4E272C /* SimulationStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953D6EF30ABE7CAC43D61DE5 /* SimulationStateManager.swift */; };
@@ -143,6 +144,7 @@
 		12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckServerTests.swift; sourceTree = "<group>"; };
 		184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryServiceTests.swift; sourceTree = "<group>"; };
 		1C32C189609146072E337C41 /* LocationConnectionArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConnectionArguments.swift; sourceTree = "<group>"; };
+		1CF6F112EA75CACD56F3214B /* DevLocationBridgeReceiptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridgeReceiptTests.swift; sourceTree = "<group>"; };
 		245D047994AAE1E18686F840 /* InspectorPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorPanel.swift; sourceTree = "<group>"; };
 		25D3DC43F9AE02C06CBDD830 /* ToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastView.swift; sourceTree = "<group>"; };
 		2760CDEDE009F38398551BF0 /* LocationInjectionReceiptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectionReceiptTests.swift; sourceTree = "<group>"; };
@@ -398,6 +400,7 @@
 				E82755A54AB427267400E6EA /* DeviceCacheTests.swift */,
 				C636275D5F772404FAB608B3 /* DeviceManagerIntegrationTests.swift */,
 				8C5B2AC269C4FF219A045B59 /* DeviceVersionTests.swift */,
+				1CF6F112EA75CACD56F3214B /* DevLocationBridgeReceiptTests.swift */,
 				E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */,
 				C87292B0A4C87F93B87D5F59 /* FileDescriptorLeakTests.swift */,
 				02C82018B5370288EB8A97BC /* GPXParserTests.swift */,
@@ -566,6 +569,7 @@
 				487FDDB005A7849E4D93CAFF /* ArgumentSanitizerTests.swift in Sources */,
 				8AC316D2DD33372899E1B303 /* CloudSyncTests.swift in Sources */,
 				DC727E6337321449695EF418 /* ConstantsTests.swift in Sources */,
+				8A07B5BED02C8DA46DA431DA /* DevLocationBridgeReceiptTests.swift in Sources */,
 				AE98A734BB403BAF60CF2D1A /* DevLocationBridgeSecurityTests.swift in Sources */,
 				BD3F13585416AF0A4DD33540 /* DeviceCacheTests.swift in Sources */,
 				D03C31C2534BAE26B31B9B50 /* DeviceManagerIntegrationTests.swift in Sources */,

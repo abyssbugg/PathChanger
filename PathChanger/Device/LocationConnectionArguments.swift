@@ -9,6 +9,12 @@
 
 import Foundation
 
+struct LocationConnectionDescriptor: Equatable, Sendable {
+    let arguments: [String]
+    let transport: LocationTransport
+    let endpointClass: LocationEndpointClass
+}
+
 enum LocationConnectionArguments {
     static func make(
         deviceId: String,
@@ -23,5 +29,32 @@ enum LocationConnectionArguments {
             return ["--rsd", rsdAddress, String(rsdPort)]
         }
         return ["--udid", deviceId]
+    }
+
+    static func classify(
+        arguments: [String],
+        physicalTransport: LocationTransport
+    ) -> LocationConnectionDescriptor {
+        LocationConnectionDescriptor(
+            arguments: arguments,
+            transport: physicalTransport,
+            endpointClass: arguments.first == "--rsd" ? .remoteServiceDiscovery : .direct
+        )
+    }
+
+    static func describe(
+        deviceId: String,
+        physicalTransport: LocationTransport,
+        isDaemonTunneld: Bool,
+        rsdAddress: String?,
+        rsdPort: Int?
+    ) -> LocationConnectionDescriptor {
+        let arguments = make(
+            deviceId: deviceId,
+            isDaemonTunneld: isDaemonTunneld,
+            rsdAddress: rsdAddress,
+            rsdPort: rsdPort
+        )
+        return classify(arguments: arguments, physicalTransport: physicalTransport)
     }
 }

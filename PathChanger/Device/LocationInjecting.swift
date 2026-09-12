@@ -4,6 +4,7 @@ enum LocationBridgeEvent: Equatable, Sendable {
     case sessionReady(LocationSessionIdentity)
     case sessionLost(LocationSessionIdentity?, reason: String)
     case processTerminated(exitCode: Int32)
+    case receipt(LocationInjectionReceipt)
 }
 
 protocol LocationInjecting: Sendable {
