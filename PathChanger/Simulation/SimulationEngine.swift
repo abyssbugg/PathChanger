@@ -284,8 +284,6 @@ class RouteMode: SimulationModeProtocol {
 
     func stop() {
         isActive = false
-        currentIndex = 0
-        currentCoordinate = nil
     }
 
     func pause() {
@@ -299,15 +297,18 @@ class RouteMode: SimulationModeProtocol {
     func update() -> LocationCoordinate? {
         guard isActive, !interpolatedPoints.isEmpty else { return currentCoordinate }
 
-        currentIndex += 1
-
-        if currentIndex >= interpolatedPoints.count {
+        let nextIndex = currentIndex + 1
+        if nextIndex >= interpolatedPoints.count {
             if loop {
                 currentIndex = 0
             } else {
+                currentIndex = interpolatedPoints.count - 1
+                currentCoordinate = interpolatedPoints[currentIndex]
                 isActive = false
                 return currentCoordinate
             }
+        } else {
+            currentIndex = nextIndex
         }
 
         currentCoordinate = interpolatedPoints[currentIndex]
@@ -646,14 +647,8 @@ class SimulationEngine: ObservableObject {
         routeMode.stop()
         joystickMode.stop()
 
-        // Clear location on device
-        if let device = targetDevice {
-            try? await locationBridge.clearLocation(for: device)
-        }
-
+        // Stopping movement holds the last applied coordinate. Explicit clear is separate.
         state = .idle
-        currentCoordinate = nil
-        routeProgress = 0
         elapsedTime = 0
     }
 
@@ -698,8 +693,12 @@ class SimulationEngine: ObservableObject {
 
         // Send to device
         if let coordinate = nextCoordinate, let device = targetDevice {
-            currentCoordinate = coordinate
-            try? await locationBridge.setLocation(coordinate, for: device)
+            do {
+                try await locationBridge.setLocation(coordinate, for: device)
+                currentCoordinate = coordinate
+            } catch {
+                state = .error(error.localizedDescription)
+            }
         }
     }
 }

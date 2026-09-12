@@ -122,4 +122,24 @@ final class JoystickMovementTests: XCTestCase {
         let diagonalDistance = RouteInterpolator.haversineDistance(from: origin, to: northeast)
         XCTAssertEqual(diagonalDistance, northDistance, accuracy: 0.5)
     }
+
+
+    func testLatestDirectionCanBeAppliedFromLastAcknowledgedCoordinate() {
+        let unchangedOrigin = origin
+        let firstProposal = JoystickMovement.nextCoordinate(
+            from: origin,
+            direction: CGPoint(x: 1, y: 0),
+            speedMetersPerSecond: speed,
+            deltaTime: dt
+        )
+        let latestProposal = JoystickMovement.nextCoordinate(
+            from: origin,
+            direction: CGPoint(x: -1, y: 0),
+            speedMetersPerSecond: speed,
+            deltaTime: dt
+        )
+        XCTAssertGreaterThan(firstProposal.longitude, origin.longitude)
+        XCTAssertLessThan(latestProposal.longitude, origin.longitude)
+        XCTAssertEqual(origin, unchangedOrigin)
+    }
 }

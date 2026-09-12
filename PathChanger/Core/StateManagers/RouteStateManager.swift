@@ -314,6 +314,30 @@ final class RouteStateManager: ObservableObject {
         skipToWaypoint(max(currentIndex - count, 0))
     }
 
+    /// Begin playback without claiming any progress before device acknowledgement.
+    func beginAcknowledgedPlayback() {
+        currentIndex = 0
+        progress = 0
+        playbackState = .playing
+    }
+
+    /// Advance route truth only after the corresponding device receipt is accepted.
+    func acknowledgeWaypoint(at index: Int, totalCount: Int) {
+        guard totalCount > 0, index >= 0, index < totalCount else { return }
+        currentIndex = index + 1
+        progress = Double(currentIndex) / Double(totalCount)
+        playbackState = .playing
+        updateEstimatedTime()
+    }
+
+    /// Complete movement while preserving the acknowledged final coordinate externally.
+    func completeAcknowledgedPlayback() {
+        currentIndex = currentRoute.count
+        progress = currentRoute.isEmpty ? 0 : 1
+        playbackState = .completed
+        estimatedRemainingTime = 0
+    }
+
     // MARK: Private Helpers
 
     private func updateEstimatedTime() {

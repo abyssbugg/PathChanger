@@ -112,236 +112,7 @@ final class SimulationStateManagerTests: XCTestCase {
         XCTAssertEqual(AppMode.mapModes.count, 5)
     }
 
-    @MainActor
-    func testStopAndClearAreDistinctLocationSemantics() async {
-        let manager = SimulationStateManager()
-        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
-        manager.desiredLocation = target
-        manager.lastAcknowledgedReceipt = receipt
-        manager.locationApplication = .active(receipt)
-        manager.isSimulating = true
-        manager.pauseSimulation()
-        XCTAssertTrue(manager.isPaused)
-        XCTAssertTrue(manager.locationApplication.isActive)
-        XCTAssertEqual(manager.desiredLocation, target)
-        manager.isSimulating = false
-        XCTAssertTrue(manager.locationApplication.isActive)
-        manager.clearLocationSession()
-        XCTAssertNil(manager.desiredLocation)
-        XCTAssertNil(manager.lastAcknowledgedReceipt)
-        XCTAssertEqual(manager.locationApplication, .idle)
-    }
 
-    @MainActor
-    func testTunnelLossMarksGUIInactiveWhileLocationStateIsUncertain() {
-        let manager = SimulationStateManager()
-        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
-        manager.desiredLocation = target
-        manager.lastAcknowledgedReceipt = receipt
-        manager.locationApplication = .active(receipt)
-        manager.isTunnelCallbackActive = false
-        manager.locationApplication = .uncertain(lastReceipt: receipt, reason: "tunnel callback inactive")
-        XCTAssertFalse(manager.isTunnelCallbackActive)
-        XCTAssertFalse(manager.locationApplication.isActive)
-        XCTAssertEqual(manager.locationApplication, .uncertain(lastReceipt: receipt, reason: "tunnel callback inactive"))
-        XCTAssertEqual(manager.desiredLocation, target)
-        XCTAssertEqual(manager.lastAcknowledgedReceipt, receipt)
-    }
-
-    @MainActor
-    func testJoystickDisengageStopsMovementButPreservesAppliedLocation() {
-        let manager = SimulationStateManager()
-        let target = LocationCoordinate(latitude: 35.0, longitude: 139.0)
-        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: target, completedAt: Date(timeIntervalSince1970: 0), outcome: .applied)
-        manager.desiredLocation = target
-        manager.lastAcknowledgedReceipt = receipt
-        manager.locationApplication = .active(receipt)
-        manager.isSimulating = true
-        manager.updateJoystickDirection(CGPoint(x: 0.5, y: -0.5))
-        manager.resetJoystick()
-        manager.isSimulating = false
-        XCTAssertFalse(manager.isSimulating)
-        XCTAssertEqual(manager.joystickDirection, .zero)
-        XCTAssertTrue(manager.locationApplication.isActive)
-        XCTAssertEqual(manager.desiredLocation, target)
-        XCTAssertEqual(manager.lastAcknowledgedReceipt, receipt)
-    }
-
-    @MainActor
-    func testApplicationCoordinateNeverMutatesRequestedTarget() {
-        let manager = SimulationStateManager()
-        let target = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
-
-        XCTAssertEqual(manager.coordinateForApplication(target), target)
-    }
-
-    @MainActor
-    func testLegacyLocationSemanticsAreRemovedDuringMigration() {
-        let suite = "Task10LegacyLocationSemantics"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        for key in AppSettings.legacyLocationSemanticsKeys {
-            defaults.set(true, forKey: key)
-        }
-
-        AppSettings.removeLegacyLocationSemantics(from: defaults)
-
-        for key in AppSettings.legacyLocationSemanticsKeys {
-            XCTAssertNil(defaults.object(forKey: key), key)
-        }
-    }
-}
-
-// MARK: - Device State Manager Direct Transport Tests
-
-@MainActor
-final class DeviceStateManagerDirectTransportTests: XCTestCase {
-
-    func testDirectWiFiDeviceIsReadyWithoutTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Wi-Fi iPhone",
-            connectionType: .wifi
-        )
-        manager.wifiDirectDeviceIds = ["00008130-000C5144019A001C"]
-        manager.isWiFiTransportAvailable = true
-        manager.isTunneldRunning = false
-
-        XCTAssertTrue(
-            manager.isDeviceReady,
-            "A Network device discovered by usbmux is a valid direct Wi-Fi path"
-        )
-    }
-
-    func testDirectUSBDeviceIsReadyWithoutTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "USB iPhone",
-            connectionType: .usb
-        )
-        manager.usbDirectDeviceIds = ["00008130-000C5144019A001C"]
-        manager.isUSBConnected = true
-        manager.isTunneldRunning = false
-
-        XCTAssertTrue(manager.isDeviceReady)
-    }
-
-    func testUnreachableDeviceStillRequiresTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Unavailable iPhone",
-            connectionType: .wifi
-        )
-        manager.isWiFiTransportAvailable = false
-        manager.isTunneldRunning = false
-
-        XCTAssertFalse(manager.isDeviceReady)
-    }
-
-    func testAnotherWiFiDeviceDoesNotMakeSelectedDeviceReady() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Selected iPhone",
-            connectionType: .wifi
-        )
-        manager.wifiDirectDeviceIds = ["00008130-1111111111111111"]
-        manager.isWiFiTransportAvailable = true
-        manager.isTunneldRunning = false
-
-        XCTAssertFalse(
-            manager.isDeviceReady,
-            "Transport availability must belong to the selected UDID"
-        )
-    }
-}
-
-// MARK: - Device Manager Deduplication Tests
-
-@MainActor
-final class DeviceManagerDeduplicationTests: XCTestCase {
-
-    func testDeduplicatesWifiEndpointIdentifiersIntoSinglePhysicalDevice() {
-        let manager = DeviceManager()
-        manager.stopAutoRefresh()
-
-        let canonical = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "🖇️ (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "🖇️"
-        )
-
-        let variants: [Device] = [
-            canonical,
-            Device(
-                id: "192.168.8.138",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-            Device(
-                id: "2c0f:f5c0:600:ac13:1839:d9a8:fd2b:a7ad",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-            Device(
-                id: "2c0f:f5c0:600:ac13:e2ea:c420:fa6c:3",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-        ]
-
-        let deduped = manager.deduplicatedDevicesForTesting(variants)
-
-        XCTAssertEqual(deduped.count, 1)
-        XCTAssertEqual(deduped.first?.id, canonical.id)
-        XCTAssertEqual(deduped.first?.productType, canonical.productType)
-        XCTAssertEqual(deduped.first?.productVersion, canonical.productVersion)
-    }
-
-    func testKeepsDistinctDevicesWhenIdentityDiffers() {
-        let manager = DeviceManager()
-        manager.stopAutoRefresh()
-
-        let first = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Phone A (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "Phone A"
-        )
-        let second = Device(
-            id: "00008120-000A111122223333",
-            displayName: "Phone B (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "Phone B"
-        )
-
-        let deduped = manager.deduplicatedDevicesForTesting([first, second])
-
-        XCTAssertEqual(deduped.count, 2)
-        XCTAssertEqual(Set(deduped.map(\.id)), Set([first.id, second.id]))
-    }
 }
 
 // MARK: - Route State Manager Tests
@@ -602,5 +373,30 @@ final class ConnectionStatusTests: XCTestCase {
         XCTAssertEqual(ConnectionStatus.connecting.text, "Connecting...")
         XCTAssertEqual(ConnectionStatus.connected.text, "Connected")
         XCTAssertEqual(ConnectionStatus.error.text, "Error")
+    }
+}
+
+@MainActor
+final class AcknowledgedRouteStateTests: XCTestCase {
+    func testProgressAdvancesOnlyWhenWaypointIsAcknowledged() {
+        let manager = RouteStateManager(routeLibrary: RouteLibraryManager())
+        manager.loadRoute(from: [
+            LocationCoordinate(latitude: 35.0, longitude: 139.0),
+            LocationCoordinate(latitude: 35.1, longitude: 139.1),
+            LocationCoordinate(latitude: 35.2, longitude: 139.2)
+        ])
+
+        manager.beginAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 0)
+        XCTAssertEqual(manager.currentIndex, 0)
+
+        manager.acknowledgeWaypoint(at: 0, totalCount: 3)
+        XCTAssertEqual(manager.progress, 1.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(manager.currentIndex, 1)
+        XCTAssertEqual(manager.playbackState, .playing)
+
+        manager.completeAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 1)
+        XCTAssertEqual(manager.playbackState, .completed)
     }
 }

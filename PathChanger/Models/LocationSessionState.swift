@@ -92,6 +92,13 @@ enum LocationConnectionPhase: Equatable, Sendable {
 
 // MARK: - LocationApplicationPhase
 
+extension LocationConnectionPhase {
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+}
+
 enum LocationApplicationPhase: Equatable, Sendable {
     case idle
     case applying(requestID: UUID, coordinate: LocationCoordinate)

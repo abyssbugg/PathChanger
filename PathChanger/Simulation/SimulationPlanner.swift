@@ -42,6 +42,10 @@ enum SimulationPlanner {
         }
     }
 
+    static func jumpIndexAfterAcknowledging(currentIndex: Int, routeCount: Int) -> Int {
+        min(max(currentIndex, 0) + 1, max(routeCount, 0))
+    }
+
     private static func planTeleport(targetLocation: LocationCoordinate?) -> SimulationStartPlan {
         guard let target = targetLocation else {
             return .failed("No target location selected")
