@@ -1,5 +1,60 @@
 import Foundation
 
+struct PersistentBridgeRequestGate {
+    private var pending: (requestID: UUID, generation: UInt64)?
+
+    mutating func begin(requestID: UUID, generation: UInt64) throws {
+        guard pending == nil else {
+            throw PersistentLocationBridge.PersistentBridgeError.requestInProgress
+        }
+        pending = (requestID, generation)
+    }
+
+    func accepts(requestID: UUID, generation: UInt64) -> Bool {
+        pending?.requestID == requestID && pending?.generation == generation
+    }
+
+    mutating func finish(requestID: UUID, generation: UInt64) {
+        guard accepts(requestID: requestID, generation: generation) else { return }
+        pending = nil
+    }
+
+    mutating func cancel() {
+        pending = nil
+    }
+}
+
+struct PersistentBridgeReadinessGate {
+    private(set) var isReady = false
+
+    mutating func consume(ready: Bool) -> Bool {
+        guard ready, !isReady else { return false }
+        isReady = true
+        return true
+    }
+}
+
+struct PersistentBridgeTerminationEvents {
+    private var consumed = false
+
+    mutating func consume(
+        exitCode: Int32,
+        intentional: Bool,
+        session: LocationSessionIdentity?
+    ) -> [LocationBridgeEvent] {
+        guard !consumed else { return [] }
+        consumed = true
+        var events: [LocationBridgeEvent] = [.processTerminated(exitCode: exitCode)]
+        if let session {
+            events.append(.sessionLost(
+                session,
+                reason: intentional ? "intentional stop" : "unexpected process exit"
+            ))
+        }
+        return events
+    }
+}
+
 // MARK: - Persistent Location Bridge
 
 /// A high-performance bridge that maintains persistent Python processes
@@ -17,6 +72,8 @@ final class PersistentLocationBridge: ObservableObject {
     /// Request to send to Python bridge
     private struct BridgeRequest: Codable {
         let cmd: String
+        var request_id: UUID = UUID()
+        var session_generation: UInt64 = 0
         var lat: Double?
         var lng: Double?
         var udid: String?
@@ -33,14 +90,17 @@ final class PersistentLocationBridge: ObservableObject {
     /// Response from Python bridge
     private struct BridgeResponse: Codable {
         let success: Bool
+        var request_id: UUID?
+        var session_generation: UInt64?
         var error: String?
         var message: String?
         var ready: Bool?
     }
 
     /// Errors specific to persistent bridge
-    enum PersistentBridgeError: Error, LocalizedError {
+    enum PersistentBridgeError: Error, LocalizedError, Equatable {
         case processNotRunning
+        case requestInProgress
         case processStartFailed(String)
         case timeout
         case invalidResponse(String)
@@ -51,6 +111,8 @@ final class PersistentLocationBridge: ObservableObject {
             switch self {
             case .processNotRunning:
                 return "Python bridge process is not running"
+            case .requestInProgress:
+                return "Another persistent bridge request is already in progress"
             case .processStartFailed(let reason):
                 return "Failed to start Python bridge: \(reason)"
             case .timeout:
@@ -92,6 +154,16 @@ final class PersistentLocationBridge: ObservableObject {
     private var responseBuffer: String = ""
     private var pendingContinuation: CheckedContinuation<BridgeResponse, Error>?
     private var timeoutTask: Task<Void, Never>?
+    private var readyContinuation: CheckedContinuation<Bool, Never>?
+    private var readyTimeoutTask: Task<Void, Never>?
+    private var requestGate = PersistentBridgeRequestGate()
+    private var readinessGate = PersistentBridgeReadinessGate()
+    private var terminationEvents = PersistentBridgeTerminationEvents()
+    private let eventHub = PersistentBridgeEventHub()
+    private var currentSession: LocationSessionIdentity?
+    private var isIntentionalStop = false
+    private var isStarting = false
+    private var processGeneration: UInt64 = 0
 
     private var python3Path: String { PythonPathResolver.path }
     private var bridgeScriptPath: String?
@@ -140,6 +212,11 @@ final class PersistentLocationBridge: ObservableObject {
             Logger.debug("[PersistentBridge] Already running", category: .device)
             return
         }
+        guard !isStarting else {
+            throw PersistentBridgeError.requestInProgress
+        }
+        isStarting = true
+        defer { isStarting = false }
 
         guard PythonPathResolver.isAvailable else {
             throw PersistentBridgeError.pythonNotFound
@@ -193,6 +270,7 @@ final class PersistentLocationBridge: ObservableObject {
 
         do {
             try newProcess.run()
+            processGeneration &+= 1
 
             self.process = newProcess
             self.stdinPipe = stdin
@@ -217,6 +295,7 @@ final class PersistentLocationBridge: ObservableObject {
     /// Stop the persistent bridge process
     func stop() async {
         guard isRunning else { return }
+        isIntentionalStop = true
 
         Logger.info("[PersistentBridge] Stopping bridge process", category: .device)
 
@@ -242,7 +321,7 @@ final class PersistentLocationBridge: ObservableObject {
     ///   - coordinate: The location to simulate
     ///   - device: Target device
     /// - Throws: PersistentBridgeError on failure
-    func setLocation(_ coordinate: LocationCoordinate, for device: Device) async throws {
+    func setLocation(_ coordinate: LocationCoordinate, for device: Device, requestID: UUID = UUID(), sessionGeneration: UInt64? = nil) async throws {
         // Auto-start if not running
         if !isRunning {
             try await start()
@@ -258,7 +337,15 @@ final class PersistentLocationBridge: ObservableObject {
         request.udid = device.id
         request.rsd_address = rsdInfo?.rsdAddress
         request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
+        request.request_id = requestID
+        request.session_generation = sessionGeneration ?? processGeneration
         usesTunnelTransport = rsdInfo != nil
+        currentSession = LocationSessionIdentity(
+            stableDeviceID: device.id,
+            transport: device.connectionType == .wifi ? .wifi : .usb,
+            endpointClass: rsdInfo == nil ? .direct : .remoteServiceDiscovery,
+            generation: request.session_generation
+        )
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let response = try await sendCommand(request)
@@ -277,7 +364,7 @@ final class PersistentLocationBridge: ObservableObject {
     }
 
     /// Clear simulated location on device
-    func clearLocation(for device: Device) async throws {
+    func clearLocation(for device: Device, requestID: UUID = UUID(), sessionGeneration: UInt64? = nil) async throws {
         // Auto-start if not running
         if !isRunning {
             try await start()
@@ -291,6 +378,8 @@ final class PersistentLocationBridge: ObservableObject {
         request.udid = device.id
         request.rsd_address = rsdInfo?.rsdAddress
         request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
+        request.request_id = requestID
+        request.session_generation = sessionGeneration ?? processGeneration
 
         let response = try await sendCommand(request)
 
@@ -309,22 +398,26 @@ final class PersistentLocationBridge: ObservableObject {
 
     // MARK: - Private Methods
 
+    func events() -> AsyncStream<LocationBridgeEvent> {
+        eventHub.stream()
+    }
+
+    private func emit(_ event: LocationBridgeEvent) {
+        eventHub.publish([event])
+    }
+
     /// Wait for ready signal from Python process
     private func waitForReady() async throws -> Bool {
-        return try await withCheckedThrowingContinuation { continuation in
-            var timeoutTask: Task<Void, Never>?
-
-            timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 second timeout
-                continuation.resume(returning: false)
-            }
-
-            // The ready signal will be handled by handleOutput
-            // For now, we check if process started and assume ready
-            Task {
-                try? await Task.sleep(nanoseconds: 500_000_000) // 500ms wait
-                timeoutTask?.cancel()
-                continuation.resume(returning: true)
+        if readinessGate.isReady { return true }
+        return await withCheckedContinuation { continuation in
+            readyContinuation = continuation
+            readyTimeoutTask?.cancel()
+            readyTimeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled, let self, let pending = self.readyContinuation else { return }
+                self.readyContinuation = nil
+                self.readyTimeoutTask = nil
+                pending.resume(returning: false)
             }
         }
     }
@@ -334,42 +427,36 @@ final class PersistentLocationBridge: ObservableObject {
         guard let stdin = stdinPipe else {
             throw PersistentBridgeError.processNotRunning
         }
+        try requestGate.begin(requestID: request.request_id, generation: request.session_generation)
 
-        // Encode request
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(request),
-              var jsonString = String(data: data, encoding: .utf8) else {
+        let data = try JSONEncoder().encode(request)
+        guard var jsonString = String(data: data, encoding: .utf8),
+              let commandData = (jsonString + "\n").data(using: .utf8) else {
+            requestGate.finish(requestID: request.request_id, generation: request.session_generation)
             throw PersistentBridgeError.invalidResponse("Failed to encode request")
         }
         jsonString += "\n"
-
-        // Send request
-        guard let commandData = jsonString.data(using: .utf8) else {
-            throw PersistentBridgeError.invalidResponse("Failed to convert request to data")
-        }
-
-        // Write to stdin
-        do {
-            try stdin.fileHandleForWriting.write(contentsOf: commandData)
-        } catch {
-            throw PersistentBridgeError.processNotRunning
-        }
-
-        // Wait for response with timeout.
         let timeoutSeconds = responseTimeout
 
         return try await withCheckedThrowingContinuation { continuation in
-            self.pendingContinuation = continuation
-
-            self.timeoutTask?.cancel()
-            self.timeoutTask = Task { @MainActor [weak self] in
+            pendingContinuation = continuation
+            timeoutTask?.cancel()
+            timeoutTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                guard !Task.isCancelled,
-                      let self,
-                      let pending = self.pendingContinuation else { return }
+                guard !Task.isCancelled, let self, let pending = self.pendingContinuation else { return }
                 self.pendingContinuation = nil
                 self.timeoutTask = nil
+                self.requestGate.finish(requestID: request.request_id, generation: request.session_generation)
                 pending.resume(throwing: PersistentBridgeError.timeout)
+            }
+            do {
+                try stdin.fileHandleForWriting.write(contentsOf: commandData)
+            } catch {
+                pendingContinuation = nil
+                timeoutTask?.cancel()
+                timeoutTask = nil
+                requestGate.finish(requestID: request.request_id, generation: request.session_generation)
+                continuation.resume(throwing: PersistentBridgeError.processNotRunning)
             }
         }
     }
@@ -392,13 +479,30 @@ final class PersistentLocationBridge: ObservableObject {
                 // Check for ready signal
                 if response.ready == true {
                     Logger.debug("[PersistentBridge] Received ready signal", category: .device)
+                    if readinessGate.consume(ready: true), let pending = readyContinuation {
+                        readyContinuation = nil
+                        readyTimeoutTask?.cancel()
+                        readyTimeoutTask = nil
+                        pending.resume(returning: true)
+                    }
+                    continue
                 }
 
-                // Resume pending continuation
+                guard let responseID = response.request_id,
+                      let responseGeneration = response.session_generation else {
+                    Logger.info("[PersistentBridge] Ignoring response without request identity", category: .device)
+                    continue
+                }
+                guard requestGate.accepts(requestID: responseID, generation: responseGeneration) else {
+                    Logger.info("[PersistentBridge] Ignoring stale or mismatched response \(responseID)", category: .device)
+                    continue
+                }
+
                 if let continuation = pendingContinuation {
                     pendingContinuation = nil
                     timeoutTask?.cancel()
                     timeoutTask = nil
+                    requestGate.finish(requestID: responseID, generation: responseGeneration)
                     continuation.resume(returning: response)
                     return
                 }
@@ -412,12 +516,24 @@ final class PersistentLocationBridge: ObservableObject {
 
         isRunning = false
 
-        // Resume any pending continuation with error
+        if let pending = readyContinuation {
+            readyContinuation = nil
+            readyTimeoutTask?.cancel()
+            readyTimeoutTask = nil
+            pending.resume(returning: false)
+        }
         if let continuation = pendingContinuation {
             pendingContinuation = nil
+            timeoutTask?.cancel()
+            timeoutTask = nil
+            requestGate.cancel()
             continuation.resume(throwing: PersistentBridgeError.processNotRunning)
         }
-
+        eventHub.publish(terminationEvents.consume(
+            exitCode: exitCode,
+            intentional: isIntentionalStop,
+            session: currentSession
+        ))
         cleanup()
     }
 
@@ -425,6 +541,8 @@ final class PersistentLocationBridge: ObservableObject {
     private func cleanup() {
         timeoutTask?.cancel()
         timeoutTask = nil
+        readyTimeoutTask?.cancel()
+        readyTimeoutTask = nil
 
         stdinPipe?.fileHandleForWriting.closeFile()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
@@ -442,5 +560,26 @@ final class PersistentLocationBridge: ObservableObject {
         averageResponseTime = 0
         responseTimeAccumulator = 0
         usesTunnelTransport = false
+    }
+}
+
+@MainActor
+final class PersistentBridgeEventHub {
+    private var continuations: [UUID: AsyncStream<LocationBridgeEvent>.Continuation] = [:]
+
+    func stream() -> AsyncStream<LocationBridgeEvent> {
+        let id = UUID()
+        let pair = AsyncStream<LocationBridgeEvent>.makeStream()
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in self?.continuations.removeValue(forKey: id) }
+        }
+        continuations[id] = pair.continuation
+        return pair.stream
+    }
+
+    func publish(_ events: [LocationBridgeEvent]) {
+        for event in events {
+            continuations.values.forEach { $0.yield(event) }
+        }
     }
 }

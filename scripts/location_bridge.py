@@ -187,6 +187,13 @@ def validate_request(request: dict) -> Tuple[bool, str]:
     
     if cmd not in ("set_location", "clear_location", "ping", "quit"):
         return False, f"Unknown command: {cmd}"
+
+    request_id = request.get("request_id")
+    if not request_id or not isinstance(request_id, str):
+        return False, "Missing or invalid 'request_id' field"
+    session_generation = request.get("session_generation")
+    if not isinstance(session_generation, int) or session_generation < 0:
+        return False, "Missing or invalid 'session_generation' field"
     
     if cmd == "set_location":
         lat = validate_coordinate(request.get("lat"))
@@ -273,13 +280,19 @@ def main():
                 # Validate request
                 valid, error_msg = validate_request(request)
                 if not valid:
-                    response = {"success": False, "error": error_msg}
+                    response = {"success": False, "error": error_msg, "code": "INVALID_REQUEST"}
+                    if isinstance(request.get("request_id"), str):
+                        response["request_id"] = request["request_id"]
+                    if isinstance(request.get("session_generation"), int):
+                        response["session_generation"] = request["session_generation"]
                     sys.stdout.write(json.dumps(response) + "\n")
                     sys.stdout.flush()
                     continue
                 
                 # Process command
                 response = process_command(connection, request)
+                response["request_id"] = request["request_id"]
+                response["session_generation"] = request["session_generation"]
                 sys.stdout.write(json.dumps(response) + "\n")
                 sys.stdout.flush()
                 

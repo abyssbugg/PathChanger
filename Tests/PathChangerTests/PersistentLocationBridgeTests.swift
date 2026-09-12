@@ -269,4 +269,48 @@ final class LocationBridgeScriptTests: XCTestCase {
             throw XCTSkip("Python3 not available for syntax check")
         }
     }
+
+    func testBridgeProtocolCarriesRequestIdentity() throws {
+        let path = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let source = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(source.contains("request_id"))
+        XCTAssertTrue(source.contains("session_generation"))
+    }
+
+    func testPythonCacheInvalidationRebuildsService() throws {
+        let script = FileManager.default.currentDirectoryPath + "/scripts/location_bridge.py"
+        let code = """
+import importlib.util
+spec = importlib.util.spec_from_file_location("location_bridge", r"\(script)")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+connection = module.DeviceConnection()
+connection._initialized = True
+created = []
+class DVT:
+    def perform_handshake(self): pass
+class Location:
+    def __init__(self, should_fail): self.should_fail = should_fail
+    def simulate_location(self, lat, lng):
+        if self.should_fail: raise RuntimeError("injected failure")
+connection._lockdown_usb = lambda serial: object()
+connection._dvt_module = lambda lockdown=None: DVT()
+def make_location(dvt):
+    created.append(True)
+    return Location(len(created) == 1)
+connection._location_module = make_location
+first = connection.set_location(1.0, 2.0, "fake-device")
+assert first["success"] is False
+assert connection._service_cache == {}
+second = connection.set_location(1.0, 2.0, "fake-device")
+assert second["success"] is True
+assert len(created) == 2
+"""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-c", code]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+    }
 }
