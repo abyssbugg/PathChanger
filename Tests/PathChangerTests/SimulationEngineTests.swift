@@ -273,10 +273,11 @@ final class RouteModeTests: XCTestCase {
             _ = mode.update()
         }
 
+        let heldCoordinate = mode.currentCoordinate
         mode.stop()
 
         XCTAssertFalse(mode.isActive)
-        XCTAssertNil(mode.currentCoordinate)
+        XCTAssertEqual(mode.currentCoordinate, heldCoordinate)
     }
 
     func testLoopingBehavior() {

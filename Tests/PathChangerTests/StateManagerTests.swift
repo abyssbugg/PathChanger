@@ -604,3 +604,28 @@ final class ConnectionStatusTests: XCTestCase {
         XCTAssertEqual(ConnectionStatus.error.text, "Error")
     }
 }
+
+@MainActor
+final class AcknowledgedRouteStateTests: XCTestCase {
+    func testProgressAdvancesOnlyWhenWaypointIsAcknowledged() {
+        let manager = RouteStateManager(routeLibrary: RouteLibraryManager())
+        manager.loadRoute(from: [
+            LocationCoordinate(latitude: 35.0, longitude: 139.0),
+            LocationCoordinate(latitude: 35.1, longitude: 139.1),
+            LocationCoordinate(latitude: 35.2, longitude: 139.2)
+        ])
+
+        manager.beginAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 0)
+        XCTAssertEqual(manager.currentIndex, 0)
+
+        manager.acknowledgeWaypoint(at: 0, totalCount: 3)
+        XCTAssertEqual(manager.progress, 1.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(manager.currentIndex, 1)
+        XCTAssertEqual(manager.playbackState, .playing)
+
+        manager.completeAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 1)
+        XCTAssertEqual(manager.playbackState, .completed)
+    }
+}
