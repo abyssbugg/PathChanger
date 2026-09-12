@@ -37,7 +37,6 @@ struct OrganicTitleBar: View {
             }
 
             HStack(spacing: 8) {
-                safeModeButton
                 Button {
                     appearanceRaw = appearance == .dark
                         ? OrganicAppearance.light.rawValue
@@ -145,33 +144,6 @@ struct OrganicTitleBar: View {
                 .shadow(color: selected ? Organic.shadow.opacity(0.08) : .clear, radius: 2, y: 1)
         }
         .buttonStyle(.plain)
-    }
-
-    private var safeModeButton: some View {
-        let on = appState.safeModeTeleport && appState.safeModeJoystick
-        return Button {
-            let next = !on
-            appState.safeModeTeleport = next
-            appState.safeModeJoystick = next
-            appState.statusMessage = next
-                ? "Safe Mode on — speed clamped, cooldown enforced"
-                : "Safe Mode off — no speed ceiling, no jump guard"
-        } label: {
-            HStack(spacing: 5) {
-                OrganicGlyphView(glyph: .shieldCheck, size: 15)
-                Circle()
-                    .fill(on ? Organic.sage600 : Organic.neutral500)
-                    .frame(width: 7, height: 7)
-            }
-            .foregroundStyle(on ? Organic.sage800 : Organic.neutral700)
-            .padding(.horizontal, 9)
-            .frame(height: 32)
-            .background(on ? Organic.sage100 : Organic.neutral200)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(on ? Organic.sage300 : Organic.neutral400, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help("Safe Mode clamps speed, enforces cooldown and confirms absurd jumps")
     }
 
     private var tunnelButton: some View {

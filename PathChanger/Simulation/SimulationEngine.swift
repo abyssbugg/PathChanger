@@ -169,17 +169,6 @@ enum SimulationSpeed: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Cooldown applied between teleports when safe mode is enabled, in seconds.
-    var defaultCooldownSeconds: Double {
-        switch self {
-        case .walking: return 20
-        case .cycling: return 30
-        case .fast: return 45
-        case .driving: return 60
-        default: return 20
-        }
-    }
-
     /// Icon for UI
     var icon: String {
         switch self {
