@@ -208,4 +208,87 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, target)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
     }
+
+
+    private func makeAcknowledgementState(
+        injector: FakeLocationInjector,
+        mode: AppMode
+    ) -> (AppState, LocationSessionIdentity) {
+        let state = AppState(startBackgroundServices: false, locationInjector: injector)
+        state.selectedDevice = Device(id: "ack-device", displayName: "Ack Device", connectionType: .usb)
+        state.isTunneldRunning = true
+        state.activeMode = mode
+        let session = LocationSessionIdentity(
+            stableDeviceID: "ack-device",
+            transport: .usb,
+            endpointClass: .direct,
+            generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+        return (state, session)
+    }
+
+    func testTeleportDoesNotBecomeActiveBeforeAcknowledgement() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeAcknowledgementState(injector: fake, mode: .teleport)
+        state.stageLocation(first, for: .teleport)
+
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertNil(state.currentLocation)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+
+        await fake.releaseNextApplication(session: session)
+        await application.value
+
+        XCTAssertTrue(state.isSimulating)
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
+    }
+
+    func testJumpAdvancesExactlyOneHopAfterAcknowledgement() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeAcknowledgementState(injector: fake, mode: .jump)
+        state.stageLocation(first, for: .jump)
+        state.stageLocation(second, for: .jump)
+
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+
+        XCTAssertEqual(state.jumpIndex, 0)
+        XCTAssertNil(state.currentLocation)
+        XCTAssertFalse(state.isSimulating)
+
+        await fake.releaseNextApplication(session: session)
+        await application.value
+
+        XCTAssertEqual(state.jumpIndex, 1)
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertTrue(state.isSimulating)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter { if case .apply = $0 { return true }; return false }.count, 1)
+    }
+
+    func testQueuedJumpDoesNotAdvanceProgressOrClaimActiveLocation() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeAcknowledgementState(injector: fake, mode: .jump)
+        state.stageLocation(first, for: .jump)
+
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session, outcome: .queued)
+        await application.value
+
+        XCTAssertEqual(state.jumpIndex, 0)
+        XCTAssertNil(state.currentLocation)
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertNotNil(state.statusMessage)
+    }
 }

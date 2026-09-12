@@ -277,6 +277,8 @@ class AppState: ObservableObject {
 
     // MARK: Private
     private let locationBridge: DevLocationBridge
+    private let locationInjector: any LocationInjecting
+    private var pendingApplicationModes: [UUID: AppMode] = [:]
     private var simulationTask: Task<Void, Never>?
     private var joystickTask: Task<Void, Never>?
     private var locationRecoveryTask: Task<Void, Never>?
@@ -296,12 +298,17 @@ class AppState: ObservableObject {
 
     // MARK: Initialization
 
-    init(startBackgroundServices: Bool = true) {
+    init(
+        startBackgroundServices: Bool = true,
+        locationInjector: (any LocationInjecting)? = nil
+    ) {
         let sharedBridge = DevLocationBridge()
         let sharedErrorHandler = ErrorHandler()
-        let sessionCoordinator = LocationSessionCoordinator(injector: sharedBridge)
+        let resolvedInjector: any LocationInjecting = locationInjector ?? sharedBridge
+        let sessionCoordinator = LocationSessionCoordinator(injector: resolvedInjector)
 
         self.locationBridge = sharedBridge
+        self.locationInjector = resolvedInjector
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(startBackgroundServices: startBackgroundServices)
@@ -512,11 +519,7 @@ class AppState: ObservableObject {
         ) {
         case .teleport(let coordinate):
             isPaused = false
-            isSimulating = true
-            await setLocation(coordinate)
-            if activeMode == .jump, currentLocation == coordinate {
-                jumpIndex = min(jumpIndex + 1, currentRoute.count)
-            }
+            await applyPlannedLocation(coordinate, mode: activeMode)
         case .route(let points):
             await playRoute(points)
         case .joystick(let start):
@@ -524,6 +527,78 @@ class AppState: ObservableObject {
         case .failed(let message):
             lastError = message
             statusMessage = message
+        }
+    }
+
+    private func applyPlannedLocation(_ coordinate: LocationCoordinate, mode: AppMode) async {
+        let locationMode = mode.locationMode ?? .teleport
+        locationSessionCoordinator.select(coordinate, mode: locationMode)
+
+        guard prepareLocationSessionIfNeeded() else {
+            isSimulating = false
+            statusMessage = "No ready location session"
+            return
+        }
+
+        do {
+            let request = try locationSessionCoordinator.beginApplication()
+            pendingApplicationModes[request.id] = mode
+            let receipt = try await locationInjector.apply(request)
+            let result = locationSessionCoordinator.accept(receipt)
+
+            if result == nil {
+                commitAcknowledgedReceipt(receipt)
+            } else if result == .noPendingRequest,
+                      locationSessionCoordinator.state.lastAcknowledgedReceipt?.requestID == receipt.requestID {
+                commitAcknowledgedReceipt(receipt)
+            } else if result == .receiptNotApplied {
+                isSimulating = currentLocation != nil
+                statusMessage = "Location update queued; awaiting acknowledgement"
+            } else {
+                pendingApplicationModes.removeValue(forKey: request.id)
+                isSimulating = currentLocation != nil
+                statusMessage = "Location update rejected: \(String(describing: result))"
+            }
+        } catch {
+            if case .applying(let requestID, _) = locationSessionCoordinator.state.application {
+                _ = locationSessionCoordinator.reject(requestID: requestID, error: error)
+                pendingApplicationModes.removeValue(forKey: requestID)
+            }
+            isSimulating = currentLocation != nil
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func prepareLocationSessionIfNeeded() -> Bool {
+        if case .ready = locationSessionCoordinator.state.connection {
+            return true
+        }
+        guard let selectedDevice else { return false }
+
+        let transport: LocationTransport = selectedDevice.connectionType == .usb ? .usb : .wifi
+        let endpointClass: LocationEndpointClass = transport == .usb ? .direct : .remoteServiceDiscovery
+        let lastGeneration = locationSessionCoordinator.state.lastAcknowledgedReceipt?.sessionGeneration ?? 0
+        locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: selectedDevice.id,
+            transport: transport,
+            endpointClass: endpointClass,
+            generation: lastGeneration + 1
+        ))
+        return true
+    }
+
+    private func commitAcknowledgedReceipt(_ receipt: LocationInjectionReceipt) {
+        guard let mode = pendingApplicationModes.removeValue(forKey: receipt.requestID) else { return }
+        simulation.currentLocation = receipt.coordinate
+        simulation.targetLocation = receipt.coordinate
+        simulation.isPaused = false
+        simulation.isSimulating = true
+
+        if mode == .jump {
+            jumpIndex = SimulationPlanner.jumpIndexAfterAcknowledging(
+                currentIndex: jumpIndex,
+                routeCount: currentRoute.count
+            )
         }
     }
 
@@ -560,6 +635,9 @@ class AppState: ObservableObject {
     func stageLocation(_ coordinate: LocationCoordinate, for mode: AppMode) {
         guard coordinate.isValid else { return }
         targetLocation = coordinate
+        if let locationMode = mode.locationMode {
+            locationSessionCoordinator.select(coordinate, mode: locationMode)
+        }
 
         switch mode {
         case .teleport, .settings:
@@ -806,7 +884,10 @@ class AppState: ObservableObject {
                 handleLocationSessionLoss(.bridgeTerminated(exitCode: exitCode))
             }
         case .receipt(let receipt):
-            _ = locationSessionCoordinator.accept(receipt)
+            let result = locationSessionCoordinator.accept(receipt)
+            if result == nil {
+                commitAcknowledgedReceipt(receipt)
+            }
         }
     }
 
