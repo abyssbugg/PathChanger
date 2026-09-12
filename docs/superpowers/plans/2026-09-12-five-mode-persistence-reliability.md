@@ -10,7 +10,7 @@
 
 **Product contract:** `PRODUCT_REQUIREMENTS.md`
 
-**Plan status:** Owner-authorized for subagent-driven execution and all Git operations explicitly named in this plan. Task 0 is complete: Stage 1 closed, source `main` normalized to `ea5a3b5a1b222729a0a8d186dee51610d8485e4b`, and completion tag `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` resolves to cleanup receipt `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d`. Task 1 is complete through the reviewed documentation integration; this execution-record commit preserves that fact without rewriting earlier commits. Canonical Stage 2 remains unauthorized as a separate audit program. Privilege/elevation and physical-device mutation remain reserved gates.
+**Plan status:** Owner-authorized for subagent-driven execution and all Git operations explicitly named in this plan. Task 0 is complete: Stage 1 closed, source `main` normalized to `ea5a3b5a1b222729a0a8d186dee51610d8485e4b`, and evidence-repository completion tag `stage1-complete-stage1-20260827T165113Z-a22b889fcfc8` resolves to cleanup receipt `43096c8bbdc6f96cc3135ce5cd4483f1dd42788d`. Task 1 is complete through the reviewed documentation integration; this execution-record commit preserves that fact without rewriting earlier commits. Canonical Stage 2 remains unauthorized as a separate audit program. Privilege/elevation and physical-device mutation remain reserved gates.
 
 ---
 
