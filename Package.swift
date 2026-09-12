@@ -17,7 +17,7 @@ let package = Package(
         // Pinned exactly: a `from:` range let the SwiftPM and Xcode-wrapper lockfiles drift to
         // different versions (2.8.1 vs 2.9.5), so the framework you shipped depended on which
         // build path you used. Upgrading is a deliberate, separately testable change.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.8.1")
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.2")
     ],
     targets: [
         .executableTarget(
