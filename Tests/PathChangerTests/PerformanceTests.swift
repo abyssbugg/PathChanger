@@ -218,25 +218,30 @@ final class PerformanceTests: XCTestCase {
     func testFileDescriptorCleanup() {
         let initialFDs = getOpenFileDescriptorCount()
 
-        // Simulate multiple process executions
+        // Simulate multiple process executions while deterministically releasing
+        // every descriptor owned by the test harness itself.
         for _ in 0..<5 {
-            let command = "echo test"
-            let task = Process()
-            task.launchPath = "/bin/sh"
-            task.arguments = ["-c", command]
+            autoreleasepool {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/bin/sh")
+                task.arguments = ["-c", "echo test"]
 
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = pipe
+                let pipe = Pipe()
+                task.standardOutput = pipe
+                task.standardError = pipe
 
-            do {
-                try task.run()
-                task.waitUntilExit()
-                // File handles should be closed
-                let data = pipe.fileHandleForReading.availableData
-                _ = data.count // Use the data
-            } catch {
-                XCTFail("Process execution failed: \(error)")
+                defer {
+                    pipe.fileHandleForReading.closeFile()
+                    pipe.fileHandleForWriting.closeFile()
+                }
+
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    _ = pipe.fileHandleForReading.availableData.count
+                } catch {
+                    XCTFail("Process execution failed: \(error)")
+                }
             }
         }
 
