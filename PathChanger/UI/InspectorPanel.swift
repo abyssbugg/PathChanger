@@ -114,7 +114,7 @@ struct InspectorPanel: View {
 
                 HStack(spacing: 9) {
                     Button(action: onTeleport) {
-                        Text(appState.isSimulating && mode == .teleport ? "Update location" : "Set location")
+                        Text(appState.locationPresentation.isMovementActive && mode == .teleport ? "Update location" : "Set location")
                     }
                     .buttonStyle(.plain)
                     .primaryButtonStyle(isDisabled: !appState.canStartSimulation)
@@ -222,11 +222,11 @@ struct InspectorPanel: View {
                     Button("Undo") { appState.removeLastRouteWaypoint() }
                         .buttonStyle(.plain)
                         .font(Organic.body(12, weight: .semibold))
-                        .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
+                        .disabled(appState.currentRoute.isEmpty || appState.locationPresentation.isMovementActive)
                     Button("Clear") { appState.clearRoute() }
                         .buttonStyle(.plain)
                         .font(Organic.body(12, weight: .semibold))
-                        .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
+                        .disabled(appState.currentRoute.isEmpty || appState.locationPresentation.isMovementActive)
                 }
                 .padding(.top, 8)
             }
@@ -249,7 +249,7 @@ struct InspectorPanel: View {
                     }
                 )
                 loopToggle
-                if appState.isSimulating && mode == .route {
+                if appState.locationPresentation.isMovementActive && mode == .route {
                     VStack(spacing: 6) {
                         HStack {
                             Text("Playing")
@@ -265,7 +265,7 @@ struct InspectorPanel: View {
                 Button {
                     Task { await appState.startSimulation() }
                 } label: {
-                    Text(appState.isSimulating ? "Pause / continue from Play" : "Run route")
+                    Text(appState.locationPresentation.isMovementActive ? "Pause / continue from Play" : "Run route")
                 }
                 .buttonStyle(.plain)
                 .primaryButtonStyle(isDisabled: !appState.canStartSimulation || appState.currentRoute.count < 2)
@@ -283,11 +283,11 @@ struct InspectorPanel: View {
     private var joystickCards: some View {
         VStack(spacing: 14) {
             inspectorCard {
-                cardHeader(icon: "gamecontroller", tint: Organic.accent600, title: "Manual control", meta: appState.isSimulating ? "Live" : "Standby")
+                cardHeader(icon: "gamecontroller", tint: Organic.accent600, title: "Manual control", meta: appState.locationPresentation.isMovementActive ? "Live" : "Standby")
                 HStack(spacing: 9) {
                     readout("HEADING", headingText)
-                    readout("SPEED", String(format: "%.1f", appState.isSimulating ? appState.effectiveMetersPerSecond : 0))
-                    readout("POSITION", (appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                    readout("SPEED", String(format: "%.1f", appState.locationPresentation.isMovementActive ? appState.effectiveMetersPerSecond : 0))
+                    readout("POSITION", (appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate)?.formattedShort ?? "—")
                 }
             }
 
@@ -310,17 +310,17 @@ struct InspectorPanel: View {
                 )
                 Button {
                     Task {
-                        if appState.isSimulating {
+                        if appState.locationPresentation.isMovementActive {
                             appState.disengageJoystick()
                         } else {
                             await appState.startSimulation()
                         }
                     }
                 } label: {
-                    Text(appState.isSimulating ? "Disengage" : "Engage joystick")
+                    Text(appState.locationPresentation.isMovementActive ? "Disengage" : "Engage joystick")
                 }
                 .buttonStyle(.plain)
-                .primaryButtonStyle(isDisabled: !appState.canStartSimulation && !appState.isSimulating)
+                .primaryButtonStyle(isDisabled: !appState.canStartSimulation && !appState.locationPresentation.isMovementActive)
                 .padding(.top, 8)
                 Text("Drag the on-map joystick or use arrow keys")
                     .font(Organic.body(11))

@@ -61,6 +61,11 @@ final class LocationSessionCoordinator: ObservableObject {
     self.injector = injector
   }
 
+  /// Lifecycle and receipt events emitted by the configured injection adapter.
+  func events() async -> AsyncStream<LocationBridgeEvent> {
+    await injector.events()
+  }
+
   // MARK: - Public API
 
   /// Select a target coordinate and desired mode (app inactive).

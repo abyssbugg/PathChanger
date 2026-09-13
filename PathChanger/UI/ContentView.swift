@@ -68,6 +68,19 @@ enum AppMode: String, CaseIterable, Identifiable {
     }
 }
 
+extension AppMode {
+    var locationAccessibilityIdentifier: String {
+        switch self {
+        case .teleport: return "location.mode.teleport"
+        case .jump: return "location.mode.jump"
+        case .twospot: return "location.mode.twoSpot"
+        case .route: return "location.mode.multiSpot"
+        case .joystick: return "location.mode.joystick"
+        case .settings: return "location.mode.settings"
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
@@ -82,6 +95,7 @@ struct ContentView: View {
     @State private var longitudeInput: String = ""
     @State private var addressText: String = "Tap the map"
     @State private var currentError: ErrorHandler.AppError?
+    @State private var showClearConfirmation = false
     @State private var showErrorDialog = false
     @State private var cardOpen = false
     @State private var savedOpen = false
@@ -159,7 +173,7 @@ struct ContentView: View {
             savedOpen = false
             coachOpen = false
         }
-        .onChange(of: appState.targetLocation) { _, _ in
+        .onChange(of: appState.locationPresentation.desiredCoordinate) { _, _ in
             syncCoordFields()
         }
         .sheet(isPresented: $appState.showOnboarding) {
@@ -331,40 +345,45 @@ struct ContentView: View {
         .frame(maxWidth: 360, alignment: .leading)
     }
 
-    @ViewBuilder
     private var livePill: some View {
-        if appState.isSimulating {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Organic.sage600)
-                    .frame(width: 8, height: 8)
-                Text(appState.simulationStatusText)
-                    .font(Organic.body(12, weight: .bold))
-                    .lineLimit(1)
-                Text((appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
-                    .font(Organic.mono(11, weight: .semibold))
-                    .foregroundStyle(Organic.neutral700)
-                Button("Reset") {
-                    Task { await appState.stopSimulation() }
-                }
+        let status = appState.locationPresentation
+        return HStack(spacing: 10) {
+            statusMetric(status.connectionLabel, id: "location.status.connection")
+            statusMetric(status.applicationLabel, id: "location.status.application")
+            statusMetric(status.movementLabel, id: "location.status.movement")
+            statusMetric(status.appliedCoordinateLabel, id: "location.status.coordinate")
+            Spacer(minLength: 4)
+            Button("Clear") { showClearConfirmation = true }
                 .buttonStyle(.plain)
                 .font(Organic.body(11, weight: .bold))
                 .foregroundStyle(Organic.accent700)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(Organic.neutral200)
-                .clipShape(Capsule())
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 42)
-            .background(Organic.neutral100)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-            .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
-            .frame(maxWidth: .infinity)
-        } else {
-            Spacer(minLength: 8)
+                .disabled(!status.canClear)
+                .accessibilityIdentifier("location.action.clear")
+                .confirmationDialog(
+                    "Return to real GPS?",
+                    isPresented: $showClearConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button("Clear simulated location", role: .destructive) {
+                        Task { await appState.clearLocation() }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This is the only action that removes the applied location.")
+                }
         }
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+        .background(Organic.neutral100)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+    }
+
+    private func statusMetric(_ text: String, id: String) -> some View {
+        Text(text)
+            .font(Organic.mono(10, weight: .semibold))
+            .lineLimit(1)
+            .accessibilityIdentifier(id)
     }
 
     private var modePill: some View {
@@ -386,6 +405,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .help(mode.description)
+                .accessibilityIdentifier(mode.locationAccessibilityIdentifier)
             }
             Rectangle()
                 .fill(Organic.neutral300)
@@ -491,7 +511,7 @@ struct ContentView: View {
     }
 
     private func syncCoordFields() {
-        if let location = appState.targetLocation ?? appState.currentLocation {
+        if let location = appState.locationPresentation.desiredCoordinate ?? appState.locationPresentation.appliedCoordinate {
             latitudeInput = String(format: "%.6f", location.latitude)
             longitudeInput = String(format: "%.6f", location.longitude)
         }
@@ -531,15 +551,15 @@ struct ContentView: View {
     }
 
     private func performMove() {
-        if appState.isSimulating, selectedMode == .route || selectedMode == .twospot {
+        if appState.locationPresentation.isMovementActive, selectedMode == .route || selectedMode == .twospot {
             Task { await appState.stopSimulation() }
             return
         }
         appState.activeMode = selectedMode == .settings ? .teleport : selectedMode
         let plan = SimulationPlanner.plan(
             mode: appState.activeMode,
-            targetLocation: appState.targetLocation,
-            currentLocation: appState.currentLocation,
+            targetLocation: appState.locationPresentation.desiredCoordinate,
+            currentLocation: appState.locationPresentation.appliedCoordinate,
             route: appState.currentRoute,
             speed: appState.simulationSpeed,
             jumpIndex: appState.jumpIndex
@@ -548,7 +568,7 @@ struct ContentView: View {
             canStartSimulation: appState.canStartSimulation,
             plan: plan
         ), let coordinate = LocationHistoryPolicy.coordinate(for: plan) {
-            let name = coordinate == appState.targetLocation ? addressText : coordinate.formattedShort
+            let name = coordinate == appState.locationPresentation.desiredCoordinate ? addressText : coordinate.formattedShort
             LocationFavoritesManager.shared.recordRecent(name: name, coordinate: coordinate)
             LocationFavoritesManager.shared.rememberPlace(name: name, coordinate: coordinate)
         }
