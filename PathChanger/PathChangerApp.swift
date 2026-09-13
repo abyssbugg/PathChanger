@@ -449,6 +449,23 @@ class AppState: ObservableObject {
             self?.simulationEngine.setDevice(selected)
         }
 
+#if DEBUG
+        if usesScriptedInjector {
+            let stableDeviceID = ScriptedLocationInjector.sessionIdentity.stableDeviceID
+            let scriptedDevice = Device(
+                id: stableDeviceID,
+                displayName: "Scripted iPhone",
+                connectionType: .usb,
+                productType: "iPhone16,2",
+                productVersion: "18.0",
+                deviceName: "Scripted iPhone"
+            )
+            device.availableDevices = [scriptedDevice]
+            device.usbDirectDeviceIds = [stableDeviceID]
+            device.selectDevice(scriptedDevice)
+        }
+#endif
+
         device.onConnectionLost = { [weak self] in
             self?.statusMessage = "Connection lost, attempting to reconnect..."
         }

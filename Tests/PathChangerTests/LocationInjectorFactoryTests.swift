@@ -16,4 +16,17 @@ final class LocationInjectorFactoryTests: XCTestCase {
         let injector = LocationInjectorFactory.make(environment: [:], buildFlavor: .releaseTesting)
         XCTAssertTrue(injector is DevLocationBridge)
     }
+
+    @MainActor
+    func testScriptedInjectorSeedsSyntheticReadyDevice() {
+        let appState = AppState(
+            startBackgroundServices: false,
+            locationInjector: ScriptedLocationInjector()
+        )
+        let stableDeviceID = ScriptedLocationInjector.sessionIdentity.stableDeviceID
+
+        XCTAssertEqual(appState.device.selectedDevice?.id, stableDeviceID)
+        XCTAssertTrue(appState.device.usbDirectDeviceIds.contains(stableDeviceID))
+        XCTAssertTrue(appState.canStartSimulation)
+    }
 }
