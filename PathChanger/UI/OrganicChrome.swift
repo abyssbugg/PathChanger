@@ -523,12 +523,14 @@ struct OrganicTelemetryBar: View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(appState.isSimulating ? Organic.sage600 : Organic.neutral500)
+                    .fill(appState.locationPresentation.isSpoofing ? Organic.sage600 : Organic.neutral500)
                     .frame(width: 8, height: 8)
-                Text(appState.isSimulating ? appState.simulationStatusText : "Standby")
+                Text(appState.locationPresentation.applicationLabel)
+                    .accessibilityIdentifier("location.status.application")
                     .font(Organic.body(12.5, weight: .bold))
                     .lineLimit(1)
-                Text((appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                Text(appState.locationPresentation.appliedCoordinateLabel)
+                    .accessibilityIdentifier("location.status.coordinate")
                     .font(Organic.mono(11.5))
                     .foregroundStyle(Organic.neutral700)
                     .padding(.horizontal, 10)
@@ -549,6 +551,18 @@ struct OrganicTelemetryBar: View {
             metric("ALTITUDE", "12.4 m")
             metric("SPEED", speedText)
             Button {
+                appState.pauseSimulation()
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+                    .font(Organic.body(12, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(!appState.locationPresentation.isMovementActive)
+            .accessibilityIdentifier("location.action.pauseMovement")
+
+            Button {
                 Task { await appState.stopSimulation() }
             } label: {
                 HStack(spacing: 6) {
@@ -557,14 +571,15 @@ struct OrganicTelemetryBar: View {
                     Text("Stop")
                         .font(Organic.body(12, weight: .bold))
                 }
-                .foregroundStyle(appState.isSimulating ? Organic.neutral100 : Organic.neutral700)
+                .foregroundStyle(appState.locationPresentation.isMovementActive ? Organic.neutral100 : Organic.neutral700)
                 .padding(.horizontal, 12)
                 .frame(height: 30)
-                .background(appState.isSimulating ? Organic.accent600 : Organic.neutral200)
+                .background(appState.locationPresentation.isMovementActive ? Organic.accent600 : Organic.neutral200)
                 .clipShape(Capsule())
             }
+            .accessibilityIdentifier("location.action.stopMovement")
             .buttonStyle(.plain)
-            .disabled(!appState.isSimulating)
+            .disabled(!appState.locationPresentation.isMovementActive)
         }
         .padding(.horizontal, 14)
         .frame(height: 52)
@@ -578,7 +593,7 @@ struct OrganicTelemetryBar: View {
         // Reads the same accessor as InspectorPanel and ModeContextCard. Previously this used
         // the raw `simulationSpeed.metersPerSecond`, so the telemetry bar showed 1.4 m/s while
         // the other panels showed 1.6 m/s for the same Walking preset.
-        String(format: "%.1f m/s", appState.isSimulating && !appState.isPaused ? appState.effectiveMetersPerSecond : 0)
+        String(format: "%.1f m/s", appState.locationPresentation.isMovementActive && !appState.locationPresentation.isMovementPaused ? appState.effectiveMetersPerSecond : 0)
     }
 
     private func metric(_ title: String, _ value: String) -> some View {

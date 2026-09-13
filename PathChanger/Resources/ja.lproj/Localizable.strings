@@ -190,3 +190,13 @@
 "dependency.installInstructions" = "インストール手順";
 "dependency.brewCommand" = "brew install python3";
 "dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";
+
+// MARK: - Verified Location Session
+"location.status.connection" = "接続";
+"location.status.application" = "適用状態";
+"location.status.movement" = "移動状態";
+"location.status.coordinate" = "適用済み座標";
+"location.action.apply" = "位置情報を適用";
+"location.action.pauseMovement" = "移動を一時停止";
+"location.action.stopMovement" = "移動を停止";
+"location.action.clear" = "模擬位置情報を消去";

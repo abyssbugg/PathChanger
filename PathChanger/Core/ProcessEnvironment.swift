@@ -176,5 +176,6 @@ extension ProcessEnvironment {
         public static let lcAll = "LC_ALL"
         public static let term = "TERM"
         public static let shell = "SHELL"
+        public static let testLocationInjector = "PATHCHANGER_TEST_LOCATION_INJECTOR"
     }
 }

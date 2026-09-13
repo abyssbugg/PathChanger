@@ -80,7 +80,7 @@ struct JoystickControlView: View {
             ]
             guard let direction = mapping[event.keyCode] else { return event }
             if event.type == .keyDown {
-                if !appState.isSimulating {
+                if !appState.locationPresentation.isMovementActive {
                     Task { await appState.startSimulation() }
                 }
                 appState.updateJoystickDirection(direction)

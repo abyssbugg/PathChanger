@@ -190,3 +190,13 @@
 "dependency.installInstructions" = "Installation Instructions";
 "dependency.brewCommand" = "brew install python3";
 "dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";
+
+// MARK: - Verified Location Session
+"location.status.connection" = "Connection";
+"location.status.application" = "Application";
+"location.status.movement" = "Movement";
+"location.status.coordinate" = "Applied coordinate";
+"location.action.apply" = "Apply location";
+"location.action.pauseMovement" = "Pause movement";
+"location.action.stopMovement" = "Stop movement";
+"location.action.clear" = "Clear simulated location";

@@ -10,12 +10,95 @@ import SwiftUI
 import Combine
 import AppKit
 
+struct LocationStatusPresentation: Equatable {
+    let connectionLabel: String
+    let applicationLabel: String
+    let movementLabel: String
+    let desiredCoordinateLabel: String
+    let appliedCoordinateLabel: String
+    let deviceLifecycleLabel: String
+    let sessionDiagnostic: String
+    let isSpoofing: Bool
+    let isMovementActive: Bool
+    let isMovementPaused: Bool
+    let desiredCoordinate: LocationCoordinate?
+    let appliedCoordinate: LocationCoordinate?
+    let canApply: Bool
+    let canMove: Bool
+    let canClear: Bool
+
+    init(state: LocationSessionState, deviceVisible: Bool) {
+        let ready: LocationSessionIdentity? = { if case .ready(let value) = state.connection { return value }; return nil }()
+        let active: LocationInjectionReceipt? = { if case .active(let value) = state.application { return value }; return nil }()
+        let current: LocationInjectionReceipt? = active.flatMap { receipt -> LocationInjectionReceipt? in
+            guard let ready, receipt.sessionGeneration == ready.generation,
+                  receipt.transport == ready.transport, receipt.endpointClass == ready.endpointClass,
+                  receipt.outcome == .applied else { return nil }
+            return receipt
+        }
+        isSpoofing = current != nil
+        isMovementActive = {
+            if case .moving = state.movement { return true }
+            if case .paused = state.movement { return true }
+            return false
+        }()
+        isMovementPaused = { if case .paused = state.movement { return true }; return false }()
+        desiredCoordinate = state.desiredLocation
+        appliedCoordinate = current?.coordinate
+        switch state.connection {
+        case .unavailable: connectionLabel = "Unavailable"
+        case .ready(let identity): connectionLabel = "Ready over " + Self.transportName(identity.transport)
+        case .reconnecting: connectionLabel = "Reconnecting"
+        case .failed: connectionLabel = "Lost"
+        }
+        switch state.application {
+        case .idle: applicationLabel = "Idle"
+        case .applying: applicationLabel = "Applying"
+        case .active: applicationLabel = isSpoofing ? "Active / Held" : "Uncertain"
+        case .uncertain: applicationLabel = "Uncertain"
+        case .lost: applicationLabel = "Lost"
+        case .clearing: applicationLabel = "Clearing"
+        case .failed: applicationLabel = "Failed"
+        }
+        switch state.movement {
+        case .idle: movementLabel = "Idle"
+        case .moving: movementLabel = "Moving"
+        case .paused: movementLabel = "Paused"
+        case .completed: movementLabel = "Completed"
+        }
+        desiredCoordinateLabel = state.desiredLocation?.formattedShort ?? "—"
+        appliedCoordinateLabel = current?.coordinate.formattedShort ?? (state.lastAcknowledgedReceipt == nil ? "—" : "Uncertain")
+        deviceLifecycleLabel = deviceVisible ? "Device visible" : "No visible device"
+        canApply = ready != nil && state.desiredLocation != nil && !Self.isBusy(state.application)
+        canMove = isSpoofing && ready != nil
+        canClear = ready != nil && (state.desiredLocation != nil || state.lastAcknowledgedReceipt != nil)
+        let source = ready?.stableDeviceID ?? "unknown"
+        let checksum = source.utf8.reduce(UInt32(5381)) { (($0 << 5) &+ $0) &+ UInt32($1) } & 0xFFFF
+        let alias = String(format: "Device-%04X", checksum)
+        let transport = ready.map { Self.transportName($0.transport) } ?? "Unavailable"
+        let endpoint = ready.map { $0.endpointClass == .direct ? "Direct" : "RSD" } ?? "Unavailable"
+        let generation = ready?.generation ?? state.lastAcknowledgedReceipt?.sessionGeneration ?? 0
+        let request = state.lastAcknowledgedReceipt.map { String($0.requestID.uuidString.suffix(4)) } ?? "—"
+        let acknowledged = state.lastAcknowledgedReceipt.map { ISO8601DateFormatter().string(from: $0.completedAt) } ?? "—"
+        sessionDiagnostic = "\(alias) · \(transport) · \(endpoint) · generation \(generation) · request …\(request) · acknowledged \(acknowledged)"
+    }
+    private static func isBusy(_ phase: LocationApplicationPhase) -> Bool {
+        if case .applying = phase { return true }; if case .clearing = phase { return true }; return false
+    }
+    private static func transportName(_ value: LocationTransport) -> String { value == .usb ? "USB" : "Wi-Fi" }
+}
+
 @main
 struct PathChangerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var appState = AppState(
-        startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup
-    )
+    @StateObject private var appState: AppState
+
+    init() {
+        _appState = StateObject(wrappedValue: AppState(
+            startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup,
+            locationInjector: LocationInjectorFactory.make()
+        ))
+    }
     @StateObject private var tunneldManager = TunneldManager.shared
     @StateObject private var dependencyValidator = DependencyValidator.shared
 
@@ -143,6 +226,13 @@ class AppState: ObservableObject {
     var connectionStatus: ConnectionStatus {
         get { device.connectionStatus }
         set { device.connectionStatus = newValue }
+    }
+
+    var locationPresentation: LocationStatusPresentation {
+        LocationStatusPresentation(
+            state: locationSessionCoordinator.state,
+            deviceVisible: selectedDevice != nil
+        )
     }
 
     // MARK: Location State (forwarded to `simulation`)
@@ -314,27 +404,38 @@ class AppState: ObservableObject {
         let sharedErrorHandler = ErrorHandler()
         let resolvedInjector: any LocationInjecting = locationInjector ?? sharedBridge
         let sessionCoordinator = LocationSessionCoordinator(injector: resolvedInjector)
+#if DEBUG
+        let usesScriptedInjector = resolvedInjector is ScriptedLocationInjector
+#else
+        let usesScriptedInjector = false
+#endif
+        let effectiveBackgroundServices = startBackgroundServices && !usesScriptedInjector
 
         self.locationBridge = sharedBridge
         self.locationInjector = resolvedInjector
         self.routeDelay = routeDelay
-        self.automaticRecoveryEnabled = startBackgroundServices
+        self.automaticRecoveryEnabled = effectiveBackgroundServices
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
-        self.device = DeviceStateManager(startBackgroundServices: startBackgroundServices)
+        self.device = DeviceStateManager(startBackgroundServices: effectiveBackgroundServices)
         self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
             errorHandler: sharedErrorHandler
         )
         self.simulationEngine = SimulationEngine(locationBridge: sharedBridge)
+        if usesScriptedInjector {
+#if DEBUG
+            sessionCoordinator.connectionReady(ScriptedLocationInjector.sessionIdentity)
+#endif
+        }
 
         // Cross-manager references.
         simulation.setDeviceStateManager(device)
         route.setSimulationStateManager(simulation)
 
         // Re-publish the managers' changes so views observing AppState still update.
-        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange] {
+        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange, sessionCoordinator.objectWillChange] {
             publisher
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
@@ -380,19 +481,21 @@ class AppState: ObservableObject {
             }
         }
 
-        guard startBackgroundServices else {
+        guard effectiveBackgroundServices || usesScriptedInjector else {
             return
         }
 
-        bridgeEventTask = Task { [weak self, locationBridge] in
-            let events = await locationBridge.events()
-            for await event in events {
-                guard !Task.isCancelled else { break }
-                await self?.handleLocationBridgeEvent(event, heldSubprocessSource: true)
+        if !usesScriptedInjector {
+            bridgeEventTask = Task { [weak self, locationBridge] in
+                let events = await locationBridge.events()
+                for await event in events {
+                    guard !Task.isCancelled else { break }
+                    await self?.handleLocationBridgeEvent(event, heldSubprocessSource: true)
+                }
             }
         }
-        persistentBridgeEventTask = Task { [weak self] in
-            let events = await PersistentLocationBridge.shared.events()
+        persistentBridgeEventTask = Task { [weak self, sessionCoordinator] in
+            let events = await sessionCoordinator.events()
             for await event in events {
                 guard !Task.isCancelled else { break }
                 await self?.handleLocationBridgeEvent(event, heldSubprocessSource: false)
