@@ -63,17 +63,22 @@ actor FakeLocationInjector: LocationInjecting {
     func releaseNextApplication(
         session: LocationSessionIdentity,
         outcome: LocationInjectionOutcome = .applied,
-        completedAt: Date = Date(timeIntervalSince1970: 1_789_000_000)
+        completedAt: Date = Date(timeIntervalSince1970: 1_789_000_000),
+        requestIDOverride: UUID? = nil,
+        coordinateOverride: LocationCoordinate? = nil,
+        transportOverride: LocationTransport? = nil,
+        endpointClassOverride: LocationEndpointClass? = nil,
+        generationOverride: UInt64? = nil
     ) {
         guard !pendingApplications.isEmpty else { return }
         let pending = pendingApplications.removeFirst()
         pending.continuation.resume(returning: LocationInjectionReceipt(
-            requestID: pending.request.id,
+            requestID: requestIDOverride ?? pending.request.id,
             session: UUID(),
-            coordinate: pending.request.coordinate,
-            transport: session.transport,
-            endpointClass: session.endpointClass,
-            sessionGeneration: session.generation,
+            coordinate: coordinateOverride ?? pending.request.coordinate,
+            transport: transportOverride ?? session.transport,
+            endpointClass: endpointClassOverride ?? session.endpointClass,
+            sessionGeneration: generationOverride ?? session.generation,
             completedAt: completedAt,
             outcome: outcome
         ))
