@@ -434,6 +434,8 @@ actor RequestQueueManager {
     private var queue: [QueuedLocationRequest] = []
     private let maxQueueSize: Int
     private var isProcessing = false
+    private var inFlightRequest: (id: UUID, deviceID: String)?
+    private var completionWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
 
     // MARK: Strategy & Metrics
 
@@ -696,10 +698,50 @@ actor RequestQueueManager {
         )
     }
 
-    /// Dequeue next request
+    /// Request identities currently retained by the queue.
+    func queuedRequestIDs() -> Set<UUID> {
+        Set(queue.map(\.id))
+    }
+
+    /// Remove queued requests for one stable device without disturbing other devices.
+    /// - Returns: The request identities removed by the cancellation barrier.
+    func removeRequests(forDeviceID stableDeviceID: String) -> Set<UUID> {
+        let removed = Set(queue.lazy.filter { $0.device.id == stableDeviceID }.map(\.id))
+        guard !removed.isEmpty else { return [] }
+        queue.removeAll { removed.contains($0.id) }
+        lagMetrics.droppedRequests += removed.count
+        lagMetrics.currentDepth = queue.count
+        return removed
+    }
+
+    /// Dequeue next request and atomically mark it in flight.
     func dequeue() -> QueuedLocationRequest? {
         guard !queue.isEmpty else { return nil }
-        return queue.removeFirst()
+        let request = queue.removeFirst()
+        inFlightRequest = (id: request.id, deviceID: request.device.id)
+        return request
+    }
+
+    /// Return the in-flight request for one stable device, if any.
+    func inFlightRequestID(forDeviceID stableDeviceID: String) -> UUID? {
+        guard inFlightRequest?.deviceID == stableDeviceID else { return nil }
+        return inFlightRequest?.id
+    }
+
+    /// Suspend only until the specified in-flight request completes.
+    func waitForInFlightRequest(_ requestID: UUID) async {
+        guard inFlightRequest?.id == requestID else { return }
+        await withCheckedContinuation { continuation in
+            completionWaiters[requestID, default: []].append(continuation)
+        }
+    }
+
+    /// Complete the current request and release only its waiters.
+    func finishInFlightRequest(_ requestID: UUID) {
+        guard inFlightRequest?.id == requestID else { return }
+        inFlightRequest = nil
+        let waiters = completionWaiters.removeValue(forKey: requestID) ?? []
+        waiters.forEach { $0.resume() }
     }
 
     /// Peek at next request without removing

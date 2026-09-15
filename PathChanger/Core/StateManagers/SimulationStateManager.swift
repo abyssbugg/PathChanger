@@ -164,8 +164,8 @@ final class SimulationStateManager: ObservableObject {
                 if currentLocation == nil {
                     isSimulating = false
                 }
-                onStatusMessage?("Location update rejected by adapter backpressure")
                 if !quiet {
+                    onStatusMessage?("Location update rejected by adapter backpressure")
                     ToastManager.shared.warning("Location update was not applied")
                 }
                 return

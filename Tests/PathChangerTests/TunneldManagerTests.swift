@@ -19,13 +19,13 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTunnelCommandsTargetSelectedDeviceWhenProvided() {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
 
         XCTAssertEqual(TunneldManager.arguments(for: .usb, deviceId: udid), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--udid", udid,
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi, deviceId: udid), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--udid", udid,
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
             "-m", "pymobiledevice3", "remote", "tunneld",
@@ -33,7 +33,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationRequiresMatchingUSBDevice() {
-        let selected = "00008130-000C5144019A001C"
+        let selected = "00000000-0000000000000001"
 
         XCTAssertTrue(DevicePreparationPlanner.canPrepareWiFi(
             deviceId: selected,
@@ -52,12 +52,12 @@ final class TunneldManagerTests: XCTestCase {
     func testRemotePairingRecordFilenameYieldsKnownDeviceId() {
         XCTAssertEqual(
             DevicePreparationPlanner.remotePairingDeviceId(
-                from: "remote_00008130-000C5144019A001C.plist"
+                from: "remote_00000000-0000000000000001.plist"
             ),
-            "00008130-000C5144019A001C"
+            "00000000-0000000000000001"
         )
         XCTAssertNil(
-            DevicePreparationPlanner.remotePairingDeviceId(from: "00008130-000C5144019A001C.plist")
+            DevicePreparationPlanner.remotePairingDeviceId(from: "00000000-0000000000000001.plist")
         )
         XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "remote_not-a-udid.plist"))
         XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "notes.txt"))
@@ -76,7 +76,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationRunsCommandsInOrder() async throws {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
         var calls: [[String]] = []
         let service = DevicePreparationService { arguments, _ in
             calls.append(arguments)
@@ -90,7 +90,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationStopsAtFirstFailure() async {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
         var calls: [[String]] = []
         let service = DevicePreparationService { arguments, _ in
             calls.append(arguments)
@@ -112,12 +112,12 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationCommandsMatchPymobiledevice3ColdStartFlow() {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
 
         XCTAssertEqual(DevicePreparationPlanner.wifiBootstrapCommands(deviceId: udid), [
             [
                 "-m", "pymobiledevice3", "lockdown", "wifi-connections",
-                "--state", "on", "--udid", udid,
+                "on", "--udid", udid,
             ],
             [
                 "-m", "pymobiledevice3", "lockdown", "remotepairing",
@@ -296,8 +296,8 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTunnelModeCommands() {
-        XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel"])
-        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "-t", "wifi"])
+        XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel", "--native"])
+        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "-t", "wifi", "--native"])
         XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
         XCTAssertEqual(TunnelMode.auto.command, [])
     }
@@ -435,14 +435,53 @@ final class TunneldManagerTests: XCTestCase {
 
     func testTunnelCommandsUseFixedArguments() {
         XCTAssertEqual(TunneldManager.arguments(for: .usb), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel",
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi",
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
             "-m", "pymobiledevice3", "remote", "tunneld",
         ])
+    }
+
+    func testNativeTunnelLaunchDoesNotInvokeAdministratorShell() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "private func attemptStart"),
+              let end = source.range(of: "private func checkLogForErrors", range: start.upperBound..<source.endIndex) else {
+            return XCTFail("Unable to isolate attemptStart implementation")
+        }
+        let implementation = source[start.lowerBound..<end.lowerBound]
+        XCTAssertFalse(implementation.contains("runAdministratorShell"))
+        XCTAssertTrue(implementation.contains("Process()"))
+    }
+
+    func testTerminationPreparationRetainsHandlerUntilReply() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "Task { @MainActor [weak self"),
+              let end = source.range(
+                of: "return .terminateLater",
+                range: start.lowerBound..<source.endIndex
+              ) else {
+            return XCTFail("Unable to isolate asynchronous termination preparation")
+        }
+        let implementation = source[start.lowerBound..<end.upperBound]
+        XCTAssertTrue(implementation.contains("[weak self, terminationHandler]"))
+        XCTAssertFalse(implementation.contains("weak terminationHandler"))
     }
 
     func testAutoModeHasNoDirectTunnelCommand() {

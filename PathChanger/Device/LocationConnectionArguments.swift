@@ -38,7 +38,7 @@ enum LocationConnectionArguments {
         LocationConnectionDescriptor(
             arguments: arguments,
             transport: physicalTransport,
-            endpointClass: arguments.first == "--rsd" ? .remoteServiceDiscovery : .direct
+            endpointClass: ["--rsd", "--tunnel"].contains(arguments.first) ? .remoteServiceDiscovery : .direct
         )
     }
 

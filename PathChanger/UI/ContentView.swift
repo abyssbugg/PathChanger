@@ -348,10 +348,26 @@ struct ContentView: View {
     private var livePill: some View {
         let status = appState.locationPresentation
         return HStack(spacing: 10) {
-            statusMetric(status.connectionLabel, id: "location.status.connection")
-            statusMetric(status.applicationLabel, id: "location.status.application")
-            statusMetric(status.movementLabel, id: "location.status.movement")
-            statusMetric(status.appliedCoordinateLabel, id: "location.status.coordinate")
+            statusMetric(
+                status.connectionLabel,
+                localizationKey: "accessibility.location.status.connection",
+                id: "location.status.connection"
+            )
+            statusMetric(
+                status.applicationLabel,
+                localizationKey: "accessibility.location.status.application",
+                id: "location.status.application"
+            )
+            statusMetric(
+                status.movementLabel,
+                localizationKey: "accessibility.location.status.movement",
+                id: "location.status.movement"
+            )
+            statusMetric(
+                status.appliedCoordinateLabel,
+                localizationKey: "accessibility.location.status.coordinate",
+                id: "location.status.coordinate"
+            )
             Spacer(minLength: 4)
             Button("Clear") { showClearConfirmation = true }
                 .buttonStyle(.plain)
@@ -379,11 +395,17 @@ struct ContentView: View {
         .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
     }
 
-    private func statusMetric(_ text: String, id: String) -> some View {
+    private func statusMetric(
+        _ text: String,
+        localizationKey: String,
+        id: String
+    ) -> some View {
         Text(text)
             .font(Organic.mono(10, weight: .semibold))
             .lineLimit(1)
             .accessibilityIdentifier(id)
+            .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
+            .accessibilityValue(text)
     }
 
     private var modePill: some View {

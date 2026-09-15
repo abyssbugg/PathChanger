@@ -94,8 +94,7 @@ struct ModeContextCard: View {
                 Spacer()
                 if appState.currentRoute.count >= 2 {
                     Button {
-                        appState.currentRoute = Array(appState.currentRoute.reversed())
-                        if let destination = appState.currentRoute.last { appState.stageLocation(destination, for: mode) }
+                        appState.reverseRoute(for: mode)
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
                             .font(.system(size: 11, weight: .semibold))

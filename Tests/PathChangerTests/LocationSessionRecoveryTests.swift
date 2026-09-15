@@ -263,4 +263,31 @@ final class LocationSessionRecoveryTests: XCTestCase {
             XCTAssertFalse(coordinator.state.application.isActive)
         }
     }
+
+    func testZeroAttemptRecoveryExhaustsWithoutInvokingSessionFactory() async throws {
+        let injector = FakeLocationInjector()
+        let coordinator = LocationSessionCoordinator(injector: injector)
+        let first = session(transport: .usb, endpoint: .direct, generation: 1)
+        try seedActive(coordinator, session: first)
+        coordinator.connectionLost(reason: "transport lost")
+        var attempts = 0
+
+        let result = await coordinator.recover(
+            strategy: ReconnectionStrategy(
+                maxAttempts: 0,
+                initialDelaySeconds: 0,
+                maxDelaySeconds: 0,
+                backoffMultiplier: 1,
+                jitterFactor: 0
+            ),
+            establishSession: { _, _ in
+                attempts += 1
+                return first
+            }
+        )
+
+        XCTAssertEqual(result, .recoveryExhausted)
+        XCTAssertEqual(attempts, 0)
+        XCTAssertEqual(coordinator.state.desiredLocation, coordinate)
+    }
 }

@@ -465,4 +465,44 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
             XCTAssertFalse(source.localizedCaseInsensitiveContains("GPS drift"), path)
         }
     }
+
+    func testRouteReverseActionDoesNotRestageDestination() throws {
+        let source = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+        let start = try XCTUnwrap(source.range(of: "Image(systemName: \"arrow.up.arrow.down\")"))
+        let prefix = source[..<start.lowerBound]
+        let buttonStart = try XCTUnwrap(prefix.range(of: "Button {", options: .backwards))
+        let action = String(source[buttonStart.lowerBound..<start.lowerBound])
+
+        XCTAssertTrue(action.contains("appState.reverseRoute(for: mode)"))
+        XCTAssertFalse(action.contains("stageLocation"))
+    }
+
+    func testQuietBackpressureStatusIsGuarded() throws {
+        let source = try sourceFile("PathChanger/Core/StateManagers/SimulationStateManager.swift")
+        let start = try XCTUnwrap(source.range(of: "if case .rateLimited = error"))
+        let suffix = source[start.lowerBound...]
+        let end = try XCTUnwrap(suffix.range(of: "errorHandler.handle(error"))
+        let rateLimitedBlock = String(suffix[..<end.lowerBound])
+
+        XCTAssertTrue(rateLimitedBlock.contains("if !quiet {\n                    onStatusMessage?(\"Location update rejected by adapter backpressure\")"))
+    }
+
+    func testLiveStatusMetricsExposeLocalizedLabelsAndValues() throws {
+        let source = try sourceFile("PathChanger/UI/ContentView.swift")
+        let metrics = ["connection", "application", "movement", "coordinate"]
+
+        for metric in metrics {
+            XCTAssertTrue(source.contains("localizationKey: \"accessibility.location.status.\(metric)\""), metric)
+        }
+        XCTAssertTrue(source.contains(".accessibilityLabel(NSLocalizedString(localizationKey"))
+        XCTAssertTrue(source.contains(".accessibilityValue(text)"))
+    }
+
+    private func sourceFile(_ relativePath: String) throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(contentsOf: repositoryRoot.appendingPathComponent(relativePath))
+    }
 }

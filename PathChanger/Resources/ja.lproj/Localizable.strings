@@ -188,8 +188,8 @@
 "dependency.python" = "Python 3が必要です";
 "dependency.pymobiledevice" = "pymobiledevice3が必要です";
 "dependency.installInstructions" = "インストール手順";
-"dependency.brewCommand" = "brew install python3";
-"dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";
+"dependency.brewCommand" = "brew install python@3.13";
+"dependency.pipCommand" = "PathChanger が管理: Python 3.13 + pymobiledevice3 11.12.5";
 
 // MARK: - Verified Location Session
 "location.status.connection" = "接続";
@@ -200,3 +200,38 @@
 "location.action.pauseMovement" = "移動を一時停止";
 "location.action.stopMovement" = "移動を停止";
 "location.action.clear" = "模擬位置情報を消去";
+
+// MARK: - Location Status Metrics (Localized Field Labels)
+"location.status.connection.unavailable" = "利用不可";
+"location.status.connection.ready.usb" = "USB経由で準備完了";
+"location.status.connection.ready.wifi" = "Wi-Fi経由で準備完了";
+"location.status.connection.reconnecting" = "再接続中";
+"location.status.connection.failed" = "接続喪失";
+
+"location.status.application.idle" = "アイドル";
+"location.status.application.applying" = "適用中";
+"location.status.application.active.spoofing" = "アクティブ / 保持中";
+"location.status.application.active.uncertain" = "不確定";
+"location.status.application.uncertain" = "不確定";
+"location.status.application.lost" = "失われた";
+"location.status.application.clearing" = "クリア中";
+"location.status.application.failed" = "失敗";
+
+"location.status.movement.idle" = "アイドル";
+"location.status.movement.moving" = "移動中";
+"location.status.movement.paused" = "一時停止";
+"location.status.movement.completed" = "完了";
+
+// MARK: - Location Status Accessibility Values
+"accessibility.location.status.connection" = "接続状態";
+"accessibility.location.status.application" = "適用状態";
+"accessibility.location.status.movement" = "移動状態";
+"accessibility.location.status.coordinate" = "適用済み座標";
+
+// MARK: - Managed Location Quit
+"quit.location.title" = "位置情報がまだ有効です";
+"quit.location.message" = "終了前にシミュレート位置を解除するか、管理ヘルパーで保持してPathChangerの再起動時に復元できます。";
+"quit.clearAndQuit" = "解除して終了";
+"quit.preserveAndQuit" = "保持して終了";
+"quit.cancel" = "キャンセル";
+"quit.failed.title" = "安全に終了できません";

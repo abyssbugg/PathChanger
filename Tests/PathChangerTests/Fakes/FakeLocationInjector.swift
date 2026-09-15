@@ -27,13 +27,21 @@ actor FakeLocationInjector: LocationInjecting {
     private var clearEntered = false
     private var clearEnteredWaiters: [CheckedContinuation<Void, Never>] = []
     private var clearReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var applicationCancellationObserver: (@Sendable () -> Void)?
+    private var applicationObserver: (@Sendable () -> Void)?
 
     func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
         callLog.append(.apply(request))
-        return try await withCheckedThrowingContinuation { continuation in
-            pendingApplications.append((request, continuation))
-            pendingWaiters.forEach { $0.resume() }
-            pendingWaiters.removeAll()
+        applicationObserver?()
+        let cancellationObserver = applicationCancellationObserver
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pendingApplications.append((request, continuation))
+                pendingWaiters.forEach { $0.resume() }
+                pendingWaiters.removeAll()
+            }
+        } onCancel: {
+            cancellationObserver?()
         }
     }
 
@@ -67,17 +75,32 @@ actor FakeLocationInjector: LocationInjecting {
         requestIDOverride: UUID? = nil,
         coordinateOverride: LocationCoordinate? = nil,
         transportOverride: LocationTransport? = nil,
+        actualChannelOverride: LocationDVTChannel? = nil,
         endpointClassOverride: LocationEndpointClass? = nil,
         generationOverride: UInt64? = nil
     ) {
         guard !pendingApplications.isEmpty else { return }
         let pending = pendingApplications.removeFirst()
+        let transport = transportOverride ?? session.transport
+        let requestedEndpointClass = endpointClassOverride ?? session.endpointClass
+        let endpointClass: LocationEndpointClass = requestedEndpointClass == .unresolved
+            ? .direct
+            : requestedEndpointClass
+        let actualChannel = actualChannelOverride ?? {
+            switch endpointClass {
+            case .unresolved, .direct:
+                return transport == .usb ? .usbLockdown : .networkLockdown
+            case .remoteServiceDiscovery:
+                return .explicitRSD
+            }
+        }()
         pending.continuation.resume(returning: LocationInjectionReceipt(
             requestID: requestIDOverride ?? pending.request.id,
             session: UUID(),
             coordinate: coordinateOverride ?? pending.request.coordinate,
-            transport: transportOverride ?? session.transport,
-            endpointClass: endpointClassOverride ?? session.endpointClass,
+            transport: transport,
+            actualChannel: actualChannel,
+            endpointClass: endpointClass,
             sessionGeneration: generationOverride ?? session.generation,
             completedAt: completedAt,
             outcome: outcome
@@ -88,6 +111,12 @@ actor FakeLocationInjector: LocationInjecting {
         guard !pendingApplications.isEmpty else { return }
         let pending = pendingApplications.removeFirst()
         pending.continuation.resume(throwing: FakeError.applicationFailed(code))
+    }
+
+    func cancelNextApplication() {
+        guard !pendingApplications.isEmpty else { return }
+        let pending = pendingApplications.removeFirst()
+        pending.continuation.resume(throwing: CancellationError())
     }
 
     func emit(_ event: LocationBridgeEvent) {
@@ -102,6 +131,12 @@ actor FakeLocationInjector: LocationInjecting {
 
     func setShouldFailClear(_ value: Bool) { shouldFailClear = value }
     func setShouldBlockClear(_ value: Bool) { shouldBlockClear = value }
+    func setApplicationCancellationObserver(_ observer: (@Sendable () -> Void)?) {
+        applicationCancellationObserver = observer
+    }
+    func setApplicationObserver(_ observer: (@Sendable () -> Void)?) {
+        applicationObserver = observer
+    }
 
     func waitForClearEntered() async throws {
         guard !clearEntered else { return }

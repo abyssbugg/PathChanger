@@ -75,4 +75,71 @@ final class PersistentBridgeLifecycleTests: XCTestCase {
         let values = await collected.value
         XCTAssertEqual(values, expected)
     }
+
+    // MARK: - Remediation Group 1: cleanup() Gate Reset Tests
+
+    func testCleanupResetsReadinessGateForNextGeneration() {
+        var gate = PersistentBridgeReadinessGate()
+        XCTAssertTrue(gate.consume(ready: true))
+        XCTAssertTrue(gate.isReady)
+        gate = PersistentBridgeReadinessGate()
+        XCTAssertTrue(gate.consume(ready: true))
+        XCTAssertTrue(gate.isReady)
+    }
+
+    func testCleanupResetsTerminationEventsForNextGeneration() {
+        let session = LocationSessionIdentity(
+            stableDeviceID: "test-device",
+            transport: .wifi,
+            endpointClass: .remoteServiceDiscovery,
+            generation: 1
+        )
+        var events = PersistentBridgeTerminationEvents()
+        let first = events.consume(exitCode: 1, intentional: false, session: session)
+        XCTAssertEqual(first.count, 2)
+        let second = events.consume(exitCode: 1, intentional: false, session: session)
+        XCTAssertTrue(second.isEmpty)
+        events = PersistentBridgeTerminationEvents()
+        let third = events.consume(exitCode: 2, intentional: true, session: session)
+        XCTAssertEqual(third.count, 2)
+    }
+
+    func testCleanupCancelsContinuationsSafely() {
+        var gate = PersistentBridgeRequestGate()
+        XCTAssertNoThrow(try gate.begin(requestID: UUID(), generation: 1))
+    }
+
+    func testIntentionalStopSemanticsPreservedAcrossCleanup() {
+        let session = LocationSessionIdentity(
+            stableDeviceID: "intent-device",
+            transport: .usb,
+            endpointClass: .direct,
+            generation: 5
+        )
+        var events = PersistentBridgeTerminationEvents()
+        let intentionalStop = events.consume(exitCode: 0, intentional: true, session: session)
+        XCTAssertTrue(intentionalStop.contains { event in
+            if case .sessionLost(_, reason: let reason) = event {
+                return reason == "intentional stop"
+            }
+            return false
+        })
+    }
+
+    func testSignalShutdownWakesPendingStdinRead() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("scripts/location_bridge.py"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("run_in_executor(None, sys.stdin.readline)"))
+        XCTAssertTrue(source.contains("_shutdown_event"))
+        XCTAssertTrue(source.contains("connect_read_pipe"))
+        XCTAssertTrue(source.contains("return_when=asyncio.FIRST_COMPLETED"))
+        XCTAssertTrue(source.contains("read_task.cancel()"))
+    }
 }

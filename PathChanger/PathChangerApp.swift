@@ -27,7 +27,7 @@ struct LocationStatusPresentation: Equatable {
     let canMove: Bool
     let canClear: Bool
 
-    init(state: LocationSessionState, deviceVisible: Bool) {
+    init(state: LocationSessionState, deviceVisible: Bool, hasUnresolvedClear: Bool = false) {
         let ready: LocationSessionIdentity? = { if case .ready(let value) = state.connection { return value }; return nil }()
         let active: LocationInjectionReceipt? = { if case .active(let value) = state.application { return value }; return nil }()
         let current: LocationInjectionReceipt? = active.flatMap { receipt -> LocationInjectionReceipt? in
@@ -46,32 +46,55 @@ struct LocationStatusPresentation: Equatable {
         desiredCoordinate = state.desiredLocation
         appliedCoordinate = current?.coordinate
         switch state.connection {
-        case .unavailable: connectionLabel = "Unavailable"
-        case .ready(let identity): connectionLabel = "Ready over " + Self.transportName(identity.transport)
-        case .reconnecting: connectionLabel = "Reconnecting"
-        case .failed: connectionLabel = "Lost"
+        case .unavailable:
+            connectionLabel = Self.localizedStatus("location.status.connection.unavailable", comment: "Connection unavailable")
+        case .ready(let identity):
+            let transport = identity.transport == .usb ? "usb" : "wifi"
+            let key = "location.status.connection.ready.\(transport)"
+            connectionLabel = Self.localizedStatus(key, comment: "Connection ready")
+        case .reconnecting:
+            connectionLabel = Self.localizedStatus("location.status.connection.reconnecting", comment: "Connection reconnecting")
+        case .failed:
+            connectionLabel = Self.localizedStatus("location.status.connection.failed", comment: "Connection failed")
         }
         switch state.application {
-        case .idle: applicationLabel = "Idle"
-        case .applying: applicationLabel = "Applying"
-        case .active: applicationLabel = isSpoofing ? "Active / Held" : "Uncertain"
-        case .uncertain: applicationLabel = "Uncertain"
-        case .lost: applicationLabel = "Lost"
-        case .clearing: applicationLabel = "Clearing"
-        case .failed: applicationLabel = "Failed"
+        case .idle:
+            applicationLabel = Self.localizedStatus("location.status.application.idle", comment: "Application idle")
+        case .applying:
+            applicationLabel = Self.localizedStatus("location.status.application.applying", comment: "Application applying")
+        case .active:
+            let key = isSpoofing ? "location.status.application.active.spoofing" : "location.status.application.active.uncertain"
+            applicationLabel = Self.localizedStatus(key, comment: "Application active")
+        case .uncertain:
+            applicationLabel = Self.localizedStatus("location.status.application.uncertain", comment: "Application uncertain")
+        case .lost:
+            applicationLabel = Self.localizedStatus("location.status.application.lost", comment: "Application lost")
+        case .clearing:
+            applicationLabel = Self.localizedStatus("location.status.application.clearing", comment: "Application clearing")
+        case .failed:
+            applicationLabel = Self.localizedStatus("location.status.application.failed", comment: "Application failed")
         }
         switch state.movement {
-        case .idle: movementLabel = "Idle"
-        case .moving: movementLabel = "Moving"
-        case .paused: movementLabel = "Paused"
-        case .completed: movementLabel = "Completed"
+        case .idle:
+            movementLabel = Self.localizedStatus("location.status.movement.idle", comment: "Movement idle")
+        case .moving:
+            movementLabel = Self.localizedStatus("location.status.movement.moving", comment: "Movement moving")
+        case .paused:
+            movementLabel = Self.localizedStatus("location.status.movement.paused", comment: "Movement paused")
+        case .completed:
+            movementLabel = Self.localizedStatus("location.status.movement.completed", comment: "Movement completed")
         }
         desiredCoordinateLabel = state.desiredLocation?.formattedShort ?? "—"
         appliedCoordinateLabel = current?.coordinate.formattedShort ?? (state.lastAcknowledgedReceipt == nil ? "—" : "Uncertain")
         deviceLifecycleLabel = deviceVisible ? "Device visible" : "No visible device"
-        canApply = ready != nil && state.desiredLocation != nil && !Self.isBusy(state.application)
-        canMove = isSpoofing && ready != nil
-        canClear = ready != nil && (state.desiredLocation != nil || state.lastAcknowledgedReceipt != nil)
+        canApply = !hasUnresolvedClear && ready != nil && state.desiredLocation != nil && !Self.isBusy(state.application)
+        canMove = !hasUnresolvedClear && isSpoofing && ready != nil
+        if case .clearing = state.application {
+            canClear = false
+        } else {
+            canClear = hasUnresolvedClear ||
+                (ready != nil && (state.desiredLocation != nil || state.lastAcknowledgedReceipt != nil))
+        }
         let source = ready?.stableDeviceID ?? "unknown"
         let checksum = source.utf8.reduce(UInt32(5381)) { (($0 << 5) &+ $0) &+ UInt32($1) } & 0xFFFF
         let alias = String(format: "Device-%04X", checksum)
@@ -82,6 +105,32 @@ struct LocationStatusPresentation: Equatable {
         let acknowledged = state.lastAcknowledgedReceipt.map { ISO8601DateFormatter().string(from: $0.completedAt) } ?? "—"
         sessionDiagnostic = "\(alias) · \(transport) · \(endpoint) · generation \(generation) · request …\(request) · acknowledged \(acknowledged)"
     }
+
+    private static let statusFallbacks: [String: String] = [
+        "location.status.connection.unavailable": "Unavailable",
+        "location.status.connection.ready.usb": "Ready over USB",
+        "location.status.connection.ready.wifi": "Ready over Wi-Fi",
+        "location.status.connection.reconnecting": "Reconnecting",
+        "location.status.connection.failed": "Lost",
+        "location.status.application.idle": "Idle",
+        "location.status.application.applying": "Applying",
+        "location.status.application.active.spoofing": "Active / Held",
+        "location.status.application.active.uncertain": "Uncertain",
+        "location.status.application.uncertain": "Uncertain",
+        "location.status.application.lost": "Lost",
+        "location.status.application.clearing": "Clearing",
+        "location.status.application.failed": "Failed",
+        "location.status.movement.idle": "Idle",
+        "location.status.movement.moving": "Moving",
+        "location.status.movement.paused": "Paused",
+        "location.status.movement.completed": "Completed",
+    ]
+
+    private static func localizedStatus(_ key: String, comment: String) -> String {
+        let localized = NSLocalizedString(key, comment: comment)
+        return localized == key ? (statusFallbacks[key] ?? key) : localized
+    }
+
     private static func isBusy(_ phase: LocationApplicationPhase) -> Bool {
         if case .applying = phase { return true }; if case .clearing = phase { return true }; return false
     }
@@ -106,12 +155,16 @@ struct PathChangerApp: App {
         WindowGroup {
             if dependencyValidator.validationStatus == .invalid {
                 DependencyErrorView(validator: dependencyValidator)
+                    .onAppear {
+                        appDelegate.terminationHandler = appState
+                    }
             } else {
                 ContentView()
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
                     .frame(minWidth: 1100, minHeight: 740)
                     .onAppear {
+                        appDelegate.terminationHandler = appState
                         guard AppRuntimeEnvironment.allowsAutomaticStartup else {
                             return
                         }
@@ -195,11 +248,32 @@ struct PathChangerApp: App {
 
 }
 
+// MARK: - Quit Policy
+
+enum LocationQuitChoice: Equatable, Sendable {
+    case clearAndQuit
+    case preserveAndQuit
+    case cancel
+}
+
+enum LocationQuitPreparationResult: Equatable, Sendable {
+    case terminate
+    case cancel
+    case failed(String)
+}
+
+@MainActor
+protocol LocationTerminationHandling: AnyObject {
+    var requiresLocationQuitDecision: Bool { get }
+    func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult
+    func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult
+}
+
 // MARK: - App State
 
 /// Global application state with full simulation control
 @MainActor
-class AppState: ObservableObject {
+class AppState: ObservableObject, LocationTerminationHandling {
 
     // MARK: Domain State Managers
     //
@@ -229,9 +303,15 @@ class AppState: ObservableObject {
     }
 
     var locationPresentation: LocationStatusPresentation {
-        LocationStatusPresentation(
-            state: locationSessionCoordinator.state,
-            deviceVisible: selectedDevice != nil
+        var presentationState = locationSessionCoordinator.state
+        if locationClearTask != nil {
+            presentationState.application = .clearing
+            presentationState.movement = .idle
+        }
+        return LocationStatusPresentation(
+            state: presentationState,
+            deviceVisible: selectedDevice != nil,
+            hasUnresolvedClear: unresolvedClearSession != nil
         )
     }
 
@@ -368,8 +448,13 @@ class AppState: ObservableObject {
     // MARK: Private
     private let locationBridge: DevLocationBridge
     private let locationInjector: any LocationInjecting
+    private let managedLocationSessionSource: any ManagedLocationSessionSource
     private let routeDelay: @MainActor @Sendable (TimeInterval) async -> Void
     private var pendingApplicationModes: [UUID: AppMode] = [:]
+    private var applicationTasks: [UUID: Task<LocationInjectionReceipt, Error>] = [:]
+    @Published private var locationClearTask: Task<Void, Never>?
+    @Published private var unresolvedClearSession: LocationSessionIdentity?
+    private var locationOperationGeneration: UInt64 = 0
     private var simulationTask: Task<Void, Never>?
     private var routePlaybackID: UUID?
     private var joystickTask: Task<Void, Never>?
@@ -383,7 +468,11 @@ class AppState: ObservableObject {
     // MARK: Computed Properties
 
     var canStartSimulation: Bool {
-        simulation.canStartSimulation
+        canBeginLocationOperation && simulation.canStartSimulation
+    }
+
+    private var canBeginLocationOperation: Bool {
+        locationClearTask == nil && unresolvedClearSession == nil
     }
 
     var simulationStatusText: String {
@@ -395,6 +484,7 @@ class AppState: ObservableObject {
     init(
         startBackgroundServices: Bool = true,
         locationInjector: (any LocationInjecting)? = nil,
+        managedLocationSessionSource: (any ManagedLocationSessionSource)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -403,6 +493,8 @@ class AppState: ObservableObject {
         let sharedBridge = DevLocationBridge()
         let sharedErrorHandler = ErrorHandler()
         let resolvedInjector: any LocationInjecting = locationInjector ?? sharedBridge
+        let resolvedManagedSessionSource: any ManagedLocationSessionSource =
+            managedLocationSessionSource ?? PersistentLocationBridge.shared
         let sessionCoordinator = LocationSessionCoordinator(injector: resolvedInjector)
 #if DEBUG
         let usesScriptedInjector = resolvedInjector is ScriptedLocationInjector
@@ -413,6 +505,7 @@ class AppState: ObservableObject {
 
         self.locationBridge = sharedBridge
         self.locationInjector = resolvedInjector
+        self.managedLocationSessionSource = resolvedManagedSessionSource
         self.routeDelay = routeDelay
         self.automaticRecoveryEnabled = effectiveBackgroundServices
         self.errorHandler = sharedErrorHandler
@@ -446,7 +539,47 @@ class AppState: ObservableObject {
         }
 
         device.onDeviceSelected = { [weak self] selected in
-            self?.simulationEngine.setDevice(selected)
+            guard let self else { return }
+            simulationEngine.setDevice(selected)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if await self.restorePublishedManagedLocationSession(for: selected) {
+                    return
+                }
+
+                let transport: LocationTransport = selected.connectionType == .usb ? .usb : .wifi
+                let endpointClass: LocationEndpointClass = .unresolved
+                if case .ready(let current) = self.locationSessionCoordinator.state.connection {
+                    if current.stableDeviceID == selected.id,
+                       current.transport == transport {
+                        return
+                    }
+
+                    switch self.locationSessionCoordinator.state.application {
+                    case .applying, .active, .clearing:
+                        let reason = current.stableDeviceID == selected.id
+                            ? "Device transport changed during an active location operation"
+                            : "Selected device changed during an active location operation"
+                        self.locationSessionCoordinator.connectionLost(reason: reason)
+                        return
+                    case .idle, .uncertain, .lost, .failed:
+                        break
+                    }
+                }
+
+                let generation: UInt64
+                if case .ready(let current) = self.locationSessionCoordinator.state.connection {
+                    generation = current.generation &+ 1
+                } else {
+                    generation = (self.locationSessionCoordinator.state.lastAcknowledgedReceipt?.sessionGeneration ?? 0) &+ 1
+                }
+                self.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+                    stableDeviceID: selected.id,
+                    transport: transport,
+                    endpointClass: endpointClass,
+                    generation: generation
+                ))
+            }
         }
 
 #if DEBUG
@@ -486,17 +619,6 @@ class AppState: ObservableObject {
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
-
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [locationBridge, sessionCoordinator] _ in
-            Task { @MainActor in
-                sessionCoordinator.submit(.appCancelled)
-                await locationBridge.stopHeldSimulation()
-            }
-        }
 
         guard effectiveBackgroundServices || usesScriptedInjector else {
             return
@@ -540,6 +662,8 @@ class AppState: ObservableObject {
 
     func refreshDevices() async {
         await device.refreshDevices()
+        guard automaticRecoveryEnabled else { return }
+        _ = await restoreManagedLocationSessionFromSource()
     }
 
     func checkTunneldStatus() async {
@@ -631,17 +755,62 @@ class AppState: ObservableObject {
     }
 
     func clearLocation() async {
-        if let error = await locationSessionCoordinator.clear() {
-            statusMessage = "Unable to clear location: \(error)"
+        if let locationClearTask {
+            await locationClearTask.value
             return
         }
-        pendingApplicationModes.removeAll()
-        simulation.currentLocation = nil
-        simulation.targetLocation = nil
-        simulation.isSimulating = false
-        simulation.isPaused = false
-        routeProgress = 0
-        statusMessage = "Location cleared"
+        locationOperationGeneration &+= 1
+        let sessionToClear: LocationSessionIdentity?
+        if let unresolvedClearSession {
+            sessionToClear = unresolvedClearSession
+        } else if case .ready(let session) = locationSessionCoordinator.state.connection {
+            sessionToClear = session
+        } else {
+            sessionToClear = nil
+        }
+        let clearing = Task { @MainActor in
+            defer { locationClearTask = nil }
+            let producers = [simulationTask, joystickTask, locationRecoveryTask].compactMap { $0 }
+            let applications = Array(applicationTasks.values)
+            producers.forEach { $0.cancel() }
+            applications.forEach { $0.cancel() }
+            pendingApplicationModes.removeAll()
+            _ = locationSessionCoordinator.cancelPendingApplication()
+            simulation.isSimulating = false
+            simulation.isPaused = false
+            route.pausePlayback()
+            locationSessionCoordinator.stopMovement()
+            for application in applications {
+                _ = await application.result
+            }
+            for producer in producers {
+                await producer.value
+            }
+            simulationTask = nil
+            routePlaybackID = nil
+            joystickTask = nil
+            joystickDeliveryID = nil
+            locationRecoveryTask = nil
+            simulation.isSimulating = false
+            simulation.isPaused = false
+            simulation.resetJoystick()
+            joystickDirection = .zero
+            route.pausePlayback()
+            locationSessionCoordinator.stopMovement()
+
+            if let error = await locationSessionCoordinator.clear(targetSession: sessionToClear) {
+                unresolvedClearSession = sessionToClear
+                statusMessage = "Unable to clear location: \(error)"
+                return
+            }
+            unresolvedClearSession = nil
+            simulation.currentLocation = nil
+            simulation.targetLocation = nil
+            routeProgress = 0
+            statusMessage = "Location cleared"
+        }
+        locationClearTask = clearing
+        await clearing.value
     }
 
     // MARK: Simulation Control
@@ -675,6 +844,8 @@ class AppState: ObservableObject {
         _ coordinate: LocationCoordinate,
         mode: AppMode
     ) async -> LocationInjectionReceipt? {
+        guard canBeginLocationOperation else { return nil }
+        let operationGeneration = locationOperationGeneration
         let locationMode = mode.locationMode ?? .teleport
         locationSessionCoordinator.select(coordinate, mode: locationMode)
 
@@ -687,8 +858,17 @@ class AppState: ObservableObject {
         do {
             let request = try locationSessionCoordinator.beginApplication()
             pendingApplicationModes[request.id] = mode
-            let receipt = try await locationInjector.apply(request)
-            guard !Task.isCancelled else {
+            let application = Task { try await locationInjector.apply(request) }
+            applicationTasks[request.id] = application
+            defer { applicationTasks.removeValue(forKey: request.id) }
+            let receipt = try await withTaskCancellationHandler {
+                try await application.value
+            } onCancel: {
+                application.cancel()
+            }
+            guard !Task.isCancelled,
+                  locationClearTask == nil,
+                  operationGeneration == locationOperationGeneration else {
                 _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                 pendingApplicationModes.removeValue(forKey: request.id)
                 return nil
@@ -715,6 +895,8 @@ class AppState: ObservableObject {
             statusMessage = "Location update rejected: \(String(describing: result))"
             return nil
         } catch {
+            guard locationClearTask == nil,
+                  operationGeneration == locationOperationGeneration else { return nil }
             if case .applying(let requestID, _) = locationSessionCoordinator.state.application {
                 _ = locationSessionCoordinator.reject(requestID: requestID, error: error)
                 pendingApplicationModes.removeValue(forKey: requestID)
@@ -732,7 +914,7 @@ class AppState: ObservableObject {
         guard let selectedDevice else { return false }
 
         let transport: LocationTransport = selectedDevice.connectionType == .usb ? .usb : .wifi
-        let endpointClass: LocationEndpointClass = transport == .usb ? .direct : .remoteServiceDiscovery
+        let endpointClass: LocationEndpointClass = .unresolved
         let lastGeneration = locationSessionCoordinator.state.lastAcknowledgedReceipt?.sessionGeneration ?? 0
         locationSessionCoordinator.connectionReady(LocationSessionIdentity(
             stableDeviceID: selectedDevice.id,
@@ -740,6 +922,91 @@ class AppState: ObservableObject {
             endpointClass: endpointClass,
             generation: lastGeneration + 1
         ))
+        return true
+    }
+
+    /// Start or adopt the managed helper and restore the single session matching
+    /// the currently selected device. Failure leaves the existing state unchanged.
+    @discardableResult
+    func restoreManagedLocationSessionFromSource() async -> Bool {
+        do {
+            try await managedLocationSessionSource.start()
+        } catch {
+            Logger.error(
+                "[AppState] Managed helper unavailable during session restoration: \(error.localizedDescription)",
+                category: .device
+            )
+            return false
+        }
+
+        guard let selectedDevice else { return false }
+        return await restorePublishedManagedLocationSession(for: selectedDevice)
+    }
+
+    private func restorePublishedManagedLocationSession(for device: Device) async -> Bool {
+        guard let helperID = managedLocationSessionSource.adoptedHelperID else {
+            return false
+        }
+        let matches = managedLocationSessionSource.adoptedHelperSessions.filter {
+            $0.matches(deviceID: device.id)
+        }
+        guard matches.count == 1, let session = matches.first else {
+            if matches.count > 1 {
+                Logger.error(
+                    "[AppState] Refusing ambiguous managed helper sessions for selected device",
+                    category: .device
+                )
+            }
+            return false
+        }
+        return await restoreManagedHelperSession(session, helperID: helperID, for: device)
+    }
+
+    /// Restore provider-acknowledged held truth from an authenticated managed helper.
+    /// This never resumes a route or joystick engine after relaunch.
+    @discardableResult
+    func restoreManagedHelperSession(
+        _ session: ManagedLocationHelperSession,
+        helperID: UUID,
+        for device: Device
+    ) async -> Bool {
+        guard selectedDevice?.id == device.id,
+              session.matches(deviceID: device.id),
+              let receipt = session.locationReceipt(helperID: helperID) else {
+            return false
+        }
+
+        do {
+            try await locationInjector.adoptManagedSession(
+                receipt: receipt,
+                stableDeviceID: device.id
+            )
+        } catch {
+            Logger.error(
+                "[AppState] Refusing managed session rejected by location adapter: \(error.localizedDescription)",
+                category: .device
+            )
+            return false
+        }
+
+        let identity = LocationSessionIdentity(
+            stableDeviceID: device.id,
+            transport: receipt.transport,
+            endpointClass: receipt.endpointClass,
+            generation: receipt.sessionGeneration
+        )
+        guard locationSessionCoordinator.adoptHeldSession(
+            identity: identity,
+            receipt: receipt
+        ) == nil else {
+            return false
+        }
+
+        simulation.currentLocation = receipt.coordinate
+        simulation.targetLocation = receipt.coordinate
+        simulation.isPaused = false
+        simulation.isSimulating = true
+        statusMessage = "Restored held location from managed helper"
         return true
     }
 
@@ -758,6 +1025,72 @@ class AppState: ObservableObject {
         }
     }
 
+    var requiresLocationQuitDecision: Bool {
+        locationSessionCoordinator.state.lastAcknowledgedReceipt != nil
+            || locationSessionCoordinator.state.application.isActive
+            || !canBeginLocationOperation
+    }
+
+    func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult {
+        await stopSimulation()
+        do {
+            try await managedLocationSessionSource.shutdownHelper()
+            return .terminate
+        } catch {
+            return .failed("Managed helper shutdown failed: \(error.localizedDescription)")
+        }
+    }
+
+    func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult {
+        switch choice {
+        case .cancel:
+            return .cancel
+
+        case .preserveAndQuit:
+            await stopSimulation()
+            do {
+                try await managedLocationSessionSource.start()
+                try await managedLocationSessionSource.refreshAdoptedHelperSessions()
+            } catch {
+                return .failed("Unable to verify managed location ownership: \(error.localizedDescription)")
+            }
+
+            guard let selectedDevice,
+                  let helperID = managedLocationSessionSource.adoptedHelperID,
+                  let currentReceipt = locationSessionCoordinator.state.lastAcknowledgedReceipt else {
+                return .failed("No acknowledged managed location session is available to preserve")
+            }
+            let matches = managedLocationSessionSource.adoptedHelperSessions.filter {
+                $0.matches(deviceID: selectedDevice.id)
+            }
+            guard matches.count == 1,
+                  let persistedReceipt = matches[0].locationReceipt(helperID: helperID),
+                  persistedReceipt.requestID == currentReceipt.requestID,
+                  persistedReceipt.sessionGeneration == currentReceipt.sessionGeneration,
+                  persistedReceipt.coordinate == currentReceipt.coordinate,
+                  persistedReceipt.transport == currentReceipt.transport,
+                  persistedReceipt.actualChannel == currentReceipt.actualChannel,
+                  persistedReceipt.endpointClass == currentReceipt.endpointClass else {
+                return .failed("Managed helper ownership does not match the acknowledged location session")
+            }
+            return .terminate
+
+        case .clearAndQuit:
+            await clearLocation()
+            guard locationSessionCoordinator.state.lastAcknowledgedReceipt == nil,
+                  !locationSessionCoordinator.state.application.isActive,
+                  canBeginLocationOperation else {
+                return .failed(lastError ?? "Location Clear was not acknowledged")
+            }
+            do {
+                try await managedLocationSessionSource.shutdownHelper()
+                return .terminate
+            } catch {
+                return .failed("Location cleared, but managed helper shutdown failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func pauseSimulation() {
         simulation.pauseSimulation()
         locationSessionCoordinator.pauseMovement()
@@ -765,7 +1098,8 @@ class AppState: ObservableObject {
     }
 
     func resumeSimulation() {
-        guard locationSessionCoordinator.state.application.isActive else { return }
+        guard canBeginLocationOperation,
+              locationSessionCoordinator.state.application.isActive else { return }
         simulation.resumeSimulation()
         if let mode = activeMode.locationMode {
             locationSessionCoordinator.beginMovement(mode)
@@ -835,6 +1169,18 @@ class AppState: ObservableObject {
         isPaused = false
     }
 
+    /// Reverses the planned route and updates the selected destination without
+    /// adding, replacing, or removing any waypoint.
+    func reverseRoute(for mode: AppMode) {
+        route.reverseRoute()
+        guard let destination = currentRoute.last else { return }
+        targetLocation = destination
+        if let locationMode = mode.locationMode {
+            locationSessionCoordinator.select(destination, mode: locationMode)
+        }
+        isPaused = false
+    }
+
     func addRouteWaypoint(_ coordinate: LocationCoordinate) {
         guard route.addWaypoint(coordinate) else { return }
         targetLocation = coordinate
@@ -901,6 +1247,7 @@ class AppState: ObservableObject {
     }
 
     private func playRoute(_ points: [LocationCoordinate]) async {
+        let operationGeneration = locationOperationGeneration
         simulationTask?.cancel()
         joystickTask?.cancel()
         joystickTask = nil
@@ -909,6 +1256,8 @@ class AppState: ObservableObject {
         isSimulating = false
         route.beginAcknowledgedPlayback()
         await locationBridge.setQueueStrategy(.sequential)
+        guard locationClearTask == nil,
+              operationGeneration == locationOperationGeneration else { return }
 
         let mode = activeMode
         let movementMode = mode.locationMode ?? .multiSpot
@@ -974,6 +1323,7 @@ class AppState: ObservableObject {
     }
 
     private func startJoystick(at start: LocationCoordinate) async {
+        let operationGeneration = locationOperationGeneration
         simulationTask?.cancel()
         joystickTask?.cancel()
         simulationTask = nil
@@ -984,8 +1334,12 @@ class AppState: ObservableObject {
         isPaused = false
         isSimulating = false
         await locationBridge.setQueueStrategy(.latestWins)
+        guard locationClearTask == nil,
+              operationGeneration == locationOperationGeneration else { return }
 
         guard await applyPlannedLocation(start, mode: .joystick) != nil,
+              operationGeneration == locationOperationGeneration,
+              locationClearTask == nil,
               locationSessionCoordinator.state.application.isActive else {
             return
         }
@@ -1106,6 +1460,7 @@ class AppState: ObservableObject {
                 handleLocationSessionLoss(.bridgeTerminated(exitCode: exitCode))
             }
         case .receipt(let receipt):
+            guard locationClearTask == nil else { return }
             let result = locationSessionCoordinator.accept(receipt)
             if result == nil {
                 commitAcknowledgedReceipt(receipt)
@@ -1139,21 +1494,28 @@ class AppState: ObservableObject {
             locationRecoveryTask = nil
             return
         }
-        guard automaticRecoveryEnabled,
+        guard automaticRecoveryEnabled else { return }
+        startLocationRecovery { [weak self] _, previous in
+            guard let self, let previous else {
+                throw LocationSessionTransitionError.noReadySession
+            }
+            return try await self.device.establishRecoverySession(previous: previous)
+        }
+    }
+
+    func startLocationRecovery(
+        strategy: ReconnectionStrategy? = nil,
+        establishSession: @escaping @MainActor (Int, LocationSessionIdentity?) async throws -> LocationSessionIdentity
+    ) {
+        guard canBeginLocationOperation,
               locationSessionCoordinator.state.desiredLocation != nil,
               locationRecoveryTask == nil else { return }
-
-        let strategy = reliabilityManager.strategy
+        let strategy = strategy ?? reliabilityManager.strategy
         locationRecoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.locationSessionCoordinator.recover(
                 strategy: strategy,
-                establishSession: { [weak self] _, previous in
-                    guard let self, let previous else {
-                        throw LocationSessionTransitionError.noReadySession
-                    }
-                    return try await self.device.establishRecoverySession(previous: previous)
-                }
+                establishSession: establishSession
             )
             if let result, result != .recoveryCancelled {
                 self.lastError = String(describing: result)

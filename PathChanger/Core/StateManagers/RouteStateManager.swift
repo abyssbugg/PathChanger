@@ -270,6 +270,15 @@ final class RouteStateManager: ObservableObject {
         return currentRoute.count
     }
 
+    /// Reverse the route direction without modifying stageLocation or cardinality.
+    /// Resets playback progress and index.
+    func reverseRoute() {
+        guard !currentRoute.isEmpty else { return }
+        currentRoute.reverse()
+        progress = 0
+        currentIndex = 0
+    }
+
     // MARK: Playback Position
 
     /// Pause playback

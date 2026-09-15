@@ -27,8 +27,76 @@ enum LocationTransport: String, Codable, Sendable {
 // MARK: - LocationEndpointClass
 
 enum LocationEndpointClass: String, Codable, Sendable {
+    case unresolved
     case direct
     case remoteServiceDiscovery
+}
+
+struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
+    let rawValue: String
+
+    static let usbLockdown = Self(rawValue: "usbLockdown")
+    static let networkLockdown = Self(rawValue: "networkLockdown")
+    static let explicitRSD = Self(rawValue: "explicitRSD")
+    static let nativeRSD = Self(rawValue: "nativeRSD")
+    static let userspaceRSD = Self(rawValue: "userspaceRSD")
+    static let managedTunneldRSD = Self(rawValue: "managedTunneldRSD")
+
+    var isSupported: Bool {
+        Self.supportedChannels.contains(self)
+    }
+
+    var endpointClass: LocationEndpointClass? {
+        switch self {
+        case .usbLockdown, .networkLockdown:
+            return .direct
+        case .explicitRSD, .nativeRSD, .userspaceRSD, .managedTunneldRSD:
+            return .remoteServiceDiscovery
+        default:
+            return nil
+        }
+    }
+
+    private static let supportedChannels: Set<Self> = [
+        .usbLockdown, .networkLockdown, .explicitRSD,
+        .nativeRSD, .userspaceRSD, .managedTunneldRSD,
+    ]
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+struct LocationProviderAcknowledgement: Equatable, Sendable {
+    let requestID: UUID
+    let sessionGeneration: UInt64
+    let physicalTransport: LocationTransport
+    let channel: LocationDVTChannel
+    let endpointClass: LocationEndpointClass
+
+    init?(
+        requestID: UUID,
+        sessionGeneration: UInt64,
+        physicalTransport: LocationTransport,
+        channel: LocationDVTChannel,
+        endpointClass: LocationEndpointClass
+    ) {
+        guard channel.isSupported, channel.endpointClass == endpointClass else { return nil }
+        self.requestID = requestID
+        self.sessionGeneration = sessionGeneration
+        self.physicalTransport = physicalTransport
+        self.channel = channel
+        self.endpointClass = endpointClass
+    }
 }
 
 // MARK: - LocationSessionIdentity
@@ -55,6 +123,7 @@ struct LocationInjectionReceipt: Equatable, Sendable {
     let session: UUID
     let coordinate: LocationCoordinate
     let transport: LocationTransport
+    let actualChannel: LocationDVTChannel?
     let endpointClass: LocationEndpointClass
     let sessionGeneration: UInt64
     let completedAt: Date
@@ -65,6 +134,7 @@ struct LocationInjectionReceipt: Equatable, Sendable {
         session: UUID,
         coordinate: LocationCoordinate,
         transport: LocationTransport = .usb,
+        actualChannel: LocationDVTChannel? = nil,
         endpointClass: LocationEndpointClass = .direct,
         sessionGeneration: UInt64 = 1,
         completedAt: Date,
@@ -74,10 +144,31 @@ struct LocationInjectionReceipt: Equatable, Sendable {
         self.session = session
         self.coordinate = coordinate
         self.transport = transport
+        self.actualChannel = actualChannel
         self.endpointClass = endpointClass
         self.sessionGeneration = sessionGeneration
         self.completedAt = completedAt
         self.outcome = outcome
+    }
+
+    init(
+        session: UUID,
+        acknowledgedCoordinate: LocationCoordinate,
+        acknowledgement: LocationProviderAcknowledgement,
+        completedAt: Date,
+        outcome: LocationInjectionOutcome
+    ) {
+        self.init(
+            requestID: acknowledgement.requestID,
+            session: session,
+            coordinate: acknowledgedCoordinate,
+            transport: acknowledgement.physicalTransport,
+            actualChannel: acknowledgement.channel,
+            endpointClass: acknowledgement.endpointClass,
+            sessionGeneration: acknowledgement.sessionGeneration,
+            completedAt: completedAt,
+            outcome: outcome
+        )
     }
 }
 

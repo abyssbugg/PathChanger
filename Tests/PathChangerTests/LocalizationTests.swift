@@ -205,6 +205,24 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Dependency.installInstructions)
     }
 
+    func testCapabilityAndConnectionLostCopyIsAccurate() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dependencySource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/UI/DependencyErrorView.swift"),
+            encoding: .utf8
+        )
+        let japaneseStrings = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Resources/ja.lproj/Localizable.strings"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(dependencySource.contains("pymobiledevice3 Capabilities Missing"))
+        XCTAssertTrue(japaneseStrings.contains("\"location.status.connection.failed\" = \"接続喪失\";"))
+    }
+
     // MARK: - Format String Tests
 
     func testVersionFormatString() {

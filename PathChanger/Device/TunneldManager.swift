@@ -77,9 +77,9 @@ enum TunnelMode: String, CaseIterable, Identifiable {
         case .auto:
             return [] // Determined at runtime
         case .usb:
-            return ["lockdown", "start-tunnel"]
+            return ["lockdown", "start-tunnel", "--native"]
         case .wifi:
-            return ["remote", "start-tunnel", "-t", "wifi"]
+            return ["remote", "start-tunnel", "-t", "wifi", "--native"]
         case .daemon:
             return ["remote", "tunneld"]
         }
@@ -506,9 +506,9 @@ class TunneldManager: ObservableObject {
         let base: [String]?
         switch mode {
         case .usb:
-            base = ["-m", "pymobiledevice3", "lockdown", "start-tunnel"]
+            base = ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"]
         case .wifi:
-            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi"]
+            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native"]
         case .daemon:
             base = ["-m", "pymobiledevice3", "remote", "tunneld"]
         case .auto:
@@ -781,7 +781,8 @@ class TunneldManager: ObservableObject {
         case cancelled
     }
 
-    /// Start the tunnel helper with administrator privileges. Detect/install stay unprivileged.
+    /// Start a native user-space tunnel directly from the managed runtime.
+    /// Arguments are fixed by `arguments(for:deviceId:)`; no shell or elevation is used.
     private func attemptStart(mode: TunnelMode, deviceId: String?) async -> PrivilegedStartOutcome {
         if mode == .usb {
             let usbVisible = await usbmuxReportsUSB()
@@ -794,69 +795,52 @@ class TunneldManager: ObservableObject {
         guard let arguments = Self.arguments(for: mode, deviceId: deviceId) else {
             return .failed
         }
-
         guard PythonPathResolver.isAvailable else {
-            lastError = "Python is not available at \(python3Path)"
+            lastError = "Managed Python is not available at \(python3Path)"
             return .failed
         }
 
         ensureLogDirectoryExists()
         try? FileManager.default.removeItem(atPath: logFilePath)
-        guard FileManager.default.createFile(atPath: logFilePath, contents: nil) else {
+        guard FileManager.default.createFile(atPath: logFilePath, contents: nil),
+              let logHandle = FileHandle(forWritingAtPath: logFilePath) else {
             lastError = "Unable to create tunnel log"
             return .failed
         }
+        defer { try? logHandle.close() }
 
-        let shellCommand: String
-        switch PrivilegedTunnelCommand.startShellCommand(
-            pythonPath: python3Path,
-            arguments: arguments,
-            logFilePath: logFilePath
-        ) {
-        case .success(let command):
-            shellCommand = command
-        case .failure(let error):
-            lastError = error.localizedDescription
-            Logger.error("SECURITY: Blocked privileged tunnel start — \(error.localizedDescription)", category: .security)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: python3Path)
+        process.arguments = arguments
+        process.environment = ProcessEnvironment.configured()
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+
+        do {
+            try process.run()
+        } catch {
+            lastError = "Failed to start \(mode.rawValue) tunnel: \(error.localizedDescription)"
             return .failed
         }
 
-        switch runAdministratorShell(shellCommand) {
-        case .cancelled:
-            lastError = "Administrator access required to start the tunnel"
-            return .cancelled
-        case .failure(let message):
-            lastError = "Failed to start \(mode.rawValue) tunnel: \(message)"
+        tunneldProcess = process
+        let pid = process.processIdentifier
+        stateMachine.send(.processLaunched(pid: pid))
+
+        let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
+        try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
+
+        guard process.isRunning && isProcessRunning(pid: pid) else {
+            await checkLogForErrors(mode: mode)
+            if lastError == nil {
+                lastError = "\(mode.rawValue) tunnel exited after launch"
+            }
+            tunneldProcess = nil
+            stateMachine.send(.processExited(pid: pid))
             return .failed
-        case .success(let output):
-            var pid = PrivilegedTunnelCommand.parseLaunchedPid(from: output)
-            if pid == nil {
-                pid = await discoverPid(for: mode)
-            }
-            guard let pid else {
-                await checkLogForErrors(mode: mode)
-                if lastError == nil {
-                    lastError = "\(mode.rawValue) tunnel started but PathChanger could not read its process id"
-                }
-                return .failed
-            }
-
-            stateMachine.send(.processLaunched(pid: pid))
-
-            let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
-            try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
-
-            guard isProcessRunning(pid: pid) else {
-                await checkLogForErrors(mode: mode)
-                if lastError == nil {
-                    lastError = "\(mode.rawValue) tunnel exited after launch"
-                }
-                stateMachine.send(.processExited(pid: pid))
-                return .failed
-            }
-
-            return .started(pid)
         }
+
+        return .started(pid)
     }
 
     private func discoverPid(for mode: TunnelMode) async -> Int32? {
@@ -1150,49 +1134,15 @@ class TunneldManager: ObservableObject {
             return
         }
 
-        switch PrivilegedTunnelCommand.stopShellCommand(pids: trackedPids) {
-        case .failure(let error):
-            Logger.error("SECURITY: Blocked privileged tunnel stop — \(error.localizedDescription)", category: .security)
-        case .success(let command):
-            switch runAdministratorShell(command) {
-            case .cancelled:
-                lastError = "Administrator access required to stop the tunnel"
-            case .failure(let message):
-                lastError = "Failed to stop tunnel: \(message)"
-                Logger.error("Privileged tunnel stop failed: \(message)", category: .security)
-            case .success:
-                Logger.debug("[SECURITY] Elevated stop completed for PIDs \(trackedPids)", category: .security)
+        for pid in trackedPids where pid > 1 {
+            if kill(pid, SIGTERM) != 0 && errno != ESRCH {
+                let message = String(cString: strerror(errno))
+                lastError = "Failed to stop tracked tunnel process \(pid): \(message)"
+                Logger.error("Tracked tunnel stop failed for PID \(pid): \(message)", category: .security)
             }
         }
 
         Logger.debug("[SECURITY] Process cleanup complete", category: .security)
-    }
-
-    private enum AdministratorShellResult {
-        case success(String)
-        case failure(String)
-        case cancelled
-    }
-
-    /// Runs a pre-validated shell command with administrator privileges.
-    private func runAdministratorShell(_ command: String) -> AdministratorShellResult {
-        let source = "do shell script \"\(command)\" with administrator privileges"
-        var errorInfo: NSDictionary?
-        guard let appleScript = NSAppleScript(source: source) else {
-            return .failure("Unable to build the elevation prompt")
-        }
-
-        let result = appleScript.executeAndReturnError(&errorInfo)
-        if let errorInfo {
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Unknown elevation error"
-            let code = errorInfo[NSAppleScript.errorNumber] as? Int ?? 0
-            if code == -128 || message.lowercased().contains("cancel") {
-                return .cancelled
-            }
-            return .failure(message)
-        }
-
-        return .success(result.stringValue ?? "")
     }
 
     /// Check if a process is still running
@@ -1338,6 +1288,90 @@ class TunneldManager: ObservableObject {
 class AppDelegate: NSObject, NSApplicationDelegate {
     /// Sparkle updater controller for auto-updates
     lazy var updaterController = UpdaterController()
+    weak var terminationHandler: (any LocationTerminationHandling)?
+    private var terminationReplyPending = false
+
+    nonisolated func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            applicationShouldTerminateOnMainActor(sender)
+        }
+    }
+
+    private func applicationShouldTerminateOnMainActor(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard !terminationReplyPending else { return .terminateLater }
+        guard let terminationHandler else { return .terminateNow }
+
+        let choice: LocationQuitChoice?
+        if terminationHandler.requiresLocationQuitDecision {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = NSLocalizedString(
+                "quit.location.title",
+                comment: "Quit while a managed location session is held"
+            )
+            alert.informativeText = NSLocalizedString(
+                "quit.location.message",
+                comment: "Choose whether to clear or preserve the managed location"
+            )
+            alert.addButton(withTitle: NSLocalizedString(
+                "quit.clearAndQuit",
+                comment: "Clear location and quit"
+            ))
+            alert.addButton(withTitle: NSLocalizedString(
+                "quit.preserveAndQuit",
+                comment: "Preserve location and quit"
+            ))
+            alert.addButton(withTitle: NSLocalizedString(
+                "quit.cancel",
+                comment: "Cancel quitting"
+            ))
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                choice = .clearAndQuit
+            case .alertSecondButtonReturn:
+                choice = .preserveAndQuit
+            default:
+                choice = .cancel
+            }
+        } else {
+            choice = nil
+        }
+
+        guard choice != .cancel else { return .terminateCancel }
+        terminationReplyPending = true
+        Task { @MainActor [weak self, terminationHandler] in
+            guard let self else {
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            let result: LocationQuitPreparationResult
+            if let choice {
+                result = await terminationHandler.prepareForQuit(choice)
+            } else {
+                result = await terminationHandler.prepareForQuitWithoutLocation()
+            }
+            terminationReplyPending = false
+            switch result {
+            case .terminate:
+                sender.reply(toApplicationShouldTerminate: true)
+            case .cancel:
+                sender.reply(toApplicationShouldTerminate: false)
+            case .failed(let message):
+                let errorAlert = NSAlert()
+                errorAlert.alertStyle = .critical
+                errorAlert.messageText = NSLocalizedString(
+                    "quit.failed.title",
+                    comment: "Quit preparation failed"
+                )
+                errorAlert.informativeText = message
+                errorAlert.runModal()
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
+    }
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in

@@ -334,6 +334,34 @@ final class RouteStateManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testReverseRoutePreservesCardinality() async {
+        let manager = RouteStateManager(routeLibrary: routeLibrary)
+
+        let coordinates = [
+            LocationCoordinate(latitude: 35.6762, longitude: 139.6503),
+            LocationCoordinate(latitude: 35.6763, longitude: 139.6504),
+            LocationCoordinate(latitude: 35.6764, longitude: 139.6505)
+        ]
+
+        manager.loadRoute(from: coordinates, name: "Test Route")
+        let originalCount = manager.currentRoute.count
+        let originalDistance = manager.totalDistance
+
+        manager.reverseRoute()
+
+        // Verify cardinality preserved
+        XCTAssertEqual(manager.currentRoute.count, originalCount)
+        // Verify distance unchanged
+        XCTAssertEqual(manager.totalDistance, originalDistance, accuracy: 0.1)
+        // Verify order reversed
+        XCTAssertEqual(manager.currentRoute[0].latitude, 35.6764, accuracy: 0.0001)
+        XCTAssertEqual(manager.currentRoute[2].latitude, 35.6762, accuracy: 0.0001)
+        // Verify progress reset
+        XCTAssertEqual(manager.progress, 0)
+        XCTAssertEqual(manager.currentIndex, 0)
+    }
+
+    @MainActor
     func testRoutePlaybackStateDisplayText() {
         XCTAssertEqual(RoutePlaybackState.idle.displayText, "No route loaded")
         XCTAssertEqual(RoutePlaybackState.loading.displayText, "Loading route...")
@@ -378,6 +406,27 @@ final class ConnectionStatusTests: XCTestCase {
 
 @MainActor
 final class AcknowledgedRouteStateTests: XCTestCase {
+    func testLocationStatusPresentationUsesLocalizedKeys() async {
+        let state = LocationSessionState(
+            desiredLocation: nil,
+            lastAcknowledgedReceipt: nil,
+            connection: .unavailable,
+            application: .idle,
+            movement: .idle
+        )
+
+        let presentation = LocationStatusPresentation(state: state, deviceVisible: true)
+
+        // Verify labels are not empty (localization worked)
+        XCTAssertFalse(presentation.connectionLabel.isEmpty)
+        XCTAssertFalse(presentation.applicationLabel.isEmpty)
+        XCTAssertFalse(presentation.movementLabel.isEmpty)
+
+        // Verify they use localized strings
+        XCTAssertEqual(presentation.connectionLabel, "Unavailable")
+    }
+
+
     func testProgressAdvancesOnlyWhenWaypointIsAcknowledged() {
         let manager = RouteStateManager(routeLibrary: RouteLibraryManager())
         manager.loadRoute(from: [
@@ -398,5 +447,30 @@ final class AcknowledgedRouteStateTests: XCTestCase {
         manager.completeAcknowledgedPlayback()
         XCTAssertEqual(manager.progress, 1)
         XCTAssertEqual(manager.playbackState, .completed)
+    }
+}
+
+@MainActor
+final class DeviceStateManagerTests: XCTestCase {
+    func testPublishedDiscoverySynchronizesWrapperState() {
+        let deviceManager = DeviceManager()
+        deviceManager.stopAutoRefresh()
+        let manager = DeviceStateManager(
+            deviceManager: deviceManager,
+            startBackgroundServices: false
+        )
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+
+        deviceManager.devices = [device]
+
+        XCTAssertEqual(manager.availableDevices, [device])
+        XCTAssertEqual(manager.selectedDevice, device)
+        XCTAssertEqual(manager.connectionStatus, .connected)
     }
 }

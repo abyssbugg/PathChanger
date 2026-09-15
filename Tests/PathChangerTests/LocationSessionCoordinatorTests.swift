@@ -594,4 +594,98 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     XCTAssertEqual(coordinator.state.application, .active(receipt: receipt))
     XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt, receipt)
   }
+
+  func testAcceptPromotesUnresolvedEndpointFromAppliedProviderReceipt() throws {
+    let coordinate = LocationCoordinate(latitude: 37.33182, longitude: -122.03118)
+    let provisional = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .usb,
+      endpointClass: .unresolved,
+      generation: 7
+    )
+    coordinator.connectionReady(provisional)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+    let receipt = LocationInjectionReceipt(
+      requestID: request.id,
+      session: UUID(),
+      coordinate: coordinate,
+      transport: .usb,
+      actualChannel: .nativeRSD,
+      endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 7,
+      completedAt: Date(),
+      outcome: .applied
+    )
+
+    XCTAssertNil(coordinator.accept(receipt))
+    XCTAssertEqual(
+      coordinator.state.connection,
+      .ready(identity: LocationSessionIdentity(
+        stableDeviceID: provisional.stableDeviceID,
+        transport: provisional.transport,
+        endpointClass: receipt.endpointClass,
+        generation: provisional.generation
+      ))
+    )
+    XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt, receipt)
+  }
+
+  func testAcceptRejectsEndpointReplacementAfterProviderTruthResolved() throws {
+    let coordinate = LocationCoordinate(latitude: 37.33182, longitude: -122.03118)
+    let resolved = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .usb,
+      endpointClass: .direct,
+      generation: 8
+    )
+    coordinator.connectionReady(resolved)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+    let receipt = LocationInjectionReceipt(
+      requestID: request.id,
+      session: UUID(),
+      coordinate: coordinate,
+      transport: .usb,
+      actualChannel: .nativeRSD,
+      endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 8,
+      completedAt: Date(),
+      outcome: .applied
+    )
+
+    XCTAssertEqual(coordinator.accept(receipt), .requestMismatch)
+    XCTAssertEqual(coordinator.state.connection, .ready(identity: resolved))
+    XCTAssertNil(coordinator.state.lastAcknowledgedReceipt)
+  }
+
+  func testAdoptHeldSessionRestoresAcknowledgedTruthWithoutMovement() {
+    let coordinate = LocationCoordinate(latitude: 37.33182, longitude: -122.03118)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .usb,
+      endpointClass: .remoteServiceDiscovery,
+      generation: 9
+    )
+    let receipt = LocationInjectionReceipt(
+      requestID: UUID(),
+      session: UUID(),
+      coordinate: coordinate,
+      transport: .usb,
+      actualChannel: .explicitRSD,
+      endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 9,
+      completedAt: Date(),
+      outcome: .applied
+    )
+
+    let error = coordinator.adoptHeldSession(identity: identity, receipt: receipt)
+
+    XCTAssertNil(error)
+    XCTAssertEqual(coordinator.state.connection, .ready(identity: identity))
+    XCTAssertEqual(coordinator.state.application, .active(receipt: receipt))
+    XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt, receipt)
+    XCTAssertEqual(coordinator.state.desiredLocation, coordinate)
+    XCTAssertEqual(coordinator.state.movement, .idle)
+  }
 }

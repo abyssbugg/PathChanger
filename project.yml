@@ -28,10 +28,16 @@ targets:
       - path: PathChanger
         excludes:
           - Resources
-    resources:
       - path: PathChanger/Resources
+        buildPhase: resources
       - path: Resources/AppIcon.icns
+        buildPhase: resources
       - path: Resources/PathChanger.entitlements
+        buildPhase: resources
+      - path: requirements-location.lock
+        buildPhase: resources
+      - path: scripts/location_bridge.py
+        buildPhase: resources
     dependencies:
       - package: Sparkle
         product: Sparkle

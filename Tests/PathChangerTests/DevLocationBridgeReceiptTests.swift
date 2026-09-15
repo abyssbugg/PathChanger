@@ -35,6 +35,134 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertEqual(rsd.generation, afterLoss.generation + 1)
     }
 
+    func testTrackerAdoptsActualAcknowledgedEndpointWithoutAdvancingGeneration() throws {
+        var tracker = LocationSessionGenerationTracker()
+        let provisional = tracker.resolve(
+            stableDeviceID: "device", transport: .usb, endpointClass: .direct
+        )
+        let acknowledgement = try XCTUnwrap(LocationProviderAcknowledgement(
+            requestID: UUID(), sessionGeneration: provisional.generation,
+            physicalTransport: .usb, channel: .nativeRSD,
+            endpointClass: .remoteServiceDiscovery
+        ))
+
+        let adopted = try tracker.adopt(
+            acknowledgement,
+            stableDeviceID: "device",
+            sessionID: provisional.sessionID
+        )
+
+        XCTAssertEqual(adopted, provisional)
+        XCTAssertEqual(
+            tracker.resolve(
+                stableDeviceID: "device", transport: .usb,
+                endpointClass: .remoteServiceDiscovery
+            ),
+            provisional
+        )
+    }
+
+    func testBeginClearInvalidatesOldAcknowledgementAndAdvancesGeneration() throws {
+        var tracker = LocationSessionGenerationTracker()
+        let provisional = tracker.resolve(
+            stableDeviceID: "device-clear",
+            transport: .usb,
+            endpointClass: .direct
+        )
+        let clearing = LocationSessionIdentity(
+            stableDeviceID: "device-clear",
+            transport: .usb,
+            endpointClass: .direct,
+            generation: provisional.generation
+        )
+
+        try tracker.beginClear(clearing)
+        try tracker.completeClear(clearing)
+
+        let stale = LocationProviderAcknowledgement(
+            requestID: UUID(),
+            sessionGeneration: provisional.generation,
+            physicalTransport: .usb,
+            channel: .usbLockdown,
+            endpointClass: .direct
+        )!
+        XCTAssertThrowsError(
+            try tracker.adopt(
+                stale,
+                stableDeviceID: "device-clear",
+                sessionID: provisional.sessionID
+            )
+        )
+
+        let next = tracker.resolve(
+            stableDeviceID: "device-clear",
+            transport: .usb,
+            endpointClass: .direct
+        )
+        XCTAssertEqual(next.generation, provisional.generation + 1)
+    }
+
+    func testFailedClearCanRetrySameAcknowledgedIdentity() throws {
+        var tracker = LocationSessionGenerationTracker()
+        let session = tracker.resolve(
+            stableDeviceID: "device-clear-retry",
+            transport: .usb,
+            endpointClass: .direct
+        )
+        let identity = LocationSessionIdentity(
+            stableDeviceID: "device-clear-retry",
+            transport: .usb,
+            endpointClass: .direct,
+            generation: session.generation
+        )
+
+        try tracker.beginClear(identity)
+        try tracker.beginClear(identity)
+
+        XCTAssertEqual(
+            tracker.resolve(
+                stableDeviceID: identity.stableDeviceID,
+                transport: identity.transport,
+                endpointClass: identity.endpointClass
+            ),
+            session
+        )
+    }
+
+    func testAcknowledgementRouterBuildsReceiptFromActualProviderTruth() throws {
+        let request = LocationApplicationRequest(
+            id: UUID(),
+            target: .init(stableDeviceID: "device", transport: .usb),
+            coordinate: .init(latitude: 37.33182, longitude: -122.03118),
+            mode: .teleport
+        )
+        var tracker = LocationSessionGenerationTracker()
+        let provisional = tracker.resolve(
+            stableDeviceID: "device", transport: .usb, endpointClass: .direct
+        )
+        let acknowledgement = try XCTUnwrap(LocationProviderAcknowledgement(
+            requestID: request.id,
+            sessionGeneration: provisional.generation,
+            physicalTransport: .usb,
+            channel: .nativeRSD,
+            endpointClass: .remoteServiceDiscovery
+        ))
+
+        let receipt = try LocationApplicationAcknowledgementRouter.accept(
+            request: request,
+            provisionalSession: provisional,
+            acknowledgement: acknowledgement,
+            generationTracker: &tracker,
+            completedAt: Date(timeIntervalSince1970: 42)
+        )
+
+        XCTAssertEqual(receipt.actualChannel, .nativeRSD)
+        XCTAssertEqual(receipt.endpointClass, .remoteServiceDiscovery)
+        XCTAssertEqual(receipt.session, provisional.sessionID)
+        XCTAssertEqual(receipt.sessionGeneration, provisional.generation)
+        XCTAssertEqual(receipt.outcome, .applied)
+    }
+
     func testReceiptEchoesAcceptedRequestAndSession() {
         let request = LocationApplicationRequest(
             id: UUID(),
@@ -86,5 +214,28 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertEqual(completed.requestID, queued.requestID)
         XCTAssertEqual(completed.outcome, .applied)
         XCTAssertEqual(LocationBridgeEvent.receipt(completed), .receipt(completed))
+    }
+
+    func testKeepAliveCommandReturnsAfterOwnershipIsRetained() async throws {
+        let bridge = DevLocationBridge(
+            pythonExecutablePath: "/bin/sleep",
+            keepAliveObservationWindow: 0.05
+        )
+        let device = Device(id: "test-device", displayName: "Test Device", connectionType: .usb)
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        let result = try await bridge.runPythonForTesting(
+            arguments: ["30"],
+            device: device,
+            keepAlive: true
+        )
+        let elapsed = startedAt.duration(to: clock.now)
+        let retained = await bridge.hasHeldSimulationProcessForTesting()
+        await bridge.stopHeldSimulation()
+
+        XCTAssertEqual(result, "")
+        XCTAssertTrue(retained)
+        XCTAssertLessThan(elapsed, .seconds(1))
     }
 }

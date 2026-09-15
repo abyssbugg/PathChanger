@@ -10,79 +10,125 @@ import XCTest
 
 final class PythonPathResolverTests: XCTestCase {
 
-    func testCandidateOrderIsHomebrewFirstAndAppleLast() {
-        XCTAssertEqual(PythonPathResolver.candidatePaths, [
-            "/opt/homebrew/bin/python3",
-            "/opt/homebrew/bin/python3.14",
-            "/opt/homebrew/bin/python3.13",
-            "/opt/homebrew/bin/python3.12",
-            "/usr/local/bin/python3",
-            "/usr/local/bin/python3.14",
-            "/usr/local/bin/python3.13",
-            "/usr/local/bin/python3.12",
-            "/usr/bin/python3",
-        ])
+    private var managedPythonPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/PathChanger/runtime/location/bin/python3")
+            .path
     }
 
-    func testResolverChoosesFirstExecutableCandidate() {
-        let executablePaths: Set<String> = [
-            "/opt/homebrew/bin/python3.13",
-            "/usr/local/bin/python3",
+    func testCandidatePolicyUsesOnlyManagedRuntime() {
+        XCTAssertEqual(PythonPathResolver.candidatePaths, [managedPythonPath])
+    }
+
+    func testResolverChoosesManagedRuntime() {
+        XCTAssertEqual(
+            PythonPathResolver.resolvePath { $0 == self.managedPythonPath },
+            managedPythonPath
+        )
+    }
+
+    func testResolverRejectsHomebrewAndAppleInterpreters() {
+        let externalPaths: Set<String> = [
+            "/opt/homebrew/opt/python@3.13/bin/python3.13",
             "/usr/bin/python3",
         ]
-
-        XCTAssertEqual(
-            PythonPathResolver.resolvePath { executablePaths.contains($0) },
-            "/opt/homebrew/bin/python3.13"
-        )
+        XCTAssertNil(PythonPathResolver.resolvePath { externalPaths.contains($0) })
     }
 
-    func testResolverFallsBackToAppleLast() {
-        XCTAssertEqual(
-            PythonPathResolver.resolvePath { $0 == "/usr/bin/python3" },
-            "/usr/bin/python3"
-        )
-    }
-
-    func testResolverReturnsNilWhenNoCandidateIsExecutable() {
+    func testResolverReturnsNilWhenManagedRuntimeIsNotExecutable() {
         XCTAssertNil(PythonPathResolver.resolvePath { _ in false })
     }
 
-    func testHomebrewInstallUsesBreakSystemPackages() {
+    func testManagedInstallUsesOnlyBundledHashLock() {
         let arguments = PythonPathResolver.pymobiledevice3InstallArguments(
-            for: "/opt/homebrew/bin/python3"
+            for: managedPythonPath
         )
-
-        XCTAssertEqual(arguments, [
-            "-m", "pip", "install", "--upgrade", "--break-system-packages", "pymobiledevice3",
-        ])
+        XCTAssertEqual(Array(arguments.prefix(4)), ["-m", "pip", "install", "--require-hashes"])
+        XCTAssertTrue(arguments.contains("-r"))
+        XCTAssertTrue(arguments.last?.hasSuffix("requirements-location.lock") == true)
         XCTAssertFalse(arguments.contains("--user"))
-    }
-
-    func testIntelHomebrewInstallUsesBreakSystemPackages() {
-        let arguments = PythonPathResolver.pymobiledevice3InstallArguments(
-            for: "/usr/local/bin/python3.14"
-        )
-
-        XCTAssertTrue(arguments.contains("--break-system-packages"))
-        XCTAssertFalse(arguments.contains("--user"))
-    }
-
-    func testAppleInstallUsesUserSite() {
-        let arguments = PythonPathResolver.pymobiledevice3InstallArguments(
-            for: "/usr/bin/python3"
-        )
-
-        XCTAssertEqual(arguments, [
-            "-m", "pip", "install", "--upgrade", "--user", "pymobiledevice3",
-        ])
         XCTAssertFalse(arguments.contains("--break-system-packages"))
+        XCTAssertFalse(arguments.contains("--upgrade"))
+        XCTAssertFalse(arguments.contains("pymobiledevice3"))
     }
 
-    func testPolicyContainsNoFrameworkOrPyenvCandidates() {
-        XCTAssertFalse(PythonPathResolver.candidatePaths.contains {
-            $0.contains("Python.framework") || $0.contains(".pyenv")
-        })
+    func testInstallPlannerRejectsExternalInterpreters() {
+        XCTAssertEqual(
+            PythonPathResolver.pymobiledevice3InstallArguments(
+                for: "/opt/homebrew/opt/python@3.13/bin/python3.13"
+            ),
+            []
+        )
+        XCTAssertEqual(
+            PythonPathResolver.pymobiledevice3InstallArguments(for: "/usr/bin/python3"),
+            []
+        )
+    }
+
+    func testFuturePythonVersionsMeetCapabilityFloor() {
+        XCTAssertTrue(PythonPathResolver.isSupportedPythonVersion(major: 3, minor: 14))
+        XCTAssertTrue(PythonPathResolver.isSupportedPythonVersion(major: 4, minor: 0))
+        XCTAssertFalse(PythonPathResolver.isSupportedPythonVersion(major: 3, minor: 12))
+    }
+
+    func testFuturePymobiledeviceVersionIsAcceptedWhenCapabilitiesArePresent() throws {
+        XCTAssertNoThrow(
+            try PythonPathResolver.validatePymobiledevice3Capabilities(
+                version: "99.0.0",
+                available: PythonPathResolver.requiredPymobiledevice3Capabilities
+            )
+        )
+    }
+
+    func testAnyPymobiledeviceVersionIsRejectedWhenCapabilityIsMissing() {
+        var available = PythonPathResolver.requiredPymobiledevice3Capabilities
+        available.remove("preferred_rsd_tunnel")
+
+        XCTAssertThrowsError(
+            try PythonPathResolver.validatePymobiledevice3Capabilities(
+                version: ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion,
+                available: available
+            )
+        ) { error in
+            guard case PythonResolverError.pymobiledevice3CapabilitiesMissing(
+                let version,
+                let missing
+            ) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(version, ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion)
+            XCTAssertEqual(missing, ["preferred_rsd_tunnel"])
+        }
+    }
+
+    func testReleaseSnapshotVersionRemainsDiagnosticOnly() {
+        XCTAssertEqual(ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion, "11.12.5")
+    }
+
+    func testCapabilityProbeUsesTheSameProviderModulesAsLocationBridge() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let resolverSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Core/PythonPathResolver.swift"),
+            encoding: .utf8
+        )
+        let bridgeSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("scripts/location_bridge.py"),
+            encoding: .utf8
+        )
+        let requiredModules = [
+            "pymobiledevice3.services.dvt.instruments.dvt_provider",
+            "pymobiledevice3.remote.rsd_tunnel",
+        ]
+
+        for module in requiredModules {
+            XCTAssertTrue(resolverSource.contains(module), "Resolver probe must import \(module)")
+            XCTAssertTrue(bridgeSource.contains(module), "Bridge must import \(module)")
+        }
+        XCTAssertFalse(resolverSource.contains("pymobiledevice3.services.dvt.dvt_secure_socket_proxy"))
+        XCTAssertFalse(resolverSource.contains("pymobiledevice3.tunneld.server\", \"PreferredRsdTunnel"))
     }
 
     func testPathIsNotEmpty() {

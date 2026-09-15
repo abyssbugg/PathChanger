@@ -114,6 +114,8 @@ final class DeviceStateManager: ObservableObject {
         self.usbFallbackManager = usbFallbackManager ?? USBFallbackManager()
         self.tunnelHealthMonitor = tunnelHealthMonitor ?? TunnelHealthMonitor()
 
+        observeDeviceDiscovery()
+
         guard startBackgroundServices else { return }
 
         observeTunnelState()
@@ -123,6 +125,51 @@ final class DeviceStateManager: ObservableObject {
     }
 
     // MARK: Setup
+
+    private func observeDeviceDiscovery() {
+        deviceManager.$devices
+            .dropFirst()
+            .sink { [weak self] devices in
+                self?.synchronizeDiscoveredDevices(devices)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func synchronizeDiscoveredDevices(_ discoveredDevices: [Device]) {
+        var seenUDIDs = Set<String>()
+        let uniqueDevices = discoveredDevices.filter { device in
+            seenUDIDs.insert(device.id).inserted
+        }
+
+        availableDevices = uniqueDevices
+
+        if let selectedDevice,
+           let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
+            let transportChanged = updated.connectionType != selectedDevice.connectionType
+            self.selectedDevice = updated
+            onDeviceSelected?(updated)
+            if transportChanged && !isResolvingRecoverySession {
+                onLocationSessionLoss?(.endpointReplaced)
+            }
+        } else if let selectedDevice {
+            self.selectedDevice = nil
+            connectionStatus = .disconnected
+            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: selectedDevice.id))
+        } else if let first = availableDevices.first {
+            selectedDevice = first
+            onDeviceSelected?(first)
+        }
+
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
+        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
+
+        connectionStatus = selectedDevice != nil ? .connected : .disconnected
+        if connectionStatus == .connected {
+            reliabilityManager.connectionEstablished()
+        }
+    }
 
     private func observeTunnelState() {
         TunneldManager.shared.$state
@@ -228,45 +275,6 @@ final class DeviceStateManager: ObservableObject {
     /// Refresh available devices from all transports.
     func refreshDevices() async {
         await deviceManager.refreshDevices()
-
-        // Deduplicate by UDID: discovery can report the same device over USB and tunnel.
-        var seenUDIDs = Set<String>()
-        var uniqueDevices: [Device] = []
-
-        for device in deviceManager.devices where !seenUDIDs.contains(device.id) {
-            uniqueDevices.append(device)
-            seenUDIDs.insert(device.id)
-        }
-
-        availableDevices = uniqueDevices
-
-        if let selectedDevice,
-           let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
-            let transportChanged = updated.connectionType != selectedDevice.connectionType
-            self.selectedDevice = updated
-            onDeviceSelected?(updated)
-            if transportChanged && !isResolvingRecoverySession {
-                onLocationSessionLoss?(.endpointReplaced)
-            }
-        } else if let selectedDevice {
-            self.selectedDevice = nil
-            connectionStatus = .disconnected
-            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: selectedDevice.id))
-        } else if let first = availableDevices.first {
-            selectedDevice = first
-            onDeviceSelected?(first)
-        }
-
-        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
-        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
-        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
-        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
-
-        connectionStatus = selectedDevice != nil ? .connected : .disconnected
-
-        if connectionStatus == .connected {
-            reliabilityManager.connectionEstablished()
-        }
     }
 
     /// Poll tunnel and transport availability.

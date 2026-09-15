@@ -10,10 +10,19 @@ enum LocationBridgeEvent: Equatable, Sendable {
 protocol LocationInjecting: Sendable {
     func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt
     func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws
+    func adoptManagedSession(
+        receipt: LocationInjectionReceipt,
+        stableDeviceID: String
+    ) async throws
     func events() async -> AsyncStream<LocationBridgeEvent>
 }
 
 extension LocationInjecting {
+    func adoptManagedSession(
+        receipt: LocationInjectionReceipt,
+        stableDeviceID: String
+    ) async throws {}
+
     func events() async -> AsyncStream<LocationBridgeEvent> {
         AsyncStream { continuation in
             continuation.finish()

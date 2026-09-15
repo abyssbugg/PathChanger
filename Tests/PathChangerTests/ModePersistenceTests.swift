@@ -2,6 +2,35 @@ import XCTest
 @testable import PathChanger
 
 @MainActor
+private final class ControlledRouteDelay {
+    let entered: XCTestExpectation
+    let cancelled: XCTestExpectation
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(entered: XCTestExpectation, cancelled: XCTestExpectation) {
+        self.entered = entered
+        self.cancelled = cancelled
+    }
+
+    func wait() async {
+        let cancelled = cancelled
+        await withTaskCancellationHandler {
+            await withCheckedContinuation {
+                continuation = $0
+                entered.fulfill()
+            }
+        } onCancel: {
+            cancelled.fulfill()
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+@MainActor
 final class ModePersistenceTests: XCTestCase {
     private let first = LocationCoordinate(latitude: 35.67620, longitude: 139.65030)
     private let second = LocationCoordinate(latitude: 35.67621, longitude: 139.65031)
@@ -10,12 +39,13 @@ final class ModePersistenceTests: XCTestCase {
     private func makeRouteState(
         injector: FakeLocationInjector,
         mode: AppMode,
-        route: [LocationCoordinate]
+        route: [LocationCoordinate],
+        routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { _ in }
     ) -> (AppState, LocationSessionIdentity) {
         let state = AppState(
             startBackgroundServices: false,
             locationInjector: injector,
-            routeDelay: { _ in }
+            routeDelay: routeDelay
         )
         state.selectedDevice = Device(id: "route-device", displayName: "Route Device", connectionType: .usb)
         state.isTunneldRunning = true
@@ -125,6 +155,360 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
     }
 
+
+    func testClearWaitsForPendingRouteApplicationBeforeClearingAdapter() async {
+        let fake = FakeLocationInjector()
+        let cancelled = expectation(description: "Pending delivery receives cancellation")
+        await fake.setApplicationCancellationObserver { cancelled.fulfill() }
+        let (state, session) = makeRouteState(
+            injector: fake,
+            mode: .twospot,
+            route: [first, second]
+        )
+        let playback = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+        let callsBeforeCompletion = await fake.calls()
+        XCTAssertFalse(callsBeforeCompletion.contains {
+            if case .clear = $0 { return true }
+            return false
+        }, "Clear must wait for already-dispatched delivery to finish")
+        await state.startSimulation()
+        let callsAfterAnotherMove = await fake.calls()
+        XCTAssertEqual(callsAfterAnotherMove, callsBeforeCompletion,
+                       "Move must not start another application during Clear")
+
+        await fake.releaseNextApplication(session: session)
+        await clearing.value
+        await playback.value
+
+        XCTAssertNil(state.currentLocation)
+        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 1)
+        XCTAssertEqual(calls.filter {
+            if case .clear = $0 { return true }
+            return false
+        }.count, 1)
+    }
+
+    func testClearJoinsRouteDelayAndCoalescesConcurrentClearRequests() async {
+        let fake = FakeLocationInjector()
+        let entered = expectation(description: "Route delay entered")
+        let cancelled = expectation(description: "Route delay cancelled")
+        let delay = ControlledRouteDelay(entered: entered, cancelled: cancelled)
+        let (state, session) = makeRouteState(
+            injector: fake,
+            mode: .twospot,
+            route: [first, second],
+            routeDelay: { _ in await delay.wait() }
+        )
+        let playback = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await fulfillment(of: [entered], timeout: 1)
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+        let callsBeforeRelease = await fake.calls()
+        XCTAssertFalse(callsBeforeRelease.contains {
+            if case .clear = $0 { return true }
+            return false
+        })
+        let duplicateStarted = expectation(description: "Duplicate Clear started")
+        let duplicateClear = Task {
+            duplicateStarted.fulfill()
+            await state.clearLocation()
+        }
+        await fulfillment(of: [duplicateStarted], timeout: 1)
+        delay.release()
+        await clearing.value
+        await duplicateClear.value
+        await playback.value
+
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 1, "The cancelled route must not apply its next waypoint")
+        XCTAssertEqual(calls.filter {
+            if case .clear = $0 { return true }
+            return false
+        }.count, 1, "Concurrent Clear callers must share the same reset")
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
+    }
+
+    func testClearWaitsForJoystickStartupAndPreventsLateWorkerCreation() async {
+        let fake = FakeLocationInjector()
+        let cancelled = expectation(description: "Joystick startup cancelled")
+        await fake.setApplicationCancellationObserver { cancelled.fulfill() }
+        let (state, session) = makeJoystickState(injector: fake)
+        let startup = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+        let beforeCompletion = await fake.calls()
+        XCTAssertFalse(beforeCompletion.contains {
+            if case .clear = $0 { return true }
+            return false
+        })
+        await fake.releaseNextApplication(session: session)
+        await clearing.value
+        await startup.value
+
+        XCTAssertNil(state.currentLocation)
+        XCTAssertEqual(state.joystickDirection, .zero)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 1)
+    }
+
+    func testClearPublishesBusyStoppedStateWhileApplicationDrains() async {
+        let fake = FakeLocationInjector()
+        let cancelled = expectation(description: "Pending joystick update cancelled")
+        await fake.setApplicationCancellationObserver { cancelled.fulfill() }
+        let (state, session) = makeJoystickState(injector: fake)
+        let startup = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await startup.value
+        await fake.waitUntilApplicationPending()
+        let receipt = state.locationSessionCoordinator.state.lastAcknowledgedReceipt
+        let desired = state.locationSessionCoordinator.state.desiredLocation
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+
+        XCTAssertEqual(
+            state.locationPresentation.applicationLabel,
+            NSLocalizedString("location.status.application.clearing", comment: "")
+        )
+        XCTAssertFalse(state.locationPresentation.isMovementActive)
+        XCTAssertFalse(state.locationPresentation.canApply)
+        XCTAssertFalse(state.locationPresentation.canMove)
+        XCTAssertFalse(state.locationPresentation.canClear)
+        XCTAssertFalse(state.canStartSimulation)
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, desired)
+        let calls = await fake.calls()
+        XCTAssertFalse(calls.contains {
+            if case .clear = $0 { return true }
+            return false
+        })
+
+        await fake.releaseNextApplication(session: session)
+        await clearing.value
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertFalse(state.locationPresentation.canClear)
+    }
+
+    func testFailedClearStopsJoystickButPreservesAcknowledgedCoordinate() async {
+        let fake = FakeLocationInjector()
+        let cancelled = expectation(description: "Joystick movement cancelled")
+        await fake.setApplicationCancellationObserver { cancelled.fulfill() }
+        let (state, session) = makeJoystickState(injector: fake)
+        let startup = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await startup.value
+        await fake.waitUntilApplicationPending()
+        let acknowledged = state.locationSessionCoordinator.state.lastAcknowledgedReceipt
+        await fake.setShouldFailClear(true)
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+        await fake.releaseNextApplication(session: session)
+        await clearing.value
+
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, acknowledged)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
+        XCTAssertEqual(state.joystickDirection, .zero)
+        guard case .failed = state.locationSessionCoordinator.state.application else {
+            return XCTFail("Failed Clear must not report Idle or Active")
+        }
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 2)
+    }
+
+    func testClearPreservesRecoveryTargetAfterLateReceipt() async {
+        await verifyClearDuringRecovery(completesWithCancellation: false)
+    }
+
+    func testClearPreservesRecoveryTargetAfterCancellationError() async {
+        await verifyClearDuringRecovery(completesWithCancellation: true)
+    }
+
+    func testFailedRecoveryClearCanRetryAfterLateReceipt() async {
+        await verifyClearDuringRecovery(completesWithCancellation: false, retryAfterFailure: true)
+    }
+
+    func testFailedRecoveryClearCanRetryAfterCancellationError() async {
+        await verifyClearDuringRecovery(completesWithCancellation: true, retryAfterFailure: true)
+    }
+
+    private func verifyClearDuringRecovery(
+        completesWithCancellation: Bool,
+        retryAfterFailure: Bool = false
+    ) async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeRouteState(
+            injector: fake,
+            mode: .teleport,
+            route: [first]
+        )
+        let initialApplication = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await initialApplication.value
+        state.submitLocationBridgeEvent(.sessionLost(session, reason: "Test transport loss"))
+        let recoveredSession = LocationSessionIdentity(
+            stableDeviceID: session.stableDeviceID,
+            transport: session.transport,
+            endpointClass: session.endpointClass,
+            generation: session.generation + 1
+        )
+        let cancelled = expectation(description: "Recovery receives cancellation")
+        await fake.setApplicationCancellationObserver { cancelled.fulfill() }
+        state.startLocationRecovery(
+            strategy: ReconnectionStrategy(
+                maxAttempts: 1, initialDelaySeconds: 0, maxDelaySeconds: 0,
+                backoffMultiplier: 1, jitterFactor: 0
+            ),
+            establishSession: { _, _ in recoveredSession }
+        )
+        await fake.waitUntilApplicationPending()
+        await fake.setShouldFailClear(retryAfterFailure)
+
+        let clearing = Task { await state.clearLocation() }
+        await fulfillment(of: [cancelled], timeout: 1)
+        let beforeCompletion = await fake.calls()
+        XCTAssertFalse(beforeCompletion.contains {
+            if case .clear = $0 { return true }
+            return false
+        })
+        if completesWithCancellation {
+            await fake.cancelNextApplication()
+        } else {
+            await fake.releaseNextApplication(session: recoveredSession)
+        }
+        await clearing.value
+
+        if retryAfterFailure {
+            XCTAssertEqual(state.currentLocation, first)
+            XCTAssertNotNil(state.locationSessionCoordinator.state.desiredLocation)
+            XCTAssertNotNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+            XCTAssertFalse(state.locationSessionCoordinator.state.connection.isReady)
+            XCTAssertTrue(state.locationPresentation.canClear,
+                          "Failed Clear must retain an explicit retry target without readiness")
+            await fake.setShouldFailClear(false)
+            await state.clearLocation()
+        }
+        let calls = await fake.calls()
+        let clearedSessions = calls.compactMap { call -> LocationSessionIdentity? in
+            if case .clear(_, let session) = call { return session }
+            return nil
+        }
+        let expectedSessions = Array(repeating: recoveredSession, count: retryAfterFailure ? 2 : 1)
+        XCTAssertEqual(clearedSessions, expectedSessions,
+                       "Recovery cancellation must not erase the explicit Clear target")
+        XCTAssertEqual(calls.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 2)
+        XCTAssertNil(state.currentLocation)
+        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertFalse(state.locationSessionCoordinator.state.connection.isReady,
+                       "Clearing a retained target must not invent connection readiness")
+        XCTAssertFalse(state.locationPresentation.canClear)
+    }
+
+    func testUnresolvedClearBlocksNewDeviceApplicationUntilRetrySucceeds() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeRouteState(
+            injector: fake, mode: .teleport, route: [first]
+        )
+        let initial = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await initial.value
+        await fake.setShouldFailClear(true)
+        await state.clearLocation()
+
+        state.selectDevice(Device(id: "second-device", displayName: "Second Device", connectionType: .usb))
+        state.stageLocation(second, for: .teleport)
+        XCTAssertFalse(state.canStartSimulation)
+        XCTAssertFalse(state.locationPresentation.canApply)
+        XCTAssertFalse(state.locationPresentation.canMove)
+        XCTAssertTrue(state.locationPresentation.canClear)
+        let unexpectedApplication = expectation(description: "No application while reset is unresolved")
+        unexpectedApplication.isInverted = true
+        await fake.setApplicationObserver { unexpectedApplication.fulfill() }
+        let attemptedMove = Task { await state.startSimulation() }
+        await fulfillment(of: [unexpectedApplication], timeout: 0.1)
+        attemptedMove.cancel()
+        if await fake.pendingApplicationCount() > 0 {
+            await fake.failNextApplication(code: "Test cleanup")
+        }
+        await attemptedMove.value
+        await fake.setApplicationObserver(nil)
+        let beforeRetry = await fake.calls()
+        XCTAssertEqual(beforeRetry.filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count, 1)
+
+        await fake.setShouldFailClear(false)
+        await state.clearLocation()
+        let clearedSessions = await fake.calls().compactMap { call -> LocationSessionIdentity? in
+            if case .clear(_, let session) = call { return session }
+            return nil
+        }
+        XCTAssertEqual(clearedSessions, [session, session])
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.currentLocation)
+
+        state.stageLocation(second, for: .teleport)
+        XCTAssertTrue(state.canStartSimulation)
+        guard case .ready(let currentSession) = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("The newly selected device must retain its ready session")
+        }
+        let newApplication = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: currentSession)
+        await newApplication.value
+        XCTAssertEqual(state.currentLocation, second)
+        guard case .ready(let acknowledgedSession) = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("Provider acknowledgement must promote the provisional session")
+        }
+        XCTAssertEqual(acknowledgedSession.endpointClass, .direct)
+
+        await state.clearLocation()
+        let finalClearedSessions = await fake.calls().compactMap { call -> LocationSessionIdentity? in
+            if case .clear(_, let session) = call { return session }
+            return nil
+        }
+        XCTAssertEqual(finalClearedSessions, [session, session, acknowledgedSession])
+    }
 
     private func makeJoystickState(
         injector: FakeLocationInjector

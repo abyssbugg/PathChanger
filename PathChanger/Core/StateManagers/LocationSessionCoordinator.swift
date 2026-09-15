@@ -134,15 +134,26 @@ final class LocationSessionCoordinator: ObservableObject {
       return .staleGeneration
     }
 
-    guard receipt.transport == currentReadySession.transport,
-          receipt.endpointClass == currentReadySession.endpointClass else {
+    guard receipt.transport == currentReadySession.transport else {
+      return .requestMismatch
+    }
+    guard currentReadySession.endpointClass == .unresolved
+            || receipt.endpointClass == currentReadySession.endpointClass else {
       return .requestMismatch
     }
 
     // Validate outcome
     switch receipt.outcome {
     case .applied:
-      // Only .applied may activate
+      // Only provider acknowledgement may resolve a provisional endpoint.
+      if currentReadySession.endpointClass == .unresolved {
+        self.state.connection = .ready(identity: LocationSessionIdentity(
+          stableDeviceID: currentReadySession.stableDeviceID,
+          transport: currentReadySession.transport,
+          endpointClass: receipt.endpointClass,
+          generation: currentReadySession.generation
+        ))
+      }
       self.state.application = .active(receipt: receipt)
       self.state.lastAcknowledgedReceipt = receipt
       self.pendingRequest = nil
@@ -262,8 +273,12 @@ final class LocationSessionCoordinator: ObservableObject {
   ) async -> LocationSessionTransitionError? {
     guard state.desiredLocation != nil else { return .noDesiredLocation }
     guard let originalSession = previousSession else { return .noReadySession }
+    guard strategy.maxAttempts > 0 else {
+      finishRecoveryFailure(reason: "Recovery exhausted")
+      return .recoveryExhausted
+    }
 
-    for attempt in 1...max(0, strategy.maxAttempts) {
+    for attempt in 1...strategy.maxAttempts {
       if Task.isCancelled {
         finishRecoveryFailure(reason: "Recovery cancelled")
         return .recoveryCancelled
@@ -335,8 +350,40 @@ final class LocationSessionCoordinator: ObservableObject {
     self.state.connection = .reconnecting(previousGeneration: previousSession?.generation, attempt: attempt)
   }
 
+  /// Restore provider-acknowledged held truth after adopting a managed helper.
+  /// Movement engines are never resumed automatically after relaunch.
+  @discardableResult
+  func adoptHeldSession(
+    identity: LocationSessionIdentity,
+    receipt: LocationInjectionReceipt
+  ) -> LocationSessionTransitionError? {
+    guard case .applied = receipt.outcome else { return .receiptNotApplied }
+    guard receipt.sessionGeneration == identity.generation else { return .staleGeneration }
+    guard receipt.transport == identity.transport,
+          receipt.endpointClass == identity.endpointClass else {
+      return .requestMismatch
+    }
+    guard let actualChannel = receipt.actualChannel,
+          actualChannel.isSupported,
+          actualChannel.endpointClass == identity.endpointClass else {
+      return .requestMismatch
+    }
+
+    currentReadySession = identity
+    previousSession = nil
+    pendingRequest = nil
+    selectedMode = .teleport
+    state.connection = .ready(identity: identity)
+    state.desiredLocation = receipt.coordinate
+    state.lastAcknowledgedReceipt = receipt
+    state.application = .active(receipt: receipt)
+    state.movement = .idle
+    return nil
+  }
+
   /// Clear state and target.
-  /// Requires currentReadySession (device/session).
+  /// Uses a target captured before delivery quiescence, or the current ready session.
+  /// A captured target does not restore connection readiness.
   /// Sets clearing phase before awaiting injector.
   /// Snapshots ready session and marks `.clearing`.
   /// Prevents `beginApplication` while clearing with a typed transition error.
@@ -346,8 +393,8 @@ final class LocationSessionCoordinator: ObservableObject {
   /// Connection loss during clear must remain failed/uncertain when clear returns.
   /// On success: sets desiredLocation=nil, lastAcknowledgedReceipt=nil, application=.idle, pending=nil.
   /// On failure: retains desired/ack/connection/movement, sets failed, returns clearFailed.
-  func clear() async -> LocationSessionTransitionError? {
-    guard let currentReadySession else {
+  func clear(targetSession: LocationSessionIdentity? = nil) async -> LocationSessionTransitionError? {
+    guard let currentReadySession = targetSession ?? self.currentReadySession else {
       return .clearUnavailable
     }
 

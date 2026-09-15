@@ -549,6 +549,44 @@ final class RequestQueueManagerSecurityTests: XCTestCase {
         XCTAssertTrue(metrics.isLagging)
     }
 
+    func testRemovingRequestsForDeviceReturnsOnlyMatchingRequestIDs() async {
+        let queue = RequestQueueManager()
+        let firstDevice = Device(
+            id: "device-1",
+            displayName: "First",
+            connectionType: .usb,
+            productVersion: "future"
+        )
+        let secondDevice = Device(
+            id: "device-2",
+            displayName: "Second",
+            connectionType: .wifi,
+            productVersion: "future"
+        )
+        let coordinate = LocationCoordinate(latitude: 35, longitude: 139)
+        let first = QueuedLocationRequest(
+            coordinate: coordinate,
+            device: firstDevice,
+            timestamp: Date(),
+            priority: .normal
+        )
+        let second = QueuedLocationRequest(
+            coordinate: coordinate,
+            device: secondDevice,
+            timestamp: Date(),
+            priority: .normal
+        )
+
+        _ = await queue.enqueue(first)
+        _ = await queue.enqueue(second)
+
+        let removed = await queue.removeRequests(forDeviceID: firstDevice.id)
+
+        let retained = await queue.queuedRequestIDs()
+        XCTAssertEqual(removed, [first.id])
+        XCTAssertEqual(retained, [second.id])
+    }
+
     // MARK: - Queue Processing Strategy Description Tests
 
     func testQueueProcessingStrategyDescriptions() {

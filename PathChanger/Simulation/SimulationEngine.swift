@@ -251,6 +251,11 @@ class RouteMode: SimulationModeProtocol {
 
     var progress: Double {
         guard !interpolatedPoints.isEmpty else { return 0 }
+        // REQ-3: Final route completion reports progress exactly 1.0 while currentIndex remains safe
+        // When inactive (completion), ensure progress is exactly 1.0
+        if !isActive && currentIndex >= interpolatedPoints.count - 1 {
+            return 1.0
+        }
         return Double(currentIndex) / Double(interpolatedPoints.count)
     }
 
@@ -697,6 +702,9 @@ class SimulationEngine: ObservableObject {
                 try await locationBridge.setLocation(coordinate, for: device)
                 currentCoordinate = coordinate
             } catch {
+                // REQ-2: Invalidate/nil repeating timer before transitioning to error state
+                timer?.invalidate()
+                timer = nil
                 state = .error(error.localizedDescription)
             }
         }
