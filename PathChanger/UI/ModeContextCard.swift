@@ -443,7 +443,7 @@ struct ModeContextCard: View {
                     }
                     .buttonStyle(.plain)
                     .font(Organic.body(12, weight: .bold))
-                    .foregroundStyle(Organic.neutral100)
+                    .foregroundStyle(canMove ? Organic.accentInk : Organic.neutral700)
                     .frame(maxWidth: .infinity)
                     .frame(height: 36)
                     .background(canMove ? Organic.accent : Organic.neutral400)

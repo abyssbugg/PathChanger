@@ -554,6 +554,23 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertFalse(source.contains(".frame(maxHeight: 560)"))
     }
 
+    func testModeSelectorIsLabeledAccessibleAndUsesContrastSafeInk() throws {
+        let content = try sourceFile("PathChanger/UI/ContentView.swift")
+        let start = try XCTUnwrap(content.range(of: "private var modePill: some View"))
+        let end = try XCTUnwrap(content.range(of: "private var handleButton"))
+        let selector = String(content[start.lowerBound..<end.lowerBound])
+        let design = try sourceFile("PathChanger/UI/DesignSystem.swift")
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+
+        XCTAssertTrue(selector.contains("Text(mode.localizedLabel)"))
+        XCTAssertTrue(selector.contains("minHeight: 44"))
+        XCTAssertTrue(selector.contains("accessibilityLabel(mode.localizedLabel)"))
+        XCTAssertTrue(selector.contains("accessibilityValue"))
+        XCTAssertTrue(selector.contains("location.savedHistory"))
+        XCTAssertTrue(design.contains("static let accentInk"))
+        XCTAssertTrue(card.contains("foregroundStyle(canMove ? Organic.accentInk : Organic.neutral700)"))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

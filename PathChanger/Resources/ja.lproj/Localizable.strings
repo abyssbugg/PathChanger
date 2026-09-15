@@ -224,6 +224,15 @@
 
 // MARK: - Location Status Domains
 "location.status.domain.connection" = "接続";
+"location.mode.teleport" = "テレポート";
+"location.mode.jump" = "ジャンプ";
+"location.mode.twoSpot" = "2地点";
+"location.mode.multiSpot" = "複数地点";
+"location.mode.joystick" = "ジョイスティック";
+"location.mode.settings" = "設定";
+"location.mode.state.selected" = "選択済み、展開中";
+"location.mode.state.notSelected" = "未選択";
+"location.savedHistory" = "保存済みと履歴";
 "location.status.domain.application" = "位置";
 "location.status.domain.movement" = "移動";
 "location.status.domain.applied" = "適用済み";

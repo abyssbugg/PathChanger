@@ -41,6 +41,8 @@ enum Organic {
     static let shadow = Color(lightHex: 0x2E2B25, darkHex: 0x000000)
 
     static let accent = Color(lightHex: 0xC67139, darkHex: 0xD8834F)
+    /// Dark ink with at least 4.5:1 contrast on every accent button surface.
+    static let accentInk = Color(lightHex: 0x080604, darkHex: 0x080604)
     static let accent100 = Color(lightHex: 0xFFF2EB, darkHex: 0x33231A)
     static let accent200 = Color(lightHex: 0xFFE1D0, darkHex: 0x482D1F)
     static let accent300 = Color(lightHex: 0xFFC6A5, darkHex: 0x6B4028)

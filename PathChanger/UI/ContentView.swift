@@ -69,6 +69,10 @@ enum AppMode: String, CaseIterable, Identifiable {
 }
 
 extension AppMode {
+    var localizedLabel: String {
+        NSLocalizedString(locationAccessibilityIdentifier, comment: "Location mode label")
+    }
+
     var locationAccessibilityIdentifier: String {
         switch self {
         case .teleport: return "location.mode.teleport"
@@ -460,6 +464,7 @@ struct ContentView: View {
     private var modePill: some View {
         HStack(spacing: 3) {
             ForEach(AppMode.mapModes) { mode in
+                let isActive = selectedMode == mode && cardOpen
                 Button {
                     if selectedMode == mode {
                         cardOpen.toggle()
@@ -468,14 +473,27 @@ struct ContentView: View {
                         selectedMode = mode
                     }
                 } label: {
-                    OrganicGlyphView(glyph: mode.glyph, size: 14)
-                        .foregroundStyle(selectedMode == mode && cardOpen ? Organic.neutral100 : Organic.neutral700)
-                        .frame(width: 36, height: 36)
-                        .background(selectedMode == mode && cardOpen ? Organic.accent : Color.clear)
-                        .clipShape(Circle())
+                    HStack(spacing: 5) {
+                        OrganicGlyphView(glyph: mode.glyph, size: 14)
+                        Text(mode.localizedLabel)
+                            .font(Organic.body(10, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isActive ? Organic.accentInk : Organic.neutral700)
+                    .padding(.horizontal, 9)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .background(isActive ? Organic.accent : Color.clear)
+                    .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(mode.description)
+                .accessibilityLabel(mode.localizedLabel)
+                .accessibilityValue(
+                    NSLocalizedString(
+                        isActive ? "location.mode.state.selected" : "location.mode.state.notSelected",
+                        comment: "Location mode selection state"
+                    )
+                )
                 .accessibilityIdentifier(mode.locationAccessibilityIdentifier)
             }
             Rectangle()
@@ -492,12 +510,13 @@ struct ContentView: View {
                 Image(systemName: "calendar")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(savedOpen ? Organic.accent800 : Organic.neutral600)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(savedOpen ? Organic.neutral200 : Color.clear)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .help("Saved & history")
+            .help(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
+            .accessibilityLabel(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
         }
         .padding(5)
         .background(Organic.neutral100)
