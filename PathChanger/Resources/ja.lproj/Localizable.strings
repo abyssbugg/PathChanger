@@ -222,6 +222,12 @@
 "location.status.movement.paused" = "一時停止";
 "location.status.movement.completed" = "完了";
 
+// MARK: - Location Status Domains
+"location.status.domain.connection" = "接続";
+"location.status.domain.application" = "適用";
+"location.status.domain.movement" = "移動";
+"location.status.domain.applied" = "適用済み";
+
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "接続状態";
 "accessibility.location.status.application" = "適用状態";

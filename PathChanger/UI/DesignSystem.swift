@@ -73,8 +73,10 @@ enum Organic {
         .custom(headingName, size: size)
     }
 
+    static let danger = Color(lightHex: 0xB94A43, darkHex: 0xE8877E)
+
     static func body(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .custom(bodyName, size: size).weight(weight)
+        .system(size: size, weight: weight, design: .rounded)
     }
 
     static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
@@ -82,7 +84,7 @@ enum Organic {
     }
 
     static func registerFonts() {
-        let names = ["Caprasimo-Regular.ttf", "Figtree-Variable.ttf"]
+        let names = ["Caprasimo-Regular.ttf"]
         for name in names {
             let urls = [
                 Bundle.main.url(forResource: name, withExtension: nil),

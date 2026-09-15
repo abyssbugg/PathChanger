@@ -224,7 +224,8 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 12) {
                     searchField
-                    livePill
+                    statusCluster
+                    clearLocationButton
                     modePill
                 }
                 .padding(.horizontal, 16)
@@ -345,67 +346,107 @@ struct ContentView: View {
         .frame(maxWidth: 360, alignment: .leading)
     }
 
-    private var livePill: some View {
+    private var statusCluster: some View {
         let status = appState.locationPresentation
-        return HStack(spacing: 10) {
-            statusMetric(
-                status.connectionLabel,
-                localizationKey: "accessibility.location.status.connection",
-                id: "location.status.connection"
-            )
-            statusMetric(
-                status.applicationLabel,
-                localizationKey: "accessibility.location.status.application",
-                id: "location.status.application"
-            )
-            statusMetric(
-                status.movementLabel,
-                localizationKey: "accessibility.location.status.movement",
-                id: "location.status.movement"
-            )
-            statusMetric(
-                status.appliedCoordinateLabel,
-                localizationKey: "accessibility.location.status.coordinate",
-                id: "location.status.coordinate"
-            )
-            Spacer(minLength: 4)
-            Button("Clear") { showClearConfirmation = true }
-                .buttonStyle(.plain)
-                .font(Organic.body(11, weight: .bold))
-                .foregroundStyle(Organic.accent700)
-                .disabled(!status.canClear)
-                .accessibilityIdentifier("location.action.clear")
-                .confirmationDialog(
-                    "Return to real GPS?",
-                    isPresented: $showClearConfirmation,
-                    titleVisibility: .visible
-                ) {
-                    Button("Clear simulated location", role: .destructive) {
-                        Task { await appState.clearLocation() }
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This is the only action that removes the applied location.")
-                }
+        let state = appState.locationSessionCoordinator.state
+        return HStack(spacing: 6) {
+            statusChip(titleKey: "location.status.domain.connection", value: status.connectionLabel,
+                       tone: connectionTone(for: state.connection),
+                       localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
+            statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
+                       tone: applicationTone(for: state.application),
+                       localizationKey: "accessibility.location.status.application", id: "location.status.application")
+            statusChip(titleKey: "location.status.domain.movement", value: status.movementLabel,
+                       tone: movementTone(for: state.movement),
+                       localizationKey: "accessibility.location.status.movement", id: "location.status.movement")
+            if status.appliedCoordinate != nil {
+                statusChip(titleKey: "location.status.domain.applied", value: status.appliedCoordinateLabel,
+                           tone: Organic.sage600,
+                           localizationKey: "accessibility.location.status.coordinate", id: "location.status.coordinate")
+            }
         }
-        .padding(.horizontal, 12)
+        .padding(4)
         .frame(height: 42)
         .background(Organic.neutral100)
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
     }
 
-    private func statusMetric(
-        _ text: String,
+    private var clearLocationButton: some View {
+        let canClear = appState.locationPresentation.canClear
+        return Button("Clear") { showClearConfirmation = true }
+            .buttonStyle(.plain)
+            .font(Organic.body(12, weight: .semibold))
+            .foregroundStyle(canClear ? Organic.accent700 : Organic.neutral600)
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(canClear ? Organic.accent100 : Organic.neutral200)
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(canClear ? Organic.accent400 : Organic.neutral300, lineWidth: 1))
+            .disabled(!canClear)
+            .accessibilityIdentifier("location.action.clear")
+            .confirmationDialog("Return to real GPS?", isPresented: $showClearConfirmation, titleVisibility: .visible) {
+                Button("Clear simulated location", role: .destructive) { Task { await appState.clearLocation() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This is the only action that removes the applied location.")
+            }
+    }
+
+    private func statusChip(
+        titleKey: String,
+        value: String,
+        tone: Color,
         localizationKey: String,
         id: String
     ) -> some View {
-        Text(text)
-            .font(Organic.mono(10, weight: .semibold))
-            .lineLimit(1)
-            .accessibilityIdentifier(id)
-            .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
-            .accessibilityValue(text)
+        HStack(spacing: 6) {
+            Circle().fill(tone).frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(NSLocalizedString(titleKey, comment: "Location status domain"))
+                    .font(Organic.body(8, weight: .semibold))
+                    .foregroundStyle(Organic.neutral600)
+                    .tracking(0.35)
+                Text(value)
+                    .font(Organic.body(10.5, weight: .semibold))
+                    .foregroundStyle(Organic.neutral900)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(maxHeight: .infinity)
+        .background(Organic.neutral200)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
+        .accessibilityValue(value)
+    }
+
+    private func connectionTone(for phase: LocationConnectionPhase) -> Color {
+        switch phase {
+        case .ready: return Organic.sage600
+        case .reconnecting: return Organic.accent
+        case .failed: return Organic.danger
+        case .unavailable: return Organic.neutral500
+        }
+    }
+
+    private func applicationTone(for phase: LocationApplicationPhase) -> Color {
+        switch phase {
+        case .active: return Organic.sage600
+        case .applying, .uncertain, .clearing: return Organic.accent
+        case .lost, .failed: return Organic.danger
+        case .idle: return Organic.neutral500
+        }
+    }
+
+    private func movementTone(for phase: LocationMovementPhase) -> Color {
+        switch phase {
+        case .moving: return Organic.sage600
+        case .paused: return Organic.accent
+        case .idle, .completed: return Organic.neutral500
+        }
     }
 
     private var modePill: some View {

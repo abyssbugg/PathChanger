@@ -495,7 +495,24 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
             XCTAssertTrue(source.contains("localizationKey: \"accessibility.location.status.\(metric)\""), metric)
         }
         XCTAssertTrue(source.contains(".accessibilityLabel(NSLocalizedString(localizationKey"))
-        XCTAssertTrue(source.contains(".accessibilityValue(text)"))
+        XCTAssertTrue(source.contains(".accessibilityValue(value)"))
+    }
+
+    func testStatusChromeUsesNativeTypographyAndSeparatedDomains() throws {
+        let design = try sourceFile("PathChanger/UI/DesignSystem.swift")
+        let content = try sourceFile("PathChanger/UI/ContentView.swift")
+        let chrome = try sourceFile("PathChanger/UI/OrganicChrome.swift")
+
+        XCTAssertTrue(design.contains(".system(size: size, weight: weight, design: .rounded)"))
+        XCTAssertFalse(design.contains(".custom(bodyName, size: size).weight(weight)"))
+        XCTAssertTrue(content.contains(".frame(maxWidth: 360"))
+        XCTAssertTrue(content.contains("private var statusCluster: some View"))
+        XCTAssertTrue(content.contains("private var clearLocationButton: some View"))
+        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.connection\""))
+        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.application\""))
+        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.movement\""))
+        XCTAssertFalse(chrome.contains("Circle().fill(Color(hex: 0xE8695E))"))
+        XCTAssertTrue(chrome.contains(".frame(height: 56)"))
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

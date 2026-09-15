@@ -24,12 +24,8 @@ struct OrganicTitleBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 7) {
-                Circle().fill(Color(hex: 0xE8695E)).frame(width: 11, height: 11)
-                Circle().fill(Color(hex: 0xE0AC3C)).frame(width: 11, height: 11)
-                Circle().fill(Color(hex: 0x5AAB52)).frame(width: 11, height: 11)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
 
             HStack(spacing: 10) {
                 deviceCluster
@@ -66,7 +62,7 @@ struct OrganicTitleBar: View {
             .padding(.trailing, 40)
         }
         .padding(.horizontal, 14)
-        .frame(height: 48)
+        .frame(height: 56)
         .background(Organic.surface)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Organic.neutral400).frame(height: 1)

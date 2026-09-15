@@ -222,6 +222,12 @@
 "location.status.movement.paused" = "Paused";
 "location.status.movement.completed" = "Completed";
 
+// MARK: - Location Status Domains
+"location.status.domain.connection" = "Connection";
+"location.status.domain.application" = "Application";
+"location.status.domain.movement" = "Movement";
+"location.status.domain.applied" = "Applied";
+
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "Connection status";
 "accessibility.location.status.application" = "Application status";
