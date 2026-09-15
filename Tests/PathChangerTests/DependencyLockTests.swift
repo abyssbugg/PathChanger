@@ -112,6 +112,19 @@ final class DependencyLockTests: XCTestCase {
         }
     }
 
+    func testBundleBuilderIsArtifactOnlyAndHonorsOutputRoot() throws {
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("build-app-bundle.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("APP_BUNDLE_BUILD_ROOT=\"${APP_BUNDLE_BUILD_ROOT:-build}\""))
+        XCTAssertTrue(source.contains("APP_DIR=\"$APP_BUNDLE_BUILD_ROOT/$APP_BUNDLE_NAME\""))
+        XCTAssertFalse(source.contains("/Applications/PathChanger.app"))
+        XCTAssertFalse(source.contains("FlowDeck/DerivedData"))
+        XCTAssertFalse(source.contains("/private/tmp"))
+        XCTAssertFalse(source.contains("lsregister"))
+    }
+
     func testLocationLockIsPackagedByEveryAppBuildPath() throws {
         let project = try String(
             contentsOf: repositoryRoot.appendingPathComponent("project.yml"),
