@@ -460,7 +460,7 @@ class TunneldManager: ObservableObject {
             break
 
         case .terminateProcesses:
-            killTrackedTunnelProcesses()
+            terminateOwnedTunnelProcess()
 
         case .parseRsdInfo:
             await parseRsdInfo()
@@ -720,10 +720,8 @@ class TunneldManager: ObservableObject {
         monitorTask?.cancel()
         monitorTask = nil
 
-        // Kill tracked tunnel processes (security hardened - PID-based only)
-        killTrackedTunnelProcesses()
-
-        tunneldProcess?.terminate()
+        // Terminate only the concrete Process instance launched by this manager.
+        terminateOwnedTunnelProcess()
         tunneldProcess = nil
         outputPipe = nil
         errorPipe = nil
@@ -1117,32 +1115,35 @@ class TunneldManager: ObservableObject {
 
     // MARK: - Process Management (Security Hardened)
 
-    /// Kill tracked tunnel processes safely using PIDs only
-    /// Does NOT use pattern matching to avoid affecting other processes
-    ///
-    /// Security Features:
-    /// - Only terminates PIDs tracked by state machine
-    /// - Verifies process ownership before termination
-    /// - Uses graceful SIGTERM before forced SIGKILL
-    /// - Does NOT kill system services (e.g., usbmuxd)
-    private func killTrackedTunnelProcesses() {
-        let trackedPids = Array(stateMachine.currentContext.activeProcessIds).sorted()
-        Logger.debug("[SECURITY] Terminating \(trackedPids.count) tracked tunnel processes", category: .security)
-
-        guard !trackedPids.isEmpty else {
-            Logger.debug("[SECURITY] No tracked processes to terminate", category: .security)
+    /// Terminate only the concrete Process instance launched by this manager.
+    /// Read-only pgrep adoption never populates this property and cannot be killed here.
+    private func terminateOwnedTunnelProcess() {
+        guard let process = tunneldProcess else {
+            Logger.debug("[SECURITY] No owned tunnel process to terminate", category: .security)
             return
         }
 
-        for pid in trackedPids where pid > 1 {
-            if kill(pid, SIGTERM) != 0 && errno != ESRCH {
-                let message = String(cString: strerror(errno))
-                lastError = "Failed to stop tracked tunnel process \(pid): \(message)"
-                Logger.error("Tracked tunnel stop failed for PID \(pid): \(message)", category: .security)
-            }
+        let pid = process.processIdentifier
+        guard pid > 1 else {
+            lastError = "Refusing to terminate invalid owned tunnel PID \(pid)"
+            Logger.error(lastError ?? "Invalid tunnel PID", category: .security)
+            return
         }
 
-        Logger.debug("[SECURITY] Process cleanup complete", category: .security)
+        process.terminate()
+        Task { @MainActor [weak self, process] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard process.isRunning else { return }
+
+            if kill(pid, SIGKILL) != 0 && errno != ESRCH {
+                let message = String(cString: strerror(errno))
+                self?.lastError = "Failed to force-stop owned tunnel process \(pid): \(message)"
+                Logger.error(
+                    "Owned tunnel force-stop failed for PID \(pid): \(message)",
+                    category: .security
+                )
+            }
+        }
     }
 
     /// Check if a process is still running

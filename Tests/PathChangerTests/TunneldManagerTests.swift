@@ -472,7 +472,11 @@ final class TunneldManagerTests: XCTestCase {
             contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
             encoding: .utf8
         )
-        guard let start = source.range(of: "Task { @MainActor [weak self"),
+        guard let function = source.range(of: "private func applicationShouldTerminateOnMainActor"),
+              let start = source.range(
+                of: "Task { @MainActor [weak self",
+                range: function.lowerBound..<source.endIndex
+              ),
               let end = source.range(
                 of: "return .terminateLater",
                 range: start.lowerBound..<source.endIndex
@@ -548,24 +552,32 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .idle)
     }
 
-    func testSystemServiceProtection() {
-        // Validate that system services like usbmuxd are protected
-        // The new implementation should NOT kill system services
+    func testSystemServiceProtection() throws {
+        let source = try tunneldManagerSource()
 
-        // usbmuxd process pattern should NOT be targeted
-        // This is validated by not having pkill -f "usbmuxd" in the code
-
-        // Note: We can't directly test the private method, but we ensure
-        // the behavior is correct through integration testing
-        XCTAssertTrue(true, "System service protection implemented")
+        XCTAssertTrue(source.contains("guard let process = tunneldProcess"))
+        XCTAssertFalse(source.contains("for pid in trackedPids"))
+        XCTAssertFalse(source.contains("pkill"))
     }
 
-    func testGracefulTerminationStrategy() {
-        // Verify SIGTERM → SIGKILL strategy is documented
-        // The implementation uses SIGTERM (-15) first, then SIGKILL (-9)
+    func testGracefulTerminationStrategy() throws {
+        let source = try tunneldManagerSource()
 
-        // This test validates the security-hardened approach
-        // by ensuring the strategy is implemented correctly
-        XCTAssertTrue(true, "Graceful termination strategy implemented")
+        XCTAssertTrue(source.contains("process.terminate()"))
+        XCTAssertTrue(source.contains("Task { @MainActor"))
+        XCTAssertTrue(source.contains("SIGKILL"))
+        XCTAssertTrue(source.contains("200_000_000"))
+    }
+
+    private func tunneldManagerSource() throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: repositoryRoot
+                .appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
+            encoding: .utf8
+        )
     }
 }
