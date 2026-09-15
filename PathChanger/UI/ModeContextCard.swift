@@ -33,7 +33,7 @@ struct ModeContextCard: View {
                     if mode == .teleport {
                         coordBlock
                     }
-                    if mode.showsMotion {
+                    if showsTravelMotion {
                         motionBlock
                     }
                     if mode == .joystick {
@@ -49,7 +49,7 @@ struct ModeContextCard: View {
             footer
         }
         .frame(width: 336)
-        .frame(maxHeight: 560)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Organic.neutral100)
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
         .overlay(
@@ -182,9 +182,25 @@ struct ModeContextCard: View {
     }
 
     private var coordBlock: some View {
-        HStack(spacing: 9) {
-            coordField("LATITUDE", text: $latitudeInput)
-            coordField("LONGITUDE", text: $longitudeInput)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                coordField("LATITUDE", text: $latitudeInput)
+                coordField("LONGITUDE", text: $longitudeInput)
+            }
+            if appState.locationPresentation.desiredCoordinate == nil {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(NSLocalizedString("location.teleport.noTarget", comment: "Teleport empty target title"))
+                            .font(Organic.body(11, weight: .semibold))
+                        Text(NSLocalizedString("location.teleport.targetHint", comment: "Teleport target selection guidance"))
+                            .font(Organic.body(10))
+                    }
+                } icon: {
+                    Image(systemName: "mappin.slash")
+                }
+                .foregroundStyle(Organic.neutral700)
+                .accessibilityIdentifier("location.teleport.emptyTarget")
+            }
         }
         .padding(10)
         .background(Organic.bg)
@@ -435,9 +451,8 @@ struct ModeContextCard: View {
                     .disabled(!canMove)
                     .accessibilityIdentifier(appState.locationPresentation.isMovementActive ? "location.action.stopMovement" : "location.action.apply")
 
-                    Button("Reset Route") {
-                        appState.clearRoute()
-                        if let current = appState.locationPresentation.appliedCoordinate { appState.stageLocation(current, for: mode) }
+                    Button(resetActionLabel) {
+                        resetContext()
                     }
                     .buttonStyle(.plain)
                     .font(Organic.body(12, weight: .bold))
@@ -461,8 +476,33 @@ struct ModeContextCard: View {
         .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
     }
 
+    private var showsTravelMotion: Bool {
+        mode == .jump || mode == .twospot || mode == .route
+    }
+
     private var canResetRoute: Bool {
-        !appState.currentRoute.isEmpty || appState.locationPresentation.desiredCoordinate != nil
+        if mode == .teleport {
+            return appState.locationPresentation.desiredCoordinate != nil
+                || !latitudeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !longitudeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return !appState.currentRoute.isEmpty
+    }
+
+    private var resetActionLabel: String {
+        mode == .teleport
+            ? NSLocalizedString("location.action.clearTarget", comment: "Clear staged Teleport target")
+            : NSLocalizedString("location.action.resetRoute", comment: "Reset route waypoints")
+    }
+
+    private func resetContext() {
+        appState.clearRoute()
+        if mode == .teleport {
+            latitudeInput = ""
+            longitudeInput = ""
+        } else if let current = appState.locationPresentation.appliedCoordinate {
+            appState.stageLocation(current, for: mode)
+        }
     }
 
     private var disabledMoveReason: String? {

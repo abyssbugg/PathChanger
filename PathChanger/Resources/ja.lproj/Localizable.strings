@@ -231,6 +231,10 @@
 "location.action.disabled.notReady" = "選択したデバイスの準備が完了するまでお待ちください。";
 "location.action.disabled.selectLocation" = "地図または検索で位置を選択すると移動を有効にできます。";
 "location.action.disabled.addWaypoints" = "必要なルート地点を追加すると移動を有効にできます。";
+"location.action.clearTarget" = "ターゲットを消去";
+"location.action.resetRoute" = "ルートをリセット";
+"location.teleport.noTarget" = "ターゲットが選択されていません";
+"location.teleport.targetHint" = "検索、地図のクリック、または座標入力で選択します。";
 
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "接続状態";

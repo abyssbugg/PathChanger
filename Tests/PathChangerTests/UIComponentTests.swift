@@ -541,6 +541,19 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(card.contains(".disabled(!canResetRoute)"))
     }
 
+    func testTeleportCardUsesCompactTargetOnlySemantics() throws {
+        let source = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+        XCTAssertTrue(source.contains("private var showsTravelMotion: Bool"))
+        XCTAssertTrue(source.contains("mode == .jump || mode == .twospot || mode == .route"))
+        XCTAssertTrue(source.contains("if showsTravelMotion"))
+        XCTAssertTrue(source.contains("private var resetActionLabel: String"))
+        XCTAssertTrue(source.contains("location.action.clearTarget"))
+        XCTAssertTrue(source.contains("location.teleport.noTarget"))
+        XCTAssertTrue(source.contains("location.teleport.targetHint"))
+        XCTAssertTrue(source.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertFalse(source.contains(".frame(maxHeight: 560)"))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -231,6 +231,10 @@
 "location.action.disabled.notReady" = "Wait for the selected device to become ready.";
 "location.action.disabled.selectLocation" = "Select a location on the map or search to enable Move.";
 "location.action.disabled.addWaypoints" = "Add the required route waypoints to enable Move.";
+"location.action.clearTarget" = "Clear Target";
+"location.action.resetRoute" = "Reset Route";
+"location.teleport.noTarget" = "No target selected";
+"location.teleport.targetHint" = "Search, click the map, or enter coordinates.";
 
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "Connection status";
