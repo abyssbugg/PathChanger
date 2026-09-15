@@ -73,6 +73,14 @@ struct OrganicTitleBar: View {
         OrganicAppearance.persisted(appearanceRaw)
     }
 
+    private var hasSelectedDevice: Bool {
+        appState.selectedDevice != nil
+    }
+
+    private var deviceCount: Int {
+        max(appState.availableDevices.count, hasSelectedDevice ? 1 : 0)
+    }
+
     private var deviceCluster: some View {
         HStack(spacing: 9) {
             Button { showDeviceMenu.toggle() } label: {
@@ -88,12 +96,12 @@ struct OrganicTitleBar: View {
                             .foregroundStyle(Organic.neutral600)
                             .lineLimit(1)
                     }
-                    Text("\(max(appState.availableDevices.count, appState.selectedDevice == nil ? 0 : 1))")
+                    Text("\(deviceCount)")
                         .font(Organic.mono(10, weight: .bold))
                         .foregroundStyle(Organic.neutral100)
                         .padding(.horizontal, 5)
                         .frame(minWidth: 17, minHeight: 17)
-                        .background(Organic.sage600)
+                        .background(deviceCount == 0 ? Organic.neutral500 : Organic.sage600)
                         .clipShape(Capsule())
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
@@ -165,6 +173,8 @@ struct OrganicTitleBar: View {
             .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(!hasSelectedDevice)
+        .opacity(hasSelectedDevice ? 1 : 0.55)
         .help(connectionHelp)
     }
 
@@ -275,7 +285,7 @@ struct OrganicTitleBar: View {
     private var deviceSubtitle: String {
         let link = transportIsUSB ? "USB-C" : "Wi-Fi"
         guard let device = appState.selectedDevice else {
-            return "No iOS device · \(link)"
+            return "No iOS device"
         }
         return "iOS \(device.iosVersion) · trusted · \(link)"
     }
@@ -297,6 +307,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelDot: Color {
+        if !hasSelectedDevice { return Organic.neutral500 }
         if tunneldManager.isStarting { return Organic.accent600 }
         if tunneldManager.isRunning { return Organic.sage600 }
         if case .error = tunneldManager.state { return Organic.accent600 }
@@ -304,6 +315,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelInk: Color {
+        if !hasSelectedDevice { return Organic.neutral700 }
         if tunneldManager.isRunning { return Organic.sage800 }
         if tunneldManager.isStarting { return Organic.neutral700 }
         if case .error = tunneldManager.state { return Organic.accent800 }
@@ -311,6 +323,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelFill: Color {
+        if !hasSelectedDevice { return Organic.neutral200 }
         if tunneldManager.isRunning { return Organic.sage100 }
         if tunneldManager.isStarting { return Organic.neutral200 }
         if case .error = tunneldManager.state { return Organic.accent100 }
@@ -329,6 +342,7 @@ struct OrganicTitleBar: View {
     }
 
     private var connectionHelp: String {
+        if !hasSelectedDevice { return "Connect a device to enable RemoteXPC tunnel" }
         if tunneldManager.isRunning { return "Stop RemoteXPC tunnel" }
         if case .error = tunneldManager.state { return "Retry RemoteXPC tunnel start" }
         if directTransportReady {

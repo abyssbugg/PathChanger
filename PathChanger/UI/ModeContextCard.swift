@@ -402,53 +402,87 @@ struct ModeContextCard: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            if mode == .joystick {
-                Button("Stop movement") {
-                    appState.disengageJoystick()
-                }
-                .accessibilityIdentifier("location.action.stopMovement")
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .foregroundStyle(Organic.sage800)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(Organic.sage100)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
-            } else {
-                Button(action: onMove) {
-                    HStack(spacing: 6) {
-                        Image(systemName: moveIcon)
-                            .font(.system(size: 11, weight: .bold))
-                        Text(moveLabel)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                if mode == .joystick {
+                    Button("Stop movement") {
+                        appState.disengageJoystick()
                     }
-                }
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .foregroundStyle(Organic.neutral100)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(canMove ? Organic.accent : Organic.neutral400)
-                .clipShape(Capsule())
-                .disabled(!canMove)
-                .accessibilityIdentifier(appState.locationPresentation.isMovementActive ? "location.action.stopMovement" : "location.action.apply")
+                    .accessibilityIdentifier("location.action.stopMovement")
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(Organic.sage800)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(Organic.sage100)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
+                } else {
+                    Button(action: onMove) {
+                        HStack(spacing: 6) {
+                            Image(systemName: moveIcon)
+                                .font(.system(size: 11, weight: .bold))
+                            Text(moveLabel)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(Organic.neutral100)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(canMove ? Organic.accent : Organic.neutral400)
+                    .clipShape(Capsule())
+                    .disabled(!canMove)
+                    .accessibilityIdentifier(appState.locationPresentation.isMovementActive ? "location.action.stopMovement" : "location.action.apply")
 
-                Button("Reset Route") {
-                    appState.clearRoute()
-                    if let current = appState.locationPresentation.appliedCoordinate { appState.stageLocation(current, for: mode) }
+                    Button("Reset Route") {
+                        appState.clearRoute()
+                        if let current = appState.locationPresentation.appliedCoordinate { appState.stageLocation(current, for: mode) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .overlay(Capsule().stroke(Organic.neutral400, lineWidth: 1))
+                    .clipShape(Capsule())
+                    .disabled(!canResetRoute)
+                    .opacity(canResetRoute ? 1 : 0.55)
                 }
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .overlay(Capsule().stroke(Organic.neutral400, lineWidth: 1))
-                .clipShape(Capsule())
+            }
+            if let reason = disabledMoveReason {
+                Label(reason, systemImage: "info.circle")
+                    .font(Organic.body(11, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .accessibilityIdentifier("location.action.disabledReason")
             }
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 12)
         .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
+    }
+
+    private var canResetRoute: Bool {
+        !appState.currentRoute.isEmpty || appState.locationPresentation.desiredCoordinate != nil
+    }
+
+    private var disabledMoveReason: String? {
+        guard !canMove else { return nil }
+        guard appState.selectedDevice != nil else {
+            return NSLocalizedString("location.action.disabled.noDevice", comment: "Move disabled without a device")
+        }
+        guard appState.canStartSimulation else {
+            return NSLocalizedString("location.action.disabled.notReady", comment: "Move disabled while device is not ready")
+        }
+        switch mode {
+        case .teleport:
+            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Teleport needs a target")
+        case .jump, .twospot, .route:
+            return NSLocalizedString("location.action.disabled.addWaypoints", comment: "Route mode needs waypoints")
+        case .joystick:
+            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Joystick needs a starting location")
+        case .settings:
+            return nil
+        }
     }
 
     private var canMove: Bool {

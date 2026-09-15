@@ -224,9 +224,13 @@
 
 // MARK: - Location Status Domains
 "location.status.domain.connection" = "接続";
-"location.status.domain.application" = "適用";
+"location.status.domain.application" = "位置";
 "location.status.domain.movement" = "移動";
 "location.status.domain.applied" = "適用済み";
+"location.action.disabled.noDevice" = "移動を有効にするにはデバイスを接続してください。";
+"location.action.disabled.notReady" = "選択したデバイスの準備が完了するまでお待ちください。";
+"location.action.disabled.selectLocation" = "地図または検索で位置を選択すると移動を有効にできます。";
+"location.action.disabled.addWaypoints" = "必要なルート地点を追加すると移動を有効にできます。";
 
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "接続状態";

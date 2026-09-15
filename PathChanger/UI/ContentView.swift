@@ -346,11 +346,19 @@ struct ContentView: View {
         .frame(maxWidth: 360, alignment: .leading)
     }
 
+    private var displayedConnectionLabel: String {
+        let status = appState.locationPresentation
+        guard appState.selectedDevice == nil, status.appliedCoordinate == nil else {
+            return status.connectionLabel
+        }
+        return NSLocalizedString("location.status.connection.unavailable", comment: "No device connection state")
+    }
+
     private var statusCluster: some View {
         let status = appState.locationPresentation
         let state = appState.locationSessionCoordinator.state
         return HStack(spacing: 6) {
-            statusChip(titleKey: "location.status.domain.connection", value: status.connectionLabel,
+            statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
                        tone: connectionTone(for: state.connection),
                        localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
             statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,

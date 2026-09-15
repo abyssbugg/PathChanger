@@ -515,6 +515,32 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(chrome.contains(".frame(height: 56)"))
     }
 
+    func testNoDeviceChromeDisablesUnavailableActions() throws {
+        let chrome = try sourceFile("PathChanger/UI/OrganicChrome.swift")
+
+        XCTAssertTrue(chrome.contains("private var hasSelectedDevice: Bool"))
+        XCTAssertTrue(chrome.contains(".disabled(!hasSelectedDevice)"))
+        let transportStart = try XCTUnwrap(chrome.range(of: "HStack(spacing: 2)"))
+        let transportSuffix = chrome[transportStart.lowerBound...]
+        let transportEnd = try XCTUnwrap(transportSuffix.range(of: ".padding(.leading, 11)"))
+        let transportBlock = String(transportSuffix[..<transportEnd.lowerBound])
+        XCTAssertFalse(transportBlock.contains(".disabled(!hasSelectedDevice)"))
+        XCTAssertTrue(chrome.contains("deviceCount == 0 ? Organic.neutral500 : Organic.sage600"))
+        XCTAssertTrue(chrome.contains("return \"No iOS device\""))
+    }
+
+    func testNoDeviceStatusAndDisabledMoveGuidanceAreTruthful() throws {
+        let content = try sourceFile("PathChanger/UI/ContentView.swift")
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+        let english = try sourceFile("PathChanger/Resources/en.lproj/Localizable.strings")
+
+        XCTAssertTrue(content.contains("private var displayedConnectionLabel: String"))
+        XCTAssertTrue(english.contains("\"location.status.domain.application\" = \"Location\";"))
+        XCTAssertTrue(card.contains("private var disabledMoveReason: String?"))
+        XCTAssertTrue(card.contains("private var canResetRoute: Bool"))
+        XCTAssertTrue(card.contains(".disabled(!canResetRoute)"))
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

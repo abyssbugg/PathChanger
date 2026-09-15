@@ -224,9 +224,13 @@
 
 // MARK: - Location Status Domains
 "location.status.domain.connection" = "Connection";
-"location.status.domain.application" = "Application";
+"location.status.domain.application" = "Location";
 "location.status.domain.movement" = "Movement";
 "location.status.domain.applied" = "Applied";
+"location.action.disabled.noDevice" = "Connect a device to enable Move.";
+"location.action.disabled.notReady" = "Wait for the selected device to become ready.";
+"location.action.disabled.selectLocation" = "Select a location on the map or search to enable Move.";
+"location.action.disabled.addWaypoints" = "Add the required route waypoints to enable Move.";
 
 // MARK: - Location Status Accessibility Values
 "accessibility.location.status.connection" = "Connection status";
