@@ -108,7 +108,7 @@ struct SettingsView: View {
     // MARK: - Tunnel Section (Multi-Mode Support)
 
     private var tunneldSection: some View {
-        Section("Tunnel (iOS 17+ Device Communication)") {
+        Section("Tunnel (When Required by Device Capabilities)") {
             // Tunnel Mode Picker
             VStack(alignment: .leading, spacing: 8) {
                 Text("Tunnel Mode")

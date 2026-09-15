@@ -2,7 +2,7 @@
 //  TunneldManager.swift
 //  PathChanger
 //
-//  Unified tunnel management supporting multiple connection methods for iOS 17+
+//  Unified tunnel management supporting multiple connection methods for capability-compatible iOS
 //  - USB Mode: lockdown start-tunnel (fastest, requires USB)
 //  - WiFi Mode: remote start-tunnel -t wifi (true wireless, no USB needed)
 //  - Daemon Mode: remote tunneld (background service, auto-discovery)
@@ -28,10 +28,10 @@ enum TunnelStartPolicy {
 
 // MARK: - Tunnel Mode
 
-/// Available tunnel connection modes for iOS 17+ devices.
+/// Available tunnel connection modes for capability-compatible iOS devices.
 ///
 /// `TunnelMode` defines the different methods for establishing a secure tunnel
-/// to an iOS 17+ device. Each mode has different requirements and trade-offs.
+/// to an capability-compatible iOS device. Each mode has different requirements and trade-offs.
 ///
 /// ## Overview
 ///
@@ -211,11 +211,11 @@ enum TunnelStartupWaiter {
 
 // MARK: - Tunneld Manager
 
-/// Manages the pymobiledevice3 tunnel lifecycle for iOS 17+ device communication.
+/// Manages the pymobiledevice3 tunnel lifecycle for capability-compatible iOS device communication.
 ///
 /// `TunneldManager` provides comprehensive tunnel management for establishing
 /// secure connections to iOS devices. It supports multiple connection modes
-/// and handles the complexity of iOS 17+ device communication requirements.
+/// and handles the complexity of capability-compatible iOS device communication requirements.
 ///
 /// ## Overview
 ///

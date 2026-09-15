@@ -353,7 +353,7 @@ actor SessionController {
 /// The device manager provides:
 /// - **Device discovery**: Automatic USB and WiFi device detection
 /// - **Connection management**: Track device connection states
-/// - **Tunnel management**: Monitor and manage secure tunnels for iOS 17+
+/// - **Tunnel management**: Monitor and manage secure tunnels for capability-compatible iOS
 /// - **Caching**: Efficient device info caching to minimize discovery overhead
 ///
 /// ## Getting Started
@@ -393,7 +393,7 @@ actor SessionController {
 ///
 /// ## Tunnel Management
 ///
-/// For iOS 17+ devices, a tunnel is required for location simulation:
+/// For capability-compatible iOS devices, a tunnel is required for location simulation:
 ///
 /// ```swift
 /// if !deviceManager.isTunneldRunning {
@@ -1437,7 +1437,7 @@ class DeviceManager: ObservableObject {
     func connect(to device: Device) async throws {
         connectionState = .connecting
 
-        // Check if tunneld is running for iOS 17+
+        // Check if tunneld is running for capability-compatible iOS
         await checkTunneldStatus()
 
         // For WiFi devices, tunneld must be running

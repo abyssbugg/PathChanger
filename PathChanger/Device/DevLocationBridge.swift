@@ -2,7 +2,7 @@
 //  DevLocationBridge.swift
 //  PathChanger
 //
-//  Bridge to pymobiledevice3 for location injection on iOS 17+
+//  Bridge to pymobiledevice3 for location injection on capability-compatible iOS
 //  Supports both USB (--udid) and WiFi via lockdown tunnel (--rsd)
 //
 
@@ -209,7 +209,7 @@ enum LocationInjectionError: Error, LocalizedError {
         case .invalidCoordinates:
             return "Invalid GPS coordinates. Latitude must be -90 to 90, longitude -180 to 180."
         case .tunneldNotRunning:
-            return "Tunnel is not running. This is required for iOS 17+ location injection."
+            return "The selected provider requires an RSD-capable tunnel, but no usable tunnel is running."
         case .deviceNotFound:
             return "Target device not found or disconnected."
         case .injectionFailed(let reason):
@@ -460,7 +460,7 @@ extension LocationInjectionReceipt {
 
 // MARK: - Dev Location Bridge
 
-/// Bridge to pymobiledevice3 for iOS 17+ location simulation.
+/// Bridge to pymobiledevice3 for capability-compatible iOS location simulation.
 ///
 /// `DevLocationBridge` is the core component for injecting simulated GPS coordinates
 /// onto iOS devices. It uses Apple's DVT (Developer Tools) simulate-location service

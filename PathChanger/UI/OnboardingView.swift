@@ -275,7 +275,7 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Spacer()
 
-            Text("Simulate GPS Locations on iOS 17+ Devices")
+            Text("Capability-Based iOS Location Simulation")
                 .font(.title2)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)

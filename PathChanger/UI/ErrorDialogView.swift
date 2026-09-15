@@ -472,7 +472,7 @@ struct StartTunneldSheet: View {
             Text("Start tunneld")
                 .font(.headline)
 
-            Text("Location injection on iOS 17+ requires tunneld to be running.")
+            Text("The selected provider requires an RSD-capable tunnel to inject location.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -559,7 +559,7 @@ struct ErrorDialogView_Previews: PreviewProvider {
         ErrorDialogView(
             error: ErrorHandler.AppError(
                 type: .device,
-                message: "tunneld is not running. This is required for iOS 17+ location injection.",
+                message: "No usable RSD tunnel is running for the selected provider.",
                 suggestion: "Use Start Tunnel in PathChanger.",
                 timestamp: Date(),
                 isRecoverable: true,

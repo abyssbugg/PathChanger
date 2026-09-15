@@ -12,7 +12,7 @@ PathChanger is a macOS application that enables GPS location spoofing on iOS dev
 - **Route Mode**: Play back GPX routes with configurable speed and looping
 - **Joystick Mode**: Real-time movement control using keyboard or on-screen joystick
 - **Multi-Device Support**: Works with both USB and WiFi-connected devices
-- **iOS 17+ Compatible**: Full support for modern iOS versions via pymobiledevice3
+- **Future-Compatible iOS Support**: Runtime capability probes select supported pymobiledevice3 providers without a hard-coded maximum iOS version
 
 ### Requirements
 

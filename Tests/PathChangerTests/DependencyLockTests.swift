@@ -137,4 +137,39 @@ final class DependencyLockTests: XCTestCase {
         XCTAssertTrue(project.contains("requirements-location.lock"))
         XCTAssertTrue(bundleScript.contains("requirements-location.lock"))
     }
+
+    func testPublicDocumentationDescribesFiveModesAndManagedRuntimeTruthfully() throws {
+        let root = repositoryRoot
+        let readme = try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
+
+        for mode in ["Teleport", "Jump", "Two-Spot", "Multi-Spot", "Joystick"] {
+            XCTAssertTrue(readme.contains(mode), "README must document \(mode)")
+        }
+        XCTAssertTrue(readme.contains("Not release-ready"))
+        XCTAssertFalse(readme.contains("via.placeholder.com"))
+        XCTAssertFalse(readme.contains("python3 -m pip install"))
+        XCTAssertFalse(readme.contains("iOS 17+"))
+    }
+
+    func testDeploymentAndProductTextAvoidsStaleVersionAndPersonalPathClaims() throws {
+        let root = repositoryRoot
+        let paths = [
+            "DEPLOYMENT/README.md",
+            "PathChanger/Documentation.docc/PathChanger.md",
+            "PathChanger/PathChangerApp.swift",
+            "PathChanger/Device/TunneldManager.swift",
+            "PathChanger/Device/DeviceManager.swift",
+            "PathChanger/Device/DevLocationBridge.swift",
+            "PathChanger/UI/ErrorDialogView.swift",
+            "PathChanger/UI/OnboardingView.swift",
+            "PathChanger/UI/SettingsView.swift",
+            "PathChanger/UI/DiagnosticsView.swift",
+        ]
+        for path in paths {
+            let contents = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+            XCTAssertFalse(contents.contains("iOS 17+"), "Stale version ceiling in \(path)")
+            XCTAssertFalse(contents.contains("/Users/shigeo"), "Personal path in \(path)")
+        }
+    }
+
 }

@@ -2,7 +2,7 @@
 //  PathChangerApp.swift
 //  PathChanger
 //
-//  iOS 17+ Location Injection macOS Application
+//  capability-compatible iOS Location Injection macOS Application
 //  Modern Pro UI with full backend integration
 //
 

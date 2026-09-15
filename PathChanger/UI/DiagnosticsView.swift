@@ -324,7 +324,7 @@ struct DiagnosticsView: View {
             return DiagnosticResult(
                 name: "Tunnel Status",
                 status: .failure,
-                message: "Tunnel not running - required for iOS 17+",
+                message: "Tunnel not running - required only by RSD providers",
                 recoveryAction: "Go to Settings and choose Start Tunnel"
             )
         }
