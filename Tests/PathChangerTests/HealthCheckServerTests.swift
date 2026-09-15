@@ -27,10 +27,7 @@ final class HealthCheckResponseTests: XCTestCase {
                 uptime: 3600,
                 state: "running"
             ),
-            devices: HealthCheckResponse.DeviceHealth(
-                count: 1,
-                connectedUDIDs: ["test-udid-123"]
-            ),
+            devices: HealthCheckResponse.DeviceHealth(count: 1),
             lastInjection: "2025-12-11T06:30:00Z",
             version: "1.0.0",
             uptime: 3600,
@@ -53,7 +50,6 @@ final class HealthCheckResponseTests: XCTestCase {
         XCTAssertEqual(decoded.tunnel.uptime, 3600)
         XCTAssertEqual(decoded.tunnel.state, "running")
         XCTAssertEqual(decoded.devices.count, 1)
-        XCTAssertEqual(decoded.devices.connectedUDIDs, ["test-udid-123"])
         XCTAssertEqual(decoded.lastInjection, "2025-12-11T06:30:00Z")
         XCTAssertEqual(decoded.version, "1.0.0")
     }
@@ -79,10 +75,7 @@ final class HealthCheckResponseTests: XCTestCase {
     }
 
     func testDeviceHealthEncoding() throws {
-        let deviceHealth = HealthCheckResponse.DeviceHealth(
-            count: 3,
-            connectedUDIDs: ["udid1", "udid2", "udid3"]
-        )
+        let deviceHealth = HealthCheckResponse.DeviceHealth(count: 3)
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(deviceHealth)
@@ -91,10 +84,6 @@ final class HealthCheckResponseTests: XCTestCase {
         let decoded = try decoder.decode(HealthCheckResponse.DeviceHealth.self, from: data)
 
         XCTAssertEqual(decoded.count, 3)
-        XCTAssertEqual(decoded.connectedUDIDs.count, 3)
-        XCTAssertTrue(decoded.connectedUDIDs.contains("udid1"))
-        XCTAssertTrue(decoded.connectedUDIDs.contains("udid2"))
-        XCTAssertTrue(decoded.connectedUDIDs.contains("udid3"))
     }
 }
 
@@ -158,21 +147,18 @@ final class HealthCheckServerTests: XCTestCase {
         server.getTunnelState = { .running }
         server.getActiveMode = { .usb }
         server.getDeviceCount = { 2 }
-        server.getDeviceUDIDs = { ["udid1", "udid2"] }
         server.getLastInjectionTime = { Date() }
 
         // Verify closures are set
         XCTAssertNotNil(server.getTunnelState)
         XCTAssertNotNil(server.getActiveMode)
         XCTAssertNotNil(server.getDeviceCount)
-        XCTAssertNotNil(server.getDeviceUDIDs)
         XCTAssertNotNil(server.getLastInjectionTime)
 
         // Test closure returns
         XCTAssertEqual(server.getTunnelState?(), .running)
         XCTAssertEqual(server.getActiveMode?(), .usb)
         XCTAssertEqual(server.getDeviceCount?(), 2)
-        XCTAssertEqual(server.getDeviceUDIDs?(), ["udid1", "udid2"])
     }
 }
 
@@ -223,5 +209,35 @@ final class TunnelStateDisplayNameTests: XCTestCase {
         XCTAssertTrue(TunnelState.running.isActive)
         XCTAssertFalse(TunnelState.stopping.isActive)
         XCTAssertFalse(TunnelState.error("test").isActive)
+    }
+}
+
+final class HealthCheckSecurityContractTests: XCTestCase {
+    private func source() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: root.appendingPathComponent("PathChanger/Core/HealthCheckServer.swift"),
+            encoding: .utf8
+        )
+    }
+
+    func testListenerIsLoopbackOnlyAndBounded() throws {
+        let source = try source()
+
+        XCTAssertTrue(source.contains("parameters.requiredLocalEndpoint"))
+        XCTAssertTrue(source.contains("127.0.0.1"))
+        XCTAssertTrue(source.contains("maximumRequestBytes"))
+        XCTAssertTrue(source.contains("maximumConcurrentConnections"))
+    }
+
+    func testHealthPayloadAndHeadersDoNotExposeDeviceIdentityOrWildcardCORS() throws {
+        let source = try source()
+
+        XCTAssertFalse(source.contains("connectedUDIDs"))
+        XCTAssertFalse(source.contains("getDeviceUDIDs"))
+        XCTAssertFalse(source.contains("Access-Control-Allow-Origin: *"))
     }
 }

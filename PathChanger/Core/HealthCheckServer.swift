@@ -35,7 +35,6 @@ struct HealthCheckResponse: Codable {
 
     struct DeviceHealth: Codable {
         let count: Int
-        let connectedUDIDs: [String]
     }
 }
 
@@ -51,6 +50,9 @@ enum HealthCheckConfig {
 
     /// Default health check port
     static let defaultPort: UInt16 = 8080
+
+    static let maximumRequestBytes = 16 * 1024
+    static let maximumConcurrentConnections = 8
 }
 
 // MARK: - Health Check Server
@@ -85,7 +87,6 @@ enum HealthCheckConfig {
 ///   },
 ///   "devices": {
 ///     "count": 1,
-///     "connectedUDIDs": ["device-udid"]
 ///   },
 ///   "lastInjection": "2025-12-11T06:30:00Z",
 ///   "version": "1.0.0"
@@ -119,9 +120,6 @@ class HealthCheckServer: ObservableObject {
     /// Closure to get device count
     var getDeviceCount: (() -> Int)?
 
-    /// Closure to get device UDIDs
-    var getDeviceUDIDs: (() -> [String])?
-
     /// Closure to get last injection time
     var getLastInjectionTime: (() -> Date?)?
 
@@ -151,8 +149,13 @@ class HealthCheckServer: ObservableObject {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
 
+        parameters.requiredLocalEndpoint = .hostPort(
+            host: .ipv4(IPv4Address("127.0.0.1")!),
+            port: NWEndpoint.Port(rawValue: port)!
+        )
+
         do {
-            listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+            listener = try NWListener(using: parameters)
         } catch {
             throw HealthCheckError.listenerCreationFailed(error)
         }
@@ -209,6 +212,10 @@ class HealthCheckServer: ObservableObject {
     }
 
     private func handleNewConnection(_ connection: NWConnection) {
+        guard connections.count < HealthCheckConfig.maximumConcurrentConnections else {
+            connection.cancel()
+            return
+        }
         connections.append(connection)
 
         connection.stateUpdateHandler = { [weak self, weak connection] state in
@@ -230,7 +237,7 @@ class HealthCheckServer: ObservableObject {
     }
 
     private func receiveRequest(from connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: HealthCheckConfig.maximumRequestBytes) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -324,8 +331,6 @@ class HealthCheckServer: ObservableObject {
         let tunnelStateName = tunnelState.displayName
 
         let deviceCount = getDeviceCount?() ?? 0
-        let connectedUDIDs = getDeviceUDIDs?() ?? []
-
         let lastInjection = getLastInjectionTime?().map { iso8601String(from: $0) }
 
         let status: HealthCheckResponse.HealthStatus
@@ -347,10 +352,7 @@ class HealthCheckServer: ObservableObject {
                 uptime: isTunnelConnected ? uptime : nil,
                 state: tunnelStateName
             ),
-            devices: HealthCheckResponse.DeviceHealth(
-                count: deviceCount,
-                connectedUDIDs: connectedUDIDs
-            ),
+            devices: HealthCheckResponse.DeviceHealth(count: deviceCount),
             lastInjection: lastInjection,
             version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0",
             uptime: uptime,
@@ -371,7 +373,6 @@ class HealthCheckServer: ObservableObject {
         Content-Type: \(contentType); charset=utf-8\r
         Content-Length: \(contentLength)\r
         Connection: close\r
-        Access-Control-Allow-Origin: *\r
         X-Content-Type-Options: nosniff\r
         \r
         \(body)
