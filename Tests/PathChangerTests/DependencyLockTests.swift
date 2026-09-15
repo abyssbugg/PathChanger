@@ -168,6 +168,9 @@ final class DependencyLockTests: XCTestCase {
         for path in paths {
             let contents = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
             XCTAssertFalse(contents.contains("iOS 17+"), "Stale version ceiling in \(path)")
+            XCTAssertFalse(contents.contains("iOS 17.0 through"), "Stale bounded compatibility range in \(path)")
+            XCTAssertFalse(contents.contains("iOS 18+ Limitations"), "Stale future-version warning in \(path)")
+            XCTAssertFalse(contents.contains("Use iOS 17.6"), "Stale fixed-version recommendation in \(path)")
             XCTAssertFalse(contents.contains("/Users/shigeo"), "Personal path in \(path)")
         }
     }

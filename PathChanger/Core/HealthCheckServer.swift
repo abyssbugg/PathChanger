@@ -236,41 +236,66 @@ class HealthCheckServer: ObservableObject {
         connection.start(queue: queue)
     }
 
-    private func receiveRequest(from connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: HealthCheckConfig.maximumRequestBytes) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
+    private func receiveRequest(from connection: NWConnection, accumulatedData: Data = Data()) {
+        let remainingBytes = HealthCheckConfig.maximumRequestBytes - accumulatedData.count
+        guard remainingBytes > 0 else {
+            sendResponse(
+                buildHTTPResponse(statusCode: 413, statusText: "Payload Too Large", body: "Request headers too large"),
+                to: connection
+            )
+            return
+        }
 
-            if let error = error {
-                Task { @MainActor in
-                    Logger.debug("Health check connection error: \(error.localizedDescription)", category: .network)
-                }
-                return
-            }
-
-            guard let data = data, !data.isEmpty else {
-                if isComplete {
-                    connection.cancel()
-                }
-                return
-            }
-
+        connection.receive(minimumIncompleteLength: 1, maximumLength: remainingBytes) { [weak self] data, _, isComplete, error in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
 
-                self.lastRequestTime = Date()
-                self.requestCount += 1
+                if let error = error {
+                    Logger.debug("Health check connection error: \(error.localizedDescription)", category: .network)
+                    self.finishConnection(connection)
+                    return
+                }
 
-                // Parse HTTP request
-                let request = String(data: data, encoding: .utf8) ?? ""
-                let response = self.handleHTTPRequest(request)
+                var requestData = accumulatedData
+                if let data = data {
+                    requestData.append(data)
+                }
 
-                // Send response
-                let responseData = response.data(using: .utf8) ?? Data()
-                connection.send(content: responseData, completion: .contentProcessed { _ in
-                    connection.cancel()
-                })
+                let headerTerminator = Data("\r\n\r\n".utf8)
+                if requestData.range(of: headerTerminator) != nil {
+                    self.lastRequestTime = Date()
+                    self.requestCount += 1
+
+                    let request = String(data: requestData, encoding: .utf8) ?? ""
+                    self.sendResponse(self.handleHTTPRequest(request), to: connection)
+                    return
+                }
+
+                if isComplete {
+                    self.sendResponse(
+                        self.buildHTTPResponse(statusCode: 400, statusText: "Bad Request", body: "Incomplete request headers"),
+                        to: connection
+                    )
+                    return
+                }
+
+                self.receiveRequest(from: connection, accumulatedData: requestData)
             }
         }
+    }
+
+    private func sendResponse(_ response: String, to connection: NWConnection) {
+        let responseData = response.data(using: .utf8) ?? Data()
+        connection.send(content: responseData, completion: .contentProcessed { [weak self] _ in
+            Task { @MainActor in
+                self?.finishConnection(connection)
+            }
+        })
+    }
+
+    private func finishConnection(_ connection: NWConnection) {
+        connection.cancel()
+        removeConnection(connection)
     }
 
     private func removeConnection(_ connection: NWConnection) {

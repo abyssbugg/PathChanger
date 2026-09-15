@@ -240,4 +240,20 @@ final class HealthCheckSecurityContractTests: XCTestCase {
         XCTAssertFalse(source.contains("getDeviceUDIDs"))
         XCTAssertFalse(source.contains("Access-Control-Allow-Origin: *"))
     }
+
+    func testRequestReceiveAccumulatesHeadersBeforeParsing() throws {
+        let source = try source()
+
+        XCTAssertTrue(source.contains("accumulatedData: Data = Data()"))
+        XCTAssertTrue(source.contains("headerTerminator"))
+        XCTAssertTrue(source.contains("receiveRequest(from: connection, accumulatedData:"))
+    }
+
+    func testConnectionIsRemovedOnlyByTerminalCleanup() throws {
+        let source = try source()
+
+        XCTAssertTrue(source.contains("finishConnection(connection)"))
+        XCTAssertTrue(source.contains("private func finishConnection(_ connection: NWConnection)"))
+        XCTAssertTrue(source.contains("self?.finishConnection(connection)"))
+    }
 }
