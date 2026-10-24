@@ -512,6 +512,9 @@ class DeviceManager: ObservableObject {
            let saved = ConnectionMode(rawValue: raw) {
             connectionMode = saved
         }
+        TunneldManager.shared.directDeviceReachability = { [weak self] udid in
+            self?.isDirectlyReachable(udid) ?? false
+        }
         guard startBackgroundServices else { return }
         setupTunnelStateObserver()
         Task {
@@ -519,6 +522,12 @@ class DeviceManager: ObservableObject {
             await refreshDevices()
             startAutoRefresh()
         }
+    }
+
+    /// Whether live usbmux reports the device over USB or Network — exactly when
+    /// the direct `--udid` DVT path is available (see LocationConnectionArguments.make).
+    func isDirectlyReachable(_ udid: String) -> Bool {
+        usbDirectDeviceIds.contains(udid) || wifiDirectDeviceIds.contains(udid)
     }
 
     // MARK: - Tunnel State Observer (Task 31)

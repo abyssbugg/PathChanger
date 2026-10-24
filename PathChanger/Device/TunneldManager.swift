@@ -1087,6 +1087,11 @@ class TunneldManager: ObservableObject {
         }
     }
 
+    /// Direct usbmux reachability (USB or Network visibility) per device UDID,
+    /// wired by DeviceManager. Directly-reachable devices prefer the `--udid`
+    /// DVT path over the native tunnel's RSD endpoint (see LocationConnectionArguments.make).
+    var directDeviceReachability: (@MainActor (String) -> Bool)?
+
     /// Connection flags for DVT / simulate-location after a tunnel is up.
     func locationConnectionArguments(for deviceId: String) -> [String] {
         let info = getRsdInfo(for: deviceId)
@@ -1094,7 +1099,8 @@ class TunneldManager: ObservableObject {
             deviceId: deviceId,
             isDaemonTunneld: activeMode == .daemon,
             rsdAddress: info?.rsdAddress,
-            rsdPort: info?.rsdPort
+            rsdPort: info?.rsdPort,
+            deviceDirectlyReachable: directDeviceReachability?(deviceId) ?? false
         )
     }
 

@@ -38,6 +38,49 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         )
     }
 
+    func testDirectlyReachableDevicePrefersUdidOverRsd() {
+        // Verified live 2026-10-24 (iOS 27.2 + pymobiledevice3 11.43.1): the native
+        // tunnel's RSD handshake succeeds but its allocated DVT service port is
+        // refused, while the direct --udid path works (pymobiledevice3 self-tunnels
+        // developer commands on iOS 17+). Direct reachability must win over RSD.
+        XCTAssertEqual(
+            LocationConnectionArguments.make(
+                deviceId: "00000000-0000000000000001",
+                isDaemonTunneld: false,
+                rsdAddress: "fddf:4f3f:cd60::1",
+                rsdPort: 52569,
+                deviceDirectlyReachable: true
+            ),
+            ["--udid", "00000000-0000000000000001"]
+        )
+    }
+
+    func testUnreachableDeviceStillUsesRsd() {
+        XCTAssertEqual(
+            LocationConnectionArguments.make(
+                deviceId: "00000000-0000000000000001",
+                isDaemonTunneld: false,
+                rsdAddress: "fddf:4f3f:cd60::1",
+                rsdPort: 52569,
+                deviceDirectlyReachable: false
+            ),
+            ["--rsd", "fddf:4f3f:cd60::1", "52569"]
+        )
+    }
+
+    func testDaemonTunnelStillPreferredWhenDirectlyReachable() {
+        XCTAssertEqual(
+            LocationConnectionArguments.make(
+                deviceId: "00000000-0000000000000001",
+                isDaemonTunneld: true,
+                rsdAddress: "fddf:4f3f:cd60::1",
+                rsdPort: 52569,
+                deviceDirectlyReachable: true
+            ),
+            ["--tunnel", "00000000-0000000000000001"]
+        )
+    }
+
     func testClassifiesDirectAndRemoteConnectionArguments() {
         XCTAssertEqual(
             LocationConnectionArguments.classify(arguments: ["--udid", "device"], physicalTransport: .usb).endpointClass,
