@@ -25,7 +25,7 @@ final class TunneldManagerTests: XCTestCase {
             "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi, deviceId: udid), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native", "--udid", udid,
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
             "-m", "pymobiledevice3", "remote", "tunneld",
@@ -297,7 +297,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testTunnelModeCommands() {
         XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel", "--native"])
-        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "-t", "wifi", "--native"])
+        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "--native"])
         XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
         XCTAssertEqual(TunnelMode.auto.command, [])
     }
@@ -438,7 +438,7 @@ final class TunneldManagerTests: XCTestCase {
             "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native",
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
             "-m", "pymobiledevice3", "remote", "tunneld",

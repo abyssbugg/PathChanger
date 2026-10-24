@@ -79,7 +79,9 @@ enum TunnelMode: String, CaseIterable, Identifiable {
         case .usb:
             return ["lockdown", "start-tunnel", "--native"]
         case .wifi:
-            return ["remote", "start-tunnel", "-t", "wifi", "--native"]
+            // pymobiledevice3 >= 11.4x: --connection-type is mutually exclusive with --native;
+            // the native tunnel piggybacks remotepairingd and selects the device by --udid only.
+            return ["remote", "start-tunnel", "--native"]
         case .daemon:
             return ["remote", "tunneld"]
         }
@@ -508,7 +510,7 @@ class TunneldManager: ObservableObject {
         case .usb:
             base = ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"]
         case .wifi:
-            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native"]
+            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "--native"]
         case .daemon:
             base = ["-m", "pymobiledevice3", "remote", "tunneld"]
         case .auto:

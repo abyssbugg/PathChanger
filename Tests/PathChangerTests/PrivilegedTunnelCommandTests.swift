@@ -11,7 +11,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testAllowedArgumentListsMatchFixedTunnelModes() {
         XCTAssertEqual(PrivilegedTunnelCommand.allowedArgumentLists, [
             ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
-            ["-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native"],
+            ["-m", "pymobiledevice3", "remote", "start-tunnel", "--native"],
             ["-m", "pymobiledevice3", "remote", "tunneld"],
         ])
     }
@@ -21,7 +21,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
             arguments: [
-                "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native",
+                "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
                 "--udid", udid,
             ],
             logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
@@ -37,7 +37,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
             arguments: [
-                "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--native",
+                "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
                 "--udid", "not-a-udid",
             ],
             logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
