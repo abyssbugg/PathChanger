@@ -192,7 +192,8 @@ class DependencyValidator: ObservableObject {
         return pythonBroken || pmd3Issue
     }
 
-    /// Rebuild the deterministic managed runtime from the bundled hash lock.
+    /// Rebuild the managed runtime with the latest pymobiledevice3 (owner policy 2026-10-23:
+    /// rolling-latest, pyenv-first bootstrap, no hash lock; capability probe is the gate).
     func installLatestPymobiledevice3() async {
         validationStatus = .installing
         installProgress = "Preparing the managed location runtime…"
@@ -222,17 +223,9 @@ class DependencyValidator: ObservableObject {
         let stagingRuntime = runtimeParent.appendingPathComponent("location.staging-\(UUID().uuidString)")
         let stagingPython = stagingRuntime.appendingPathComponent("bin/python3")
         let rollbackRuntime = runtimeParent.appendingPathComponent("location.rollback")
-        let lockPath = PythonPathResolver.dependencyLockPath
-
-        guard fileManager.fileExists(atPath: lockPath) else {
-            throw installerError("Bundled requirements-location.lock is missing")
-        }
-        let bootstrapCandidates = [
-            "/opt/homebrew/opt/python@3.13/bin/python3.13",
-            "/usr/local/opt/python@3.13/bin/python3.13",
-        ]
-        guard let bootstrapPython = bootstrapCandidates.first(where: fileManager.isExecutableFile(atPath:)) else {
-            throw installerError("Homebrew Python 3.13 is required to create the managed runtime")
+        guard let bootstrapPython = PythonPathResolver.bootstrapPythonCandidates
+            .first(where: fileManager.isExecutableFile(atPath:)) else {
+            throw installerError("A pyenv-managed or Homebrew Python 3.13+ is required to create the managed runtime")
         }
 
         try fileManager.createDirectory(at: runtimeParent, withIntermediateDirectories: true)
@@ -273,15 +266,15 @@ class DependencyValidator: ObservableObject {
         guard !installArguments.isEmpty else {
             throw installerError("Refusing to install outside the managed staging runtime")
         }
-        installProgress = "Installing hash-locked location dependencies…"
+        installProgress = "Installing the latest location dependencies…"
         output += try await runInstallerCommand(
             executable: stagingPython.path,
             arguments: installArguments,
             timeout: 600
         )
 
-        installProgress = "Verifying exact runtime versions…"
-        let verification = "import importlib.metadata as m, sys; assert sys.version_info[:2] == (3, 13); assert m.version('pymobiledevice3') == '\(ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion)'"
+        installProgress = "Verifying the runtime capability floor…"
+        let verification = "import importlib.metadata as m, sys; assert sys.version_info >= (3, 13); v = m.version('pymobiledevice3'); assert tuple(int(p) for p in v.split('.')[:2]) >= (11, 12), v"
         output += try await runInstallerCommand(
             executable: stagingPython.path,
             arguments: ["-c", verification],

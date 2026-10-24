@@ -129,15 +129,6 @@ else
     echo -e "${YELLOW}⚠ scripts/location_bridge.py not found${NC}"
 fi
 
-# Step 5.65: Copy the exact location dependency lock
-if [ -f "requirements-location.lock" ]; then
-    cp "requirements-location.lock" "$RESOURCES_DIR/requirements-location.lock"
-    echo -e "${GREEN}✓ requirements-location.lock copied${NC}"
-else
-    echo -e "${RED}✗ requirements-location.lock not found${NC}"
-    exit 1
-fi
-
 # Step 5.7: Copy Organic fonts
 echo -e "${BLUE}Step 5.7: Copying Organic fonts...${NC}"
 mkdir -p "$RESOURCES_DIR/Fonts"

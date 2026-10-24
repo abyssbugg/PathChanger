@@ -61,7 +61,7 @@ class OnboardingViewModel: ObservableObject {
     @Published var showCopiedToast = false
 
     private let minPythonVersion = "3.9"
-    private let minPymobiledevice3Version = ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion
+    private let minPymobiledevice3Version = ManagedLocationRuntimeContract.pymobiledevice3MinimumVersion
 
     func nextStep() {
         if let nextStep = OnboardingStep(rawValue: currentStep.rawValue + 1) {

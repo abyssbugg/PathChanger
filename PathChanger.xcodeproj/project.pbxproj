@@ -31,7 +31,6 @@
 		2DE9A02F94F83E3F9C223AD1 /* TestEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76FDA01BFDC637767F7ACA20 /* TestEnvironment.swift */; };
 		2E57354929C5A48ABD1586B4 /* GPXParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C82018B5370288EB8A97BC /* GPXParserTests.swift */; };
 		2F576470E17729B251C1C8B4 /* LocationInjecting.swift in Sources */ = {isa = PBXBuildFile; fileRef = E694EB21161F2604506242C7 /* LocationInjecting.swift */; };
-		31B2FD8B66EE37FEFD9D3952 /* requirements-location.lock in Resources */ = {isa = PBXBuildFile; fileRef = F724BF63B74724EA33E8BD97 /* requirements-location.lock */; };
 		3261A7EA6CA0A691FB4FB1E7 /* ProcessEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C393E96BF361BDCCBAD578B3 /* ProcessEnvironmentTests.swift */; };
 		3E20FE9BA65A334EF17B8324 /* RouteInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94011219CD024F1686B7D39F /* RouteInterpolatorTests.swift */; };
 		3FD11ED2475492BA41285369 /* SimulationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BB7E490DFFCFE40EED55CD /* SimulationTypes.swift */; };
@@ -274,7 +273,6 @@
 		F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSettingsSheet.swift; sourceTree = "<group>"; };
 		F4B045D6AFD74CFC2E34BA0A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimiter.swift; sourceTree = "<group>"; };
-		F724BF63B74724EA33E8BD97 /* requirements-location.lock */ = {isa = PBXFileReference; path = "requirements-location.lock"; sourceTree = "<group>"; };
 		F96180AE641F38182F8704F0 /* PersistentBridgeLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentBridgeLifecycleTests.swift; sourceTree = "<group>"; };
 		FD97D62FEFC2920754C14091 /* MultiDeviceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDeviceCoordinator.swift; sourceTree = "<group>"; };
 		FEB641C434CB5B477C9D5669 /* CloudSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSync.swift; sourceTree = "<group>"; };
@@ -519,7 +517,6 @@
 		E6B042F55107DBA02E95B791 = {
 			isa = PBXGroup;
 			children = (
-				F724BF63B74724EA33E8BD97 /* requirements-location.lock */,
 				376483EA9E60C2E7F9EAC328 /* PathChanger */,
 				3C9593B79D9A94FFD728B222 /* Resources */,
 				C149CB13E760F3AEE46FD4E2 /* scripts */,
@@ -653,7 +650,6 @@
 				9CD5221340AE577072D73FD7 /* Localizable.strings in Resources */,
 				C797A5539BE19A6DB0C94FB4 /* PathChanger.entitlements in Resources */,
 				090E8CB9A7FAD859F8D31712 /* location_bridge.py in Resources */,
-				31B2FD8B66EE37FEFD9D3952 /* requirements-location.lock in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

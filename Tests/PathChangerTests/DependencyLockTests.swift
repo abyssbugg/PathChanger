@@ -10,42 +10,30 @@ final class DependencyLockTests: XCTestCase {
             .deletingLastPathComponent()
     }
 
-    func testLocationInputPinsExactSupportedVersion() throws {
-        let url = repositoryRoot.appendingPathComponent("requirements-location.in")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Missing requirements-location.in")
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        let content = try String(contentsOf: url, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        XCTAssertEqual(content, "pymobiledevice3==11.12.5")
+    func testNoPinnedRequirementArtifactsRemain() throws {
+        for name in ["requirements-location.in", "requirements-location.lock"] {
+            let url = repositoryRoot.appendingPathComponent(name)
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: url.path),
+                "\(name) must not exist: PathChanger tracks rolling-latest pymobiledevice3 (owner policy 2026-10-23), not a pinned snapshot"
+            )
+        }
     }
 
-    func testLocationLockPinsAndHashesEveryDistribution() throws {
-        let url = repositoryRoot.appendingPathComponent("requirements-location.lock")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Missing requirements-location.lock")
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        let content = try String(contentsOf: url, encoding: .utf8)
-        var records: [String] = []
-        var current = ""
-
-        for rawLine in content.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
-            if line.hasPrefix("--"), !line.hasPrefix("--hash=") { continue }
-            current += line.hasSuffix("\\") ? String(line.dropLast()) : line
-            if !line.hasSuffix("\\") {
-                records.append(current)
-                current = ""
-            }
-        }
-
-        XCTAssertTrue(records.contains { $0.hasPrefix("pymobiledevice3==11.12.5") })
-        XCTAssertGreaterThan(records.count, 1, "Expected a complete transitive lock")
-        for record in records {
-            XCTAssertTrue(record.contains("=="), "Unpinned requirement: \(record)")
-            XCTAssertTrue(record.contains("--hash=sha256:"), "Unhashed requirement: \(record)")
-        }
+    func testManagedInstallerTracksRollingLatestPymobiledevice3() throws {
+        let validatorSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Core/DependencyValidator.swift"),
+            encoding: .utf8
+        )
+        let resolverSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Core/PythonPathResolver.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(validatorSource.contains("requirements-location.lock"), "Installer must not depend on a lock snapshot")
+        XCTAssertFalse(validatorSource.contains("--require-hashes"), "Rolling-latest installs are not hash-locked")
+        XCTAssertTrue(validatorSource.contains("bootstrapPythonCandidates"), "Installer must use the resolver's bootstrap candidate policy")
+        XCTAssertTrue(resolverSource.contains(".pyenv"), "Bootstrap candidates must prefer a pyenv-managed interpreter")
+        XCTAssertFalse(resolverSource.contains("--require-hashes"), "Install arguments must not be hash-locked")
     }
 
     @MainActor
@@ -87,7 +75,6 @@ final class DependencyLockTests: XCTestCase {
         XCTAssertEqual(Bundle.main.bundleIdentifier, "com.pathchanger.app")
         let resources = try XCTUnwrap(Bundle.main.resourceURL)
         for relativePath in [
-            "requirements-location.lock",
             "location_bridge.py",
             "en.lproj/Localizable.strings",
             "ja.lproj/Localizable.strings",
@@ -98,7 +85,6 @@ final class DependencyLockTests: XCTestCase {
             )
         }
         for (resource, source) in [
-            ("requirements-location.lock", "requirements-location.lock"),
             ("location_bridge.py", "scripts/location_bridge.py"),
         ] {
             let bundled = resources.appendingPathComponent(resource)
@@ -125,7 +111,7 @@ final class DependencyLockTests: XCTestCase {
         XCTAssertFalse(source.contains("lsregister"))
     }
 
-    func testLocationLockIsPackagedByEveryAppBuildPath() throws {
+    func testNoLockPackagingRemains() throws {
         let project = try String(
             contentsOf: repositoryRoot.appendingPathComponent("project.yml"),
             encoding: .utf8
@@ -134,8 +120,9 @@ final class DependencyLockTests: XCTestCase {
             contentsOf: repositoryRoot.appendingPathComponent("build-app-bundle.sh"),
             encoding: .utf8
         )
-        XCTAssertTrue(project.contains("requirements-location.lock"))
-        XCTAssertTrue(bundleScript.contains("requirements-location.lock"))
+        XCTAssertFalse(project.contains("requirements-location"), "project.yml must not package a requirements snapshot")
+        XCTAssertFalse(bundleScript.contains("requirements-location"), "Bundler must not package a requirements snapshot")
+        XCTAssertTrue(bundleScript.contains("location_bridge.py"), "Bundler must still package the persistent bridge script")
     }
 
     func testPublicDocumentationDescribesFiveModesAndManagedRuntimeTruthfully() throws {

@@ -12,7 +12,10 @@ enum ManagedLocationRuntimeContract {
     static let minimumPythonMajor = 3
     static let minimumPythonMinor = 13
     static let pythonSnapshotVersion = "3.13"
-    static let pymobiledevice3SnapshotVersion = "11.12.5"
+    /// Floor, not a pin: the managed runtime installs rolling-latest pymobiledevice3
+    /// (`pip install -U`); this is the oldest version whose capabilities were last verified.
+    /// Owner policy 2026-10-23 — no exact pins, pyenv is the Python authority.
+    static let pymobiledevice3MinimumVersion = "11.12.5"
 }
 
 /// Errors that can occur during Python path resolution and dependency validation
@@ -45,7 +48,7 @@ enum PythonResolverError: Error, LocalizedError {
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
-            return "Build the managed runtime from the release's requirements-location.lock snapshot"
+            return "Rebuild the managed runtime to install the latest pymobiledevice3"
         case .pymobiledevice3CapabilitiesMissing:
             return "Update PathChanger's reviewed dependency snapshot to a pymobiledevice3 build that provides every required capability"
         case .invalidPythonVersion:
@@ -132,22 +135,38 @@ enum PythonPathResolver {
         return resolved
     }
 
-    static var dependencyLockPath: String {
-        if let bundled = Bundle.main.path(
-            forResource: "requirements-location",
-            ofType: "lock"
-        ) {
-            return bundled
+    /// Bootstrap interpreters used only to *create* the managed runtime venv.
+    /// Policy (owner, 2026-10-23): pyenv is the single Python authority — prefer the newest
+    /// pyenv-managed interpreter meeting the capability floor, then fall back to Homebrew.
+    /// The app itself still executes only the managed runtime, never these interpreters.
+    static func bootstrapPythonCandidates(pyenvRoot: String, homebrewRoots: [String]) -> [String] {
+        let versionsDir = URL(fileURLWithPath: pyenvRoot).appendingPathComponent("versions")
+        let pyenvCandidates = (try? FileManager.default.contentsOfDirectory(atPath: versionsDir.path))?
+            .compactMap { name -> (components: [Int], path: String)? in
+                let parts = name.split(separator: ".").compactMap { Int($0) }
+                guard parts.count >= 2,
+                      isSupportedPythonVersion(major: parts[0], minor: parts[1]) else { return nil }
+                return (parts, versionsDir.appendingPathComponent(name).appendingPathComponent("bin/python3").path)
+            }
+            .sorted { lhs, rhs in
+                for (l, r) in zip(lhs.components, rhs.components) where l != r { return l > r }
+                return lhs.components.count > rhs.components.count
+            }
+            .map(\.path) ?? []
+        let homebrewCandidates = homebrewRoots.flatMap { root in
+            ["\(root)/python@3.13/bin/python3.13", "\(root)/python@3.14/bin/python3.14"]
         }
-        return URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("requirements-location.lock")
-            .path
+        return pyenvCandidates + homebrewCandidates
     }
 
-    /// Build a hash-locked installation command only for the final managed runtime
+    static var bootstrapPythonCandidates: [String] {
+        bootstrapPythonCandidates(
+            pyenvRoot: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pyenv").path,
+            homebrewRoots: ["/opt/homebrew/opt", "/usr/local/opt"]
+        )
+    }
+
+    /// Build a rolling-latest installation command only for the final managed runtime
     /// or a deterministic sibling staging runtime created for atomic replacement.
     static func pymobiledevice3InstallArguments(for pythonPath: String) -> [String] {
         let candidatePython = URL(fileURLWithPath: pythonPath).standardizedFileURL
@@ -160,8 +179,7 @@ enum PythonPathResolver {
             candidatePython.deletingLastPathComponent().lastPathComponent == "bin"
         guard candidatePython == managedPython || isStagingRuntime else { return [] }
         return [
-            "-m", "pip", "install", "--require-hashes",
-            "-r", dependencyLockPath,
+            "-m", "pip", "install", "-U", "pymobiledevice3",
         ]
     }
 

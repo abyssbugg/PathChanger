@@ -39,17 +39,50 @@ final class PythonPathResolverTests: XCTestCase {
         XCTAssertNil(PythonPathResolver.resolvePath { _ in false })
     }
 
-    func testManagedInstallUsesOnlyBundledHashLock() {
+    func testManagedInstallUpgradesToRollingLatestPymobiledevice3() {
         let arguments = PythonPathResolver.pymobiledevice3InstallArguments(
             for: managedPythonPath
         )
-        XCTAssertEqual(Array(arguments.prefix(4)), ["-m", "pip", "install", "--require-hashes"])
-        XCTAssertTrue(arguments.contains("-r"))
-        XCTAssertTrue(arguments.last?.hasSuffix("requirements-location.lock") == true)
+        XCTAssertEqual(arguments, ["-m", "pip", "install", "-U", "pymobiledevice3"])
+        XCTAssertFalse(arguments.contains("--require-hashes"))
+        XCTAssertFalse(arguments.contains("-r"))
         XCTAssertFalse(arguments.contains("--user"))
         XCTAssertFalse(arguments.contains("--break-system-packages"))
-        XCTAssertFalse(arguments.contains("--upgrade"))
-        XCTAssertFalse(arguments.contains("pymobiledevice3"))
+    }
+
+    func testBootstrapCandidatesPreferNewestPyenvInterpreter() throws {
+        let pyenvRoot = try Self.createTemporaryPyenvRoot(versions: ["3.12.11", "3.13.14", "3.14.1"])
+        let candidates = PythonPathResolver.bootstrapPythonCandidates(
+            pyenvRoot: pyenvRoot,
+            homebrewRoots: ["/opt/homebrew/opt"]
+        )
+        XCTAssertEqual(candidates.first, pyenvRoot + "/versions/3.14.1/bin/python3")
+        XCTAssertTrue(candidates.contains("/opt/homebrew/opt/python@3.13/bin/python3.13"))
+
+        let belowFloor = try Self.createTemporaryPyenvRoot(versions: ["3.12.11"])
+        let fallback = PythonPathResolver.bootstrapPythonCandidates(
+            pyenvRoot: belowFloor,
+            homebrewRoots: ["/opt/homebrew/opt"]
+        )
+        XCTAssertTrue(
+            fallback.first?.hasPrefix("/opt/homebrew/opt") == true,
+            "Below-floor pyenv versions must fall back to Homebrew"
+        )
+    }
+
+    private static func createTemporaryPyenvRoot(versions: [String]) throws -> String {
+        let root = NSTemporaryDirectory() + "pyenv-test-\(UUID().uuidString)"
+        for version in versions {
+            try FileManager.default.createDirectory(
+                atPath: root + "/versions/\(version)/bin",
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(
+                atPath: root + "/versions/\(version)/bin/python3",
+                contents: nil
+            )
+        }
+        return root
     }
 
     func testInstallPlannerRejectsExternalInterpreters() {
@@ -86,7 +119,7 @@ final class PythonPathResolverTests: XCTestCase {
 
         XCTAssertThrowsError(
             try PythonPathResolver.validatePymobiledevice3Capabilities(
-                version: ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion,
+                version: ManagedLocationRuntimeContract.pymobiledevice3MinimumVersion,
                 available: available
             )
         ) { error in
@@ -96,13 +129,13 @@ final class PythonPathResolverTests: XCTestCase {
             ) = error else {
                 return XCTFail("Unexpected error: \(error)")
             }
-            XCTAssertEqual(version, ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion)
+            XCTAssertEqual(version, ManagedLocationRuntimeContract.pymobiledevice3MinimumVersion)
             XCTAssertEqual(missing, ["preferred_rsd_tunnel"])
         }
     }
 
-    func testReleaseSnapshotVersionRemainsDiagnosticOnly() {
-        XCTAssertEqual(ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion, "11.12.5")
+    func testPymobiledevice3FloorRemainsDiagnosticOnly() {
+        XCTAssertEqual(ManagedLocationRuntimeContract.pymobiledevice3MinimumVersion, "11.12.5")
     }
 
     func testCapabilityProbeUsesTheSameProviderModulesAsLocationBridge() throws {

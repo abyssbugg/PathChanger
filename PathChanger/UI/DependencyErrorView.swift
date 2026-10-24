@@ -66,7 +66,7 @@ struct DependencyErrorView: View {
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
 
-                        Text("This rebuilds PathChanger's managed Python \(ManagedLocationRuntimeContract.pythonSnapshotVersion) release snapshot with hash-locked pymobiledevice3 \(ManagedLocationRuntimeContract.pymobiledevice3SnapshotVersion). Future compatible runtimes are accepted by capability probe.")
+                        Text("This rebuilds PathChanger's managed Python runtime (pyenv-first bootstrap) with the latest pymobiledevice3. Compatible runtimes are accepted by capability probe.")
                             .font(.system(size: 13, weight: .regular))
                             .foregroundColor(.gray)
 
