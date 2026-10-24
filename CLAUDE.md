@@ -1,10 +1,12 @@
 # PathChanger — Operating Protocol (ALWAYS LOAD)
 
-This file defines **how work is performed on PathChanger**. It is binding for every task in this repository unless a more specific, user-approved governance contract narrows the scope further.
+This file defines **how work is performed on PathChanger**. **`AGENTS.md`** defines **what is true**: project identity, non-negotiable locked decisions, the product model, the docs map, the gotcha ledger, and current open items. **Both files are binding — read them together before acting.** Do not invent conflicting decisions.
+
+This protocol is binding for every task in this repository unless a more specific, user-approved governance contract narrows the scope further.
 
 **CRITICAL: Read this file completely before writing code, changing configuration, running the app, touching a physical device, mutating Git state, or dispatching implementation work.**
 
-`CLAUDE.md` defines project **HOW**. `PRODUCT_REQUIREMENTS.md` defines required product behavior and acceptance outcomes. Accepted governance and evidence define authorized scope and durable decisions. Repository files, Git state, processes, remote state, and fresh tool output establish observed reality. ByteRover provides durable project memory when available. The task tool tracks current work.
+`CLAUDE.md` defines project **HOW**. `PRODUCT_REQUIREMENTS.md` defines required product behavior and acceptance outcomes. Accepted governance and evidence define authorized scope and durable decisions. Repository files, Git state, processes, remote state, and fresh tool output establish observed reality. Supermemory + Mem0 provide durable project memory when available. The task tool tracks current work.
 
 ## 0. Project identity and authority map
 
@@ -18,11 +20,12 @@ PathChanger is a macOS 14+ SwiftUI application that simulates location on truste
 | **Accepted evidence records** | Establish completed gates, verified findings, and owner decisions. The private `abyssbugg/PathChanger-Evidence` repository is authoritative when a task references a governed run. |
 | **`PRODUCT_REQUIREMENTS.md`** | Owner-approved product contract under the authorized five-mode implementation plan. It is binding for all engineering decisions in this repository. |
 | **Repository evidence** | Files, Git state, worktrees, processes, remotes, and fresh command output establish current observed state. |
-| **`CLAUDE.md`** | Defines the stable operating method for this repository. It is not a backlog or current-status ledger. |
-| **ByteRover** | Stores durable decisions, patterns, facts, and gotchas when available. It does not override fresh repository or accepted evidence. |
+| **`CLAUDE.md`** | Defines the stable operating method for this repository (HOW). It is not a backlog or current-status ledger; that role belongs to `AGENTS.md`. |
+| **`AGENTS.md`** | Binding project-rules file (the WHAT): locked decisions, product model, docs map, gotcha ledger, and open items. Keep it current; retire completed entries to `docs/archive/AGENT_LOG.md`; never delete history silently. |
+| **Supermemory + Mem0** | Durable project-memory layer (replaced ByteRover 2026-10-23 after persistent server issues). Mem0 stores verified decisions, patterns, facts, and gotchas; Supermemory provides recall. Neither overrides fresh repository or accepted evidence. |
 | **Task tool** | Tracks current scope, dependencies, ownership, and progress. |
 
-Do not smooth over contradictions. State each conflicting claim, cite its source, and use the hierarchy above. If authority or permitted mutation remains uncertain, stop and ask the user.
+Do not smooth over contradictions. State each conflicting claim, cite its source, and use the hierarchy above. If authority or permitted mutation remains uncertain, stop and ask the user. If a request has a gap or ambiguity, flag the gap — do not fill it with an assumption and proceed.
 
 ### Stable project facts
 
@@ -91,9 +94,9 @@ Operate as the lead coordinator and final integrator. Maintain one coherent syst
 ### Sources of truth and memory
 
 - Use the task tool for active work and dependency order.
-- Query ByteRover before non-trivial work when it is available; curate only durable, verified lessons after substantial work.
-- If ByteRover is unavailable, do not invent remembered facts. Continue from accepted governance, repository evidence, and fresh tools when those are sufficient. Stop only when missing memory creates an unresolved authority or safety ambiguity.
-- Do not create ad hoc coordination Markdown files. Create documentation only when the user explicitly requests it or an accepted governance contract requires an evidence artifact.
+- Query Mem0 (store) and Supermemory (recall) before non-trivial work; curate only durable, verified lessons after substantial work.
+- If the memory layer is unavailable, do not invent remembered facts. Continue from accepted governance, repository evidence, and fresh tools when those are sufficient. Stop only when missing memory creates an unresolved authority or safety ambiguity.
+- Do not create ad hoc coordination Markdown files. Durable project facts, the gotcha ledger, and open items belong in `AGENTS.md`; create other documentation only when the user explicitly requests it or an accepted governance contract requires an evidence artifact.
 - Do not put transient commit hashes, current stage status, open tasks, or session logs in `CLAUDE.md`.
 
 A non-trivial task includes a feature, bug fix, refactor, behavior change, multi-file investigation, security/privilege work, device/tunnel work, signing/packaging work, or Git-history mutation.
@@ -109,13 +112,27 @@ A non-trivial task includes a feature, bug fix, refactor, behavior change, multi
 - A fresh review agent must not repair the work it reviews. Report failures and return them to the implementation lane.
 - If a subagent is interrupted, silent, or inconsistent, inspect its lane and surviving processes before redispatching.
 
+### Phases sequential, work parallel
+
+**Across phases:** do not start the next phase until the previous phase is **verified working** — not assumed working.
+
+**Within a phase:** fan out. Large or wide-scope work is distributed across subagents running concurrently, each with clean isolated context and non-overlapping file ownership. Subagent orchestration is a tooling decision made during planning, and it is what makes phase discipline practical at this repository's scale.
+
+In this mode you act as **advisor and orchestrator**:
+
+- Decompose the phase into independent, non-overlapping units.
+- Dispatch one subagent per unit with a precise, self-contained brief.
+- Keep contexts isolated so findings do not cross-contaminate.
+- Reconcile results yourself — never concatenate subagent output verbatim.
+- Always inspect a dead or silent agent's lane before redispatching; the lane may hold complete but unreported work, and redispatching would duplicate or clobber it.
+
 ### Session continuity
 
 For a normal new session or routine resume:
 
 1. Read `CLAUDE.md` completely.
 2. Read the active accepted governance/evidence records when the task belongs to a governed run.
-3. Query ByteRover when available for non-trivial work.
+3. Query Mem0/Supermemory for durable project memory on non-trivial work.
 4. Inspect the task list and relevant repository state.
 5. Load every applicable skill before execution.
 6. Use Sequential Thinking for every non-trivial problem.
@@ -165,9 +182,14 @@ Do not re-plan approved work after interruption unless new evidence contradicts 
 | **Subagents** | Independent research, bounded implementation, or fresh-session review with non-overlapping ownership. |
 | **Workspace file tools** | Prefer for reading and precise edits over shell-based file mutation. |
 | **Desktop Commander or approved connector** | Read approved external files when direct workspace tools cannot access them; never use it to bypass an explicit safety boundary. |
-| **ByteRover** | Retrieve and curate durable verified project memory when available. |
+| **Mem0 / Supermemory** | Retrieve and curate durable verified project memory — store via Mem0, recall via Supermemory. |
 | **Task tool** | Track multi-step work and mark completed gates immediately. |
 | **Commands** | Targeted evidence gathering only when a purpose-built tool does not cover the operation. |
+| **Plugins** | Extended platform-specific functionality when a task genuinely requires it. |
+| **Rules** | Constraints from `CLAUDE.md`/`AGENTS.md` and accepted governance contracts that must be enforced. |
+| **Hooks** | Automated pre/post-step enforcement and validation when configured. |
+
+State which capabilities the task needs and why before executing. Don't default to raw execution when a purpose-built tool exists; don't use tools reflexively either — justify each one.
 
 Never use raw `xcodebuild`, `xcrun`, `simctl`, `devicectl`, `xcode-select`, or `instruments`. Do not manually parse or hand-edit `project.pbxproj`; change `project.yml` or another approved source and regenerate through XcodeGen.
 
@@ -417,6 +439,17 @@ Use subagents and automated reviewers without requesting permission when their w
 
 The checklist below is the agent’s work, not a sequence of user approval prompts. Ask the user only at the explicit human boundaries defined above or by the active governance contract.
 
+The standing verification gate for this repository, stated compactly:
+
+```text
+Debug + Release builds green · full FlowDeck test suite green in ReleaseTesting
+(no unexplained test-count decrease) · generated project matches project.yml
+· GUI path verified for user-visible behavior · no unauthorized device,
+privilege, dependency, or remote mutation
+```
+
+Anything unverified is labeled unverified — never reported as done.
+
 Before claiming work complete:
 
 1. Re-read the user request and active governance contract.
@@ -444,12 +477,13 @@ For governed work, preserve the required sequence: implementation/evidence → f
 ## 12. Documentation and durable knowledge
 
 - `CLAUDE.md` contains stable operating rules only.
+- `AGENTS.md` is the binding project-rules file (the WHAT): identity, locked decisions, product model, docs map, gotcha ledger, and open items. Keep it current — when a decision changes, update it; when work completes, retire its entry to `docs/archive/AGENT_LOG.md`; promote new durable gotchas into the ledger. Never delete history silently.
 - `PRODUCT_REQUIREMENTS.md` is the binding functional contract for five-mode behavior, spoof persistence, transport recovery, state truth, and product acceptance.
 - `Consolidated-Source-Of-Truth-Aug-23-2026.md` is the repository’s reconciled historical documentation baseline; later user-approved requirements and accepted evidence may supersede its status or priority claims without rewriting history.
 - Governance contracts and accepted evidence belong in the private PathChanger evidence repository when the user authorizes that workflow.
 - Repository documentation must distinguish documented-and-evidenced, documented-but-asserted, suspected, unknown, and superseded claims.
 - Do not edit accepted historical evidence to make a later result look cleaner. Add a correction or successor record.
-- Record durable lessons in ByteRover only after verification; do not store secrets, transient task state, or unsupported hypotheses.
+- Record durable lessons in Mem0 only after verification; do not store secrets, transient task state, or unsupported hypotheses.
 
 ---
 
@@ -458,7 +492,7 @@ For governed work, preserve the required sequence: implementation/evidence → f
 ```text
 1. Protocol check       → interruption recovery when required
 2. Authority check      → user scope, PRODUCT_REQUIREMENTS, accepted contract/evidence, repository state
-3. Memory retrieval     → ByteRover when available; no invented fallback facts
+3. Memory retrieval     → Mem0/Supermemory when available; no invented fallback facts
 4. Sequential Thinking  → evidence, root cause, files, dependencies, strategy, gates
 5. Skill/tool selection → load required procedures; FlowDeck for Apple work
 6. Comprehension        → trace GUI-to-device path and reproduce the behavior
