@@ -67,6 +67,13 @@ final class DeviceStateManager: ObservableObject {
     private var lastUSBStateChange: Date = .distantPast
     private let stateDebounceInterval: TimeInterval = 2.5
 
+    /// Transport availability refreshes at most this often on the status poll while a
+    /// device is selected or the tunnel is running: routing (`--udid` vs `--rsd`) must
+    /// not act on minutes-old usbmux visibility, but the 5 s poll must not spawn a
+    /// subprocess on every tick either.
+    private var lastTransportRefresh: Date = .distantPast
+    private let transportRefreshInterval: TimeInterval = 15
+
     private var cancellables = Set<AnyCancellable>()
     private var isResolvingRecoverySession = false
 
@@ -289,7 +296,7 @@ final class DeviceStateManager: ObservableObject {
                 await tunnelManager.adoptRunningTunnelIfPresent()
             }
         }
-        await deviceManager.refreshTransportAvailability()
+        await refreshTransportAvailabilityIfNeeded()
 
         updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
@@ -310,6 +317,23 @@ final class DeviceStateManager: ObservableObject {
         } else {
             usbFallbackManager.wirelessRestored()
         }
+    }
+
+    /// Refresh usbmux transport visibility when it is actionable and not too recent.
+    ///
+    /// The `--udid` vs `--rsd` routing decision reads `usbDirectDeviceIds` /
+    /// `wifiDirectDeviceIds`, so visibility is refreshed only while a device is selected
+    /// or the tunnel is running, and never more often than `transportRefreshInterval`.
+    /// `now` is injectable so tests can cross the interval without sleeping.
+    func refreshTransportAvailabilityIfNeeded(now: Date = Date()) async {
+        let shouldRefresh = (selectedDevice != nil || isTunneldRunning)
+            && now.timeIntervalSince(lastTransportRefresh) >= transportRefreshInterval
+
+        guard shouldRefresh else { return }
+
+        // Stamped before the await so an interleaved poll tick cannot double-spawn.
+        lastTransportRefresh = now
+        await deviceManager.refreshTransportAvailability()
     }
 
     /// Resolves the same stable device over a currently verified transport and advances generation.
