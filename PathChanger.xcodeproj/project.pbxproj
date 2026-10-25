@@ -36,6 +36,7 @@
 		3FD11ED2475492BA41285369 /* SimulationTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38BB7E490DFFCFE40EED55CD /* SimulationTypes.swift */; };
 		40408798BBDE315942F446E0 /* DevLocationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E310520845BC420D1E96BEF /* DevLocationBridge.swift */; };
 		44D1297513E0868A10323AA6 /* CompanionHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CF4709757DA06B9797D0B95 /* CompanionHostService.swift */; };
+		4825F2E4696AC50F9DF1B46C /* TunnelHealthMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C74C7D0AE8568059EDFE862 /* TunnelHealthMonitorTests.swift */; };
 		487FDDB005A7849E4D93CAFF /* ArgumentSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3728FC3F30EB53874CDDEBCF /* ArgumentSanitizerTests.swift */; };
 		4A8536E2B4187986013229CD /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D2A57DF7CBDBE6AFDE91D4 /* SidebarView.swift */; };
 		4EA6C1C954021A0083AEA67B /* TelemetryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6415B5AA220D4AE2A519C8E6 /* TelemetryService.swift */; };
@@ -169,6 +170,7 @@
 		299D6107F91E689898AD1A64 /* ConnectionInterruptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionInterruptionTests.swift; sourceTree = "<group>"; };
 		2A4FDF07A2E77C95E4A78F0E /* RouteLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteLibrary.swift; sourceTree = "<group>"; };
 		2A98953FFC2BA23334F9058C /* Figtree-Variable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Figtree-Variable.ttf"; sourceTree = "<group>"; };
+		2C74C7D0AE8568059EDFE862 /* TunnelHealthMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelHealthMonitorTests.swift; sourceTree = "<group>"; };
 		2F6FAB02B0D5816A07D10CC2 /* FloatingControlPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingControlPanel.swift; sourceTree = "<group>"; };
 		311353ECA4039C698A73AD5C /* LocationSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSessionCoordinator.swift; sourceTree = "<group>"; };
 		3389753A94510B1DDF9E16E8 /* PersistentLocationBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentLocationBridgeTests.swift; sourceTree = "<group>"; };
@@ -507,6 +509,7 @@
 				184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */,
 				76FDA01BFDC637767F7ACA20 /* TestEnvironment.swift */,
 				8BFBBD50A80562870376A2E7 /* TunneldManagerTests.swift */,
+				2C74C7D0AE8568059EDFE862 /* TunnelHealthMonitorTests.swift */,
 				41A5F5B26D2CFB171B0BA7ED /* TunnelStateMachineTests.swift */,
 				C16D538B0B2EC61AE280E94D /* UIComponentTests.swift */,
 				B6F71CF615835420943016C9 /* Fakes */,
@@ -707,6 +710,7 @@
 				902C9F465A9AEE515A1204D3 /* StateManagerTests.swift in Sources */,
 				D7ED8A375FEEB98D53CAD8C9 /* TelemetryServiceTests.swift in Sources */,
 				2DE9A02F94F83E3F9C223AD1 /* TestEnvironment.swift in Sources */,
+				4825F2E4696AC50F9DF1B46C /* TunnelHealthMonitorTests.swift in Sources */,
 				28FDCA895589DDFF572B95D8 /* TunnelStateMachineTests.swift in Sources */,
 				2C2D934DE7905790DEFE81C2 /* TunneldManagerTests.swift in Sources */,
 				713786D179D60E5460606184 /* UIComponentTests.swift in Sources */,
