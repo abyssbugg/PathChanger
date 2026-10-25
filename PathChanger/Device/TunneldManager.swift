@@ -1263,6 +1263,7 @@ class TunneldManager: ObservableObject {
                     }
 
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    pipe.fileHandleForReading.closeFile()
 
                     // Security: Check output size limit (consistent with DevLocationBridge)
                     if data.count > maxOutputSize {

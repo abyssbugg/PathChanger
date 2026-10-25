@@ -107,7 +107,9 @@ final class TunnelHealthMonitorTests: XCTestCase {
     func testSuccessfulEndpointProbeIsCadenceBounded() async throws {
         // A probe success answers a full TCP handshake; the very next 2 s check must not
         // open another socket for it. Failures (other tests) still probe every check.
-        let info = usableTunnelInfo(processId: ProcessInfo.processInfo.processIdentifier)
+        // PID nil keeps the check off /bin/ps entirely (isRunning guard only), so the
+        // test stays independent of process-spawn pressure in the full-suite run.
+        let info = usableTunnelInfo(processId: nil)
         makeSharedTunnelRunning(with: info)
         prober.result = true
         try await settleSharedManagerSync(expect: info)

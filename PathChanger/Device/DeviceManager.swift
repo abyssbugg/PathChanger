@@ -1544,6 +1544,11 @@ class DeviceManager: ObservableObject {
 
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    // Close both read-ends: this is the highest-volume subprocess path
+                    // (usbmux discovery polling); drained-but-unclosed handles leaked
+                    // thousands of pipe fds until the process hit EMFILE.
+                    outputPipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
 
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
@@ -1595,6 +1600,15 @@ class DeviceManager: ObservableObject {
 
                     process.waitUntilExit()
 
+                    // Drain and close BOTH pipe read-ends on every exit path: the error
+                    // pipe was never read, and neither handle was ever closed, so every
+                    // pgrep/usbmux poll leaked 2-3 pipe fds — thousands under the test
+                    // suite's polling, until the process hit EMFILE.
+                    let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    pipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
 
@@ -1606,11 +1620,13 @@ class DeviceManager: ObservableObject {
                         return
                     }
 
-                    let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
 
                     continuation.resume(returning: output)
                 } catch {
+                    pipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
 
