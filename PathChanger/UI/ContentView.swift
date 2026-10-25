@@ -365,6 +365,9 @@ struct ContentView: View {
             statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
                        tone: connectionTone(for: state.connection),
                        localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
+            if case .failed = state.connection {
+                reconnectButton
+            }
             statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
                        tone: applicationTone(for: state.application),
                        localizationKey: "accessibility.location.status.application", id: "location.status.application")
@@ -382,6 +385,31 @@ struct ContentView: View {
         .background(Organic.neutral100)
         .clipShape(Capsule())
         .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+    }
+
+    /// Offered only while the connection chip reads Lost; hands recovery to AppState,
+    /// which refreshes discovery, restarts the user-started tunnel and reapplies the
+    /// desired location.
+    private var reconnectButton: some View {
+        Button {
+            Task { await appState.reconnectNow() }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 9, weight: .bold))
+                Text("Reconnect")
+                    .font(Organic.body(10.5, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Organic.accent700)
+            .padding(.horizontal, 8)
+            .frame(maxHeight: .infinity)
+            .background(Organic.accent100)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Refresh devices, restore the connection and reapply the location")
+        .accessibilityIdentifier("location.action.reconnect")
     }
 
     private var clearLocationButton: some View {
