@@ -1,3 +1,9 @@
+> **Status correction (2026-10-25):** this document predates the August-2026 audit
+> lineage, which rates production-release confidence "not acceptable"
+> (Consolidated-Source-Of-Truth-Aug-23-2026.md §A). Treat historical claims here as
+> superseded by the audit lineage and the requirements ledger in
+> docs/requirements-ledger-2026-10-25.md.
+
 # PathChanger Deployment and Acceptance
 
 ## Current status

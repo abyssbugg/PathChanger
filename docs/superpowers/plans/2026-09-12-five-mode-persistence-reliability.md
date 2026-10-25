@@ -159,17 +159,17 @@ Expected: both commits contain documentation only. Review `git show --stat --one
 **Files:**
 - No product files changed in setup
 
-- [ ] **Step 1: Create the feature integration branch and worktree**
+- [x] **Step 1: Create the feature integration branch and worktree**
 
 ```bash
 git worktree add "$HOME/.config/superpowers/worktrees/PathChanger/five-mode-reliability" -b feature/five-mode-reliability main
 ```
 
-- [ ] **Step 2: Configure FlowDeck for the new worktree**
+- [x] **Step 2: Configure FlowDeck for the new worktree**
 
 Run `flowdeck config get --json` first. If no worktree-specific config exists, run `flowdeck context --json`, select the PathChanger scheme and `My Mac`, and save that selection once. Do not overwrite another worktree's existing selection.
 
-- [ ] **Step 3: Verify the clean baseline**
+- [x] **Step 3: Verify the clean baseline**
 
 Run:
 
@@ -182,7 +182,7 @@ flowdeck test
 
 Expected: package resolution succeeds, ReleaseTesting builds, and the full baseline is classified. Record existing failures or flakes; do not fix them during setup.
 
-- [ ] **Step 4: Establish branch conventions**
+- [x] **Step 4: Establish branch conventions**
 
 Use these sequential branches from `feature/five-mode-reliability`:
 
@@ -202,7 +202,7 @@ Each topic branch must start from the accepted head of the feature integration b
 
 **Branch:** `feature/location-session-model`
 
-- [ ] **Step 0: Identify any usable previous-build behavioral oracle**
+- [x] **Step 0: Identify any usable previous-build behavioral oracle**
 
 Inventory available installed artifacts, tags, archived evidence, and source refs without executing an untrusted manual bundle. Record an artifact hash and source provenance before treating anything as known-good. If no source-linked working artifact exists, record `reference unavailable` and use `PRODUCT_REQUIREMENTS.md` plus current-behavior tests; never invent a historical baseline.
 
@@ -211,7 +211,7 @@ Inventory available installed artifacts, tags, archived evidence, and source ref
 - Modify: `Tests/PathChangerTests/StateManagerTests.swift`
 - Test only; no production change in this task
 
-- [ ] **Step 1: Add a characterization test for cooldown rejection**
+- [x] **Step 1: Add a characterization test for cooldown rejection**
 
 Add a test proving the current ordering can announce simulation before `setLocation` accepts the request. The desired assertion is:
 
@@ -230,19 +230,19 @@ flowdeck test --only PathChangerTests/AppStateSimulationTests/testCooldownReject
 
 Expected RED: the existing boolean becomes active without an acknowledgement.
 
-- [ ] **Step 2: Add a test separating stop movement from clear location**
+- [x] **Step 2: Add a test separating stop movement from clear location**
 
 Test that route completion, pause, and stop movement preserve the last acknowledged coordinate, while explicit clear removes it. Expected RED: `AppState.stopSimulation()` currently calls `clearLocation()`.
 
-- [ ] **Step 3: Add a test for tunnel-loss stale GUI state**
+- [x] **Step 3: Add a test for tunnel-loss stale GUI state**
 
 Drive the existing tunnel-state callback to a non-active state. Assert that the location state becomes uncertain/lost and the GUI cannot remain active. Expected RED: the held bridge is stopped without synchronizing simulation truth.
 
-- [ ] **Step 4: Add a test for joystick disengage semantics**
+- [x] **Step 4: Add a test for joystick disengage semantics**
 
 Assert that releasing joystick movement leaves the last coordinate held but changes movement—not location application—to idle/paused. Expected RED: current boolean state cannot represent this distinction.
 
-- [ ] **Step 5: Preserve the RED tests and continue directly to Task 4**
+- [x] **Step 5: Preserve the RED tests and continue directly to Task 4**
 
 If the tests initially fail to compile because the new domain API does not exist, preserve that compiler output as RED evidence and keep the tests unchanged and uncommitted. Task 4 must add only the minimum domain types needed to make the tests compile and fail on behavior; do not revert or weaken the assertions.
 
@@ -257,7 +257,7 @@ If the tests initially fail to compile because the new domain API does not exist
 - Create: `Tests/PathChangerTests/LocationSessionStateTests.swift`
 - Regenerate from `project.yml` only if target membership is not automatic
 
-- [ ] **Step 1: Write compiling-intent tests for the five domain modes**
+- [x] **Step 1: Write compiling-intent tests for the five domain modes**
 
 The test must require exactly these cases:
 
@@ -269,7 +269,7 @@ XCTAssertEqual(Set(LocationMode.allCases), Set([
 
 Expected RED: `LocationMode` does not exist.
 
-- [ ] **Step 2: Write transition tests for independent state dimensions**
+- [x] **Step 2: Write transition tests for independent state dimensions**
 
 Cover these facts independently:
 
@@ -282,7 +282,7 @@ XCTAssertNil(state.lastAcknowledgedReceipt)
 
 Then test applying, acknowledged-active, movement paused/completed, connection uncertain, recovery, and explicit clear. Desired location must survive every transition except explicit clear.
 
-- [ ] **Step 3: Add the minimal domain types**
+- [x] **Step 3: Add the minimal domain types**
 
 Use this shape, refining names only if the compiling implementation demands it:
 
@@ -389,11 +389,11 @@ protocol LocationInjecting: Sendable {
 
 If synthesized `Codable` for associated-value enums is not needed by production/evidence, remove that conformance rather than adding custom serialization prematurely.
 
-- [ ] **Step 4: Map UI mode to domain mode without making settings a spoofing mode**
+- [x] **Step 4: Map UI mode to domain mode without making settings a spoofing mode**
 
 Keep `.settings` as navigation-only. Add an explicit `AppMode.locationMode: LocationMode?` mapping for the five functional cases. Exhaustive tests must fail if a new functional mode lacks a mapping.
 
-- [ ] **Step 5: Run focused and full tests**
+- [x] **Step 5: Run focused and full tests**
 
 Use discovered identifiers, then:
 
@@ -404,7 +404,7 @@ flowdeck test
 
 Expected GREEN: domain tests pass and the existing baseline count does not decrease without an explained accepted reason.
 
-- [ ] **Step 6: Commit the green domain types**
+- [x] **Step 6: Commit the green domain types**
 
 ```bash
 git add PathChanger/Models/LocationSessionState.swift PathChanger/Device/LocationInjecting.swift PathChanger/UI/ContentView.swift Tests/PathChangerTests/LocationSessionStateTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
@@ -422,7 +422,7 @@ Stage only files that actually changed. A generated project diff without a corre
 - Create: `Tests/PathChangerTests/LocationSessionCoordinatorTests.swift`
 - Modify: `PathChanger/PathChangerApp.swift` only to construct the coordinator
 
-- [ ] **Step 1: Write RED tests for acknowledgement-gated activity**
+- [x] **Step 1: Write RED tests for acknowledgement-gated activity**
 
 Test this sequence:
 
@@ -444,11 +444,11 @@ XCTAssertEqual(coordinator.state.application, .active(receipt))
 
 Expected RED: no coordinator exists and current state activates before acknowledgement.
 
-- [ ] **Step 2: Write RED tests for stale receipt rejection**
+- [x] **Step 2: Write RED tests for stale receipt rejection**
 
 A receipt whose session generation differs from the current connection must transition to `.uncertain` and must never set `.active`.
 
-- [ ] **Step 3: Write RED tests for hold, loss, and clear**
+- [x] **Step 3: Write RED tests for hold, loss, and clear**
 
 Assert:
 
@@ -457,7 +457,7 @@ Assert:
 - explicit clear enters `.clearing`, calls the clear dependency, and only then removes desired/acknowledged state;
 - failed clear reports failure and retains enough state to retry honestly.
 
-- [ ] **Step 4: Implement the minimal coordinator**
+- [x] **Step 4: Implement the minimal coordinator**
 
 Use `@MainActor final class LocationSessionCoordinator: ObservableObject`. It is the sole writer of `LocationSessionState`; `AppState`, mode engines, bridge adapters, and GUI controls submit events instead of setting booleans directly. Its initializer requires an `any LocationInjecting` dependency and stores it privately, so `clear()` and application requests cannot bypass the tested adapter.
 
@@ -478,18 +478,18 @@ func beginRecovery(attempt: Int)
 func clear() async
 ```
 
-- [ ] **Step 5: Make illegal transitions explicit**
+- [x] **Step 5: Make illegal transitions explicit**
 
 Return typed state-transition errors for application without a desired coordinate, receipt/request mismatch, stale generation, and clear without a device/session. Do not silently ignore them.
 
-- [ ] **Step 6: Run focused tests and full suite, then commit green**
+- [x] **Step 6: Run focused tests and full suite, then commit green**
 
 ```bash
 git add PathChanger/Core/StateManagers/LocationSessionCoordinator.swift PathChanger/PathChangerApp.swift Tests/PathChangerTests/LocationSessionCoordinatorTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
 git commit -m "feat(state): centralize acknowledged spoofing truth"
 ```
 
-- [ ] **Step 7: Automated review and topic integration**
+- [x] **Step 7: Automated review and topic integration**
 
 Verify the coordinator is the only location-session-state writer, then merge `feature/location-session-model` into `feature/five-mode-reliability` with `--no-ff` after the execution plan's Git authorization is in force.
 
@@ -503,15 +503,15 @@ Verify the coordinator is the only location-session-state writer, then merge `fe
 - Create: `Tests/PathChangerTests/Fakes/FakeLocationInjector.swift`
 - Modify: `PathChanger/Core/StateManagers/LocationSessionCoordinator.swift`
 
-- [ ] **Step 1: Write RED tests for request/receipt identity**
+- [x] **Step 1: Write RED tests for request/receipt identity**
 
 Require a request to contain request ID, stable device ID, coordinate, and mode. Require a successful receipt to echo the request ID and coordinate and to add transport, endpoint class, session generation, completion time, and `.applied` outcome. The production stable device ID is an internal correlation key and must never enter ordinary logs, screenshots, or exported evidence. UI/evidence uses a run-local alias such as `device-001`; any reversible alias map stays only in the protected evidence staging area and is omitted from manifested public-facing artifacts.
 
-- [ ] **Step 2: Write RED tests for queued and stale outcomes**
+- [x] **Step 2: Write RED tests for queued and stale outcomes**
 
 A queued/rate-limited result is not active. A receipt from generation N is stale after the coordinator has accepted generation N+1.
 
-- [ ] **Step 3: Add the protocol and event contract**
+- [x] **Step 3: Add the protocol and event contract**
 
 ```swift
 enum LocationBridgeEvent: Equatable, Sendable {
@@ -533,15 +533,15 @@ protocol LocationInjecting: Sendable {
 
 Keep `Device` out of the cross-actor protocol. Construct `LocationInjectionTarget` from the canonical selected device before calling the injector.
 
-- [ ] **Step 4: Implement a deterministic fake**
+- [x] **Step 4: Implement a deterministic fake**
 
 The fake must support controlled acknowledgement, queued result, failure, session loss, process termination, generation changes, and an ordered call log. Do not sleep in unit tests; inject a clock where retry timing matters.
 
-- [ ] **Step 5: Update coordinator tests to use the fake**
+- [x] **Step 5: Update coordinator tests to use the fake**
 
 Prove no application state becomes active before `FakeLocationInjector` releases its acknowledgement.
 
-- [ ] **Step 6: Run focused/full tests and commit green**
+- [x] **Step 6: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Device/LocationInjecting.swift PathChanger/Core/StateManagers/LocationSessionCoordinator.swift Tests/PathChangerTests/LocationInjectionReceiptTests.swift Tests/PathChangerTests/Fakes/FakeLocationInjector.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
@@ -559,27 +559,27 @@ git commit -m "test(device): define session-bound injection receipts"
 - Modify: `Tests/PathChangerTests/DevLocationBridgeSecurityTests.swift`
 - Create: `Tests/PathChangerTests/DevLocationBridgeReceiptTests.swift`
 
-- [ ] **Step 1: Write RED tests for direct and RSD receipt classification**
+- [x] **Step 1: Write RED tests for direct and RSD receipt classification**
 
 Given direct `--udid` arguments, expect `.usb/.direct` or `.wifi/.direct` from the selected device transport. Given `--rsd`, expect the retained physical transport plus `.remoteServiceDiscovery`. Never infer the transport from a log string.
 
-- [ ] **Step 2: Write RED tests for rate-limit truth**
+- [x] **Step 2: Write RED tests for rate-limit truth**
 
 When a request is queued, return/throw a typed queued result and leave application state non-active. Queue completion must emit its own receipt tied to the original request ID; do not let the original caller assume immediate application.
 
-- [ ] **Step 3: Track a monotonic generation per stable device/session**
+- [x] **Step 3: Track a monotonic generation per stable device/session**
 
 Increment generation whenever the held subprocess, persistent Python process, endpoint tuple, or selected transport is replaced after loss. Resetting process statistics must not reset generation.
 
-- [ ] **Step 4: Return a receipt only after the selected path has accepted the coordinate**
+- [x] **Step 4: Return a receipt only after the selected path has accepted the coordinate**
 
 Change the adapter API from `async throws -> Void` to `async throws -> LocationInjectionReceipt`. For the held subprocess path, `.applied` requires the process to remain running and ownership to be retained. For the persistent path, `.applied` requires a decoded success response.
 
-- [ ] **Step 5: Remove false fallback semantics**
+- [x] **Step 5: Remove false fallback semantics**
 
 A persistent-bridge failure may fall back to the subprocess only while preserving the same request ID and recording a new session identity. If both fail, return the terminal error; do not record success statistics.
 
-- [ ] **Step 6: Run focused/full tests and commit green**
+- [x] **Step 6: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Device/DevLocationBridge.swift PathChanger/Device/LocationConnectionArguments.swift PathChanger/Device/TunneldManager.swift Tests/PathChangerTests/DevLocationBridgeSecurityTests.swift Tests/PathChangerTests/DevLocationBridgeReceiptTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
@@ -598,34 +598,34 @@ Stage only changed files. `TunneldManager.swift` is excluded if no production ed
 - Modify: `Tests/PathChangerTests/PersistentLocationBridgeTests.swift`
 - Create: `Tests/PathChangerTests/PersistentBridgeLifecycleTests.swift`
 
-- [ ] **Step 1: Write RED tests for concurrent requests**
+- [x] **Step 1: Write RED tests for concurrent requests**
 
 Start request A and attempt request B before A responds. The bridge must queue through one tested serialization boundary or reject B with a typed `requestInProgress`; it must never overwrite `pendingContinuation`.
 
-- [ ] **Step 2: Write RED tests for real readiness**
+- [x] **Step 2: Write RED tests for real readiness**
 
 `start()` cannot set `isRunning` from a fixed 500 ms delay. It must wait for the Python `{\"ready\": true}` response and fail on timeout/process exit.
 
-- [ ] **Step 3: Add request identity to the JSON protocol**
+- [x] **Step 3: Add request identity to the JSON protocol**
 
 Add `request_id` and `session_generation` to requests and responses in both Swift and Python. A response with the wrong request ID is invalid and cannot resume the pending caller.
 
-- [ ] **Step 4: Publish termination and session-loss events**
+- [x] **Step 4: Publish termination and session-loss events**
 
 On process termination, resume any pending request exactly once, clear pipe handlers, and emit `.processTerminated(exitCode:)` followed by session loss. Intentional stop must be distinguishable from unexpected exit.
 
-- [ ] **Step 5: Verify service-cache invalidation**
+- [x] **Step 5: Verify service-cache invalidation**
 
 Python tests must prove an injection error removes the corresponding cached service and that a later request rebuilds it. Do not import or execute real tunnel code in unit tests.
 
-- [ ] **Step 6: Run focused/full tests and commit green**
+- [x] **Step 6: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Device/PersistentLocationBridge.swift scripts/location_bridge.py Tests/PathChangerTests/PersistentLocationBridgeTests.swift Tests/PathChangerTests/PersistentBridgeLifecycleTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
 git commit -m "fix(device): serialize bridge requests and report termination"
 ```
 
-- [ ] **Step 7: Review and integrate the receipt topic**
+- [x] **Step 7: Review and integrate the receipt topic**
 
 Verify Swift/Python protocol parity, continuation single-resume safety, no sensitive identifiers in normal logs, and no off-topic tunnel lifecycle edits. Merge `feature/injection-receipts` to `feature/five-mode-reliability` after green review.
 
@@ -644,38 +644,38 @@ Verify Swift/Python protocol parity, continuation single-resume safety, no sensi
 - Modify: `Tests/PathChangerTests/TunnelStateMachineTests.swift`
 - Modify: `Tests/PathChangerTests/StateManagerTests.swift`
 
-- [ ] **Step 1: Write RED tests for USB reconnect**
+- [x] **Step 1: Write RED tests for USB reconnect**
 
 Apply coordinate C over USB generation 1, lose the transport, and restore the same stable device on generation 2. Assert movement stops, desired C remains, the old receipt becomes uncertain, C is reapplied, and `.active` occurs only after the generation-2 receipt.
 
-- [ ] **Step 2: Write RED tests for Wi-Fi/RSD reconnect**
+- [x] **Step 2: Write RED tests for Wi-Fi/RSD reconnect**
 
 Lose tunnel/RSD health, rebuild the endpoint, and reapply C. Device refresh alone is not recovery success.
 
-- [ ] **Step 3: Write RED tests for transport failover**
+- [x] **Step 3: Write RED tests for transport failover**
 
 When USB disappears but verified Wi-Fi is available, use the same stable device identity, establish a new session generation, reapply C, and only then report active. Never clear C during switching.
 
-- [ ] **Step 4: Write RED tests for exhaustion and cancellation**
+- [x] **Step 4: Write RED tests for exhaustion and cancellation**
 
 Use an injected clock/backoff policy. Prove retries are bounded and cancelable, terminal failure retains desired C, and explicit retry starts a new generation. Do not hard-code a retry count until product settings or existing policy supplies it.
 
-- [ ] **Step 5: Wire observable loss sources into the coordinator**
+- [x] **Step 5: Wire observable loss sources into the coordinator**
 
 Bridge termination, held subprocess exit, tunnel health loss, selected-device loss, endpoint replacement, and app cancellation must submit typed events. Remove direct simulation booleans from those callbacks.
 
-- [ ] **Step 6: Reapply before resuming movement**
+- [x] **Step 6: Reapply before resuming movement**
 
 Route/joystick work remains paused through recovery. Resume movement only after the desired coordinate has a current-generation applied receipt.
 
-- [ ] **Step 7: Run focused/full tests and commit green**
+- [x] **Step 7: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Core/StateManagers/LocationSessionCoordinator.swift PathChanger/Core/StateManagers/DeviceStateManager.swift PathChanger/Core/ReliabilityManager.swift PathChanger/Device/DeviceManager.swift PathChanger/Device/TunnelStateMachine.swift PathChanger/PathChangerApp.swift Tests/PathChangerTests/LocationSessionRecoveryTests.swift Tests/PathChangerTests/TunnelStateMachineTests.swift Tests/PathChangerTests/StateManagerTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
 git commit -m "feat(recovery): reapply desired location after session loss"
 ```
 
-- [ ] **Step 8: Review and integrate the recovery topic**
+- [x] **Step 8: Review and integrate the recovery topic**
 
 Review every path that can stop a held process. Each must either be explicit Clear/Reset or transition to uncertain/lost while preserving desired state. Merge after tests pass.
 
@@ -693,23 +693,23 @@ Review every path that can stop a held process. Each must either be explicit Cle
 - Modify: `Tests/PathChangerTests/AppStateSimulationTests.swift`
 - Modify: `Tests/PathChangerTests/UIComponentTests.swift`
 
-- [ ] **Step 1: Write RED tests for exact-coordinate application**
+- [x] **Step 1: Write RED tests for exact-coordinate application**
 
 With legacy Safe Mode enabled in stored preferences, applying target T must request T exactly. Expected RED: current code can replace T with a random drift coordinate.
 
-- [ ] **Step 2: Write RED tests for cooldown truth**
+- [x] **Step 2: Write RED tests for cooldown truth**
 
 A repeated teleport can be accepted, queued with an explicit non-active state, or rejected with a visible error. It cannot leave the GUI active without a receipt. Expected RED: the manager returns early after callers have already announced activity.
 
-- [ ] **Step 3: Remove Safe Mode random drift and automatic cooldown gating**
+- [x] **Step 3: Remove Safe Mode random drift and automatic cooldown gating**
 
 Remove Safe Mode and cooldown as user-visible location semantics. Ignore legacy persisted values during migration; do not let them alter coordinates or reset the location. Keep adapter-level rate limiting/backpressure, but expose queued/rejected results through the coordinator.
 
-- [ ] **Step 4: Remove or replace affected UI controls**
+- [x] **Step 4: Remove or replace affected UI controls**
 
 Remove the Safe Mode and cooldown controls from active chrome/settings. If product copy still needs a connection-safety notice, make it informational and unrelated to location reset or coordinate mutation.
 
-- [ ] **Step 5: Run focused/full tests and commit green**
+- [x] **Step 5: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Core/StateManagers/SimulationStateManager.swift PathChanger/Core/AppSettings.swift PathChanger/Simulation/SimulationEngine.swift PathChanger/UI/OrganicChrome.swift PathChanger/UI/OrganicSettingsSheet.swift Tests/PathChangerTests/StateManagerTests.swift Tests/PathChangerTests/AppStateSimulationTests.swift Tests/PathChangerTests/UIComponentTests.swift
@@ -727,23 +727,23 @@ git commit -m "fix(simulation): remove misleading safe-mode cooldown behavior"
 - Modify: `Tests/PathChangerTests/AppStateSimulationTests.swift`
 - Create: `Tests/PathChangerTests/ModePersistenceTests.swift`
 
-- [ ] **Step 1: Write RED Teleport tests**
+- [x] **Step 1: Write RED Teleport tests**
 
 Prove: selecting does not inject; Move creates one request; active appears only after its receipt; stop movement holds the coordinate; explicit Clear resets it.
 
-- [ ] **Step 2: Write RED Jump tests**
+- [x] **Step 2: Write RED Jump tests**
 
 Prove each action applies exactly one indexed waypoint and advances the index only after an applied receipt. A queued, failed, stale, or canceled request must not consume a hop.
 
-- [ ] **Step 3: Route `AppState` through the coordinator**
+- [x] **Step 3: Route `AppState` through the coordinator**
 
 Replace preemptive `isSimulating = true` and direct bridge-state mutation with coordinator operations. Keep compatibility computed properties only while old views migrate; they must derive from coordinator state and must not be independently writable.
 
-- [ ] **Step 4: Make stop movement hold**
+- [x] **Step 4: Make stop movement hold**
 
 Replace the current stop path that calls `clearLocation()` with coordinator `stopMovement()`. Add a separate explicit clear operation for intentional return to real GPS.
 
-- [ ] **Step 5: Run focused/full tests and commit green**
+- [x] **Step 5: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Simulation/SimulationPlanner.swift PathChanger/PathChangerApp.swift Tests/PathChangerTests/SimulationPlannerTests.swift Tests/PathChangerTests/AppStateSimulationTests.swift Tests/PathChangerTests/ModePersistenceTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
@@ -764,23 +764,23 @@ git commit -m "fix(modes): make teleport and jump receipt-driven"
 - Modify: `Tests/PathChangerTests/StateManagerTests.swift`
 - Modify: `Tests/PathChangerTests/ModePersistenceTests.swift`
 
-- [ ] **Step 1: Write RED Two-Spot lifecycle tests**
+- [x] **Step 1: Write RED Two-Spot lifecycle tests**
 
 Verify start → acknowledged first point → movement → acknowledged destination → `.completed(.twoSpot)` while application remains active at the destination. Pause and stop movement hold the last acknowledged point.
 
-- [ ] **Step 2: Write RED Multi-Spot lifecycle tests**
+- [x] **Step 2: Write RED Multi-Spot lifecycle tests**
 
 Verify every route point advances only after an applied receipt, progress reflects acknowledged—not merely generated—points, interruption pauses at the last receipt, recovery reapplies desired position, and completion holds the final waypoint.
 
-- [ ] **Step 3: Separate route generation from delivery**
+- [x] **Step 3: Separate route generation from delivery**
 
 Keep `SimulationPlanner`/`RouteInterpolator` pure. The engine proposes a next point; the coordinator/injector acknowledges it; only then does route state advance.
 
-- [ ] **Step 4: Remove completion-as-clear behavior**
+- [x] **Step 4: Remove completion-as-clear behavior**
 
 Completing or stopping playback cancels timers/tasks but does not call bridge clear or terminate the active held location session.
 
-- [ ] **Step 5: Run focused/full tests and commit green**
+- [x] **Step 5: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Simulation/SimulationPlanner.swift PathChanger/Simulation/SimulationEngine.swift PathChanger/Core/StateManagers/RouteStateManager.swift PathChanger/PathChangerApp.swift Tests/PathChangerTests/SimulationPlannerTests.swift Tests/PathChangerTests/SimulationEngineTests.swift Tests/PathChangerTests/StateManagerTests.swift Tests/PathChangerTests/ModePersistenceTests.swift
@@ -799,30 +799,30 @@ git commit -m "fix(modes): hold route destinations after movement"
 - Modify: `Tests/PathChangerTests/SimulationEngineTests.swift`
 - Modify: `Tests/PathChangerTests/ModePersistenceTests.swift`
 
-- [ ] **Step 1: Write RED engage/disengage tests**
+- [x] **Step 1: Write RED engage/disengage tests**
 
 Engage applies the selected/start coordinate before movement becomes active. Releasing the joystick stops updates but leaves application active at the last receipt.
 
-- [ ] **Step 2: Write RED latest-wins/backpressure tests**
+- [x] **Step 2: Write RED latest-wins/backpressure tests**
 
 Rapid input may coalesce only coordinates not yet sent. Never discard an acknowledged receipt, never mark an unacknowledged coordinate active, and never let queue overflow silently advance displayed position.
 
-- [ ] **Step 3: Write RED interruption tests**
+- [x] **Step 3: Write RED interruption tests**
 
 Transport loss cancels movement updates, preserves desired/last acknowledged state, and enters uncertain. Recovery reapplies before new joystick movement.
 
-- [ ] **Step 4: Implement minimal coordinator-backed joystick delivery**
+- [x] **Step 4: Implement minimal coordinator-backed joystick delivery**
 
 The movement calculator stays pure; the coordinator owns application truth. Remove direct writes to `isSimulating/currentLocation` from joystick callbacks.
 
-- [ ] **Step 5: Run focused/full tests and commit green**
+- [x] **Step 5: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/Simulation/SimulationEngine.swift PathChanger/Simulation/JoystickMovement.swift PathChanger/PathChangerApp.swift Tests/PathChangerTests/JoystickMovementTests.swift Tests/PathChangerTests/SimulationEngineTests.swift Tests/PathChangerTests/ModePersistenceTests.swift
 git commit -m "fix(modes): hold acknowledged joystick location"
 ```
 
-- [ ] **Step 6: Review all five mode contracts and integrate**
+- [x] **Step 6: Review all five mode contracts and integrate**
 
 Run the full suite twice. Verify exact-coordinate behavior, no implicit clear, no progress before receipt, and no Safe Mode/cooldown dependency. Merge `feature/five-mode-semantics` into `feature/five-mode-reliability` after review.
 
@@ -845,15 +845,15 @@ Run the full suite twice. Verify exact-coordinate behavior, no implicit clear, n
 - Modify: `Tests/PathChangerTests/AppStateSimulationTests.swift`
 - Create: `Tests/PathChangerTests/LocationStatusPresentationTests.swift`
 
-- [ ] **Step 1: Write RED presentation-state tests**
+- [x] **Step 1: Write RED presentation-state tests**
 
 Require explicit labels for idle, applying, active/held, moving, paused, reconnecting/uncertain, lost, clearing, and failed. “Spoofing” is permitted only for `.active` with a current-generation applied receipt.
 
-- [ ] **Step 2: Write RED readiness-versus-lifecycle tests**
+- [x] **Step 2: Write RED readiness-versus-lifecycle tests**
 
 A device may be visible over FlowDeck/CoreDevice while pymobiledevice3 is unavailable; the GUI must show those facts separately. A connected transport must not imply location active, and a tunnel-active state must not imply a coordinate was applied.
 
-- [ ] **Step 3: Add stable accessibility identifiers**
+- [x] **Step 3: Add stable accessibility identifiers**
 
 At minimum:
 
@@ -873,34 +873,34 @@ location.status.movement
 location.status.coordinate
 ```
 
-- [ ] **Step 4: Wire UI controls to coordinator intents**
+- [x] **Step 4: Wire UI controls to coordinator intents**
 
 Mode selection stages data only. Apply starts an injection request. Pause/Stop affect movement only. Clear is visually distinct, confirmation-protected, and the only normal action that returns to real GPS.
 
-- [ ] **Step 5: Show uncertainty honestly**
+- [x] **Step 5: Show uncertainty honestly**
 
 During reconnect, show the desired coordinate and last acknowledged coordinate separately, mark actual device state uncertain, and disable new movement until reapplication succeeds. Do not display the desired coordinate as the current applied coordinate.
 
-- [ ] **Step 6: Keep diagnostics privacy-safe**
+- [x] **Step 6: Keep diagnostics privacy-safe**
 
 Display transport, endpoint class, redacted stable device alias, session generation, request ID suffix, last acknowledgement time, and failure code. Do not show raw UDIDs, account data, or tunnel endpoints in normal UI/log evidence.
 
-- [ ] **Step 7: Add a ReleaseTesting-only deterministic injector seam**
+- [x] **Step 7: Add a ReleaseTesting-only deterministic injector seam**
 
 `LocationInjectorFactory` must return the real `DevLocationBridge` in shipping Release builds. Under the existing ReleaseTesting `DEBUG` compilation condition only, it may select a scripted fake when `ProcessEnvironment` contains `PATHCHANGER_TEST_LOCATION_INJECTOR=1`. Add tests proving Release ignores the variable and ReleaseTesting can exercise all UI states without a physical device. Keep the launch environment external to the repository.
 
-- [ ] **Step 8: Run focused/full tests and commit green**
+- [x] **Step 8: Run focused/full tests and commit green**
 
 ```bash
 git add PathChanger/PathChangerApp.swift PathChanger/UI/ContentView.swift PathChanger/UI/OrganicChrome.swift PathChanger/UI/ModeContextCard.swift PathChanger/UI/FloatingControlPanel.swift PathChanger/UI/JoystickControlView.swift PathChanger/UI/DiagnosticsView.swift PathChanger/Device/LocationInjectorFactory.swift PathChanger/Core/ProcessEnvironment.swift Tests/PathChangerTests/LocationInjectorFactoryTests.swift Tests/PathChangerTests/UIComponentTests.swift Tests/PathChangerTests/AppStateSimulationTests.swift Tests/PathChangerTests/LocationStatusPresentationTests.swift project.yml PathChanger.xcodeproj/project.pbxproj
 git commit -m "fix(ui): derive spoofing status from acknowledged state"
 ```
 
-- [ ] **Step 9: Run background FlowDeck GUI verification**
+- [x] **Step 9: Run background FlowDeck GUI verification**
 
 Follow the macOS preflight: inspect `--help`, start a session, use `find` before actions, pass `--background`, and inspect the updated screenshot/tree after each action. No physical-device mutation is required for this step; use deterministic app dependencies.
 
-- [ ] **Step 10: Review and integrate the GUI topic**
+- [x] **Step 10: Review and integrate the GUI topic**
 
 Reject any remaining writable duplicate boolean that can make the GUI disagree with coordinator state. Merge after unit, full-suite, and background GUI checks pass.
 
@@ -914,7 +914,7 @@ Reject any remaining writable duplicate boolean that can make the GUI disagree w
 - Modify: `Tests/PathChangerTests/Fakes/FakeLocationInjector.swift`
 - Modify: `Tests/PathChangerTests/LocationSessionRecoveryTests.swift`
 
-- [ ] **Step 1: Define the ten core cases in one typed table**
+- [x] **Step 1: Define the ten core cases in one typed table**
 
 ```swift
 let cases: [(LocationMode, LocationTransport)] = LocationMode.allCases.flatMap { mode in
@@ -925,7 +925,7 @@ XCTAssertEqual(cases.count, 10)
 
 Each case must verify selection → connection ready → application request → receipt → active/held state → mode action → movement stop/completion → final coordinate held.
 
-- [ ] **Step 2: Verify mode-specific outcomes**
+- [x] **Step 2: Verify mode-specific outcomes**
 
 - Teleport holds its selected coordinate.
 - Jump consumes exactly one acknowledged hop per action.
@@ -933,19 +933,19 @@ Each case must verify selection → connection ready → application request →
 - Multi-Spot acknowledges every route point and holds the final waypoint.
 - Joystick release stops movement and holds its final acknowledged coordinate.
 
-- [ ] **Step 3: Add interruption/recovery cases**
+- [x] **Step 3: Add interruption/recovery cases**
 
 For every mode/transport pair, inject loss before first acknowledgement, during movement, and after completion. Verify desired state persistence, uncertainty, session-generation rollover, reapplication, and no implicit clear.
 
-- [ ] **Step 4: Add failure-truth cases**
+- [x] **Step 4: Add failure-truth cases**
 
 Cover rate limiting, queue overflow, timeout, process death, stale endpoint, wrong request ID, stale generation, selected-device replacement, exhausted recovery, and failed explicit clear.
 
-- [ ] **Step 5: Make timing deterministic**
+- [x] **Step 5: Make timing deterministic**
 
 Use injected clocks and event-driven fake acknowledgements. No arbitrary sleeps are permitted in these tests.
 
-- [ ] **Step 6: Run the matrix twice and classify divergence**
+- [x] **Step 6: Run the matrix twice and classify divergence**
 
 ```bash
 flowdeck test discover
@@ -957,7 +957,7 @@ flowdeck test
 
 Expected: all ten core cases and interruption cases pass identically; any run divergence is a flake finding, not a retry-to-green.
 
-- [ ] **Step 7: Commit and integrate test evidence**
+- [x] **Step 7: Commit and integrate test evidence**
 
 ```bash
 git add Tests/PathChangerTests/ModeTransportMatrixTests.swift Tests/PathChangerTests/ConnectionInterruptionTests.swift Tests/PathChangerTests/Fakes/FakeLocationInjector.swift Tests/PathChangerTests/LocationSessionRecoveryTests.swift project.yml PathChanger.xcodeproj/project.pbxproj PathChanger.xcodeproj/xcshareddata/xcschemes/PathChanger.xcscheme
@@ -967,6 +967,8 @@ git commit -m "test(integration): cover five modes over usb and wifi"
 Merge after an independent test-review verifies that the fake models receipt/session semantics rather than bypassing them.
 
 ## Task 16: Verify the complete GUI workflow in a controlled macOS run
+> **2026-10-25 status:** Steps 1–8 implemented and unit-verified; Steps 9–10 (scripted GUI drive) are environment-blocked — `flowdeck ui mac` recorder lacks Accessibility/Screen-Recording permission in agent sessions (AGENTS.md). Launch + process-stable verification done device-free.
+
 
 **Branch:** `test/mode-transport-matrix`
 
@@ -1010,6 +1012,8 @@ The event log for mode completion, stop movement, transport loss, and transport 
 Stop the UI session and development app, close bounded log streams, verify zero PathChanger processes, verify product/source hashes, and delete only run-created external staging when retention policy permits.
 
 ## Task 17: Run one owner-approved physical-device matrix
+> **2026-10-25 status:** Owner-gated and deliberately deferred: the owner will run the physical test personally (owner instruction 2026-10-25). This is the single open hardware gate.
+
 
 **Branch:** `test/mode-transport-matrix`
 
@@ -1073,31 +1077,31 @@ Each row is PASS, FAIL, BLOCKED, or NOT RUN with evidence. A GUI-only result can
 - Create: `Tests/PathChangerTests/DependencyLockTests.swift`
 - Modify: `Resources/PathChanger.entitlements` and `project.yml` only if signing verification proves a mismatch
 
-- [ ] **Step 1: Write RED dependency-policy tests**
+- [x] **Step 1: Write RED dependency-policy tests**
 
 Require an exact pymobiledevice3 version, complete transitive lock, hashes for downloaded artifacts, supported Python range, and deterministic managed environment location. Reject unpinned install commands.
 
-- [ ] **Step 2: Write RED packaging fail-closed tests**
+- [x] **Step 2: Write RED packaging fail-closed tests**
 
 A failed build, copy, entitlements application, signing operation, signature verification, or Gatekeeper check must return non-zero and must not replace an existing installed app. Tests operate in temporary directories; never write `/Applications` during unit tests.
 
-- [ ] **Step 3: Generate the lock through an approved reproducible tool**
+- [x] **Step 3: Generate the lock through an approved reproducible tool**
 
 Generate `requirements-location.lock` with `uv pip compile --generate-hashes requirements-location.in --output-file requirements-location.lock` using the verified `$HOME/.local/bin/uv`. Record the `uv` version and verify all transitive versions/hashes. Do not hand-author dependency entries or upgrade unrelated packages.
 
-- [ ] **Step 4: Use a managed user-level runtime**
+- [x] **Step 4: Use a managed user-level runtime**
 
 Resolve the app's Python from its managed environment, not arbitrary PATH order. A privileged helper/tunnel path must never execute user-writable Python or packages. If typed privilege separation is not yet available, keep privileged execution blocked and report the release blocker rather than weakening ownership checks.
 
-- [ ] **Step 5: Replace fail-open packaging**
+- [x] **Step 5: Replace fail-open packaging**
 
 Remove `|| true` and success-after-failure paths. Build into external staging, verify the complete bundle/signature/entitlements first, and replace an installed app only through an explicitly authorized atomic installation step with rollback.
 
-- [ ] **Step 6: Verify the FlowDeck/Xcode product separately from the installed artifact**
+- [x] **Step 6: Verify the FlowDeck/Xcode product separately from the installed artifact**
 
 A built product passing launch checks does not prove `/Applications/PathChanger.app` or the manual bundler is correct. Record hashes and signing matrix results for each artifact independently.
 
-- [ ] **Step 7: Run tests/build/signing checks and commit green**
+- [x] **Step 7: Run tests/build/signing checks and commit green**
 
 ```bash
 flowdeck project packages resolve
@@ -1115,7 +1119,7 @@ git commit -m "fix(release): pin location runtime and fail packaging closed"
 
 Stage only changed files. Certificate-dependent Developer ID/Gatekeeper results may remain documented release blockers; they cannot be converted into pass without the real credential.
 
-- [ ] **Step 8: Review and integrate packaging**
+- [x] **Step 8: Review and integrate packaging**
 
 Require security review of ownership boundaries, lock generation, shell quoting, destructive paths, signing, and rollback. Merge only after no product/test regression and no privilege expansion.
 
