@@ -8,17 +8,25 @@
 
 **Status: Not release-ready.** The feature branch remains under automated, visual, and physical acceptance. Do not publish a release until the ten-case USB/Wi-Fi matrix, interruption checks, signing, and evidence gates pass.
 
-PathChanger is a macOS SwiftUI application backed by a managed, hash-verified Python runtime. Runtime support is selected by capability probes rather than a hard-coded maximum iOS or pymobiledevice3 version. Provider acknowledgements are the source of truth for applied location state.
+PathChanger is a macOS SwiftUI application backed by a managed, rolling-latest Python runtime that the app bootstraps itself (pyenv-first; no version pins or hash locks). Runtime support is selected by capability probes rather than a hard-coded maximum iOS or pymobiledevice3 version. Provider acknowledgements are the source of truth for applied location state.
 
 ## Five user modes
 
 - **Teleport** — apply one selected target and hold it.
-- **Jump** — apply a discrete jump with an explicit distance.
+- **Jump** — apply an ordered list of discrete destinations one Move at a time; the index advances only after each successful injection.
 - **Two-Spot** — move repeatedly between two acknowledged targets.
 - **Multi-Spot** — play an ordered route of multiple targets.
 - **Joystick** — move continuously from an acknowledged starting location.
 
 Stop and Clear are different operations. Stop preserves the last acknowledged coordinate. Clear is destructive, requires explicit confirmation, and succeeds only after provider reset acknowledgement.
+
+The binding mode contracts live in `PRODUCT_REQUIREMENTS.md` §2 (scope) and §3 (per-mode behavior).
+
+## Device and iOS support
+
+PathChanger attempts location simulation on every parseable iOS version — iOS 17 through 27 included — and hard-blocks none of them. iOS 18 and newer are surfaced as caution-only: the flag is advisory and never blocks injection. Simulation runs as a held session, so an applied coordinate stays active as long as PathChanger keeps the session open; Stop, Pause, and mode changes hold the spoof, and only explicit Clear/Reset ends it. This replaces the behavior of earlier pymobiledevice3 releases, which silently dropped simulation on iOS 18+ (upstream issue #1387).
+
+Wi-Fi-prepared devices appear as Network connections and work through the same injection path. Device visibility depends on the phone staying unlocked, awake, and on the same network.
 
 ## Transport model
 
@@ -38,6 +46,10 @@ The builder retains `build/PathChanger.app` and never modifies `/Applications`. 
 ```
 
 During agent-driven development, use FlowDeck for package resolution, builds, tests, launches, logs, and UI automation. Do not substitute raw Apple build or device commands.
+
+## Testing
+
+The suite is 30+ XCTest suites and 1000+ tests. Locally, run `./scripts/test.sh` — it wraps `swift test` with scratch-path and framework-linking workarounds for iCloud-synced checkouts — and during agent-driven development FlowDeck drives the same suite. The scheme's test action builds the `ReleaseTesting` configuration. A small number of tests require a physical device and stay skipped unless `PATHCHANGER_RUN_DEVICE_TESTS=1` is set explicitly.
 
 ## Verification
 
