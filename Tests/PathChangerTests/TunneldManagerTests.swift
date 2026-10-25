@@ -16,6 +16,16 @@ final class TunneldManagerTests: XCTestCase {
     override func setUp() async throws {
         // Note: Using shared singleton - tests may affect each other
         manager = TunneldManager.shared
+
+        // Hermetic start: earlier suites (e.g. TunnelHealthMonitorTests) drive the shared
+        // state machine into running, whose action starts this manager's health monitor.
+        // Residual consecutive-failure counts would otherwise fire .healthCheckFailed into
+        // the machine within milliseconds of connectionEstablished below.
+        let mirror = Mirror(reflecting: manager as TunneldManager)
+        if let sharedMonitor = mirror.children.first(where: { $0.label == "healthMonitor" })?.value as? TunnelHealthMonitor {
+            sharedMonitor.stopMonitoring()
+            sharedMonitor.resetMetrics()
+        }
     }
 
     func testTunnelCommandsTargetSelectedDeviceWhenProvided() {

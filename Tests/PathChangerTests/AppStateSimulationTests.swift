@@ -53,6 +53,17 @@ final class AppStateSimulationTests: XCTestCase {
         }
     }
 
+    /// Stubs the one DeviceManager entry point one-tap reconnect exercises, so
+    /// reconnect tests never invoke pymobiledevice3 discovery or clobber the
+    /// selected fake device with live host state.
+    private final class ReconnectStubDeviceManager: DeviceManager {
+        private(set) var refreshCallCount = 0
+
+        override func refreshDevices() async {
+            refreshCallCount += 1
+        }
+    }
+
     private func makeState(locationInjector: (any LocationInjecting)? = nil) -> AppState {
         AppState(startBackgroundServices: false, locationInjector: locationInjector)
     }
@@ -458,12 +469,14 @@ final class AppStateSimulationTests: XCTestCase {
     private func makeAcknowledgementState(
         injector: FakeLocationInjector,
         mode: AppMode,
-        managedSessionSource: (any ManagedLocationSessionSource)? = nil
+        managedSessionSource: (any ManagedLocationSessionSource)? = nil,
+        deviceManager: DeviceManager? = nil
     ) -> (AppState, LocationSessionIdentity) {
         let state = AppState(
             startBackgroundServices: false,
             locationInjector: injector,
-            managedLocationSessionSource: managedSessionSource
+            managedLocationSessionSource: managedSessionSource,
+            deviceManager: deviceManager
         )
         state.selectedDevice = Device(id: "ack-device", displayName: "Ack Device", connectionType: .usb)
         state.isTunneldRunning = true
@@ -691,5 +704,116 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         XCTAssertNotNil(state.statusMessage)
+    }
+
+    // MARK: - One-Tap Reconnect
+
+    /// Applies once through the Move path, forces a connection-class rejection so the
+    /// coordinator classifies the connection as failed, then verifies one-tap
+    /// reconnect restores a ready session and reapplies the desired coordinate.
+    func testReconnectNowRestoresReadySessionAndReappliesDesiredLocation() async throws {
+        let fake = FakeLocationInjector()
+        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
+        let (state, session) = makeAcknowledgementState(
+            injector: fake,
+            mode: .teleport,
+            managedSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
+            deviceManager: deviceManager
+        )
+        state.stageLocation(first, for: .teleport)
+
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+        XCTAssertEqual(state.currentLocation, first)
+
+        let rejected = try state.locationSessionCoordinator.beginApplication()
+        state.locationSessionCoordinator.reject(
+            requestID: rejected.id,
+            error: LocationInjectionError.endpointUnreachable
+        )
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("Expected the connection-class rejection to fail the connection")
+        }
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+
+        let reconnect = Task { await state.reconnectNow() }
+        let reconnected = try await awaitReadyIdentity(in: state)
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: reconnected)
+        await reconnect.value
+
+        XCTAssertEqual(deviceManager.refreshCallCount, 1)
+        guard case .ready(let restored) = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("Expected reconnect to restore a ready session")
+        }
+        XCTAssertEqual(restored.stableDeviceID, session.stableDeviceID)
+        XCTAssertEqual(restored.generation, session.generation + 1)
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.currentLocation, first)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter { if case .apply = $0 { return true }; return false }.count, 2)
+    }
+
+    func testReconnectNowWithoutSelectedDeviceChangesNothing() async {
+        let fake = FakeLocationInjector()
+        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: fake,
+            managedLocationSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
+            deviceManager: deviceManager
+        )
+        state.locationSessionCoordinator.select(first, mode: .teleport)
+
+        await state.reconnectNow()
+
+        XCTAssertEqual(deviceManager.refreshCallCount, 1)
+        guard case .unavailable = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("Expected connection to remain unavailable without a selected device")
+        }
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertFalse(state.isSimulating)
+        let calls = await fake.calls()
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testReconnectNowTappedTwiceRunsASingleRecovery() async throws {
+        let fake = FakeLocationInjector()
+        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
+        let (state, session) = makeAcknowledgementState(
+            injector: fake,
+            mode: .teleport,
+            managedSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
+            deviceManager: deviceManager
+        )
+        state.stageLocation(first, for: .teleport)
+
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+
+        let rejected = try state.locationSessionCoordinator.beginApplication()
+        state.locationSessionCoordinator.reject(
+            requestID: rejected.id,
+            error: LocationInjectionError.endpointUnreachable
+        )
+
+        let firstTap = Task { await state.reconnectNow() }
+        let secondTap = Task { await state.reconnectNow() }
+        let reconnected = try await awaitReadyIdentity(in: state)
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: reconnected)
+        await firstTap.value
+        await secondTap.value
+
+        guard case .ready = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("Expected repeated taps to leave one ready session")
+        }
+        let calls = await fake.calls()
+        XCTAssertEqual(calls.filter { if case .apply = $0 { return true }; return false }.count, 2)
     }
 }

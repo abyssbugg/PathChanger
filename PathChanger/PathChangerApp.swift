@@ -463,6 +463,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private var locationRecoveryTask: Task<Void, Never>?
     private var bridgeEventTask: Task<Void, Never>?
     private var persistentBridgeEventTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    /// True once the user explicitly started a tunnel this session (tunnel button or
+    /// error-dialog action). One-tap reconnect may then restart it; launch-time and
+    /// adopted tunnels never gain that permission.
+    private var userStartedTunnelInSession = false
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -485,6 +490,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         startBackgroundServices: Bool = true,
         locationInjector: (any LocationInjecting)? = nil,
         managedLocationSessionSource: (any ManagedLocationSessionSource)? = nil,
+        deviceManager: DeviceManager? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -510,7 +516,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.automaticRecoveryEnabled = effectiveBackgroundServices
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
-        self.device = DeviceStateManager(startBackgroundServices: effectiveBackgroundServices)
+        self.device = DeviceStateManager(
+            deviceManager: deviceManager,
+            startBackgroundServices: effectiveBackgroundServices
+        )
         self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
@@ -695,6 +704,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     /// Start the selected tunnel mode against the selected device, when available.
     func startSelectedTunnel() async {
+        userStartedTunnelInSession = true
         await TunneldManager.shared.startTunnel(deviceId: tunnelTargetDeviceId())
     }
 
@@ -738,6 +748,47 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
 
         return selectedDevice.id
+    }
+
+    /// One-tap recovery after the connection phase reports failed: refresh device
+    /// discovery, restart the tunnel when the user started one in this session,
+    /// restore a ready location session for the selected device, and reapply the
+    /// desired coordinate through the normal apply path. Safe to tap repeatedly:
+    /// an in-flight reconnect is awaited rather than duplicated, and a Clear in
+    /// progress is never interrupted.
+    func reconnectNow() async {
+        if let reconnectTask {
+            await reconnectTask.value
+            return
+        }
+        let reconnect = Task { @MainActor in
+            defer { reconnectTask = nil }
+            await runReconnectNow()
+        }
+        reconnectTask = reconnect
+        await reconnect.value
+    }
+
+    private func runReconnectNow() async {
+        guard canBeginLocationOperation else { return }
+        // Manual reconnect supersedes an in-flight automatic recovery; cancelling
+        // first keeps the two paths from driving the coordinator concurrently.
+        locationRecoveryTask?.cancel()
+        await locationRecoveryTask?.value
+        locationRecoveryTask = nil
+
+        await device.refreshDevices()
+
+        if userStartedTunnelInSession {
+            await TunneldManager.shared.restartTunnel()
+        }
+
+        guard prepareLocationSessionIfNeeded() else {
+            statusMessage = "Connect and select an iOS device to reconnect"
+            return
+        }
+        guard let desired = locationSessionCoordinator.state.desiredLocation else { return }
+        await applyPlannedLocation(desired, mode: .teleport)
     }
 
     // MARK: Location Control

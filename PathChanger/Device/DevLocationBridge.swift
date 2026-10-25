@@ -196,6 +196,7 @@ enum LocationInjectionError: Error, LocalizedError {
     case invalidCoordinates
     case tunneldNotRunning
     case deviceNotFound
+    case endpointUnreachable
     case injectionFailed(String)
     case clearFailed(String)
     case rateLimited
@@ -212,6 +213,8 @@ enum LocationInjectionError: Error, LocalizedError {
             return "The selected provider requires an RSD-capable tunnel, but no usable tunnel is running."
         case .deviceNotFound:
             return "Target device not found or disconnected."
+        case .endpointUnreachable:
+            return "The device connection endpoint is unreachable — the device is likely locked, asleep, or off the network."
         case .injectionFailed(let reason):
             return "Location injection failed: \(reason)"
         case .clearFailed(let reason):
@@ -237,6 +240,8 @@ enum LocationInjectionError: Error, LocalizedError {
             return "Settings > Privacy & Security > Developer Mode > Enable"
         case .deviceNotFound:
             return "1. Check USB connection or Wi-Fi\n2. Trust this computer on the device\n3. Refresh device list"
+        case .endpointUnreachable:
+            return "Wake and unlock the device, confirm it is on the same Wi-Fi (or reconnect USB), then retry. Spoofing state is preserved as uncertain, not cleared."
         case .outputSizeExceeded:
             return "If this persists, check pymobiledevice3 installation or report a bug."
         case .unsupportedIOSVersion:
@@ -1229,43 +1234,50 @@ actor DevLocationBridge: LocationInjecting {
 
     // MARK: Private Methods
 
-    private func parseResult(_ result: String) throws {
-        if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
-            stats.recordFailure()
-            throw LocationInjectionError.tunneldNotRunning
+    /// Classifies provider (subprocess/helper) output into a typed injection error.
+    /// Pure and testable: covers both the classic exception names and the
+    /// pymobiledevice3 11.4x log-formatted wording observed live on iOS 27.2
+    /// (2026-10-24): "No route to host", "ConnectionRefusedError … Connect call
+    /// failed", and "Device not found: usbmux has no device matching udid".
+    static func classifyProviderOutput(_ output: String) -> LocationInjectionError? {
+        if output.contains("InvalidServiceError") || output.contains("Unable to connect to Tunneld") {
+            return .tunneldNotRunning
         }
-
-        if result.contains("DeviceNotFoundError") {
-            stats.recordFailure()
-            throw LocationInjectionError.deviceNotFound
+        if output.contains("DeviceNotFoundError")
+            || output.contains("usbmux has no device")
+            || output.contains("Device not found") {
+            return .deviceNotFound
         }
-
-        if result.contains("DeveloperModeError") {
-            stats.recordFailure()
-            throw LocationInjectionError.developerModeRequired
+        if output.contains("DeveloperModeError") {
+            return .developerModeRequired
         }
-
-        // Handle DVT service error -402653150 (service not available)
-        if result.contains("-402653150") || result.contains("402653150") {
-            stats.recordFailure()
-            throw LocationInjectionError.injectionFailed("DVT service unavailable. Ensure Developer Mode is enabled and device is trusted.")
+        if output.contains("402653150") {
+            return .injectionFailed("DVT service unavailable. Ensure Developer Mode is enabled and device is trusted.")
         }
-
-        // Handle connection/protocol errors
-        if result.contains("ConnectionError") || result.contains("BrokenPipeError") {
-            stats.recordFailure()
-            throw LocationInjectionError.tunneldNotRunning
+        if output.contains("ConnectionError") || output.contains("BrokenPipeError") {
+            return .tunneldNotRunning
         }
-
-        if result.contains("Traceback") || result.contains("rsd_dependency") {
-            stats.recordFailure()
-            throw LocationInjectionError.injectionFailed("Could not reach the tunnel. Start Tunnel again.")
+        if output.contains("No route to host")
+            || output.contains("Errno 65")
+            || output.contains("ConnectionRefusedError")
+            || output.contains("Connect call failed")
+            || output.contains("Errno 61") {
+            return .endpointUnreachable
         }
-
-        let lowercased = result.lowercased()
+        if output.contains("Traceback") || output.contains("rsd_dependency") {
+            return .injectionFailed("Could not reach the tunnel. Start Tunnel again.")
+        }
+        let lowercased = output.lowercased()
         if lowercased.contains("error") && !lowercased.contains("warning") {
+            return .injectionFailed(shortPythonError(output))
+        }
+        return nil
+    }
+
+    private func parseResult(_ result: String) throws {
+        if let error = Self.classifyProviderOutput(result) {
             stats.recordFailure()
-            throw LocationInjectionError.injectionFailed(Self.shortPythonError(result))
+            throw error
         }
     }
 

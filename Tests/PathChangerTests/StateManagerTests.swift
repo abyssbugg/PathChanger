@@ -452,6 +452,38 @@ final class AcknowledgedRouteStateTests: XCTestCase {
 
 @MainActor
 final class DeviceStateManagerTests: XCTestCase {
+
+    private final class TransportRefreshRecordingDeviceManager: DeviceManager {
+        private(set) var transportRefreshCount = 0
+
+        init() {
+            // Skip DeviceManager's background discovery tasks; only the overridden
+            // refresh is observed.
+            super.init(startBackgroundServices: false)
+        }
+
+        override func refreshTransportAvailability() async {
+            transportRefreshCount += 1
+        }
+    }
+
+    private func makeDevice() -> Device {
+        Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+    }
+
+    private func makeManager(deviceManager: DeviceManager) -> DeviceStateManager {
+        DeviceStateManager(
+            deviceManager: deviceManager,
+            startBackgroundServices: false
+        )
+    }
+
     func testPublishedDiscoverySynchronizesWrapperState() {
         let deviceManager = DeviceManager()
         deviceManager.stopAutoRefresh()
@@ -472,5 +504,56 @@ final class DeviceStateManagerTests: XCTestCase {
         XCTAssertEqual(manager.availableDevices, [device])
         XCTAssertEqual(manager.selectedDevice, device)
         XCTAssertEqual(manager.connectionStatus, .connected)
+    }
+
+    func testTransportRefreshIsSkippedInsideMinimumInterval() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.selectedDevice = makeDevice()
+
+        let firstTrigger = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger)
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+
+        // The 15 s guard: an immediate second trigger must not spawn the usbmux
+        // subprocess again, even though a device is selected.
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger.addingTimeInterval(1))
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+    }
+
+    func testTransportRefreshRunsAfterMinimumIntervalWithDeviceSelected() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.selectedDevice = makeDevice()
+
+        let firstTrigger = Date(timeIntervalSinceReferenceDate: 2_000_000)
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger)
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger.addingTimeInterval(15))
+        XCTAssertEqual(deviceManager.transportRefreshCount, 2)
+    }
+
+    func testTransportRefreshSkippedWithoutDeviceOrTunnel() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+
+        await manager.refreshTransportAvailabilityIfNeeded(
+            now: Date(timeIntervalSinceReferenceDate: 3_000_000)
+        )
+
+        XCTAssertEqual(deviceManager.transportRefreshCount, 0)
+    }
+
+    func testTransportRefreshRunsWhenTunnelRunningWithoutDevice() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.isTunneldRunning = true
+
+        await manager.refreshTransportAvailabilityIfNeeded(
+            now: Date(timeIntervalSinceReferenceDate: 4_000_000)
+        )
+
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
     }
 }

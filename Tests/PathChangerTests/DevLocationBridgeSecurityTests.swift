@@ -25,6 +25,36 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         ]))
     }
 
+    // MARK: - Provider Output Connection-Loss Classification (pymobiledevice3 11.4x)
+
+    func testClassifyProviderOutputRecognizesModernUnreachableSignatures() {
+        let unreachableOutputs = [
+            "OSError: [Errno 65] No route to host",
+            "ConnectionRefusedError: [Errno 61] Connect call failed ('fd57:16a4:e2fa::1', 57017, 0, 0)",
+            "sock_connect_cb raise OSError Connect call failed",
+        ]
+        for output in unreachableOutputs {
+            guard case .endpointUnreachable? = DevLocationBridge.classifyProviderOutput(output) else {
+                return XCTFail("Expected endpointUnreachable for: \(output)")
+            }
+        }
+    }
+
+    func testClassifyProviderOutputRecognizesModernDeviceGoneWording() {
+        guard case .deviceNotFound? = DevLocationBridge.classifyProviderOutput(
+            "Device not found: usbmux has no device matching udid 00008130-000C5144019A001C"
+        ) else {
+            return XCTFail("Expected deviceNotFound for usbmux-has-no-device wording")
+        }
+    }
+
+    func testClassifyProviderOutputPreservesLegacyClassification() {
+        guard case .tunneldNotRunning? = DevLocationBridge.classifyProviderOutput("ConnectionError: broken pipe") else {
+            return XCTFail("Expected tunneldNotRunning for legacy ConnectionError")
+        }
+        XCTAssertNil(DevLocationBridge.classifyProviderOutput("location set"))
+    }
+
     func testExplicitClearAwaitsHeldSimulationTermination() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -91,7 +121,8 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             .rateLimited,
             .timeout,
             .developerModeRequired,
-            .outputSizeExceeded
+            .outputSizeExceeded,
+            .endpointUnreachable
         ]
 
         for error in errors {

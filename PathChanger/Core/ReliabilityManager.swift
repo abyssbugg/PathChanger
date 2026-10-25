@@ -261,7 +261,7 @@ struct ErrorClassifier {
                 return .transient
             case .injectionFailed, .clearFailed:
                 return .retryable
-            case .deviceNotFound, .tunneldNotRunning:
+            case .deviceNotFound, .tunneldNotRunning, .endpointUnreachable:
                 return .persistent
             case .developerModeRequired, .unsupportedIOSVersion:
                 return .fatal
