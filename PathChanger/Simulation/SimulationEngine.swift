@@ -558,7 +558,8 @@ class SimulationEngine: ObservableObject {
         teleportMode.setTarget(coordinate)
         teleportMode.start()
 
-        try await locationBridge.setLocation(coordinate, for: device)
+        // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+        let _ = try await locationBridge.setLocation(coordinate, for: device)
         currentCoordinate = coordinate
         state = .completed
     }
@@ -699,7 +700,8 @@ class SimulationEngine: ObservableObject {
         // Send to device
         if let coordinate = nextCoordinate, let device = targetDevice {
             do {
-                try await locationBridge.setLocation(coordinate, for: device)
+                // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+                let _ = try await locationBridge.setLocation(coordinate, for: device)
                 currentCoordinate = coordinate
             } catch {
                 // REQ-2: Invalidate/nil repeating timer before transitioning to error state

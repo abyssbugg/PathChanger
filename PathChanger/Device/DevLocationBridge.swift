@@ -1146,7 +1146,8 @@ actor DevLocationBridge: LocationInjecting {
         onProgress: @escaping (Int, Int, LocationCoordinate) -> Void
     ) async throws {
         for (index, coordinate) in coordinates.enumerated() {
-            try await setLocation(coordinate, for: device)
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await setLocation(coordinate, for: device)
             onProgress(index + 1, coordinates.count, coordinate)
 
             // Wait for interval
@@ -1385,6 +1386,10 @@ actor DevLocationBridge: LocationInjecting {
 
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            // Close both read-ends: drained handles were never released, leaking 2 fds
+            // per subprocess call until the process hit EMFILE under sustained polling.
+            outputPipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
             let totalSize = outputData.count + errorData.count
             guard totalSize <= maxOutputSize else {
                 throw LocationInjectionError.outputSizeExceeded
@@ -1436,6 +1441,8 @@ actor DevLocationBridge: LocationInjecting {
                     // Read output with size limit to prevent DoS
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    outputPipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
 
                     // Security: Check output size limit
                     let totalSize = outputData.count + errorData.count
@@ -1560,7 +1567,8 @@ class LocationBridgeManager: ObservableObject {
         lastError = nil
 
         do {
-            try await bridge.setLocation(coordinate, for: device)
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await bridge.setLocation(coordinate, for: device)
             lastInjectedLocation = coordinate
             retryCount = 0
             injectionStats = await bridge.getStats()

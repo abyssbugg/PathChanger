@@ -243,7 +243,8 @@ class MultiDeviceCoordinator: ObservableObject {
                 for device in chunk {
                     group.addTask {
                         do {
-                            try await self.locationBridge.setLocation(coordinate, for: device)
+                            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+                            let _ = try await self.locationBridge.setLocation(coordinate, for: device)
 
                             // Update device state
                             await MainActor.run {

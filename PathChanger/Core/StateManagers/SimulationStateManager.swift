@@ -139,7 +139,8 @@ final class SimulationStateManager: ObservableObject {
         }
 
         do {
-            try await locationBridge.setLocation(
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await locationBridge.setLocation(
                 applicationCoordinate,
                 for: targetDevice,
                 priority: quiet ? .high : .normal,
