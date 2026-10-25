@@ -571,6 +571,72 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(card.contains("foregroundStyle(canMove ? Organic.accentInk : Organic.neutral700)"))
     }
 
+    func testModeContextCardPairsIdentifiersWithHumanLabels() throws {
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+
+        // The Teleport empty-target callout keeps its identifier but reads human text.
+        let emptyTarget = try XCTUnwrap(card.range(of: ".accessibilityIdentifier(\"location.teleport.emptyTarget\")"))
+        let emptyTargetLabel = try XCTUnwrap(card[..<emptyTarget.lowerBound].range(of: ".accessibilityLabel(", options: .backwards))
+        let emptyTargetPairing = String(card[emptyTargetLabel.lowerBound..<emptyTarget.upperBound])
+        XCTAssertTrue(emptyTargetPairing.contains("location.teleport.noTarget"), "emptyTarget must pair with the human noTarget label")
+        XCTAssertTrue(emptyTargetPairing.contains("location.teleport.targetHint"), "emptyTarget must carry the targetHint guidance")
+
+        // The Move-disabled helper reads the reason text instead of its identifier.
+        let disabledReason = try XCTUnwrap(card.range(of: ".accessibilityIdentifier(\"location.action.disabledReason\")"))
+        let disabledReasonLabel = try XCTUnwrap(card[..<disabledReason.lowerBound].range(of: ".accessibilityLabel(", options: .backwards))
+        let disabledReasonPairing = String(card[disabledReasonLabel.lowerBound..<disabledReason.upperBound])
+        XCTAssertTrue(disabledReasonPairing.contains(".accessibilityLabel(reason)"), "disabledReason must pair with the human reason text")
+
+        // The ROUTE header Download icon names what it does instead of its symbol.
+        XCTAssertTrue(card.contains(".accessibilityLabel(\"Save every point to Favorites\")"))
+    }
+
+    func testJoystickStopMovementRequiresActiveMovement() throws {
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+        let stopButton = try XCTUnwrap(card.range(of: "Button(\"Stop movement\")"))
+        let suffix = card[stopButton.lowerBound...]
+        let end = try XCTUnwrap(suffix.range(of: "} else {"))
+        let stopBlock = String(suffix[..<end.lowerBound])
+
+        XCTAssertTrue(stopBlock.contains("appState.disengageJoystick()"))
+        XCTAssertTrue(stopBlock.contains(".disabled(!appState.locationPresentation.isMovementActive)"), "Stop movement must be disabled while movement is not active")
+    }
+
+    func testMapCanvasControlsExposeHumanAccessibilityLabels() throws {
+        let source = try sourceFile("PathChanger/UI/SimulationView.swift")
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Center on device\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Zoom in\")"))
+        XCTAssertTrue(source.contains(".accessibilityLabel(\"Zoom out\")"))
+    }
+
+    func testModeContextCardRowsReadAsDiscreteVoiceOverElements() throws {
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+
+        // Each route stop's name and coordinate read as one element, separate from its row buttons.
+        let stopName = try XCTUnwrap(card.range(of: "Text(stop.name)"))
+        let stopRowStart = try XCTUnwrap(card[..<stopName.lowerBound].range(of: "VStack(alignment: .leading, spacing: 1)", options: .backwards))
+        let stopRowSuffix = card[stopRowStart.lowerBound...]
+        let stopRowEnd = try XCTUnwrap(stopRowSuffix.range(of: "Spacer(minLength: 0)"))
+        let stopRow = String(stopRowSuffix[..<stopRowEnd.lowerBound])
+        XCTAssertTrue(stopRow.contains(".accessibilityElement(children: .combine)"), "each route stop reads as one element")
+
+        // The travel-mode header reads together with its current value, separate from the picker buttons.
+        let travelHeader = try XCTUnwrap(card.range(of: "Text(\"TRAVEL MODE\")"))
+        let travelStart = try XCTUnwrap(card[..<travelHeader.lowerBound].range(of: "HStack {", options: .backwards))
+        let travelSuffix = card[travelStart.lowerBound...]
+        let travelEnd = try XCTUnwrap(travelSuffix.range(of: "OrganicSliderRow("))
+        let travelBlock = String(travelSuffix[..<travelEnd.lowerBound])
+        XCTAssertTrue(travelBlock.contains(".accessibilityElement(children: .combine)"), "the travel-mode header reads with its value")
+
+        // Metric rows read title and value as one element with the decorative icon hidden.
+        let metricRowStart = try XCTUnwrap(card.range(of: "private func metricRow(system: String, title: String, value: String) -> some View {"))
+        let metricRowSuffix = card[metricRowStart.lowerBound...]
+        let metricRowEnd = try XCTUnwrap(metricRowSuffix.range(of: "\n    }"))
+        let metricRow = String(metricRowSuffix[..<metricRowEnd.lowerBound])
+        XCTAssertTrue(metricRow.contains(".accessibilityElement(children: .combine)"), "each metric row reads as one element")
+        XCTAssertTrue(metricRow.contains(".accessibilityHidden(true)"), "the metric icon is decorative")
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

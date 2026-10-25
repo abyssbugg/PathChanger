@@ -117,6 +117,7 @@ struct ModeContextCard: View {
                 }
                 .buttonStyle(.plain)
                 .help("Save every point to Favorites")
+                .accessibilityLabel("Save every point to Favorites")
             }
 
             if displayStops.isEmpty {
@@ -148,6 +149,7 @@ struct ModeContextCard: View {
                                     .font(Organic.mono(10))
                                     .foregroundStyle(Organic.neutral600)
                             }
+                            .accessibilityElement(children: .combine)
                             Spacer(minLength: 0)
                             Button {
                                 favorites.toggleFavorite(name: stop.name, coordinate: stop.coordinate)
@@ -199,6 +201,8 @@ struct ModeContextCard: View {
                     Image(systemName: "mappin.slash")
                 }
                 .foregroundStyle(Organic.neutral700)
+                .accessibilityLabel(NSLocalizedString("location.teleport.noTarget", comment: "Teleport empty target title"))
+                .accessibilityHint(NSLocalizedString("location.teleport.targetHint", comment: "Teleport target selection guidance"))
                 .accessibilityIdentifier("location.teleport.emptyTarget")
             }
         }
@@ -241,6 +245,7 @@ struct ModeContextCard: View {
                     .font(Organic.body(10, weight: .bold))
                     .foregroundStyle(Organic.accent800)
             }
+            .accessibilityElement(children: .combine)
             HStack(spacing: 6) {
                 ForEach(travelModes, id: \.self) { speed in
                     Button {
@@ -383,6 +388,7 @@ struct ModeContextCard: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Organic.accent600)
                 .frame(width: 15)
+                .accessibilityHidden(true)
             Text(title)
                 .font(Organic.body(12, weight: .semibold))
                 .foregroundStyle(Organic.neutral700)
@@ -391,6 +397,7 @@ struct ModeContextCard: View {
                 .font(Organic.mono(12, weight: .bold))
         }
         .frame(height: 28)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -433,6 +440,8 @@ struct ModeContextCard: View {
                     .background(Organic.sage100)
                     .clipShape(Capsule())
                     .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
+                    .disabled(!appState.locationPresentation.isMovementActive)
+                    .opacity(appState.locationPresentation.isMovementActive ? 1 : 0.55)
                 } else {
                     Button(action: onMove) {
                         HStack(spacing: 6) {
@@ -468,6 +477,7 @@ struct ModeContextCard: View {
                 Label(reason, systemImage: "info.circle")
                     .font(Organic.body(11, weight: .semibold))
                     .foregroundStyle(Organic.neutral700)
+                    .accessibilityLabel(reason)
                     .accessibilityIdentifier("location.action.disabledReason")
             }
         }

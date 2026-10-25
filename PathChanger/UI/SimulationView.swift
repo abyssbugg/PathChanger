@@ -192,6 +192,7 @@ struct SimulationView: View {
             }
             .buttonStyle(.plain)
             .help("Center on device")
+            .accessibilityLabel("Center on device")
 
             VStack(spacing: 0) {
                 Button { zoom(0.8) } label: {
@@ -201,6 +202,7 @@ struct SimulationView: View {
                         .frame(width: 36, height: 34)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Zoom in")
                 Rectangle().fill(Organic.neutral300).frame(height: 1)
                 Button { zoom(1.25) } label: {
                     Image(systemName: "minus")
@@ -209,6 +211,7 @@ struct SimulationView: View {
                         .frame(width: 36, height: 34)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Zoom out")
             }
             .background(Organic.neutral100)
             .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
