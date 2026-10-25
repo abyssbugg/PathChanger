@@ -13,8 +13,75 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     coordinator = LocationSessionCoordinator(injector: fakeInjector)
   }
   
+  // MARK: - Connection-Loss Propagation on Reject
+
+  func test_reject_withEndpointUnreachable_marksConnectionFailedAndApplicationUncertain() throws {
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(requestID: request.id, error: LocationInjectionError.endpointUnreachable)
+
+    guard case .failed = coordinator.state.connection else {
+      return XCTFail("Expected connection .failed after connection-loss rejection")
+    }
+    guard case .uncertain(let receipt, _) = coordinator.state.application else {
+      return XCTFail("Expected application .uncertain after connection-loss rejection")
+    }
+    XCTAssertNil(receipt)
+  }
+
+  func test_reject_withDeviceNotFound_marksConnectionFailedAndApplicationUncertain() throws {
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(requestID: request.id, error: LocationInjectionError.deviceNotFound)
+
+    guard case .failed = coordinator.state.connection else {
+      return XCTFail("Expected connection .failed after deviceNotFound rejection")
+    }
+    guard case .uncertain = coordinator.state.application else {
+      return XCTFail("Expected application .uncertain after deviceNotFound rejection")
+    }
+  }
+
+  func test_reject_withGenericError_keepsConnectionReadyAndApplicationFailed() throws {
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(requestID: request.id, error: LocationInjectionError.injectionFailed("boom"))
+
+    XCTAssertEqual(coordinator.state.connection, .ready(identity: identity))
+    guard case .failed = coordinator.state.application else {
+      return XCTFail("Expected application .failed for generic rejection")
+    }
+  }
+
   // MARK: - State Initialization
-  
+
   func test_initialState_isIdle() {
     XCTAssertEqual(coordinator.state.application, .idle)
     XCTAssertEqual(coordinator.state.movement, .idle)

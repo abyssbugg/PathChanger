@@ -192,6 +192,18 @@ final class LocationSessionCoordinator: ObservableObject {
     }
 
     let errorText = error.localizedDescription
+    // Connection-class rejections are not one-off failures: the channel to the
+    // device is gone, so the connection becomes failed and the application
+    // becomes uncertain while the last receipt is preserved (PRODUCT_REQUIREMENTS §4.2, §7.3).
+    if let injectionError = error as? LocationInjectionError {
+      switch injectionError {
+      case .tunneldNotRunning, .deviceNotFound, .endpointUnreachable:
+        connectionLost(reason: errorText)
+        return nil
+      default:
+        break
+      }
+    }
     self.state.application = .failed(errorText)
     self.pendingRequest = nil
     return nil
