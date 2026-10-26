@@ -584,10 +584,20 @@ final class TunneldManagerTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        return try String(
-            contentsOf: repositoryRoot
-                .appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
-            encoding: .utf8
-        )
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("PathChanger/Device/TunneldManager.swift")
+        // The app-hosted suite's MapKit/XPC plumbing transiently fills the fd table
+        // (~4.7k open PIPEs at peak). Retry the open briefly instead of failing the
+        // source-text assertions on a momentary EMFILE — same assertions, robust read.
+        for attempt in 0..<6 {
+            do {
+                return try String(contentsOf: sourceURL, encoding: .utf8)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile
+                    || (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == 24 {
+                if attempt == 5 { throw error }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+        }
+        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
     }
 }
