@@ -1490,8 +1490,11 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         readyTimeoutTask = nil
 
         stdinPipe?.fileHandleForWriting.closeFile()
+        stdinPipe?.fileHandleForReading.closeFile()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stdoutPipe?.fileHandleForReading.closeFile()
         stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.closeFile()
 
         process = nil
         stdinPipe = nil
