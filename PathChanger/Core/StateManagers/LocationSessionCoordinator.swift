@@ -204,6 +204,17 @@ final class LocationSessionCoordinator: ObservableObject {
         break
       }
     }
+    // The default five-mode path surfaces provider failures as PersistentBridgeError
+    // carrying raw provider text (the socket helper does not type them). Recognize the
+    // connection-loss signatures in that text so the primary path cannot report a
+    // healthy connection over a dead endpoint (2026-10-24 false-connected incident;
+    // found blocking by independent review 2026-10-25).
+    if let bridgeError = error as? PersistentLocationBridge.PersistentBridgeError,
+       let classified = DevLocationBridge.classifyProviderOutput(bridgeError.localizedDescription),
+       classified.isConnectionLoss {
+      connectionLost(reason: errorText)
+      return nil
+    }
     self.state.application = .failed(errorText)
     self.pendingRequest = nil
     return nil

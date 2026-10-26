@@ -205,6 +205,18 @@ enum LocationInjectionError: Error, LocalizedError {
     case outputSizeExceeded
     case unsupportedIOSVersion(String)
 
+    /// True for the errors that mean the channel to the device is gone (not a
+    /// one-off injection failure) — the class the coordinator maps to
+    /// connection-lost / application-uncertain.
+    var isConnectionLoss: Bool {
+        switch self {
+        case .tunneldNotRunning, .deviceNotFound, .endpointUnreachable:
+            return true
+        default:
+            return false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidCoordinates:

@@ -3,9 +3,63 @@ import XCTest
 
 @MainActor
 final class LocationSessionCoordinatorTests: XCTestCase {
-  
+
   var coordinator: LocationSessionCoordinator!
   fileprivate var fakeInjector: FakeLocationInjector!
+
+  // MARK: - Persistent-Bridge Error Mapping on Reject
+
+  func test_reject_withPersistentBridgeConnectionLossText_marksConnectionFailed() throws {
+    // The default five-mode path surfaces provider failures as PersistentBridgeError
+    // with raw provider text; the coordinator must recognize the connection-loss
+    // signatures in that text instead of treating them as generic failures
+    // (the false-connected defect from the 2026-10-24 live incident).
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(
+      requestID: request.id,
+      error: PersistentLocationBridge.PersistentBridgeError.bridgeError("OSError: [Errno 65] No route to host")
+    )
+
+    guard case .failed = coordinator.state.connection else {
+      return XCTFail("Expected connection .failed for persistent-bridge connection loss")
+    }
+    guard case .uncertain = coordinator.state.application else {
+      return XCTFail("Expected application .uncertain for persistent-bridge connection loss")
+    }
+  }
+
+  func test_reject_withPersistentBridgeGenericError_keepsConnectionReady() throws {
+    let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(
+      requestID: request.id,
+      error: PersistentLocationBridge.PersistentBridgeError.bridgeError("some unrelated provider error")
+    )
+
+    XCTAssertEqual(coordinator.state.connection, .ready(identity: identity))
+    guard case .failed = coordinator.state.application else {
+      return XCTFail("Expected application .failed for generic bridge rejection")
+    }
+  }
   
   override func setUp() {
     super.setUp()
