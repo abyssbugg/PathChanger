@@ -151,3 +151,160 @@ final class DeviceManagerIntegrationTests: XCTestCase {
         Logger.info("✅ Repeated refresh stability test passed", category: .device)
     }
 }
+
+final class DeviceDiscoveryReconciliationTests: XCTestCase {
+    @MainActor
+    func testDuplicatePhysicalFingerprintsDoNotTrapOrCollapseDistinctUDIDs() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.stopAutoRefresh()
+
+        let first = Device(
+            id: "00008110-001A000E3E82001E",
+            displayName: "iPhone (iOS 18.0)",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "18.0",
+            deviceName: "iPhone"
+        )
+        let second = Device(
+            id: "00008120-001B000E3E82002F",
+            displayName: "iPhone (iOS 18.0)",
+            connectionType: .wifi,
+            productType: "iPhone17,1",
+            productVersion: "18.0",
+            deviceName: "iPhone"
+        )
+
+        let devices = manager.deduplicatedDevicesForTesting([first, second])
+
+        XCTAssertEqual(devices.count, 2)
+        XCTAssertEqual(Set(devices.map(\.id)), Set([first.id, second.id]))
+    }
+
+    @MainActor
+    func testDirectUSBObservationOutranksTunnelMetadataForSameDevice() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.stopAutoRefresh()
+        let id = "00008110-001A000E3E82001E"
+        let usb = Device(id: id, displayName: "USB Device", connectionType: .usb)
+        let tunnel = Device(id: id, displayName: "Tunnel Device", connectionType: .wifi)
+
+        let devices = manager.mergedDiscoverySourcesForTesting(
+            knownWiFiDevices: [],
+            mobdev2Devices: [],
+            usbmuxDevices: [usb],
+            tunnelDevices: [tunnel],
+            mode: .auto
+        )
+
+        XCTAssertEqual(devices.count, 1)
+        XCTAssertEqual(devices.first?.connectionType, .usb)
+        XCTAssertEqual(devices.first?.displayName, "USB Device")
+    }
+
+    @MainActor
+    func testExplicitConnectionModeFiltersFinalMergedDeviceList() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.stopAutoRefresh()
+        let usb = Device(
+            id: "00008110-001A000E3E82001E",
+            displayName: "USB Device",
+            connectionType: .usb
+        )
+        let wifi = Device(
+            id: "00008120-001B000E3E82002F",
+            displayName: "Wi-Fi Device",
+            connectionType: .wifi
+        )
+
+        let usbOnly = manager.mergedDiscoverySourcesForTesting(
+            knownWiFiDevices: [wifi],
+            mobdev2Devices: [wifi],
+            usbmuxDevices: [usb, wifi],
+            tunnelDevices: [wifi],
+            mode: .usb
+        )
+        let wifiOnly = manager.mergedDiscoverySourcesForTesting(
+            knownWiFiDevices: [wifi],
+            mobdev2Devices: [wifi],
+            usbmuxDevices: [usb, wifi],
+            tunnelDevices: [wifi],
+            mode: .wifi
+        )
+
+        XCTAssertEqual(usbOnly.map(\.id), [usb.id])
+        XCTAssertEqual(wifiOnly.map(\.id), [wifi.id])
+    }
+
+    @MainActor
+    func testPairingRecordWithoutLiveObservationIsNotReportedConnected() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        let remembered = Device(
+            id: "00008120-001B000E3E82002F",
+            displayName: "Remembered Wi-Fi Device",
+            connectionType: .wifi
+        )
+
+        let devices = manager.mergedDiscoverySourcesForTesting(
+            knownWiFiDevices: [remembered],
+            mobdev2Devices: [],
+            usbmuxDevices: [],
+            tunnelDevices: [],
+            mode: .auto
+        )
+
+        XCTAssertTrue(devices.isEmpty)
+    }
+
+    @MainActor
+    func testFailedScanPreservesLastKnownDevicesAndPublishesError() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        let existing = Device(
+            id: "00008110-001A000E3E82001E",
+            displayName: "Existing USB Device",
+            connectionType: .usb
+        )
+        manager.devices = [existing]
+        manager.selectedDevice = existing
+
+        manager.commitDiscoverySnapshotForTesting(
+            [],
+            scanSucceeded: false,
+            generation: 2,
+            latestGeneration: 2,
+            errorMessage: "usbmux scan failed"
+        )
+
+        XCTAssertEqual(manager.devices, [existing])
+        XCTAssertEqual(manager.selectedDevice, existing)
+        XCTAssertNotNil(manager.lastError)
+    }
+
+    @MainActor
+    func testOlderRefreshGenerationCannotOverwriteNewerSnapshot() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        let current = Device(
+            id: "00008120-001B000E3E82002F",
+            displayName: "Current Network Device",
+            connectionType: .wifi
+        )
+        let stale = Device(
+            id: "00008110-001A000E3E82001E",
+            displayName: "Stale USB Device",
+            connectionType: .usb
+        )
+        manager.devices = [current]
+        manager.selectedDevice = current
+
+        manager.commitDiscoverySnapshotForTesting(
+            [stale],
+            scanSucceeded: true,
+            generation: 1,
+            latestGeneration: 2,
+            errorMessage: nil
+        )
+
+        XCTAssertEqual(manager.devices, [current])
+        XCTAssertEqual(manager.selectedDevice, current)
+    }
+}

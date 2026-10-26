@@ -47,12 +47,40 @@ enum AppMode: String, CaseIterable, Identifiable {
 
     var description: String {
         switch self {
-        case .teleport: return "One hop, then cooldown"
+        case .teleport: return "One acknowledged hop"
         case .jump: return "Numbered hops, one at a time"
         case .twospot: return "Travel between two points"
         case .route: return "Route through many stops"
         case .joystick: return "Steer by hand"
         case .settings: return "App settings"
+        }
+    }
+
+    var locationMode: LocationMode? {
+        switch self {
+        case .teleport: return .teleport
+        case .jump: return .jumpTeleport
+        case .twospot: return .twoSpot
+        case .route: return .multiSpot
+        case .joystick: return .joystick
+        case .settings: return nil
+        }
+    }
+}
+
+extension AppMode {
+    var localizedLabel: String {
+        NSLocalizedString(locationAccessibilityIdentifier, comment: "Location mode label")
+    }
+
+    var locationAccessibilityIdentifier: String {
+        switch self {
+        case .teleport: return "location.mode.teleport"
+        case .jump: return "location.mode.jump"
+        case .twospot: return "location.mode.twoSpot"
+        case .route: return "location.mode.multiSpot"
+        case .joystick: return "location.mode.joystick"
+        case .settings: return "location.mode.settings"
         }
     }
 }
@@ -71,6 +99,7 @@ struct ContentView: View {
     @State private var longitudeInput: String = ""
     @State private var addressText: String = "Tap the map"
     @State private var currentError: ErrorHandler.AppError?
+    @State private var showClearConfirmation = false
     @State private var showErrorDialog = false
     @State private var cardOpen = false
     @State private var savedOpen = false
@@ -148,7 +177,7 @@ struct ContentView: View {
             savedOpen = false
             coachOpen = false
         }
-        .onChange(of: appState.targetLocation) { _, _ in
+        .onChange(of: appState.locationPresentation.desiredCoordinate) { _, _ in
             syncCoordFields()
         }
         .sheet(isPresented: $appState.showOnboarding) {
@@ -199,7 +228,8 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 12) {
                     searchField
-                    livePill
+                    statusCluster
+                    clearLocationButton
                     modePill
                 }
                 .padding(.horizontal, 16)
@@ -320,45 +350,149 @@ struct ContentView: View {
         .frame(maxWidth: 360, alignment: .leading)
     }
 
-    @ViewBuilder
-    private var livePill: some View {
-        if appState.isSimulating {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Organic.sage600)
-                    .frame(width: 8, height: 8)
-                Text(appState.simulationStatusText)
-                    .font(Organic.body(12, weight: .bold))
-                    .lineLimit(1)
-                Text((appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
-                    .font(Organic.mono(11, weight: .semibold))
-                    .foregroundStyle(Organic.neutral700)
-                Button("Reset") {
-                    Task { await appState.stopSimulation() }
-                }
-                .buttonStyle(.plain)
-                .font(Organic.body(11, weight: .bold))
-                .foregroundStyle(Organic.accent700)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(Organic.neutral200)
-                .clipShape(Capsule())
+    private var displayedConnectionLabel: String {
+        let status = appState.locationPresentation
+        guard appState.selectedDevice == nil, status.appliedCoordinate == nil else {
+            return status.connectionLabel
+        }
+        return NSLocalizedString("location.status.connection.unavailable", comment: "No device connection state")
+    }
+
+    private var statusCluster: some View {
+        let status = appState.locationPresentation
+        let state = appState.locationSessionCoordinator.state
+        return HStack(spacing: 6) {
+            statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
+                       tone: connectionTone(for: state.connection),
+                       localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
+            if case .failed = state.connection {
+                reconnectButton
             }
-            .padding(.horizontal, 12)
+            statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
+                       tone: applicationTone(for: state.application),
+                       localizationKey: "accessibility.location.status.application", id: "location.status.application")
+            statusChip(titleKey: "location.status.domain.movement", value: status.movementLabel,
+                       tone: movementTone(for: state.movement),
+                       localizationKey: "accessibility.location.status.movement", id: "location.status.movement")
+            if status.appliedCoordinate != nil {
+                statusChip(titleKey: "location.status.domain.applied", value: status.appliedCoordinateLabel,
+                           tone: Organic.sage600,
+                           localizationKey: "accessibility.location.status.coordinate", id: "location.status.coordinate")
+            }
+        }
+        .padding(4)
+        .frame(height: 42)
+        .background(Organic.neutral100)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+    }
+
+    /// Offered only while the connection chip reads Lost; hands recovery to AppState,
+    /// which refreshes discovery, restarts the user-started tunnel and reapplies the
+    /// desired location.
+    private var reconnectButton: some View {
+        Button {
+            Task { await appState.reconnectNow() }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 9, weight: .bold))
+                Text("Reconnect")
+                    .font(Organic.body(10.5, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Organic.accent700)
+            .padding(.horizontal, 8)
+            .frame(maxHeight: .infinity)
+            .background(Organic.accent100)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Refresh devices, restore the connection and reapply the location")
+        .accessibilityIdentifier("location.action.reconnect")
+    }
+
+    private var clearLocationButton: some View {
+        let canClear = appState.locationPresentation.canClear
+        return Button("Clear") { showClearConfirmation = true }
+            .buttonStyle(.plain)
+            .font(Organic.body(12, weight: .semibold))
+            .foregroundStyle(canClear ? Organic.accent700 : Organic.neutral600)
+            .padding(.horizontal, 14)
             .frame(height: 42)
-            .background(Organic.neutral100)
+            .background(canClear ? Organic.accent100 : Organic.neutral200)
             .clipShape(Capsule())
-            .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-            .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
-            .frame(maxWidth: .infinity)
-        } else {
-            Spacer(minLength: 8)
+            .overlay(Capsule().stroke(canClear ? Organic.accent400 : Organic.neutral300, lineWidth: 1))
+            .disabled(!canClear)
+            .accessibilityIdentifier("location.action.clear")
+            .confirmationDialog("Return to real GPS?", isPresented: $showClearConfirmation, titleVisibility: .visible) {
+                Button("Clear simulated location", role: .destructive) { Task { await appState.clearLocation() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This is the only action that removes the applied location.")
+            }
+    }
+
+    private func statusChip(
+        titleKey: String,
+        value: String,
+        tone: Color,
+        localizationKey: String,
+        id: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(tone).frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(NSLocalizedString(titleKey, comment: "Location status domain"))
+                    .font(Organic.body(8, weight: .semibold))
+                    .foregroundStyle(Organic.neutral600)
+                    .tracking(0.35)
+                Text(value)
+                    .font(Organic.body(10.5, weight: .semibold))
+                    .foregroundStyle(Organic.neutral900)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(maxHeight: .infinity)
+        .background(Organic.neutral200)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
+        .accessibilityValue(value)
+    }
+
+    private func connectionTone(for phase: LocationConnectionPhase) -> Color {
+        switch phase {
+        case .ready: return Organic.sage600
+        case .reconnecting: return Organic.accent
+        case .failed: return Organic.danger
+        case .unavailable: return Organic.neutral500
+        }
+    }
+
+    private func applicationTone(for phase: LocationApplicationPhase) -> Color {
+        switch phase {
+        case .active: return Organic.sage600
+        case .applying, .uncertain, .clearing: return Organic.accent
+        case .lost, .failed: return Organic.danger
+        case .idle: return Organic.neutral500
+        }
+    }
+
+    private func movementTone(for phase: LocationMovementPhase) -> Color {
+        switch phase {
+        case .moving: return Organic.sage600
+        case .paused: return Organic.accent
+        case .idle, .completed: return Organic.neutral500
         }
     }
 
     private var modePill: some View {
         HStack(spacing: 3) {
             ForEach(AppMode.mapModes) { mode in
+                let isActive = selectedMode == mode && cardOpen
                 Button {
                     if selectedMode == mode {
                         cardOpen.toggle()
@@ -367,14 +501,28 @@ struct ContentView: View {
                         selectedMode = mode
                     }
                 } label: {
-                    OrganicGlyphView(glyph: mode.glyph, size: 14)
-                        .foregroundStyle(selectedMode == mode && cardOpen ? Organic.neutral100 : Organic.neutral700)
-                        .frame(width: 36, height: 36)
-                        .background(selectedMode == mode && cardOpen ? Organic.accent : Color.clear)
-                        .clipShape(Circle())
+                    HStack(spacing: 5) {
+                        OrganicGlyphView(glyph: mode.glyph, size: 14)
+                        Text(mode.localizedLabel)
+                            .font(Organic.body(10, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isActive ? Organic.accentInk : Organic.neutral700)
+                    .padding(.horizontal, 9)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .background(isActive ? Organic.accent : Color.clear)
+                    .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(mode.description)
+                .accessibilityLabel(mode.localizedLabel)
+                .accessibilityValue(
+                    NSLocalizedString(
+                        isActive ? "location.mode.state.selected" : "location.mode.state.notSelected",
+                        comment: "Location mode selection state"
+                    )
+                )
+                .accessibilityIdentifier(mode.locationAccessibilityIdentifier)
             }
             Rectangle()
                 .fill(Organic.neutral300)
@@ -390,12 +538,13 @@ struct ContentView: View {
                 Image(systemName: "calendar")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(savedOpen ? Organic.accent800 : Organic.neutral600)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(savedOpen ? Organic.neutral200 : Color.clear)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-            .help("Saved & history")
+            .help(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
+            .accessibilityLabel(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
         }
         .padding(5)
         .background(Organic.neutral100)
@@ -480,7 +629,7 @@ struct ContentView: View {
     }
 
     private func syncCoordFields() {
-        if let location = appState.targetLocation ?? appState.currentLocation {
+        if let location = appState.locationPresentation.desiredCoordinate ?? appState.locationPresentation.appliedCoordinate {
             latitudeInput = String(format: "%.6f", location.latitude)
             longitudeInput = String(format: "%.6f", location.longitude)
         }
@@ -520,15 +669,15 @@ struct ContentView: View {
     }
 
     private func performMove() {
-        if appState.isSimulating, selectedMode == .route || selectedMode == .twospot {
+        if appState.locationPresentation.isMovementActive, selectedMode == .route || selectedMode == .twospot {
             Task { await appState.stopSimulation() }
             return
         }
         appState.activeMode = selectedMode == .settings ? .teleport : selectedMode
         let plan = SimulationPlanner.plan(
             mode: appState.activeMode,
-            targetLocation: appState.targetLocation,
-            currentLocation: appState.currentLocation,
+            targetLocation: appState.locationPresentation.desiredCoordinate,
+            currentLocation: appState.locationPresentation.appliedCoordinate,
             route: appState.currentRoute,
             speed: appState.simulationSpeed,
             jumpIndex: appState.jumpIndex
@@ -537,7 +686,7 @@ struct ContentView: View {
             canStartSimulation: appState.canStartSimulation,
             plan: plan
         ), let coordinate = LocationHistoryPolicy.coordinate(for: plan) {
-            let name = coordinate == appState.targetLocation ? addressText : coordinate.formattedShort
+            let name = coordinate == appState.locationPresentation.desiredCoordinate ? addressText : coordinate.formattedShort
             LocationFavoritesManager.shared.recordRecent(name: name, coordinate: coordinate)
             LocationFavoritesManager.shared.rememberPlace(name: name, coordinate: coordinate)
         }

@@ -26,30 +26,6 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testSafeModeDefaultsAreOn() async {
-        let manager = SimulationStateManager()
-
-        XCTAssertTrue(manager.safeModeTeleport)
-        XCTAssertTrue(manager.safeModeJoystick)
-        XCTAssertTrue(manager.cooldownReminder)
-        XCTAssertTrue(manager.headerSafeMode)
-        XCTAssertFalse(manager.addGPSDrift)
-    }
-
-    @MainActor
-    func testHeaderSafeModeSetsBothFlags() async {
-        let manager = SimulationStateManager()
-
-        manager.headerSafeMode = false
-        XCTAssertFalse(manager.safeModeTeleport)
-        XCTAssertFalse(manager.safeModeJoystick)
-
-        manager.headerSafeMode = true
-        XCTAssertTrue(manager.safeModeTeleport)
-        XCTAssertTrue(manager.safeModeJoystick)
-    }
-
-    @MainActor
     func testEffectiveSpeedFollowsAutoSpeedFlag() async {
         let manager = SimulationStateManager()
 
@@ -60,13 +36,6 @@ final class SimulationStateManagerTests: XCTestCase {
         manager.autoSpeed = false
         manager.customSpeedMps = 9.9
         XCTAssertEqual(manager.effectiveMetersPerSecond, 9.9)
-    }
-
-    @MainActor
-    func testCooldownIsZeroBeforeAnyTeleport() async {
-        let manager = SimulationStateManager()
-
-        XCTAssertEqual(manager.cooldownRemaining, 0)
     }
 
     @MainActor
@@ -131,16 +100,6 @@ final class SimulationStateManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testSetSpeedUpdatesCooldownWhenAutomatic() async {
-        let manager = SimulationStateManager()
-
-        manager.autoCooldown = true
-        manager.setSpeed(.driving)
-
-        XCTAssertEqual(manager.cooldownSeconds, SimulationSpeed.driving.defaultCooldownSeconds)
-    }
-
-    @MainActor
     func testAppModeCoversEveryUserFacingMode() {
         // `AppMode` replaced a four-case `ActiveSimulationMode` that could not represent
         // Jump or Two-spot. Guard against that regression.
@@ -152,155 +111,8 @@ final class SimulationStateManagerTests: XCTestCase {
         XCTAssertTrue(modes.contains(.joystick))
         XCTAssertEqual(AppMode.mapModes.count, 5)
     }
-}
 
-// MARK: - Device State Manager Direct Transport Tests
 
-@MainActor
-final class DeviceStateManagerDirectTransportTests: XCTestCase {
-
-    func testDirectWiFiDeviceIsReadyWithoutTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Wi-Fi iPhone",
-            connectionType: .wifi
-        )
-        manager.wifiDirectDeviceIds = ["00008130-000C5144019A001C"]
-        manager.isWiFiTransportAvailable = true
-        manager.isTunneldRunning = false
-
-        XCTAssertTrue(
-            manager.isDeviceReady,
-            "A Network device discovered by usbmux is a valid direct Wi-Fi path"
-        )
-    }
-
-    func testDirectUSBDeviceIsReadyWithoutTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "USB iPhone",
-            connectionType: .usb
-        )
-        manager.usbDirectDeviceIds = ["00008130-000C5144019A001C"]
-        manager.isUSBConnected = true
-        manager.isTunneldRunning = false
-
-        XCTAssertTrue(manager.isDeviceReady)
-    }
-
-    func testUnreachableDeviceStillRequiresTunnel() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Unavailable iPhone",
-            connectionType: .wifi
-        )
-        manager.isWiFiTransportAvailable = false
-        manager.isTunneldRunning = false
-
-        XCTAssertFalse(manager.isDeviceReady)
-    }
-
-    func testAnotherWiFiDeviceDoesNotMakeSelectedDeviceReady() {
-        let manager = DeviceStateManager(startBackgroundServices: false)
-        manager.selectedDevice = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Selected iPhone",
-            connectionType: .wifi
-        )
-        manager.wifiDirectDeviceIds = ["00008130-1111111111111111"]
-        manager.isWiFiTransportAvailable = true
-        manager.isTunneldRunning = false
-
-        XCTAssertFalse(
-            manager.isDeviceReady,
-            "Transport availability must belong to the selected UDID"
-        )
-    }
-}
-
-// MARK: - Device Manager Deduplication Tests
-
-@MainActor
-final class DeviceManagerDeduplicationTests: XCTestCase {
-
-    func testDeduplicatesWifiEndpointIdentifiersIntoSinglePhysicalDevice() {
-        let manager = DeviceManager()
-        manager.stopAutoRefresh()
-
-        let canonical = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "🖇️ (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "🖇️"
-        )
-
-        let variants: [Device] = [
-            canonical,
-            Device(
-                id: "192.168.8.138",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-            Device(
-                id: "2c0f:f5c0:600:ac13:1839:d9a8:fd2b:a7ad",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-            Device(
-                id: "2c0f:f5c0:600:ac13:e2ea:c420:fa6c:3",
-                displayName: "🖇️ (iOS 27.0)",
-                connectionType: .wifi,
-                productType: "iPhone16,2",
-                productVersion: "27.0",
-                deviceName: "🖇️"
-            ),
-        ]
-
-        let deduped = manager.deduplicatedDevicesForTesting(variants)
-
-        XCTAssertEqual(deduped.count, 1)
-        XCTAssertEqual(deduped.first?.id, canonical.id)
-        XCTAssertEqual(deduped.first?.productType, canonical.productType)
-        XCTAssertEqual(deduped.first?.productVersion, canonical.productVersion)
-    }
-
-    func testKeepsDistinctDevicesWhenIdentityDiffers() {
-        let manager = DeviceManager()
-        manager.stopAutoRefresh()
-
-        let first = Device(
-            id: "00008130-000C5144019A001C",
-            displayName: "Phone A (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "Phone A"
-        )
-        let second = Device(
-            id: "00008120-000A111122223333",
-            displayName: "Phone B (iOS 27.0)",
-            connectionType: .wifi,
-            productType: "iPhone16,2",
-            productVersion: "27.0",
-            deviceName: "Phone B"
-        )
-
-        let deduped = manager.deduplicatedDevicesForTesting([first, second])
-
-        XCTAssertEqual(deduped.count, 2)
-        XCTAssertEqual(Set(deduped.map(\.id)), Set([first.id, second.id]))
-    }
 }
 
 // MARK: - Route State Manager Tests
@@ -522,6 +334,34 @@ final class RouteStateManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testReverseRoutePreservesCardinality() async {
+        let manager = RouteStateManager(routeLibrary: routeLibrary)
+
+        let coordinates = [
+            LocationCoordinate(latitude: 35.6762, longitude: 139.6503),
+            LocationCoordinate(latitude: 35.6763, longitude: 139.6504),
+            LocationCoordinate(latitude: 35.6764, longitude: 139.6505)
+        ]
+
+        manager.loadRoute(from: coordinates, name: "Test Route")
+        let originalCount = manager.currentRoute.count
+        let originalDistance = manager.totalDistance
+
+        manager.reverseRoute()
+
+        // Verify cardinality preserved
+        XCTAssertEqual(manager.currentRoute.count, originalCount)
+        // Verify distance unchanged
+        XCTAssertEqual(manager.totalDistance, originalDistance, accuracy: 0.1)
+        // Verify order reversed
+        XCTAssertEqual(manager.currentRoute[0].latitude, 35.6764, accuracy: 0.0001)
+        XCTAssertEqual(manager.currentRoute[2].latitude, 35.6762, accuracy: 0.0001)
+        // Verify progress reset
+        XCTAssertEqual(manager.progress, 0)
+        XCTAssertEqual(manager.currentIndex, 0)
+    }
+
+    @MainActor
     func testRoutePlaybackStateDisplayText() {
         XCTAssertEqual(RoutePlaybackState.idle.displayText, "No route loaded")
         XCTAssertEqual(RoutePlaybackState.loading.displayText, "Loading route...")
@@ -561,5 +401,159 @@ final class ConnectionStatusTests: XCTestCase {
         XCTAssertEqual(ConnectionStatus.connecting.text, "Connecting...")
         XCTAssertEqual(ConnectionStatus.connected.text, "Connected")
         XCTAssertEqual(ConnectionStatus.error.text, "Error")
+    }
+}
+
+@MainActor
+final class AcknowledgedRouteStateTests: XCTestCase {
+    func testLocationStatusPresentationUsesLocalizedKeys() async {
+        let state = LocationSessionState(
+            desiredLocation: nil,
+            lastAcknowledgedReceipt: nil,
+            connection: .unavailable,
+            application: .idle,
+            movement: .idle
+        )
+
+        let presentation = LocationStatusPresentation(state: state, deviceVisible: true)
+
+        // Verify labels are not empty (localization worked)
+        XCTAssertFalse(presentation.connectionLabel.isEmpty)
+        XCTAssertFalse(presentation.applicationLabel.isEmpty)
+        XCTAssertFalse(presentation.movementLabel.isEmpty)
+
+        // Verify they use localized strings
+        XCTAssertEqual(presentation.connectionLabel, "Unavailable")
+    }
+
+
+    func testProgressAdvancesOnlyWhenWaypointIsAcknowledged() {
+        let manager = RouteStateManager(routeLibrary: RouteLibraryManager())
+        manager.loadRoute(from: [
+            LocationCoordinate(latitude: 35.0, longitude: 139.0),
+            LocationCoordinate(latitude: 35.1, longitude: 139.1),
+            LocationCoordinate(latitude: 35.2, longitude: 139.2)
+        ])
+
+        manager.beginAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 0)
+        XCTAssertEqual(manager.currentIndex, 0)
+
+        manager.acknowledgeWaypoint(at: 0, totalCount: 3)
+        XCTAssertEqual(manager.progress, 1.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(manager.currentIndex, 1)
+        XCTAssertEqual(manager.playbackState, .playing)
+
+        manager.completeAcknowledgedPlayback()
+        XCTAssertEqual(manager.progress, 1)
+        XCTAssertEqual(manager.playbackState, .completed)
+    }
+}
+
+@MainActor
+final class DeviceStateManagerTests: XCTestCase {
+
+    private final class TransportRefreshRecordingDeviceManager: DeviceManager {
+        private(set) var transportRefreshCount = 0
+
+        init() {
+            // Skip DeviceManager's background discovery tasks; only the overridden
+            // refresh is observed.
+            super.init(startBackgroundServices: false)
+        }
+
+        override func refreshTransportAvailability() async {
+            transportRefreshCount += 1
+        }
+    }
+
+    private func makeDevice() -> Device {
+        Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+    }
+
+    private func makeManager(deviceManager: DeviceManager) -> DeviceStateManager {
+        DeviceStateManager(
+            deviceManager: deviceManager,
+            startBackgroundServices: false
+        )
+    }
+
+    func testPublishedDiscoverySynchronizesWrapperState() {
+        let deviceManager = DeviceManager()
+        deviceManager.stopAutoRefresh()
+        let manager = DeviceStateManager(
+            deviceManager: deviceManager,
+            startBackgroundServices: false
+        )
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+
+        deviceManager.devices = [device]
+
+        XCTAssertEqual(manager.availableDevices, [device])
+        XCTAssertEqual(manager.selectedDevice, device)
+        XCTAssertEqual(manager.connectionStatus, .connected)
+    }
+
+    func testTransportRefreshIsSkippedInsideMinimumInterval() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.selectedDevice = makeDevice()
+
+        let firstTrigger = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger)
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+
+        // The 15 s guard: an immediate second trigger must not spawn the usbmux
+        // subprocess again, even though a device is selected.
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger.addingTimeInterval(1))
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+    }
+
+    func testTransportRefreshRunsAfterMinimumIntervalWithDeviceSelected() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.selectedDevice = makeDevice()
+
+        let firstTrigger = Date(timeIntervalSinceReferenceDate: 2_000_000)
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger)
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
+
+        await manager.refreshTransportAvailabilityIfNeeded(now: firstTrigger.addingTimeInterval(15))
+        XCTAssertEqual(deviceManager.transportRefreshCount, 2)
+    }
+
+    func testTransportRefreshSkippedWithoutDeviceOrTunnel() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+
+        await manager.refreshTransportAvailabilityIfNeeded(
+            now: Date(timeIntervalSinceReferenceDate: 3_000_000)
+        )
+
+        XCTAssertEqual(deviceManager.transportRefreshCount, 0)
+    }
+
+    func testTransportRefreshRunsWhenTunnelRunningWithoutDevice() async {
+        let deviceManager = TransportRefreshRecordingDeviceManager()
+        let manager = makeManager(deviceManager: deviceManager)
+        manager.isTunneldRunning = true
+
+        await manager.refreshTransportAvailabilityIfNeeded(
+            now: Date(timeIntervalSinceReferenceDate: 4_000_000)
+        )
+
+        XCTAssertEqual(deviceManager.transportRefreshCount, 1)
     }
 }

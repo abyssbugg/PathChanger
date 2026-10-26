@@ -8,12 +8,22 @@
 
 import Foundation
 
+enum ManagedLocationRuntimeContract {
+    static let minimumPythonMajor = 3
+    static let minimumPythonMinor = 13
+    static let pythonSnapshotVersion = "3.13"
+    /// Floor, not a pin: the managed runtime installs rolling-latest pymobiledevice3
+    /// (`pip install -U`); this is the oldest version whose capabilities were last verified.
+    /// Owner policy 2026-10-23 — no exact pins, pyenv is the Python authority.
+    static let pymobiledevice3MinimumVersion = "11.12.5"
+}
+
 /// Errors that can occur during Python path resolution and dependency validation
 enum PythonResolverError: Error, LocalizedError {
     case pythonNotFound
     case pythonNotExecutable(String)
     case pymobiledevice3NotInstalled
-    case pymobiledevice3VersionTooOld(String)
+    case pymobiledevice3CapabilitiesMissing(version: String, missing: [String])
     case invalidPythonVersion(String)
 
     var errorDescription: String? {
@@ -24,25 +34,25 @@ enum PythonResolverError: Error, LocalizedError {
             return "Python 3 found at '\(path)' but is not executable"
         case .pymobiledevice3NotInstalled:
             return "pymobiledevice3 is not installed"
-        case .pymobiledevice3VersionTooOld(let version):
-            return "pymobiledevice3 version \(version) is too old. Minimum required: 6.1.5"
+        case .pymobiledevice3CapabilitiesMissing(let version, let missing):
+            return "pymobiledevice3 \(version) is missing required capabilities: \(missing.joined(separator: ", "))"
         case .invalidPythonVersion(let version):
-            return "Python version \(version) is not supported. Minimum required: 3.9"
+            return "Python version \(version) is below PathChanger's capability floor (minimum \(ManagedLocationRuntimeContract.minimumPythonMajor).\(ManagedLocationRuntimeContract.minimumPythonMinor))"
         }
     }
 
     var recoverySuggestion: String? {
         switch self {
         case .pythonNotFound:
-            return "Install Python 3.9 or later with Homebrew, or enable Apple's /usr/bin/python3"
+            return "Install a managed Homebrew Python that meets PathChanger's capability floor, then rebuild the runtime snapshot"
         case .pythonNotExecutable:
             return "Check file permissions for the Python executable"
         case .pymobiledevice3NotInstalled:
-            return "Install the latest pymobiledevice3 from PathChanger"
-        case .pymobiledevice3VersionTooOld:
-            return "Install the latest pymobiledevice3 from PathChanger"
+            return "Rebuild the managed runtime to install the latest pymobiledevice3"
+        case .pymobiledevice3CapabilitiesMissing:
+            return "Update PathChanger's reviewed dependency snapshot to a pymobiledevice3 build that provides every required capability"
         case .invalidPythonVersion:
-            return "Install Python 3.9 or later"
+            return "Install a managed Python runtime that meets PathChanger's capability floor"
         }
     }
 }
@@ -50,28 +60,54 @@ enum PythonResolverError: Error, LocalizedError {
 /// Resolves the Python 3 executable path using the app's fixed candidate policy.
 enum PythonPathResolver {
 
-    /// Homebrew is preferred on both architectures. Apple's Python is the final fallback.
-    static let candidatePaths: [String] = [
-        "/opt/homebrew/bin/python3",
-        "/opt/homebrew/bin/python3.14",
-        "/opt/homebrew/bin/python3.13",
-        "/opt/homebrew/bin/python3.12",
-        "/usr/local/bin/python3",
-        "/usr/local/bin/python3.14",
-        "/usr/local/bin/python3.13",
-        "/usr/local/bin/python3.12",
-        "/usr/bin/python3",
-    ]
+    /// PathChanger executes only its deterministic managed runtime.
+    /// Homebrew Python is a bootstrap dependency and is never used directly by the app.
+    static var managedPythonPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/PathChanger/runtime/location/bin/python3")
+            .path
+    }
+
+    static var candidatePaths: [String] {
+        [managedPythonPath]
+    }
 
     /// Cached resolved path
     private static var _resolvedPath: String?
     private static let cacheLock = NSLock()
 
-    /// Minimum required Python version (major.minor)
-    private static let minimumPythonVersion = (major: 3, minor: 9)
+    /// Minimum language/runtime floor. Newer Python releases remain eligible.
+    private static let minimumPythonVersion = (
+        major: ManagedLocationRuntimeContract.minimumPythonMajor,
+        minor: ManagedLocationRuntimeContract.minimumPythonMinor
+    )
 
-    /// Minimum required pymobiledevice3 version
-    private static let minimumPmd3Version = "6.1.5"
+    static let requiredPymobiledevice3Capabilities: Set<String> = [
+        "create_using_tcp",
+        "create_using_usbmux",
+        "dvt_provider",
+        "location_simulation",
+        "preferred_rsd_tunnel",
+        "remote_service_discovery",
+    ]
+
+    static func isSupportedPythonVersion(major: Int, minor: Int) -> Bool {
+        major > minimumPythonVersion.major ||
+            (major == minimumPythonVersion.major && minor >= minimumPythonVersion.minor)
+    }
+
+    static func validatePymobiledevice3Capabilities(
+        version: String,
+        available: Set<String>
+    ) throws {
+        let missing = requiredPymobiledevice3Capabilities.subtracting(available).sorted()
+        guard missing.isEmpty else {
+            throw PythonResolverError.pymobiledevice3CapabilitiesMissing(
+                version: version,
+                missing: missing
+            )
+        }
+    }
 
     /// Get the Python 3 executable path
     /// Uses cached value if available, otherwise discovers dynamically
@@ -99,19 +135,52 @@ enum PythonPathResolver {
         return resolved
     }
 
-    /// Build the installation command for the selected interpreter.
-    static func pymobiledevice3InstallArguments(for pythonPath: String) -> [String] {
-        var arguments = ["-m", "pip", "install", "--upgrade"]
-
-        if pythonPath.hasPrefix("/opt/homebrew/bin/") ||
-           pythonPath.hasPrefix("/usr/local/bin/") {
-            arguments.append("--break-system-packages")
-        } else {
-            arguments.append("--user")
+    /// Bootstrap interpreters used only to *create* the managed runtime venv.
+    /// Policy (owner, 2026-10-23): pyenv is the single Python authority — prefer the newest
+    /// pyenv-managed interpreter meeting the capability floor, then fall back to Homebrew.
+    /// The app itself still executes only the managed runtime, never these interpreters.
+    static func bootstrapPythonCandidates(pyenvRoot: String, homebrewRoots: [String]) -> [String] {
+        let versionsDir = URL(fileURLWithPath: pyenvRoot).appendingPathComponent("versions")
+        let pyenvCandidates = (try? FileManager.default.contentsOfDirectory(atPath: versionsDir.path))?
+            .compactMap { name -> (components: [Int], path: String)? in
+                let parts = name.split(separator: ".").compactMap { Int($0) }
+                guard parts.count >= 2,
+                      isSupportedPythonVersion(major: parts[0], minor: parts[1]) else { return nil }
+                return (parts, versionsDir.appendingPathComponent(name).appendingPathComponent("bin/python3").path)
+            }
+            .sorted { lhs, rhs in
+                for (l, r) in zip(lhs.components, rhs.components) where l != r { return l > r }
+                return lhs.components.count > rhs.components.count
+            }
+            .map(\.path) ?? []
+        let homebrewCandidates = homebrewRoots.flatMap { root in
+            ["\(root)/python@3.13/bin/python3.13", "\(root)/python@3.14/bin/python3.14"]
         }
+        return pyenvCandidates + homebrewCandidates
+    }
 
-        arguments.append("pymobiledevice3")
-        return arguments
+    static var bootstrapPythonCandidates: [String] {
+        bootstrapPythonCandidates(
+            pyenvRoot: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pyenv").path,
+            homebrewRoots: ["/opt/homebrew/opt", "/usr/local/opt"]
+        )
+    }
+
+    /// Build a rolling-latest installation command only for the final managed runtime
+    /// or a deterministic sibling staging runtime created for atomic replacement.
+    static func pymobiledevice3InstallArguments(for pythonPath: String) -> [String] {
+        let candidatePython = URL(fileURLWithPath: pythonPath).standardizedFileURL
+        let managedPython = URL(fileURLWithPath: managedPythonPath).standardizedFileURL
+        let candidateRuntime = candidatePython.deletingLastPathComponent().deletingLastPathComponent()
+        let managedRuntime = managedPython.deletingLastPathComponent().deletingLastPathComponent()
+        let isStagingRuntime = candidateRuntime.deletingLastPathComponent() == managedRuntime.deletingLastPathComponent() &&
+            candidateRuntime.lastPathComponent.hasPrefix("location.staging-") &&
+            candidatePython.lastPathComponent == "python3" &&
+            candidatePython.deletingLastPathComponent().lastPathComponent == "bin"
+        guard candidatePython == managedPython || isStagingRuntime else { return [] }
+        return [
+            "-m", "pip", "install", "-U", "pymobiledevice3",
+        ]
     }
 
     /// Check if Python 3 is available and executable
@@ -172,47 +241,68 @@ enum PythonPathResolver {
             throw PythonResolverError.invalidPythonVersion(versionString)
         }
 
-        // Check against minimum version
-        if major < minimumPythonVersion.major ||
-           (major == minimumPythonVersion.major && minor < minimumPythonVersion.minor) {
+        guard isSupportedPythonVersion(major: major, minor: minor) else {
             throw PythonResolverError.invalidPythonVersion("\(major).\(minor)")
         }
     }
 
-    /// Check if pymobiledevice3 is installed
-    /// - Returns: True if installed, false otherwise
+    private struct Pymobiledevice3CapabilityReport: Decodable {
+        let version: String
+        let capabilities: [String]
+    }
+
+    /// Returns true only when the installed package provides every capability PathChanger uses.
     static func isPymobiledevice3Installed() async -> Bool {
         do {
-            _ = try await checkPymobiledevice3Installation()
+            try await validatePymobiledevice3()
             return true
         } catch {
             return false
         }
     }
 
-    /// Validate pymobiledevice3 installation and version
-    /// - Throws: PythonResolverError if not installed or version is too old
+    /// Validate pymobiledevice3 by executable capabilities, not an exact package version.
     static func validatePymobiledevice3() async throws {
-        let version = try await checkPymobiledevice3Installation()
-
-        // Parse version and compare (simplified version check)
-        if compareVersions(version, minimumPmd3Version) == .orderedAscending {
-            throw PythonResolverError.pymobiledevice3VersionTooOld(version)
-        }
+        let report = try await checkPymobiledevice3Installation()
+        try validatePymobiledevice3Capabilities(
+            version: report.version,
+            available: Set(report.capabilities)
+        )
     }
 
-    /// Check pymobiledevice3 installation and get version
-    /// - Returns: Version string (e.g., "6.1.5")
-    /// - Throws: PythonResolverError if not installed
-    private static func checkPymobiledevice3Installation() async throws -> String {
-        return try await checkPymobiledevice3WithPip()
-    }
+    private static func checkPymobiledevice3Installation() async throws
+        -> Pymobiledevice3CapabilityReport
+    {
+        let script = #"""
+        import importlib
+        import json
+        from importlib.metadata import version
 
-    /// Check pymobiledevice3 using pip show
-    private static func checkPymobiledevice3WithPip() async throws -> String {
+        checks = (
+            ("create_using_tcp", "pymobiledevice3.lockdown", "create_using_tcp"),
+            ("create_using_usbmux", "pymobiledevice3.lockdown", "create_using_usbmux"),
+            ("dvt_provider", "pymobiledevice3.services.dvt.instruments.dvt_provider", "DvtProvider"),
+            ("location_simulation", "pymobiledevice3.services.dvt.instruments.location_simulation", "LocationSimulation"),
+            ("preferred_rsd_tunnel", "pymobiledevice3.remote.rsd_tunnel", "PreferredRsdTunnel"),
+            ("remote_service_discovery", "pymobiledevice3.remote.remote_service_discovery", "RemoteServiceDiscoveryService"),
+        )
+        available = []
+        for name, module_name, attribute_name in checks:
+            try:
+                module = importlib.import_module(module_name)
+                getattr(module, attribute_name)
+                available.append(name)
+            except (ImportError, AttributeError):
+                pass
+        print(json.dumps({
+            "version": version("pymobiledevice3"),
+            "capabilities": sorted(available),
+        }, separators=(",", ":")))
+        """#
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["-m", "pip", "show", "pymobiledevice3"]
+        process.arguments = ["-c", script]
         process.environment = ProcessEnvironment.configured()
 
         let pipe = Pipe()
@@ -222,7 +312,6 @@ enum PythonPathResolver {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 defer {
-                    // Ensure cleanup of file handles and process
                     try? pipe.fileHandleForReading.close()
                     if process.isRunning {
                         process.terminate()
@@ -237,55 +326,35 @@ enum PythonPathResolver {
                         Thread.sleep(forTimeInterval: 0.05)
                     }
 
-                    if process.isRunning {
+                    guard !process.isRunning, process.terminationStatus == 0 else {
                         process.terminate()
-                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
-                        return
-                    }
-
-                    guard process.terminationStatus == 0 else {
-                        continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
+                        continuation.resume(
+                            throwing: PythonResolverError.pymobiledevice3NotInstalled
+                        )
                         return
                     }
 
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-
-                    // Extract version number from pip show output (format: "Version: X.Y.Z")
-                    let versionPattern = #"Version:\s*(\d+\.\d+\.\d+)"#
-                    if let regex = try? NSRegularExpression(pattern: versionPattern),
-                       let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-                       let range = Range(match.range(at: 1), in: output) {
-                        let version = String(output[range])
-                        continuation.resume(returning: version)
-                    } else {
-                        // If we got here with exit code 0, pymobiledevice3 is installed
-                        continuation.resume(returning: "unknown")
+                    guard let report = try? JSONDecoder().decode(
+                        Pymobiledevice3CapabilityReport.self,
+                        from: data
+                    ) else {
+                        continuation.resume(
+                            throwing: PythonResolverError.pymobiledevice3NotInstalled
+                        )
+                        return
                     }
+                    continuation.resume(returning: report)
                 } catch {
-                    continuation.resume(throwing: PythonResolverError.pymobiledevice3NotInstalled)
+                    continuation.resume(
+                        throwing: PythonResolverError.pymobiledevice3NotInstalled
+                    )
                 }
             }
         }
     }
 
     // MARK: - Helper Methods
-
-    /// Compare semantic versions
-    private static func compareVersions(_ v1: String, _ v2: String) -> ComparisonResult {
-        let v1Components = v1.components(separatedBy: ".").compactMap { Int($0) }
-        let v2Components = v2.components(separatedBy: ".").compactMap { Int($0) }
-
-        for componentIndex in 0..<max(v1Components.count, v2Components.count) {
-            let v1Value = componentIndex < v1Components.count ? v1Components[componentIndex] : 0
-            let v2Value = componentIndex < v2Components.count ? v2Components[componentIndex] : 0
-
-            if v1Value < v2Value { return .orderedAscending }
-            if v1Value > v2Value { return .orderedDescending }
-        }
-
-        return .orderedSame
-    }
 
     /// Get the Python version string with timeout protection
     static func version() async -> String? {

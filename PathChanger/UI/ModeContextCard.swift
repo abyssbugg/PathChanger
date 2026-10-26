@@ -33,7 +33,7 @@ struct ModeContextCard: View {
                     if mode == .teleport {
                         coordBlock
                     }
-                    if mode.showsMotion {
+                    if showsTravelMotion {
                         motionBlock
                     }
                     if mode == .joystick {
@@ -49,7 +49,7 @@ struct ModeContextCard: View {
             footer
         }
         .frame(width: 336)
-        .frame(maxHeight: 560)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Organic.neutral100)
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
         .overlay(
@@ -94,8 +94,7 @@ struct ModeContextCard: View {
                 Spacer()
                 if appState.currentRoute.count >= 2 {
                     Button {
-                        appState.currentRoute = Array(appState.currentRoute.reversed())
-                        appState.targetLocation = appState.currentRoute.last
+                        appState.reverseRoute(for: mode)
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
                             .font(.system(size: 11, weight: .semibold))
@@ -118,6 +117,7 @@ struct ModeContextCard: View {
                 }
                 .buttonStyle(.plain)
                 .help("Save every point to Favorites")
+                .accessibilityLabel("Save every point to Favorites")
             }
 
             if displayStops.isEmpty {
@@ -149,6 +149,7 @@ struct ModeContextCard: View {
                                     .font(Organic.mono(10))
                                     .foregroundStyle(Organic.neutral600)
                             }
+                            .accessibilityElement(children: .combine)
                             Spacer(minLength: 0)
                             Button {
                                 favorites.toggleFavorite(name: stop.name, coordinate: stop.coordinate)
@@ -183,9 +184,27 @@ struct ModeContextCard: View {
     }
 
     private var coordBlock: some View {
-        HStack(spacing: 9) {
-            coordField("LATITUDE", text: $latitudeInput)
-            coordField("LONGITUDE", text: $longitudeInput)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                coordField("LATITUDE", text: $latitudeInput)
+                coordField("LONGITUDE", text: $longitudeInput)
+            }
+            if appState.locationPresentation.desiredCoordinate == nil {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(NSLocalizedString("location.teleport.noTarget", comment: "Teleport empty target title"))
+                            .font(Organic.body(11, weight: .semibold))
+                        Text(NSLocalizedString("location.teleport.targetHint", comment: "Teleport target selection guidance"))
+                            .font(Organic.body(10))
+                    }
+                } icon: {
+                    Image(systemName: "mappin.slash")
+                }
+                .foregroundStyle(Organic.neutral700)
+                .accessibilityLabel(NSLocalizedString("location.teleport.noTarget", comment: "Teleport empty target title"))
+                .accessibilityHint(NSLocalizedString("location.teleport.targetHint", comment: "Teleport target selection guidance"))
+                .accessibilityIdentifier("location.teleport.emptyTarget")
+            }
         }
         .padding(10)
         .background(Organic.bg)
@@ -226,6 +245,7 @@ struct ModeContextCard: View {
                     .font(Organic.body(10, weight: .bold))
                     .foregroundStyle(Organic.accent800)
             }
+            .accessibilityElement(children: .combine)
             HStack(spacing: 6) {
                 ForEach(travelModes, id: \.self) { speed in
                     Button {
@@ -261,22 +281,6 @@ struct ModeContextCard: View {
                     }
                 }
             )
-            if mode.showsCooldown {
-                OrganicSliderRow(
-                    title: "Cooldown",
-                    valueLabel: String(format: "%.0fs", appState.cooldownSeconds),
-                    value: $appState.cooldownSeconds,
-                    range: 0...90,
-                    step: 1,
-                    isAuto: appState.autoCooldown,
-                    onToggleAuto: {
-                        appState.autoCooldown.toggle()
-                        if appState.autoCooldown {
-                            appState.cooldownSeconds = appState.mockCooldown(for: appState.simulationSpeed)
-                        }
-                    }
-                )
-            }
             if mode == .route || mode == .twospot {
                 HStack(spacing: 9) {
                     Text("Repeat")
@@ -306,8 +310,8 @@ struct ModeContextCard: View {
         VStack(spacing: 12) {
             HStack(spacing: 7) {
                 readout("HEADING", headingText)
-                readout("SPEED", String(format: "%.1f", appState.isSimulating ? appState.effectiveMetersPerSecond : 0))
-                readout("POSITION", (appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                readout("SPEED", String(format: "%.1f", appState.locationPresentation.isMovementActive ? appState.effectiveMetersPerSecond : 0))
+                readout("POSITION", (appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate)?.formattedShort ?? "—")
             }
             OrganicSliderRow(
                 title: "Speed",
@@ -335,28 +339,25 @@ struct ModeContextCard: View {
 
     private var toggleBlock: some View {
         VStack(spacing: 1) {
-            if mode == .route || mode == .twospot || mode == .joystick {
-                toggleRow(
-                    "Realistic pace",
-                    "Vary speed and drift like a real journey",
-                    Binding(get: { appState.addGPSDrift }, set: { appState.addGPSDrift = $0 })
+            if mode == .joystick {
+                toggleLine(
+                    "Smooth corners",
+                    Binding(get: { appState.smoothTurns }, set: { appState.smoothTurns = $0 })
                 )
             }
             if mode == .jump {
-                toggleRow(
-                    "Auto jump after cooldown",
-                    "Walks the hop list on its own",
-                    $appState.autoJump
+                toggleLine(
+                    "Auto jump after each applied waypoint",
+                    Binding(get: { appState.autoJump }, set: { appState.autoJump = $0 })
                 )
             }
         }
     }
 
-    private func toggleRow(_ title: String, _ sub: String, _ value: Binding<Bool>) -> some View {
+    private func toggleLine(_ title: String, _ value: Binding<Bool>) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(Organic.body(12, weight: .semibold))
-                Text(sub).font(Organic.body(10)).foregroundStyle(Organic.neutral600)
             }
             Spacer()
             Toggle("", isOn: value).labelsHidden().tint(Organic.accent600)
@@ -376,9 +377,6 @@ struct ModeContextCard: View {
             if mode == .jump {
                 metricRow(system: "arrow.up.right", title: "Hop", value: "\(min(appState.jumpIndex, appState.currentRoute.count))/\(appState.currentRoute.count)")
             }
-            if mode.showsCooldown {
-                metricRow(system: "hourglass", title: "Cooldown", value: cooldownLabel)
-            }
         }
         .padding(.top, 8)
         .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300.opacity(0.85)).frame(height: 1) }
@@ -390,6 +388,7 @@ struct ModeContextCard: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Organic.accent600)
                 .frame(width: 15)
+                .accessibilityHidden(true)
             Text(title)
                 .font(Organic.body(12, weight: .semibold))
                 .foregroundStyle(Organic.neutral700)
@@ -398,16 +397,12 @@ struct ModeContextCard: View {
                 .font(Organic.mono(12, weight: .bold))
         }
         .frame(height: 28)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var notesBlock: some View {
-        if appState.cooldownRemaining > 0.05 {
-            note("Cooling down — \(Self.hms(appState.cooldownRemaining)) left", sage: true)
-        }
-        if (appState.safeModeTeleport || appState.safeModeJoystick), appState.customSpeedMps > 12 {
-            note("Safe Mode will clamp movement to 12 m/s.", sage: false)
-        }
+        EmptyView()
     }
 
     private func note(_ text: String, sage: Bool) -> some View {
@@ -430,46 +425,60 @@ struct ModeContextCard: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
-            if mode == .joystick {
-                Button("Reset to real location") {
-                    Task { await appState.clearLocation() }
-                }
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .foregroundStyle(Organic.sage800)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(Organic.sage100)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
-            } else {
-                Button(action: onMove) {
-                    HStack(spacing: 6) {
-                        Image(systemName: moveIcon)
-                            .font(.system(size: 11, weight: .bold))
-                        Text(moveLabel)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                if mode == .joystick {
+                    Button("Stop movement") {
+                        appState.disengageJoystick()
                     }
-                }
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .foregroundStyle(Organic.neutral100)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(canMove ? Organic.accent : Organic.neutral400)
-                .clipShape(Capsule())
-                .disabled(!canMove)
+                    .accessibilityIdentifier("location.action.stopMovement")
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(Organic.sage800)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(Organic.sage100)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
+                    .disabled(!appState.locationPresentation.isMovementActive)
+                    .opacity(appState.locationPresentation.isMovementActive ? 1 : 0.55)
+                } else {
+                    Button(action: onMove) {
+                        HStack(spacing: 6) {
+                            Image(systemName: moveIcon)
+                                .font(.system(size: 11, weight: .bold))
+                            Text(moveLabel)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(canMove ? Organic.accentInk : Organic.neutral700)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(canMove ? Organic.accent : Organic.neutral400)
+                    .clipShape(Capsule())
+                    .disabled(!canMove)
+                    .accessibilityIdentifier(appState.locationPresentation.isMovementActive ? "location.action.stopMovement" : "location.action.apply")
 
-                Button("Clear") {
-                    appState.clearRoute()
-                    appState.targetLocation = appState.currentLocation
+                    Button(resetActionLabel) {
+                        resetContext()
+                    }
+                    .buttonStyle(.plain)
+                    .font(Organic.body(12, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .overlay(Capsule().stroke(Organic.neutral400, lineWidth: 1))
+                    .clipShape(Capsule())
+                    .disabled(!canResetRoute)
+                    .opacity(canResetRoute ? 1 : 0.55)
                 }
-                .buttonStyle(.plain)
-                .font(Organic.body(12, weight: .bold))
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .overlay(Capsule().stroke(Organic.neutral400, lineWidth: 1))
-                .clipShape(Capsule())
+            }
+            if let reason = disabledMoveReason {
+                Label(reason, systemImage: "info.circle")
+                    .font(Organic.body(11, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .accessibilityLabel(reason)
+                    .accessibilityIdentifier("location.action.disabledReason")
             }
         }
         .padding(.horizontal, 13)
@@ -477,27 +486,72 @@ struct ModeContextCard: View {
         .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
     }
 
+    private var showsTravelMotion: Bool {
+        mode == .jump || mode == .twospot || mode == .route
+    }
+
+    private var canResetRoute: Bool {
+        if mode == .teleport {
+            return appState.locationPresentation.desiredCoordinate != nil
+                || !latitudeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !longitudeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return !appState.currentRoute.isEmpty
+    }
+
+    private var resetActionLabel: String {
+        mode == .teleport
+            ? NSLocalizedString("location.action.clearTarget", comment: "Clear staged Teleport target")
+            : NSLocalizedString("location.action.resetRoute", comment: "Reset route waypoints")
+    }
+
+    private func resetContext() {
+        appState.clearRoute()
+        if mode == .teleport {
+            latitudeInput = ""
+            longitudeInput = ""
+        } else if let current = appState.locationPresentation.appliedCoordinate {
+            appState.stageLocation(current, for: mode)
+        }
+    }
+
+    private var disabledMoveReason: String? {
+        guard !canMove else { return nil }
+        guard appState.selectedDevice != nil else {
+            return NSLocalizedString("location.action.disabled.noDevice", comment: "Move disabled without a device")
+        }
+        guard appState.canStartSimulation else {
+            return NSLocalizedString("location.action.disabled.notReady", comment: "Move disabled while device is not ready")
+        }
+        switch mode {
+        case .teleport:
+            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Teleport needs a target")
+        case .jump, .twospot, .route:
+            return NSLocalizedString("location.action.disabled.addWaypoints", comment: "Route mode needs waypoints")
+        case .joystick:
+            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Joystick needs a starting location")
+        case .settings:
+            return nil
+        }
+    }
+
     private var canMove: Bool {
-        if appState.cooldownRemaining > 0.05 { return false }
         // A device exposed directly by usbmux over USB or Network/Wi-Fi is ready without
         // RemoteXPC. The old app worked over Wi-Fi through this exact `--udid` path; gating
         // only on `tunneldManager.isRunning` disabled every mode in the fixed build.
         if !appState.canStartSimulation { return false }
         switch mode {
-        case .teleport: return appState.targetLocation != nil
+        case .teleport: return appState.locationPresentation.desiredCoordinate != nil
         case .jump: return !appState.currentRoute.isEmpty && appState.jumpIndex < appState.currentRoute.count
-        case .twospot: return (appState.currentLocation != nil && (appState.targetLocation != nil || !appState.currentRoute.isEmpty)) || appState.currentRoute.count >= 2
+        case .twospot: return (appState.locationPresentation.appliedCoordinate != nil && (appState.locationPresentation.desiredCoordinate != nil || !appState.currentRoute.isEmpty)) || appState.currentRoute.count >= 2
         case .route: return appState.currentRoute.count >= 2
-        case .joystick: return appState.targetLocation != nil || appState.currentLocation != nil
+        case .joystick: return appState.locationPresentation.desiredCoordinate != nil || appState.locationPresentation.appliedCoordinate != nil
         case .settings: return false
         }
     }
 
     private var moveLabel: String {
-        if appState.cooldownRemaining > 0.05 {
-            return Self.hms(appState.cooldownRemaining)
-        }
-        if appState.isSimulating, mode == .route || mode == .twospot {
+        if appState.locationPresentation.isMovementActive, mode == .route || mode == .twospot {
             return "Stop"
         }
         if mode == .jump, !appState.currentRoute.isEmpty {
@@ -507,13 +561,8 @@ struct ModeContextCard: View {
     }
 
     private var moveIcon: String {
-        if appState.cooldownRemaining > 0.05 { return "snowflake" }
-        if appState.isSimulating, mode == .route || mode == .twospot { return "stop.fill" }
+        if appState.locationPresentation.isMovementActive, mode == .route || mode == .twospot { return "stop.fill" }
         return "play.fill"
-    }
-
-    private var cooldownLabel: String {
-        appState.cooldownRemaining > 0.05 ? Self.hms(appState.cooldownRemaining) : "—"
     }
 
     private var headingText: String {
@@ -525,9 +574,9 @@ struct ModeContextCard: View {
 
     private var routeDistance: String {
         let points = displayStops.map(\.coordinate)
-        guard points.count + (appState.currentLocation == nil ? 0 : 0) >= 1 else { return "—" }
+        guard points.count + (appState.locationPresentation.appliedCoordinate == nil ? 0 : 0) >= 1 else { return "—" }
         var coords = points
-        if mode == .twospot, let start = appState.currentLocation, coords.first != start {
+        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
             coords.insert(start, at: 0)
         }
         guard coords.count > 1 else { return "—" }
@@ -541,7 +590,7 @@ struct ModeContextCard: View {
     private var routeETA: String {
         let points = displayStops.map(\.coordinate)
         var coords = points
-        if mode == .twospot, let start = appState.currentLocation, coords.first != start {
+        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
             coords.insert(start, at: 0)
         }
         guard coords.count > 1 else { return "00:00:00" }
@@ -561,10 +610,10 @@ struct ModeContextCard: View {
     private var displayStops: [DisplayStop] {
         if mode == .twospot {
             var rows: [DisplayStop] = []
-            if let current = appState.currentLocation {
+            if let current = appState.locationPresentation.appliedCoordinate {
                 rows.append(DisplayStop(name: address.isEmpty ? "Start" : address, coordinate: current, fromRoute: false))
             }
-            if let dest = appState.currentRoute.last ?? appState.targetLocation {
+            if let dest = appState.currentRoute.last ?? appState.locationPresentation.desiredCoordinate {
                 rows.append(DisplayStop(name: dest.formattedShort, coordinate: dest, fromRoute: true))
             }
             return rows
@@ -578,7 +627,7 @@ struct ModeContextCard: View {
                 )
             }
         }
-        if let target = appState.targetLocation {
+        if let target = appState.locationPresentation.desiredCoordinate {
             return [DisplayStop(name: address, coordinate: target, fromRoute: false)]
         }
         return []
@@ -586,11 +635,11 @@ struct ModeContextCard: View {
 
     private func removeDisplayStop(at index: Int) {
         if mode == .twospot {
-            if index == 0, appState.currentLocation != nil, displayStops.count > 1 {
+            if index == 0, appState.locationPresentation.appliedCoordinate != nil, displayStops.count > 1 {
                 return
             }
             appState.clearRoute()
-            appState.targetLocation = appState.currentLocation
+            if let current = appState.locationPresentation.appliedCoordinate { appState.stageLocation(current, for: mode) }
             return
         }
         appState.removeRouteWaypoint(at: index)
@@ -677,6 +726,5 @@ extension AppMode {
 
     var showsRouteList: Bool { self == .jump || self == .twospot || self == .route }
     var showsMotion: Bool { self == .teleport || self == .jump || self == .twospot || self == .route }
-    var showsCooldown: Bool { self == .teleport || self == .jump }
     var showsDistance: Bool { self == .teleport || self == .jump || self == .twospot || self == .route }
 }

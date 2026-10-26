@@ -66,7 +66,7 @@ struct DependencyErrorView: View {
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
 
-                        Text("This installs the latest pymobiledevice3 for this app. No Terminal, no browser.")
+                        Text("This rebuilds PathChanger's managed Python runtime (pyenv-first bootstrap) with the latest pymobiledevice3. Compatible runtimes are accepted by capability probe.")
                             .font(.system(size: 13, weight: .regular))
                             .foregroundColor(.gray)
 
@@ -173,7 +173,7 @@ struct ErrorItemView: View {
             return "exclamationmark.circle.fill"
         case .pymobiledevice3Missing:
             return "xmark.circle.fill"
-        case .pymobiledevice3VersionTooOld:
+        case .pymobiledevice3CapabilitiesMissing:
             return "exclamationmark.circle.fill"
         case .pythonNotExecutable:
             return "lock.circle.fill"
@@ -184,7 +184,7 @@ struct ErrorItemView: View {
         switch error.type {
         case .pythonMissing, .pymobiledevice3Missing, .pythonNotExecutable:
             return .red
-        case .pythonVersionTooOld, .pymobiledevice3VersionTooOld:
+        case .pythonVersionTooOld, .pymobiledevice3CapabilitiesMissing:
             return .yellow
         }
     }
@@ -197,8 +197,8 @@ struct ErrorItemView: View {
             return "Python Version Too Old"
         case .pymobiledevice3Missing:
             return "pymobiledevice3 Not Installed"
-        case .pymobiledevice3VersionTooOld:
-            return "pymobiledevice3 Version Too Old"
+        case .pymobiledevice3CapabilitiesMissing:
+            return "pymobiledevice3 Capabilities Missing"
         case .pythonNotExecutable:
             return "Python Not Executable"
         }

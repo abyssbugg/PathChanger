@@ -64,12 +64,12 @@ struct SimulationView: View {
         .onChange(of: mode) { _, newMode in
             appState.activeMode = newMode
         }
-        .onChange(of: appState.currentLocation) { _, newLocation in
+        .onChange(of: appState.locationPresentation.appliedCoordinate) { _, newLocation in
             guard keepCentered, let location = newLocation else { return }
             withAnimation { focus(location) }
         }
-        .onChange(of: appState.targetLocation) { _, newLocation in
-            guard let location = newLocation, !appState.isSimulating else { return }
+        .onChange(of: appState.locationPresentation.desiredCoordinate) { _, newLocation in
+            guard let location = newLocation, !appState.locationPresentation.isMovementActive else { return }
             withAnimation { focus(location) }
         }
         .fileImporter(
@@ -84,7 +84,7 @@ struct SimulationView: View {
     private var mapView: some View {
         MapReader { proxy in
             Map(position: $position, interactionModes: [.all]) {
-                if let location = appState.currentLocation ?? appState.targetLocation {
+                if let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
                     Annotation("Location", coordinate: location.clLocationCoordinate2D) {
                         ZStack {
                             Circle()
@@ -137,7 +137,7 @@ struct SimulationView: View {
     private var mapFooter: some View {
         HStack {
             Spacer()
-            if showCoordinatesOnMap, let location = appState.currentLocation ?? appState.targetLocation {
+            if showCoordinatesOnMap, let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
                 Text(String(format: "%.6f, %.6f", location.latitude, location.longitude))
                     .font(Organic.mono(10.5))
                     .foregroundStyle(Organic.neutral700)
@@ -171,7 +171,7 @@ struct SimulationView: View {
                 .clipShape(Capsule())
 
             Button {
-                if let location = appState.currentLocation ?? appState.targetLocation {
+                if let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
                     position = .region(MKCoordinateRegion(
                         center: location.clLocationCoordinate2D,
                         span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
@@ -192,6 +192,7 @@ struct SimulationView: View {
             }
             .buttonStyle(.plain)
             .help("Center on device")
+            .accessibilityLabel("Center on device")
 
             VStack(spacing: 0) {
                 Button { zoom(0.8) } label: {
@@ -201,6 +202,7 @@ struct SimulationView: View {
                         .frame(width: 36, height: 34)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Zoom in")
                 Rectangle().fill(Organic.neutral300).frame(height: 1)
                 Button { zoom(1.25) } label: {
                     Image(systemName: "minus")
@@ -209,6 +211,7 @@ struct SimulationView: View {
                         .frame(width: 36, height: 34)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Zoom out")
             }
             .background(Organic.neutral100)
             .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
@@ -232,7 +235,7 @@ struct SimulationView: View {
 
     private var polylineCoordinates: [CLLocationCoordinate2D] {
         var points = appState.currentRoute.map(\.clLocationCoordinate2D)
-        if mode == .twospot, let start = appState.currentLocation {
+        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate {
             points.insert(start.clLocationCoordinate2D, at: 0)
         }
         return points

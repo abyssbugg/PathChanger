@@ -15,7 +15,6 @@ struct OrganicSettingsSheet: View {
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
     @AppStorage("autoReconnectDevice") private var autoReconnect: Bool = true
     @AppStorage("keepLocationCentered") private var keepCentered: Bool = true
-    @AppStorage("cooldownReminder") private var cooldownReminderStorage: Bool = true
     @AppStorage("unitsMetric") private var unitsMetric: Bool = true
     @AppStorage("showStreetLabels") private var showStreetLabels: Bool = true
 
@@ -111,13 +110,17 @@ struct OrganicSettingsSheet: View {
                             toggleRow("Reconnect automatically", "Re-handshake when the device or transport switches", $autoReconnect)
                         }
 
+                        section("Connection safety") {
+                            Text("Location changes become active only after the device acknowledges them.")
+                                .font(Organic.body(12))
+                                .foregroundStyle(Organic.neutral600)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 12)
+                        }
+
                         section("Movement") {
                             segmentedRow("Units", left: "km", right: "mi", leftSelected: unitsMetric) { unitsMetric = $0 }
                             segmentedModes
-                            toggleRow("Add GPS drift for realism", "Subtle natural jitter so movement looks human", Binding(
-                                get: { appState.addGPSDrift },
-                                set: { appState.addGPSDrift = $0 }
-                            ))
                             toggleRow("Smooth turns", "Ease around corners instead of snapping", Binding(
                                 get: { appState.smoothTurns },
                                 set: { appState.smoothTurns = $0 }
@@ -144,28 +147,6 @@ struct OrganicSettingsSheet: View {
                             toggleRow("Street labels", "Draw road names over the basemap", $showStreetLabels)
                             toggleRow("Show coordinates overlay", nil, $showCoordinatesOnMap)
                             toggleRow("Keep location centred", "Pan the map to follow the pin while moving", $keepCentered)
-                        }
-
-                        section("Safety") {
-                            toggleRow("Safe Mode", "Clamps speed to 12 m/s and confirms absurd jumps", Binding(
-                                get: { appState.headerSafeMode },
-                                set: { appState.headerSafeMode = $0 }
-                            ))
-                            toggleRow("Cooldown reminder", "iOS may rate-limit rapid jumps. We suggest a pause between teleports.", Binding(
-                                get: { appState.cooldownReminder },
-                                set: { appState.cooldownReminder = $0; cooldownReminderStorage = $0 }
-                            ))
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Cooldown window")
-                                        .font(Organic.body(13, weight: .semibold))
-                                }
-                                Spacer()
-                                Text(cooldownText)
-                                    .font(Organic.mono(12))
-                                    .foregroundStyle(Organic.neutral700)
-                            }
-                            .padding(.vertical, 12)
                         }
 
                         section("Saved Data") {
@@ -376,11 +357,6 @@ struct OrganicSettingsSheet: View {
 
     private var selectedAppearance: OrganicAppearance {
         OrganicAppearance.persisted(appearanceRaw)
-    }
-
-    private var cooldownText: String {
-        let seconds = max(0, Int(appState.cooldownSeconds.rounded()))
-        return String(format: "%02d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
     }
 
     private var historyDetail: String {

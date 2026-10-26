@@ -83,6 +83,22 @@ struct DiagnosticsView: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Location session")
+                    .font(.headline)
+                Text(appState.locationPresentation.sessionDiagnostic)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("location.diagnostics.session")
+                Text(appState.locationPresentation.deviceLifecycleLabel + " · " + appState.locationPresentation.connectionLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
             // Results
             if results.isEmpty && !isRunning {
                 VStack(spacing: 12) {
@@ -224,11 +240,11 @@ struct DiagnosticsView: View {
         // Check 6: Target location
         results.append(DiagnosticResult(
             name: "Target Location",
-            status: appState.targetLocation != nil ? .success : .warning,
-            message: appState.targetLocation != nil ?
-                String(format: "%.4f, %.4f", appState.targetLocation!.latitude, appState.targetLocation!.longitude) :
+            status: appState.locationPresentation.desiredCoordinate != nil ? .success : .warning,
+            message: appState.locationPresentation.desiredCoordinate != nil ?
+                String(format: "%.4f, %.4f", appState.locationPresentation.desiredCoordinate!.latitude, appState.locationPresentation.desiredCoordinate!.longitude) :
                 "No target location set",
-            recoveryAction: appState.targetLocation == nil ? "Search for a location or click on the map" : nil
+            recoveryAction: appState.locationPresentation.desiredCoordinate == nil ? "Search for a location or click on the map" : nil
         ))
 
         // Check 7: Location injection test (only if all previous passed)
@@ -308,7 +324,7 @@ struct DiagnosticsView: View {
             return DiagnosticResult(
                 name: "Tunnel Status",
                 status: .failure,
-                message: "Tunnel not running - required for iOS 17+",
+                message: "Tunnel not running - required only by RSD providers",
                 recoveryAction: "Go to Settings and choose Start Tunnel"
             )
         }

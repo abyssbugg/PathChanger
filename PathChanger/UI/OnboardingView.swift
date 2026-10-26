@@ -61,7 +61,7 @@ class OnboardingViewModel: ObservableObject {
     @Published var showCopiedToast = false
 
     private let minPythonVersion = "3.9"
-    private let minPymobiledevice3Version = "6.1.5"
+    private let minPymobiledevice3Version = ManagedLocationRuntimeContract.pymobiledevice3MinimumVersion
 
     func nextStep() {
         if let nextStep = OnboardingStep(rawValue: currentStep.rawValue + 1) {
@@ -275,7 +275,7 @@ struct OnboardingView: View {
         VStack(spacing: 20) {
             Spacer()
 
-            Text("Simulate GPS Locations on iOS 17+ Devices")
+            Text("Capability-Based iOS Location Simulation")
                 .font(.title2)
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)

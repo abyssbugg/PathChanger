@@ -353,7 +353,7 @@ actor SessionController {
 /// The device manager provides:
 /// - **Device discovery**: Automatic USB and WiFi device detection
 /// - **Connection management**: Track device connection states
-/// - **Tunnel management**: Monitor and manage secure tunnels for iOS 17+
+/// - **Tunnel management**: Monitor and manage secure tunnels for capability-compatible iOS
 /// - **Caching**: Efficient device info caching to minimize discovery overhead
 ///
 /// ## Getting Started
@@ -393,7 +393,7 @@ actor SessionController {
 ///
 /// ## Tunnel Management
 ///
-/// For iOS 17+ devices, a tunnel is required for location simulation:
+/// For capability-compatible iOS devices, a tunnel is required for location simulation:
 ///
 /// ```swift
 /// if !deviceManager.isTunneldRunning {
@@ -485,8 +485,16 @@ class DeviceManager: ObservableObject {
     // MARK: Private Properties
     private let sessionController = SessionController()
     private var refreshTask: Task<Void, Never>?
+    private var latestRefreshGeneration: UInt64 = 0
     private var autoRefreshEnabled: Bool = true
     private let autoRefreshInterval: TimeInterval = 120.0  // Reduced tunnel status check frequency to stabilize connection mode display
+
+    private struct DiscoveryAttempt {
+        let devices: [Device]
+        let errorMessage: String?
+
+        var succeeded: Bool { errorMessage == nil }
+    }
 
     // MARK: Debouncing for UI Stability
     private var lastTunnelStateChange: Date = Date.distantPast
@@ -499,17 +507,27 @@ class DeviceManager: ObservableObject {
     private var tunnelStateObserver: AnyCancellable?
 
     // MARK: Initialization
-    init() {
+    init(startBackgroundServices: Bool = true) {
         if let raw = UserDefaults.standard.string(forKey: "connectionMode"),
            let saved = ConnectionMode(rawValue: raw) {
             connectionMode = saved
         }
+        TunneldManager.shared.directDeviceReachability = { [weak self] udid in
+            self?.isDirectlyReachable(udid) ?? false
+        }
+        guard startBackgroundServices else { return }
         setupTunnelStateObserver()
         Task {
             await checkTunneldStatus()
             await refreshDevices()
             startAutoRefresh()
         }
+    }
+
+    /// Whether live usbmux reports the device over USB or Network — exactly when
+    /// the direct `--udid` DVT path is available (see LocationConnectionArguments.make).
+    func isDirectlyReachable(_ udid: String) -> Bool {
+        usbDirectDeviceIds.contains(udid) || wifiDirectDeviceIds.contains(udid)
     }
 
     // MARK: - Tunnel State Observer (Task 31)
@@ -637,10 +655,14 @@ class DeviceManager: ObservableObject {
 
     // MARK: Device Discovery - Unified pymobiledevice3
     func refreshDevices() async {
+        latestRefreshGeneration &+= 1
+        let refreshGeneration = latestRefreshGeneration
         isScanning = true
         let startTime = Date()
         defer {
-            isScanning = false
+            if refreshGeneration == latestRefreshGeneration {
+                isScanning = false
+            }
             // Record discovery statistics (PERF-003)
             let duration = Date().timeIntervalSince(startTime)
             Task {
@@ -655,33 +677,55 @@ class DeviceManager: ObservableObject {
         async let mobdev2DevicesTask = discoverMobdev2Devices()
         async let tunnelDevicesTask = discoverTunneldAPIDevices()
 
-        let usbDevices = await usbDevicesTask
+        let usbAttempt = await usbDevicesTask
         let mobdev2Devices = await mobdev2DevicesTask
         let tunnelDevices = await tunnelDevicesTask
         let knownWiFiDevices = connectionMode == .usb ? [] : discoverKnownRemotePairingDevices()
 
-        // Merge devices, preferring live usbmux/tunnel devices over offline pairing records.
-        var deviceMap: [String: Device] = [:]
-        for device in knownWiFiDevices {
-            deviceMap[device.id] = device
-        }
-        for device in mobdev2Devices {
-            deviceMap[device.id] = device
-        }
-        for device in usbDevices {
-            deviceMap[device.id] = device
-        }
-        for device in tunnelDevices {
-            deviceMap[device.id] = device
-        }
-
-        let discoveredDevices = deduplicatePhysicalDevices(Array(deviceMap.values))
+        let discoveredDevices = mergeDiscoverySources(
+            knownWiFiDevices: knownWiFiDevices,
+            mobdev2Devices: mobdev2Devices,
+            usbmuxDevices: usbAttempt.devices,
+            tunnelDevices: tunnelDevices,
+            mode: connectionMode
+        )
+        let rawDeviceCount = knownWiFiDevices.count
+            + mobdev2Devices.count
+            + usbAttempt.devices.count
+            + tunnelDevices.count
         Logger.debug(
-            "Device discovery collapsed \(deviceMap.count) raw entries to \(discoveredDevices.count) canonical device(s)",
+            "Device discovery collapsed \(rawDeviceCount) raw entries to \(discoveredDevices.count) canonical device(s)",
             category: .device
         )
 
-        // Only update if there's a change to prevent UI flickering
+        commitDiscoverySnapshot(
+            discoveredDevices,
+            scanSucceeded: usbAttempt.succeeded,
+            generation: refreshGeneration,
+            latestGeneration: latestRefreshGeneration,
+            errorMessage: usbAttempt.errorMessage
+        )
+    }
+
+    private func commitDiscoverySnapshot(
+        _ discoveredDevices: [Device],
+        scanSucceeded: Bool,
+        generation: UInt64,
+        latestGeneration: UInt64,
+        errorMessage: String?
+    ) {
+        guard generation == latestGeneration else {
+            Logger.debug(
+                "Ignoring stale device refresh generation \(generation); latest is \(latestGeneration)",
+                category: .device
+            )
+            return
+        }
+        guard scanSucceeded else {
+            lastError = .commandFailed(errorMessage ?? "Device discovery failed")
+            return
+        }
+
         let currentIds = Set(devices.map { $0.id })
         let newIds = Set(discoveredDevices.map { $0.id })
 
@@ -707,18 +751,109 @@ class DeviceManager: ObservableObject {
         lastError = nil
     }
 
+    #if DEBUG
+    func commitDiscoverySnapshotForTesting(
+        _ discoveredDevices: [Device],
+        scanSucceeded: Bool,
+        generation: UInt64,
+        latestGeneration: UInt64,
+        errorMessage: String?
+    ) {
+        commitDiscoverySnapshot(
+            discoveredDevices,
+            scanSucceeded: scanSucceeded,
+            generation: generation,
+            latestGeneration: latestGeneration,
+            errorMessage: errorMessage
+        )
+    }
+    #endif
+
+    private func mergeDiscoverySources(
+        knownWiFiDevices: [Device],
+        mobdev2Devices: [Device],
+        usbmuxDevices: [Device],
+        tunnelDevices: [Device],
+        mode: ConnectionMode
+    ) -> [Device] {
+        let directUSBDevices = usbmuxDevices.filter { $0.connectionType == .usb }
+        let directNetworkDevices = usbmuxDevices.filter { $0.connectionType == .wifi }
+        let liveDeviceIds = Set(
+            (mobdev2Devices + usbmuxDevices + tunnelDevices).map(\.id)
+        )
+        let corroboratedKnownWiFiDevices = knownWiFiDevices.filter {
+            liveDeviceIds.contains($0.id)
+        }
+        let rankedSources: [[Device]]
+        switch mode {
+        case .usb:
+            rankedSources = [directUSBDevices]
+        case .wifi:
+            rankedSources = [
+                corroboratedKnownWiFiDevices,
+                tunnelDevices,
+                mobdev2Devices,
+                directNetworkDevices,
+            ]
+        case .auto, .random:
+            rankedSources = [
+                corroboratedKnownWiFiDevices,
+                tunnelDevices,
+                mobdev2Devices,
+                directNetworkDevices,
+                directUSBDevices,
+            ]
+        }
+
+        var devicesById: [String: Device] = [:]
+        var firstSeenIds: [String] = []
+        for source in rankedSources {
+            for device in source {
+                if let existing = devicesById[device.id] {
+                    devicesById[device.id] = mergeDevice(device, with: existing)
+                } else {
+                    firstSeenIds.append(device.id)
+                    devicesById[device.id] = device
+                }
+            }
+        }
+
+        let rankedDevices = firstSeenIds.compactMap { devicesById[$0] }
+        return deduplicatePhysicalDevices(rankedDevices)
+    }
+
+    #if DEBUG
+    func mergedDiscoverySourcesForTesting(
+        knownWiFiDevices: [Device],
+        mobdev2Devices: [Device],
+        usbmuxDevices: [Device],
+        tunnelDevices: [Device],
+        mode: ConnectionMode
+    ) -> [Device] {
+        mergeDiscoverySources(
+            knownWiFiDevices: knownWiFiDevices,
+            mobdev2Devices: mobdev2Devices,
+            usbmuxDevices: usbmuxDevices,
+            tunnelDevices: tunnelDevices,
+            mode: mode
+        )
+    }
+    #endif
+
     /// Collapse multiple discovery identifiers (UDID + IPv4/IPv6 endpoint IDs) that
     /// represent the same physical phone into one canonical device record.
     private func deduplicatePhysicalDevices(_ devices: [Device]) -> [Device] {
         guard !devices.isEmpty else { return [] }
 
         let udidDevices = devices.filter { ArgumentSanitizer.isValidDeviceUDID($0.id) }
-        let udidByFingerprint: [String: String] = Dictionary(
-            uniqueKeysWithValues: udidDevices.compactMap { device in
-                guard let fingerprint = physicalFingerprint(for: device) else { return nil }
-                return (fingerprint, device.id)
-            }
-        )
+        var udidsByFingerprint: [String: Set<String>] = [:]
+        for device in udidDevices {
+            guard let fingerprint = physicalFingerprint(for: device) else { continue }
+            udidsByFingerprint[fingerprint, default: []].insert(device.id)
+        }
+        let udidByFingerprint = udidsByFingerprint.compactMapValues { deviceIds in
+            deviceIds.count == 1 ? deviceIds.first : nil
+        }
         let soleUDID = udidDevices.count == 1 ? udidDevices[0] : nil
 
         var mergedByCanonicalId: [String: Device] = [:]
@@ -873,7 +1008,7 @@ class DeviceManager: ObservableObject {
     }
 
     // MARK: USB Device Discovery (pymobiledevice3 usbmux list)
-    private func discoverUSBDevices() async -> [Device] {
+    private func discoverUSBDevices() async -> DiscoveryAttempt {
         do {
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3",
@@ -922,9 +1057,16 @@ class DeviceManager: ObservableObject {
                 devices.append(device)
             }
 
-            return devices
+            return DiscoveryAttempt(devices: devices, errorMessage: nil)
         } catch {
-            return []
+            Logger.error(
+                "Authoritative usbmux discovery failed: \(error.localizedDescription)",
+                category: .device
+            )
+            return DiscoveryAttempt(
+                devices: [],
+                errorMessage: "usbmux discovery failed: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -1304,7 +1446,7 @@ class DeviceManager: ObservableObject {
     func connect(to device: Device) async throws {
         connectionState = .connecting
 
-        // Check if tunneld is running for iOS 17+
+        // Check if tunneld is running for capability-compatible iOS
         await checkTunneldStatus()
 
         // For WiFi devices, tunneld must be running
@@ -1402,6 +1544,11 @@ class DeviceManager: ObservableObject {
 
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    // Close both read-ends: this is the highest-volume subprocess path
+                    // (usbmux discovery polling); drained-but-unclosed handles leaked
+                    // thousands of pipe fds until the process hit EMFILE.
+                    outputPipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
 
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
@@ -1453,6 +1600,15 @@ class DeviceManager: ObservableObject {
 
                     process.waitUntilExit()
 
+                    // Drain and close BOTH pipe read-ends on every exit path: the error
+                    // pipe was never read, and neither handle was ever closed, so every
+                    // pgrep/usbmux poll leaked 2-3 pipe fds — thousands under the test
+                    // suite's polling, until the process hit EMFILE.
+                    let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
+                    _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    pipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
 
@@ -1464,11 +1620,13 @@ class DeviceManager: ObservableObject {
                         return
                     }
 
-                    let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
 
                     continuation.resume(returning: output)
                 } catch {
+                    pipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
+
                     resumeLock.lock()
                     defer { resumeLock.unlock() }
 

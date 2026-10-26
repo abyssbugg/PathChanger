@@ -2,17 +2,15 @@
 //  SimulationStateManager.swift
 //  PathChanger
 //
-//  Owns simulation state and the policy applied to every location injection:
-//  safe-mode cooldown, GPS drift, turn smoothing and speed selection.
+//  Owns simulation delivery policy: exact coordinates, turn smoothing, and speed selection.
 //  Part of the AppState decomposition (ARCH-002).
 //
 //  This replaces an earlier unwired version that could not represent the app's behaviour.
 //  That version modelled modes with a four-case `ActiveSimulationMode` (none/teleport/
 //  route/joystick), which has no way to express Jump or Two-spot, and its
 //  `startSimulation()` teleported to `targetLocation` directly instead of going through
-//  `SimulationPlanner`. It also had no cooldown, GPS drift, turn smoothing, performance
-//  mode or queue-strategy switching. `AppMode` is now the single mode type and
-//  `ActiveSimulationMode` has been removed.
+//  `SimulationPlanner`. It also had no turn smoothing, performance mode or queue-strategy
+//  switching. `AppMode` is now the single mode type and `ActiveSimulationMode` was removed.
 //
 //  Playback loops deliberately do not live here. AppState still owns `playRoute` and
 //  `startJoystick` until the simulation engine takes them over, so that exactly one
@@ -39,19 +37,9 @@ final class SimulationStateManager: ObservableObject {
     // MARK: Movement Tuning
 
     @Published var autoSpeed: Bool = true
-    @Published var autoCooldown: Bool = true
     @Published var customSpeedMps: Double = 1.6
-    @Published var cooldownSeconds: Double = 20
     @Published var updateFrequencyHz: Double = 5
-
-    // MARK: Safe Mode
-
-    @Published var safeModeTeleport: Bool = true
-    @Published var safeModeJoystick: Bool = true
-    @Published var addGPSDrift: Bool = false
     @Published var smoothTurns: Bool = true
-    @Published var cooldownReminder: Bool = true
-    @Published var lastTeleportMessage: String?
 
     // MARK: Joystick
 
@@ -104,19 +92,8 @@ final class SimulationStateManager: ObservableObject {
         autoSpeed ? simulationSpeed.presetMetersPerSecond : customSpeedMps
     }
 
-    /// Seconds left before another safe-mode teleport is permitted.
-    var cooldownRemaining: TimeInterval {
-        guard let last = lastTeleportAt else { return 0 }
-        return max(0, cooldownSeconds - Date().timeIntervalSince(last))
-    }
-
-    /// Combined safe-mode switch used by the title bar.
-    var headerSafeMode: Bool {
-        get { safeModeTeleport && safeModeJoystick }
-        set {
-            safeModeTeleport = newValue
-            safeModeJoystick = newValue
-        }
+    func coordinateForApplication(_ coordinate: LocationCoordinate) -> LocationCoordinate {
+        coordinate
     }
 
     // MARK: Initialization
@@ -140,8 +117,7 @@ final class SimulationStateManager: ObservableObject {
     /// Apply a coordinate to the selected device.
     ///
     /// - Parameters:
-    ///   - quiet: suppresses toasts, status text and the cooldown gate. Used by the route
-    ///     and joystick loops, which update continuously.
+    ///   - quiet: suppresses user-facing toasts and status text for continuous movement.
     ///   - usePerformanceMode: routes through the persistent Python bridge.
     func setLocation(
         _ coordinate: LocationCoordinate,
@@ -156,46 +132,43 @@ final class SimulationStateManager: ObservableObject {
             return
         }
 
-        var coordinate = coordinate
-        if !quiet, safeModeTeleport, cooldownReminder, let last = lastTeleportAt {
-            let wait = cooldownSeconds - Date().timeIntervalSince(last)
-            if wait > 0.05 {
-                lastTeleportMessage = String(format: "Cooldown %.1fs — wait before the next jump", wait)
-                onStatusMessage?(lastTeleportMessage)
-                return
-            }
-        }
-
-        if addGPSDrift, (safeModeTeleport && !quiet) || (quiet && safeModeJoystick) {
-            coordinate = Self.drifted(coordinate)
-        }
-
-        targetLocation = coordinate
+        let applicationCoordinate = coordinateForApplication(coordinate)
+        targetLocation = applicationCoordinate
         if !quiet {
             onStatusMessage?("Injecting location...")
         }
 
         do {
-            try await locationBridge.setLocation(
-                coordinate,
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await locationBridge.setLocation(
+                applicationCoordinate,
                 for: targetDevice,
                 priority: quiet ? .high : .normal,
                 usePerformanceMode: usePerformanceMode
             )
-            currentLocation = coordinate
+            currentLocation = applicationCoordinate
             isSimulating = true
             injectionStats = await locationBridge.getStats()
             errorHandler.clearCurrentError()
 
             if !quiet {
-                lastTeleportAt = Date()
-                lastTeleportMessage = nil
-                let locationStr = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
+                let locationStr = String(
+                    format: "%.4f, %.4f",
+                    applicationCoordinate.latitude,
+                    applicationCoordinate.longitude
+                )
                 onStatusMessage?("Location spoofed to \(locationStr)")
                 ToastManager.shared.success("Location spoofed successfully!")
             }
         } catch let error as LocationInjectionError {
-            if case .rateLimited = error, quiet {
+            if case .rateLimited = error {
+                if currentLocation == nil {
+                    isSimulating = false
+                }
+                if !quiet {
+                    onStatusMessage?("Location update rejected by adapter backpressure")
+                    ToastManager.shared.warning("Location update was not applied")
+                }
                 return
             }
             errorHandler.handle(error, context: "Location injection")
@@ -289,28 +262,10 @@ final class SimulationStateManager: ObservableObject {
         return raw
     }
 
-    // MARK: Speed
-
     func setSpeed(_ speed: SimulationSpeed) {
         simulationSpeed = speed
         if autoSpeed {
             customSpeedMps = speed.presetMetersPerSecond
         }
-        if autoCooldown {
-            cooldownSeconds = speed.defaultCooldownSeconds
-        }
-    }
-
-    // MARK: Helpers
-
-    /// Nudge a coordinate by a metre or two so repeated pins are not pixel-identical.
-    static func drifted(_ coordinate: LocationCoordinate) -> LocationCoordinate {
-        let meters = Double.random(in: 0.4...2.2)
-        let bearing = Double.random(in: 0..<360)
-        return RouteInterpolator.moveCoordinate(
-            from: coordinate,
-            distanceMeters: meters,
-            bearingDegrees: bearing
-        )
     }
 }

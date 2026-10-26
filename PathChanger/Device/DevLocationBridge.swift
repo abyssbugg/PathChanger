@@ -2,10 +2,11 @@
 //  DevLocationBridge.swift
 //  PathChanger
 //
-//  Bridge to pymobiledevice3 for location injection on iOS 17+
+//  Bridge to pymobiledevice3 for location injection on capability-compatible iOS
 //  Supports both USB (--udid) and WiFi via lockdown tunnel (--rsd)
 //
 
+import Darwin
 import Foundation
 import Combine
 
@@ -195,6 +196,7 @@ enum LocationInjectionError: Error, LocalizedError {
     case invalidCoordinates
     case tunneldNotRunning
     case deviceNotFound
+    case endpointUnreachable
     case injectionFailed(String)
     case clearFailed(String)
     case rateLimited
@@ -203,14 +205,28 @@ enum LocationInjectionError: Error, LocalizedError {
     case outputSizeExceeded
     case unsupportedIOSVersion(String)
 
+    /// True for the errors that mean the channel to the device is gone (not a
+    /// one-off injection failure) — the class the coordinator maps to
+    /// connection-lost / application-uncertain.
+    var isConnectionLoss: Bool {
+        switch self {
+        case .tunneldNotRunning, .deviceNotFound, .endpointUnreachable:
+            return true
+        default:
+            return false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidCoordinates:
             return "Invalid GPS coordinates. Latitude must be -90 to 90, longitude -180 to 180."
         case .tunneldNotRunning:
-            return "Tunnel is not running. This is required for iOS 17+ location injection."
+            return "The selected provider requires an RSD-capable tunnel, but no usable tunnel is running."
         case .deviceNotFound:
             return "Target device not found or disconnected."
+        case .endpointUnreachable:
+            return "The device connection endpoint is unreachable — the device is likely locked, asleep, or off the network."
         case .injectionFailed(let reason):
             return "Location injection failed: \(reason)"
         case .clearFailed(let reason):
@@ -236,6 +252,8 @@ enum LocationInjectionError: Error, LocalizedError {
             return "Settings > Privacy & Security > Developer Mode > Enable"
         case .deviceNotFound:
             return "1. Check USB connection or Wi-Fi\n2. Trust this computer on the device\n3. Refresh device list"
+        case .endpointUnreachable:
+            return "Wake and unlock the device, confirm it is on the same Wi-Fi (or reconnect USB), then retry. Spoofing state is preserved as uncertain, not cleared."
         case .outputSizeExceeded:
             return "If this persists, check pymobiledevice3 installation or report a bug."
         case .unsupportedIOSVersion:
@@ -278,9 +296,188 @@ struct InjectionStats {
     }
 }
 
+struct LocationBridgeSession: Equatable, Sendable {
+    let sessionID: UUID
+    let generation: UInt64
+}
+
+struct LocationSessionGenerationTracker: Sendable {
+    private struct Record: Sendable {
+        var session: LocationBridgeSession
+        var transport: LocationTransport
+        var endpointClass: LocationEndpointClass
+        var lost: Bool
+    }
+    private var records: [String: Record] = [:]
+
+    mutating func resolve(
+        stableDeviceID: String,
+        transport: LocationTransport,
+        endpointClass: LocationEndpointClass
+    ) -> LocationBridgeSession {
+        if var record = records[stableDeviceID] {
+            if record.lost || record.transport != transport || record.endpointClass != endpointClass {
+                record.session = LocationBridgeSession(sessionID: UUID(), generation: record.session.generation + 1)
+                record.transport = transport
+                record.endpointClass = endpointClass
+                record.lost = false
+                records[stableDeviceID] = record
+            }
+            return record.session
+        }
+        let session = LocationBridgeSession(sessionID: UUID(), generation: 1)
+        records[stableDeviceID] = Record(
+            session: session, transport: transport, endpointClass: endpointClass, lost: false
+        )
+        return session
+    }
+
+    enum AdoptionError: Error, Equatable {
+        case missingSession
+        case staleAcknowledgement
+        case transportMismatch
+        case endpointMismatch
+    }
+
+    @discardableResult
+    mutating func restore(
+        receipt: LocationInjectionReceipt,
+        stableDeviceID: String
+    ) throws -> LocationBridgeSession {
+        guard receipt.outcome == .applied else {
+            throw AdoptionError.missingSession
+        }
+        if let existing = records[stableDeviceID] {
+            guard existing.session.generation <= receipt.sessionGeneration else {
+                throw AdoptionError.staleAcknowledgement
+            }
+            if existing.session.generation == receipt.sessionGeneration {
+                guard existing.transport == receipt.transport else {
+                    throw AdoptionError.transportMismatch
+                }
+                guard existing.endpointClass == receipt.endpointClass else {
+                    throw AdoptionError.endpointMismatch
+                }
+            }
+        }
+
+        let session = LocationBridgeSession(
+            sessionID: receipt.session,
+            generation: receipt.sessionGeneration
+        )
+        records[stableDeviceID] = Record(
+            session: session,
+            transport: receipt.transport,
+            endpointClass: receipt.endpointClass,
+            lost: false
+        )
+        return session
+    }
+
+    mutating func beginClear(_ identity: LocationSessionIdentity) throws {
+        guard let record = records[identity.stableDeviceID], !record.lost else {
+            throw AdoptionError.missingSession
+        }
+        guard record.session.generation == identity.generation else {
+            throw AdoptionError.staleAcknowledgement
+        }
+        guard record.transport == identity.transport else {
+            throw AdoptionError.transportMismatch
+        }
+        guard record.endpointClass == identity.endpointClass else {
+            throw AdoptionError.endpointMismatch
+        }
+    }
+
+    mutating func completeClear(_ identity: LocationSessionIdentity) throws {
+        try beginClear(identity)
+        guard var record = records[identity.stableDeviceID] else {
+            throw AdoptionError.missingSession
+        }
+        record.lost = true
+        records[identity.stableDeviceID] = record
+    }
+
+    mutating func adopt(
+        _ acknowledgement: LocationProviderAcknowledgement,
+        stableDeviceID: String,
+        sessionID: UUID
+    ) throws -> LocationBridgeSession {
+        guard var record = records[stableDeviceID], !record.lost else {
+            throw AdoptionError.missingSession
+        }
+        guard record.session.sessionID == sessionID,
+              record.session.generation == acknowledgement.sessionGeneration else {
+            throw AdoptionError.staleAcknowledgement
+        }
+        guard record.transport == acknowledgement.physicalTransport else {
+            throw AdoptionError.transportMismatch
+        }
+
+        record.endpointClass = acknowledgement.endpointClass
+        records[stableDeviceID] = record
+        return record.session
+    }
+
+    mutating func markLost(stableDeviceID: String) {
+        records[stableDeviceID]?.lost = true
+    }
+}
+
+enum LocationApplicationAcknowledgementRouter {
+    enum RoutingError: Error, Equatable {
+        case requestMismatch
+    }
+
+    static func accept(
+        request: LocationApplicationRequest,
+        provisionalSession: LocationBridgeSession,
+        acknowledgement: LocationProviderAcknowledgement,
+        generationTracker: inout LocationSessionGenerationTracker,
+        completedAt: Date = Date()
+    ) throws -> LocationInjectionReceipt {
+        guard acknowledgement.requestID == request.id else {
+            throw RoutingError.requestMismatch
+        }
+        let adoptedSession = try generationTracker.adopt(
+            acknowledgement,
+            stableDeviceID: request.target.stableDeviceID,
+            sessionID: provisionalSession.sessionID
+        )
+        return LocationInjectionReceipt(
+            session: adoptedSession.sessionID,
+            acknowledgedCoordinate: request.coordinate,
+            acknowledgement: acknowledgement,
+            completedAt: completedAt,
+            outcome: .applied
+        )
+    }
+}
+
+extension LocationInjectionReceipt {
+    static func accepted(
+        request: LocationApplicationRequest,
+        endpointClass: LocationEndpointClass,
+        session: LocationBridgeSession,
+        outcome: LocationInjectionOutcome,
+        completedAt: Date = Date()
+    ) -> LocationInjectionReceipt {
+        LocationInjectionReceipt(
+            requestID: request.id,
+            session: session.sessionID,
+            coordinate: request.coordinate,
+            transport: request.target.transport,
+            endpointClass: endpointClass,
+            sessionGeneration: session.generation,
+            completedAt: completedAt,
+            outcome: outcome
+        )
+    }
+}
+
 // MARK: - Dev Location Bridge
 
-/// Bridge to pymobiledevice3 for iOS 17+ location simulation.
+/// Bridge to pymobiledevice3 for capability-compatible iOS location simulation.
 ///
 /// `DevLocationBridge` is the core component for injecting simulated GPS coordinates
 /// onto iOS devices. It uses Apple's DVT (Developer Tools) simulate-location service
@@ -326,10 +523,20 @@ struct InjectionStats {
 ///
 /// - Note: Developer Mode must be enabled on the iOS device.
 /// - Important: Requires pymobiledevice3 to be installed.
-actor DevLocationBridge {
+actor DevLocationBridge: LocationInjecting {
 
     // MARK: Configuration
-    private var python3Path: String { PythonPathResolver.path }
+    private let pythonExecutablePath: String
+    private let keepAliveObservationWindow: TimeInterval
+    private var python3Path: String { pythonExecutablePath }
+
+    init(
+        pythonExecutablePath: String = PythonPathResolver.path,
+        keepAliveObservationWindow: TimeInterval = 4.0
+    ) {
+        self.pythonExecutablePath = pythonExecutablePath
+        self.keepAliveObservationWindow = max(0, keepAliveObservationWindow)
+    }
 
     /// Whether to use persistent bridge for high-frequency operations
     /// This significantly reduces overhead for joystick mode
@@ -354,24 +561,230 @@ actor DevLocationBridge {
     /// `developer dvt simulate-location set` must stay running or iOS snaps back.
     private var heldSimulationProcess: Process?
     private var heldSimulationRequiresTunnel: Bool = false
+    private var heldSessionDeviceID: String?
+    private var generationTracker = LocationSessionGenerationTracker()
+    private var eventContinuations: [UUID: AsyncStream<LocationBridgeEvent>.Continuation] = [:]
+    private var queuedApplicationContexts: [UUID: QueuedApplicationContext] = [:]
+    private var queueProcessingTask: Task<Void, Never>?
+    private var clearingDeviceIDs: Set<String> = []
 
-    private func retainSimulationProcess(_ process: Process, requiresTunnel: Bool) {
+    private struct QueuedApplicationContext: Sendable {
+        let request: LocationApplicationRequest
+        let endpointClass: LocationEndpointClass
+        let session: LocationBridgeSession
+    }
+
+    private func retainSimulationProcess(
+        _ process: Process,
+        requiresTunnel: Bool,
+        stableDeviceID: String?
+    ) {
         heldSimulationProcess = process
         heldSimulationRequiresTunnel = requiresTunnel
+        heldSessionDeviceID = stableDeviceID
+        process.terminationHandler = { [weak self] terminatedProcess in
+            Task { await self?.heldSimulationProcessTerminated(terminatedProcess) }
+        }
     }
 
-    func stopHeldSimulation() {
-        heldSimulationProcess?.terminate()
+    private func heldSimulationProcessTerminated(_ process: Process) {
+        guard heldSimulationProcess === process else { return }
+        if let heldSessionDeviceID {
+            generationTracker.markLost(stableDeviceID: heldSessionDeviceID)
+        }
         heldSimulationProcess = nil
         heldSimulationRequiresTunnel = false
+        heldSessionDeviceID = nil
+        emit(.processTerminated(exitCode: process.terminationStatus))
     }
 
-    /// Stop only sessions whose connection disappears with the RemoteXPC tunnel.
+    func stopHeldSimulation() async {
+        guard let process = heldSimulationProcess else {
+            heldSimulationRequiresTunnel = false
+            heldSessionDeviceID = nil
+            return
+        }
+
+        process.terminate()
+        let terminateDeadline = Date().addingTimeInterval(2.0)
+        while process.isRunning, Date() < terminateDeadline {
+            if Task.isCancelled { break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if process.isRunning {
+            process.interrupt()
+            let interruptDeadline = Date().addingTimeInterval(2.0)
+            while process.isRunning, Date() < interruptDeadline {
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        if process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            let killDeadline = Date().addingTimeInterval(1.0)
+            while process.isRunning, Date() < killDeadline {
+                if Task.isCancelled { break }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        guard !process.isRunning else {
+            Logger.error("Held location process did not exit after SIGKILL", category: .device)
+            return
+        }
+
+        if heldSimulationProcess === process {
+            heldSimulationProcess = nil
+            heldSimulationRequiresTunnel = false
+            heldSessionDeviceID = nil
+        }
+    }
+
     func stopTunnelDependentSimulation() async {
         if heldSimulationRequiresTunnel {
-            stopHeldSimulation()
+            if let heldSessionDeviceID {
+                generationTracker.markLost(stableDeviceID: heldSessionDeviceID)
+            }
+            await stopHeldSimulation()
         }
         await PersistentLocationBridge.shared.stopIfUsingTunnel()
+    }
+
+    func events() async -> AsyncStream<LocationBridgeEvent> {
+        let id = UUID()
+        let pair = AsyncStream<LocationBridgeEvent>.makeStream()
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeEventContinuation(id) }
+        }
+        eventContinuations[id] = pair.continuation
+        return pair.stream
+    }
+
+    func adoptManagedSession(
+        receipt: LocationInjectionReceipt,
+        stableDeviceID: String
+    ) async throws {
+        try generationTracker.restore(receipt: receipt, stableDeviceID: stableDeviceID)
+    }
+
+    private func removeEventContinuation(_ id: UUID) {
+        eventContinuations.removeValue(forKey: id)
+    }
+
+    private func emit(_ event: LocationBridgeEvent) {
+        eventContinuations.values.forEach { $0.yield(event) }
+    }
+
+    private func descriptor(for device: Device) async -> LocationConnectionDescriptor {
+        let arguments = await MainActor.run {
+            TunneldManager.shared.locationConnectionArguments(for: device.id)
+        }
+        return LocationConnectionArguments.classify(
+            arguments: arguments,
+            physicalTransport: device.connectionType == .wifi ? .wifi : .usb
+        )
+    }
+
+    func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+        guard !clearingDeviceIDs.contains(request.target.stableDeviceID) else {
+            throw LocationInjectionError.injectionFailed("Location Clear is in progress for this device")
+        }
+
+        let device = Device(
+            id: request.target.stableDeviceID,
+            displayName: request.target.stableDeviceID,
+            connectionType: request.target.transport == .wifi ? .wifi : .usb
+        )
+        let connection = await descriptor(for: device)
+        let session = generationTracker.resolve(
+            stableDeviceID: device.id,
+            transport: connection.transport,
+            endpointClass: connection.endpointClass
+        )
+        do {
+            guard let acknowledgement = try await setLocation(
+                request.coordinate,
+                for: device,
+                usePerformanceMode: true,
+                applicationRequest: request,
+                applicationSession: session,
+                applicationEndpointClass: connection.endpointClass
+            ) else {
+                throw LocationInjectionError.injectionFailed(
+                    "Provider completed without an acknowledgement"
+                )
+            }
+            return try LocationApplicationAcknowledgementRouter.accept(
+                request: request,
+                provisionalSession: session,
+                acknowledgement: acknowledgement,
+                generationTracker: &generationTracker
+            )
+        } catch LocationInjectionError.rateLimited {
+            return .accepted(
+                request: request,
+                endpointClass: connection.endpointClass,
+                session: session,
+                outcome: .queued
+            )
+        } catch {
+            throw error
+        }
+    }
+
+    func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
+        guard let session else {
+            throw LocationInjectionError.injectionFailed("Cannot Clear without an acknowledged location session")
+        }
+        guard session.stableDeviceID == target.stableDeviceID else {
+            throw LocationInjectionError.injectionFailed("Clear target does not match the acknowledged session")
+        }
+        guard clearingDeviceIDs.insert(target.stableDeviceID).inserted else {
+            throw LocationInjectionError.injectionFailed("Location Clear is already in progress for this device")
+        }
+        defer { clearingDeviceIDs.remove(target.stableDeviceID) }
+
+        do {
+            try generationTracker.beginClear(session)
+        } catch {
+            throw LocationInjectionError.injectionFailed("Clear session validation failed: \(error.localizedDescription)")
+        }
+
+        let removedRequestIDs = await requestQueue.removeRequests(forDeviceID: target.stableDeviceID)
+        for requestID in removedRequestIDs {
+            queuedApplicationContexts.removeValue(forKey: requestID)
+        }
+
+        if let inFlightRequestID = await requestQueue.inFlightRequestID(
+            forDeviceID: target.stableDeviceID
+        ) {
+            await requestQueue.waitForInFlightRequest(inFlightRequestID)
+        }
+        if heldSessionDeviceID == target.stableDeviceID {
+            await stopHeldSimulation()
+        }
+
+        let device = Device(
+            id: target.stableDeviceID,
+            displayName: target.stableDeviceID,
+            connectionType: target.transport == .wifi ? .wifi : .usb
+        )
+        let acknowledgement = try await PersistentLocationBridge.shared.clearLocation(
+            for: device,
+            requestID: UUID(),
+            sessionGeneration: session.generation
+        )
+        guard acknowledgement.physicalTransport == session.transport,
+              acknowledgement.sessionGeneration == session.generation,
+              acknowledgement.endpointClass == session.endpointClass else {
+            throw LocationInjectionError.injectionFailed("Clear acknowledgement does not match the active session")
+        }
+        do {
+            try generationTracker.completeClear(session)
+        } catch {
+            throw LocationInjectionError.injectionFailed(
+                "Clear completion could not invalidate the acknowledged session: \(error.localizedDescription)"
+            )
+        }
     }
 
     static func connectionRequiresTunnel(_ arguments: [String]) -> Bool {
@@ -407,7 +820,15 @@ actor DevLocationBridge {
     /// // Performance mode for joystick
     /// try await bridge.setLocation(coordinate, for: device, usePerformanceMode: true)
     /// ```
-    func setLocation(_ coordinate: LocationCoordinate, for device: Device, priority: QueuedLocationRequest.RequestPriority = .normal, usePerformanceMode: Bool = false) async throws {
+    func setLocation(
+        _ coordinate: LocationCoordinate,
+        for device: Device,
+        priority: QueuedLocationRequest.RequestPriority = .normal,
+        usePerformanceMode: Bool = false,
+        applicationRequest: LocationApplicationRequest? = nil,
+        applicationSession: LocationBridgeSession? = nil,
+        applicationEndpointClass: LocationEndpointClass? = nil
+    ) async throws -> LocationProviderAcknowledgement? {
         // Strict coordinate validation
         try coordinate.validated()
 
@@ -428,12 +849,30 @@ actor DevLocationBridge {
                 timestamp: Date(),
                 priority: priority
             )
+            let applicationContext: QueuedApplicationContext?
+            if let applicationRequest, let applicationSession, let applicationEndpointClass {
+                applicationContext = QueuedApplicationContext(
+                    request: applicationRequest,
+                    endpointClass: applicationEndpointClass,
+                    session: applicationSession
+                )
+            } else {
+                applicationContext = nil
+            }
 
             // Use strategy-aware enqueue (latest-wins for joystick, sequential for routes)
             let enqueueResult = await requestQueue.enqueueWithStrategy(queuedRequest)
 
             switch enqueueResult {
             case .success:
+                if let applicationContext {
+                    queuedApplicationContexts[queuedRequest.id] = applicationContext
+                }
+                let retainedRequestIDs = await requestQueue.queuedRequestIDs()
+                queuedApplicationContexts = queuedApplicationContexts.filter {
+                    retainedRequestIDs.contains($0.key)
+                }
+
                 // Notify user via toast (only if not in performance mode to avoid spam)
                 if !usePerformanceMode {
                     await MainActor.run {
@@ -441,10 +880,7 @@ actor DevLocationBridge {
                     }
                 }
 
-                // Process queue in background
-                Task {
-                    await processQueue()
-                }
+                startQueueProcessingIfNeeded()
 
                 throw LocationInjectionError.rateLimited
 
@@ -466,12 +902,20 @@ actor DevLocationBridge {
         // Use persistent bridge for high-frequency/performance mode
         if usePersistentBridge && usePerformanceMode {
             do {
-                try await setLocationViaPersistentBridge(coordinate, for: device)
+                let acknowledgement = try await setLocationViaPersistentBridge(
+                    coordinate,
+                    for: device,
+                    requestID: applicationRequest?.id ?? UUID(),
+                    sessionGeneration: applicationSession?.generation
+                )
                 let latencyMs = Date().timeIntervalSince(startTime) * 1000
                 stats.recordSuccess(latencyMs: latencyMs)
-                return
+                return acknowledgement
             } catch {
-                // Fall back to subprocess mode if persistent bridge fails
+                if applicationRequest != nil {
+                    throw error
+                }
+                // Non-session utility callers retain the legacy fallback during migration.
                 Logger.debug("Persistent bridge failed, falling back to subprocess: \(error)", category: .device, deviceUDID: device.id, iosVersion: device.productVersion)
             }
         }
@@ -503,12 +947,23 @@ actor DevLocationBridge {
         // Record success
         let latencyMs = Date().timeIntervalSince(startTime) * 1000
         stats.recordSuccess(latencyMs: latencyMs)
+        return nil
     }
 
     /// Set location using the persistent bridge (high-performance mode)
     /// This reuses a long-running Python process for significantly reduced latency
-    private func setLocationViaPersistentBridge(_ coordinate: LocationCoordinate, for device: Device) async throws {
-        try await PersistentLocationBridge.shared.setLocation(coordinate, for: device)
+    private func setLocationViaPersistentBridge(
+        _ coordinate: LocationCoordinate,
+        for device: Device,
+        requestID: UUID,
+        sessionGeneration: UInt64?
+    ) async throws -> LocationProviderAcknowledgement {
+        try await PersistentLocationBridge.shared.setLocation(
+            coordinate,
+            for: device,
+            requestID: requestID,
+            sessionGeneration: sessionGeneration
+        )
     }
 
     /// Enable or disable persistent bridge mode
@@ -543,6 +998,19 @@ actor DevLocationBridge {
 
     // MARK: Queue Processing
 
+    private func startQueueProcessingIfNeeded() {
+        guard queueProcessingTask == nil else { return }
+        queueProcessingTask = Task { [weak self] in
+            guard let self else { return }
+            await self.processQueue()
+            await self.queueProcessingDidFinish()
+        }
+    }
+
+    private func queueProcessingDidFinish() {
+        queueProcessingTask = nil
+    }
+
     /// Process queued location requests
     private func processQueue() async {
         // Prevent concurrent queue processing
@@ -566,35 +1034,54 @@ actor DevLocationBridge {
             await requestQueue.recordProcessed(queuedAt: queuedRequest.timestamp)
 
             do {
-                // Process the queued request directly (bypass rate limiting since we already waited)
-                let arguments = try await buildLocationArguments(
-                    subcommand: "set",
-                    device: queuedRequest.device,
-                    extraArgs: [
-                        "--",
-                        String(format: "%.6f", queuedRequest.coordinate.latitude),
-                        String(format: "%.6f", queuedRequest.coordinate.longitude)
-                    ]
-                )
-
-                let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
-                let result = try await runPython(
-                    arguments: sanitizedArgs,
-                    device: queuedRequest.device,
-                    keepAlive: true,
-                    heldSessionRequiresTunnel: Self.connectionRequiresTunnel(sanitizedArgs)
-                )
-                try parseResult(result)
+                if let context = queuedApplicationContexts[queuedRequest.id] {
+                    let acknowledgement = try await setLocationViaPersistentBridge(
+                        queuedRequest.coordinate,
+                        for: queuedRequest.device,
+                        requestID: context.request.id,
+                        sessionGeneration: context.session.generation
+                    )
+                    let receipt = try LocationApplicationAcknowledgementRouter.accept(
+                        request: context.request,
+                        provisionalSession: context.session,
+                        acknowledgement: acknowledgement,
+                        generationTracker: &generationTracker
+                    )
+                    queuedApplicationContexts.removeValue(forKey: queuedRequest.id)
+                    emit(.receipt(receipt))
+                } else {
+                    // Non-session utility queue entries retain the legacy one-shot path.
+                    let arguments = try await buildLocationArguments(
+                        subcommand: "set",
+                        device: queuedRequest.device,
+                        extraArgs: [
+                            "--",
+                            String(format: "%.6f", queuedRequest.coordinate.latitude),
+                            String(format: "%.6f", queuedRequest.coordinate.longitude)
+                        ]
+                    )
+                    let sanitizedArgs = try ArgumentSanitizer.sanitizeSubprocessArgs(arguments)
+                    let result = try await runPython(
+                        arguments: sanitizedArgs,
+                        device: queuedRequest.device,
+                        keepAlive: true,
+                        heldSessionRequiresTunnel: Self.connectionRequiresTunnel(sanitizedArgs)
+                    )
+                    try parseResult(result)
+                }
 
                 stats.recordSuccess(latencyMs: 0) // Queue processing doesn't track individual latency
             } catch {
+                queuedApplicationContexts.removeValue(forKey: queuedRequest.id)
                 Logger.debug("Failed to process queued location request: \(error)", category: .device, deviceUDID: queuedRequest.device.id, iosVersion: queuedRequest.device.productVersion)
             }
+
+            await requestQueue.finishInFlightRequest(queuedRequest.id)
         }
     }
 
     /// Build pymobiledevice3 arguments based on device connection type with validation
-    /// iOS 17+ requires tunnel access for developer services
+    /// Capability discovery selects direct or RSD access for developer services.
     @MainActor
     private func buildLocationArguments(subcommand: String, device: Device, extraArgs: [String] = []) throws -> [String] {
         var args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", subcommand]
@@ -627,7 +1114,7 @@ actor DevLocationBridge {
 
         // Ending the held `simulate-location set` session is the real clear.
         let hadHeldSession = heldSimulationProcess != nil
-        stopHeldSimulation()
+        await stopHeldSimulation()
         if hadHeldSession {
             return
         }
@@ -671,7 +1158,8 @@ actor DevLocationBridge {
         onProgress: @escaping (Int, Int, LocationCoordinate) -> Void
     ) async throws {
         for (index, coordinate) in coordinates.enumerated() {
-            try await setLocation(coordinate, for: device)
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await setLocation(coordinate, for: device)
             onProgress(index + 1, coordinates.count, coordinate)
 
             // Wait for interval
@@ -759,43 +1247,50 @@ actor DevLocationBridge {
 
     // MARK: Private Methods
 
-    private func parseResult(_ result: String) throws {
-        if result.contains("InvalidServiceError") || result.contains("Unable to connect to Tunneld") {
-            stats.recordFailure()
-            throw LocationInjectionError.tunneldNotRunning
+    /// Classifies provider (subprocess/helper) output into a typed injection error.
+    /// Pure and testable: covers both the classic exception names and the
+    /// pymobiledevice3 11.4x log-formatted wording observed live on iOS 27.2
+    /// (2026-10-24): "No route to host", "ConnectionRefusedError … Connect call
+    /// failed", and "Device not found: usbmux has no device matching udid".
+    static func classifyProviderOutput(_ output: String) -> LocationInjectionError? {
+        if output.contains("InvalidServiceError") || output.contains("Unable to connect to Tunneld") {
+            return .tunneldNotRunning
         }
-
-        if result.contains("DeviceNotFoundError") {
-            stats.recordFailure()
-            throw LocationInjectionError.deviceNotFound
+        if output.contains("DeviceNotFoundError")
+            || output.contains("usbmux has no device")
+            || output.contains("Device not found") {
+            return .deviceNotFound
         }
-
-        if result.contains("DeveloperModeError") {
-            stats.recordFailure()
-            throw LocationInjectionError.developerModeRequired
+        if output.contains("DeveloperModeError") {
+            return .developerModeRequired
         }
-
-        // Handle DVT service error -402653150 (service not available)
-        if result.contains("-402653150") || result.contains("402653150") {
-            stats.recordFailure()
-            throw LocationInjectionError.injectionFailed("DVT service unavailable. Ensure Developer Mode is enabled and device is trusted.")
+        if output.contains("402653150") {
+            return .injectionFailed("DVT service unavailable. Ensure Developer Mode is enabled and device is trusted.")
         }
-
-        // Handle connection/protocol errors
-        if result.contains("ConnectionError") || result.contains("BrokenPipeError") {
-            stats.recordFailure()
-            throw LocationInjectionError.tunneldNotRunning
+        if output.contains("ConnectionError") || output.contains("BrokenPipeError") {
+            return .tunneldNotRunning
         }
-
-        if result.contains("Traceback") || result.contains("rsd_dependency") {
-            stats.recordFailure()
-            throw LocationInjectionError.injectionFailed("Could not reach the tunnel. Start Tunnel again.")
+        if output.contains("No route to host")
+            || output.contains("Errno 65")
+            || output.contains("ConnectionRefusedError")
+            || output.contains("Connect call failed")
+            || output.contains("Errno 61") {
+            return .endpointUnreachable
         }
-
-        let lowercased = result.lowercased()
+        if output.contains("Traceback") || output.contains("rsd_dependency") {
+            return .injectionFailed("Could not reach the tunnel. Start Tunnel again.")
+        }
+        let lowercased = output.lowercased()
         if lowercased.contains("error") && !lowercased.contains("warning") {
+            return .injectionFailed(shortPythonError(output))
+        }
+        return nil
+    }
+
+    private func parseResult(_ result: String) throws {
+        if let error = Self.classifyProviderOutput(result) {
             stats.recordFailure()
-            throw LocationInjectionError.injectionFailed(Self.shortPythonError(result))
+            throw error
         }
     }
 
@@ -817,7 +1312,8 @@ actor DevLocationBridge {
         timeoutSeconds: Double? = nil,
         device: Device? = nil,
         keepAlive: Bool = false,
-        heldSessionRequiresTunnel: Bool = false
+        heldSessionRequiresTunnel: Bool = false,
+        validateCommand: Bool = true
     ) async throws -> String {
         let timeout = await MainActor.run { timeoutSeconds ?? AppSettings.shared.commandTimeout }
 
@@ -827,9 +1323,11 @@ actor DevLocationBridge {
             heldSimulationRequiresTunnel = false
         }
 
-        // Security: Validate command structure against allowlist (defense-in-depth)
-        // This catches any injection attempts that bypass other validation layers
-        try SubprocessCommandValidator.validateCommandStructure(arguments)
+        // Security: Validate command structure against allowlist (defense-in-depth).
+        // The internal test seam may disable this only for a controlled local executable.
+        if validateCommand {
+            try SubprocessCommandValidator.validateCommandStructure(arguments)
+        }
 
         // Extract device context for enhanced logging
         let deviceUDID = device?.id
@@ -842,11 +1340,12 @@ actor DevLocationBridge {
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        var keepAliveProcessRetained = false
 
         defer {
             try? outputPipe.fileHandleForReading.close()
             try? errorPipe.fileHandleForReading.close()
-            if !keepAlive, process.isRunning {
+            if process.isRunning && (!keepAlive || !keepAliveProcessRetained) {
                 process.terminate()
             }
         }
@@ -864,6 +1363,54 @@ actor DevLocationBridge {
         let capturedDeviceUDID = deviceUDID
         let capturedIOSVersion = iosVersion
         let capturedCommand = fullCommand
+
+        if keepAlive {
+            do {
+                try process.run()
+            } catch {
+                Logger.error(
+                    "Failed to execute python: \(error.localizedDescription)",
+                    category: .device,
+                    deviceUDID: capturedDeviceUDID,
+                    iosVersion: capturedIOSVersion,
+                    operation: "subprocess_error"
+                )
+                throw LocationInjectionError.injectionFailed(
+                    "Python execution failed: \(error.localizedDescription)"
+                )
+            }
+
+            let observationWindow = min(timeout, keepAliveObservationWindow)
+            let holdDeadline = Date().addingTimeInterval(observationWindow)
+            while process.isRunning && Date() < holdDeadline {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            if process.isRunning {
+                retainSimulationProcess(
+                    process,
+                    requiresTunnel: heldSessionRequiresTunnel,
+                    stableDeviceID: device?.id
+                )
+                keepAliveProcessRetained = true
+                return ""
+            }
+
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            // Close both read-ends: drained handles were never released, leaking 2 fds
+            // per subprocess call until the process hit EMFILE under sustained polling.
+            outputPipe.fileHandleForReading.closeFile()
+            errorPipe.fileHandleForReading.closeFile()
+            let totalSize = outputData.count + errorData.count
+            guard totalSize <= maxOutputSize else {
+                throw LocationInjectionError.outputSizeExceeded
+            }
+
+            let output = String(data: outputData, encoding: .utf8) ?? ""
+            let error = String(data: errorData, encoding: .utf8) ?? ""
+            return output + error
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             var hasResumed = false
@@ -888,49 +1435,7 @@ actor DevLocationBridge {
                         }
                     }
 
-                    if keepAlive {
-                        // pymobiledevice3 10.x `simulate-location set` applies the pin
-                        // then waits for Return so the DVT session stays open.
-                        let holdDeadline = Date().addingTimeInterval(min(timeout, 4.0))
-                        while process.isRunning && Date() < holdDeadline {
-                            Thread.sleep(forTimeInterval: 0.1)
-                        }
-
-                        // Only claim the continuation when we are actually going to resume it.
-                        // A process that has already exited (every failure case: no device,
-                        // tunnel down, DVT error) must fall through to the output-parsing path
-                        // below so the caller receives the error instead of hanging forever.
-                        var alreadyResumed = false
-                        var holdsSession = false
-                        resumeLock.lock()
-                        if hasResumed {
-                            alreadyResumed = true
-                        } else if process.isRunning {
-                            hasResumed = true
-                            holdsSession = true
-                        }
-                        resumeLock.unlock()
-
-                        if alreadyResumed {
-                            return
-                        }
-
-                        if holdsSession {
-                            Task {
-                                await self.retainSimulationProcess(
-                                    process,
-                                    requiresTunnel: heldSessionRequiresTunnel
-                                )
-                                // Resume only after actor-isolated ownership has been stored.
-                                // Otherwise the caller can immediately clear/replace a session
-                                // before `heldSimulationProcess` points at it.
-                                continuation.resume(returning: "")
-                            }
-                            return
-                        }
-                    } else {
-                        process.waitUntilExit()
-                    }
+                    process.waitUntilExit()
 
                     // Check if we timed out - both read and write are now protected by resumeLock
                     resumeLock.lock()
@@ -948,6 +1453,8 @@ actor DevLocationBridge {
                     // Read output with size limit to prevent DoS
                     let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    outputPipe.fileHandleForReading.closeFile()
+                    errorPipe.fileHandleForReading.closeFile()
 
                     // Security: Check output size limit
                     let totalSize = outputData.count + errorData.count
@@ -1026,6 +1533,25 @@ actor DevLocationBridge {
         }
     }
 
+#if DEBUG
+    func runPythonForTesting(
+        arguments: [String],
+        device: Device? = nil,
+        keepAlive: Bool = false
+    ) async throws -> String {
+        try await runPython(
+            arguments: arguments,
+            device: device,
+            keepAlive: keepAlive,
+            validateCommand: false
+        )
+    }
+
+    func hasHeldSimulationProcessForTesting() -> Bool {
+        heldSimulationProcess?.isRunning == true
+    }
+#endif
+
     // MARK: - Security Testing Support
 
     /// Returns the maximum output size limit for testing purposes
@@ -1053,7 +1579,8 @@ class LocationBridgeManager: ObservableObject {
         lastError = nil
 
         do {
-            try await bridge.setLocation(coordinate, for: device)
+            // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+            let _ = try await bridge.setLocation(coordinate, for: device)
             lastInjectedLocation = coordinate
             retryCount = 0
             injectionStats = await bridge.getStats()

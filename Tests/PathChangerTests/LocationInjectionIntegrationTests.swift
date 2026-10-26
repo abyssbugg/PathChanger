@@ -14,7 +14,14 @@ final class LocationInjectionIntegrationTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        locationBridge = DevLocationBridge()
+        if PathChangerTestEnvironment.runsDeviceIntegrationTests {
+            locationBridge = DevLocationBridge()
+        } else {
+            locationBridge = DevLocationBridge(
+                pythonExecutablePath: "/usr/bin/true",
+                keepAliveObservationWindow: 0
+            )
+        }
 
         // Create test device
         testDevice = Device(
@@ -25,6 +32,14 @@ final class LocationInjectionIntegrationTests: XCTestCase {
             productVersion: "17.4",
             deviceName: "Test Device"
         )
+    }
+
+    func testDefaultFixtureDoesNotExecuteDevicePython() async throws {
+        guard !PathChangerTestEnvironment.runsDeviceIntegrationTests else { return }
+        let output = try await locationBridge.runPythonForTesting(
+            arguments: ["-c", "print('unexpected-live-python')"]
+        )
+        XCTAssertEqual(output, "", "Default integration tests must use an inert executable")
     }
 
     func testDirectWiFiDoesNotRequireRemoteTunnel() async throws {

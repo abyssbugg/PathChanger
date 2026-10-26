@@ -13,7 +13,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
     func testConnectionArgumentsClassifyTunnelDependency() {
         XCTAssertFalse(DevLocationBridge.connectionRequiresTunnel([
             "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
-            "set", "--udid", "00008130-000C5144019A001C",
+            "set", "--udid", "00000000-0000000000000001",
         ]))
         XCTAssertTrue(DevLocationBridge.connectionRequiresTunnel([
             "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
@@ -21,8 +21,49 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         ]))
         XCTAssertTrue(DevLocationBridge.connectionRequiresTunnel([
             "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
-            "set", "--tunnel", "00008130-000C5144019A001C",
+            "set", "--tunnel", "00000000-0000000000000001",
         ]))
+    }
+
+    // MARK: - Provider Output Connection-Loss Classification (pymobiledevice3 11.4x)
+
+    func testClassifyProviderOutputRecognizesModernUnreachableSignatures() {
+        let unreachableOutputs = [
+            "OSError: [Errno 65] No route to host",
+            "ConnectionRefusedError: [Errno 61] Connect call failed ('fd57:16a4:e2fa::1', 57017, 0, 0)",
+            "sock_connect_cb raise OSError Connect call failed",
+        ]
+        for output in unreachableOutputs {
+            guard case .endpointUnreachable? = DevLocationBridge.classifyProviderOutput(output) else {
+                return XCTFail("Expected endpointUnreachable for: \(output)")
+            }
+        }
+    }
+
+    func testClassifyProviderOutputRecognizesModernDeviceGoneWording() {
+        guard case .deviceNotFound? = DevLocationBridge.classifyProviderOutput(
+            "Device not found: usbmux has no device matching udid 00008130-000C5144019A001C"
+        ) else {
+            return XCTFail("Expected deviceNotFound for usbmux-has-no-device wording")
+        }
+    }
+
+    func testClassifyProviderOutputPreservesLegacyClassification() {
+        guard case .tunneldNotRunning? = DevLocationBridge.classifyProviderOutput("ConnectionError: broken pipe") else {
+            return XCTFail("Expected tunneldNotRunning for legacy ConnectionError")
+        }
+        XCTAssertNil(DevLocationBridge.classifyProviderOutput("location set"))
+    }
+
+    func testExplicitClearAwaitsHeldSimulationTermination() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("PathChanger/Device/DevLocationBridge.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("func stopHeldSimulation() async"))
+        XCTAssertTrue(source.contains("await stopHeldSimulation()"))
     }
 
     // MARK: - Output Size Limit Tests
@@ -80,7 +121,8 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             .rateLimited,
             .timeout,
             .developerModeRequired,
-            .outputSizeExceeded
+            .outputSizeExceeded,
+            .endpointUnreachable
         ]
 
         for error in errors {
@@ -360,5 +402,33 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             }
             XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(args), "Subcommand \(cmd) should be allowed")
         }
+    }
+
+    func testHeldProcessQueueAndInterruptOwnershipAreBounded() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/DevLocationBridge.swift"),
+            encoding: .utf8
+        )
+        let queueSource = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Core/RateLimiter.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("stableDeviceID: device?.id"))
+        XCTAssertTrue(source.contains("heldSessionDeviceID = stableDeviceID"))
+        XCTAssertTrue(source.contains("let interruptDeadline"))
+        XCTAssertTrue(source.contains("Task.isCancelled"))
+        XCTAssertTrue(source.contains("SIGKILL"))
+        XCTAssertTrue(queueSource.contains("func queuedRequestIDs()"))
+        XCTAssertTrue(source.contains("queuedApplicationContexts = queuedApplicationContexts.filter"))
+        XCTAssertTrue(queueSource.contains("func inFlightRequestID(forDeviceID"))
+        XCTAssertTrue(queueSource.contains("func waitForInFlightRequest"))
+        XCTAssertTrue(queueSource.contains("func finishInFlightRequest"))
+        XCTAssertTrue(source.contains("await requestQueue.waitForInFlightRequest"))
+        XCTAssertFalse(source.contains("if let queueProcessingTask {\n            await queueProcessingTask.value\n        }"))
     }
 }

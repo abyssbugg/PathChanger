@@ -169,17 +169,6 @@ enum SimulationSpeed: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Cooldown applied between teleports when safe mode is enabled, in seconds.
-    var defaultCooldownSeconds: Double {
-        switch self {
-        case .walking: return 20
-        case .cycling: return 30
-        case .fast: return 45
-        case .driving: return 60
-        default: return 20
-        }
-    }
-
     /// Icon for UI
     var icon: String {
         switch self {
@@ -262,6 +251,11 @@ class RouteMode: SimulationModeProtocol {
 
     var progress: Double {
         guard !interpolatedPoints.isEmpty else { return 0 }
+        // REQ-3: Final route completion reports progress exactly 1.0 while currentIndex remains safe
+        // When inactive (completion), ensure progress is exactly 1.0
+        if !isActive && currentIndex >= interpolatedPoints.count - 1 {
+            return 1.0
+        }
         return Double(currentIndex) / Double(interpolatedPoints.count)
     }
 
@@ -295,8 +289,6 @@ class RouteMode: SimulationModeProtocol {
 
     func stop() {
         isActive = false
-        currentIndex = 0
-        currentCoordinate = nil
     }
 
     func pause() {
@@ -310,15 +302,18 @@ class RouteMode: SimulationModeProtocol {
     func update() -> LocationCoordinate? {
         guard isActive, !interpolatedPoints.isEmpty else { return currentCoordinate }
 
-        currentIndex += 1
-
-        if currentIndex >= interpolatedPoints.count {
+        let nextIndex = currentIndex + 1
+        if nextIndex >= interpolatedPoints.count {
             if loop {
                 currentIndex = 0
             } else {
+                currentIndex = interpolatedPoints.count - 1
+                currentCoordinate = interpolatedPoints[currentIndex]
                 isActive = false
                 return currentCoordinate
             }
+        } else {
+            currentIndex = nextIndex
         }
 
         currentCoordinate = interpolatedPoints[currentIndex]
@@ -563,7 +558,8 @@ class SimulationEngine: ObservableObject {
         teleportMode.setTarget(coordinate)
         teleportMode.start()
 
-        try await locationBridge.setLocation(coordinate, for: device)
+        // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+        let _ = try await locationBridge.setLocation(coordinate, for: device)
         currentCoordinate = coordinate
         state = .completed
     }
@@ -657,14 +653,8 @@ class SimulationEngine: ObservableObject {
         routeMode.stop()
         joystickMode.stop()
 
-        // Clear location on device
-        if let device = targetDevice {
-            try? await locationBridge.clearLocation(for: device)
-        }
-
+        // Stopping movement holds the last applied coordinate. Explicit clear is separate.
         state = .idle
-        currentCoordinate = nil
-        routeProgress = 0
         elapsedTime = 0
     }
 
@@ -709,8 +699,16 @@ class SimulationEngine: ObservableObject {
 
         // Send to device
         if let coordinate = nextCoordinate, let device = targetDevice {
-            currentCoordinate = coordinate
-            try? await locationBridge.setLocation(coordinate, for: device)
+            do {
+                // Legacy fire-and-forget path: acknowledgement intentionally not consumed (receipts govern the five-mode path; PRODUCT_REQUIREMENTS.md §7).
+                let _ = try await locationBridge.setLocation(coordinate, for: device)
+                currentCoordinate = coordinate
+            } catch {
+                // REQ-2: Invalidate/nil repeating timer before transitioning to error state
+                timer?.invalidate()
+                timer = nil
+                state = .error(error.localizedDescription)
+            }
         }
     }
 }

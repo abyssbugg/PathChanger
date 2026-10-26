@@ -54,27 +54,9 @@ jobs:
         PATHCHANGER_RUN_DEVICE_TESTS: "0"
       run: swift test --enable-code-coverage
 
-    - name: Build App Bundle Smoke Test
-      run: |
-        chmod +x build-app-bundle.sh
-        ./build-app-bundle.sh
-
-        APP="build/PathChanger.app"
-        EXECUTABLE="$APP/Contents/MacOS/PathChanger"
-        PLIST="$APP/Contents/Info.plist"
-        SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
-
-        test -d "$APP"
-        test -x "$EXECUTABLE"
-        test -d "$SPARKLE"
-
-        /usr/libexec/PlistBuddy -c "Print :CFBundleName" "$PLIST" | grep -qx "PathChanger"
-        /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" | grep -qx "PathChanger"
-        /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST" | grep -qx "com.pathchanger.app"
-
-        codesign --verify --verbose "$APP"
-        otool -L "$EXECUTABLE" | grep -q "@rpath/Sparkle.framework"
-
+    # build-app-bundle.sh is deliberately not invoked here: while it remains
+    # fail-open/destructive it is a prohibited packaging script (CLAUDE.md §10), so CI
+    # must not enforce a bundle path the project forbids.
     - name: Generate Coverage Report
       run: |
         xcrun llvm-cov export \

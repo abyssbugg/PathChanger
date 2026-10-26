@@ -24,12 +24,8 @@ struct OrganicTitleBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 7) {
-                Circle().fill(Color(hex: 0xE8695E)).frame(width: 11, height: 11)
-                Circle().fill(Color(hex: 0xE0AC3C)).frame(width: 11, height: 11)
-                Circle().fill(Color(hex: 0x5AAB52)).frame(width: 11, height: 11)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity)
 
             HStack(spacing: 10) {
                 deviceCluster
@@ -37,7 +33,6 @@ struct OrganicTitleBar: View {
             }
 
             HStack(spacing: 8) {
-                safeModeButton
                 Button {
                     appearanceRaw = appearance == .dark
                         ? OrganicAppearance.light.rawValue
@@ -67,7 +62,7 @@ struct OrganicTitleBar: View {
             .padding(.trailing, 40)
         }
         .padding(.horizontal, 14)
-        .frame(height: 48)
+        .frame(height: 56)
         .background(Organic.surface)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Organic.neutral400).frame(height: 1)
@@ -76,6 +71,14 @@ struct OrganicTitleBar: View {
 
     private var appearance: OrganicAppearance {
         OrganicAppearance.persisted(appearanceRaw)
+    }
+
+    private var hasSelectedDevice: Bool {
+        appState.selectedDevice != nil
+    }
+
+    private var deviceCount: Int {
+        max(appState.availableDevices.count, hasSelectedDevice ? 1 : 0)
     }
 
     private var deviceCluster: some View {
@@ -93,12 +96,12 @@ struct OrganicTitleBar: View {
                             .foregroundStyle(Organic.neutral600)
                             .lineLimit(1)
                     }
-                    Text("\(max(appState.availableDevices.count, appState.selectedDevice == nil ? 0 : 1))")
+                    Text("\(deviceCount)")
                         .font(Organic.mono(10, weight: .bold))
                         .foregroundStyle(Organic.neutral100)
                         .padding(.horizontal, 5)
                         .frame(minWidth: 17, minHeight: 17)
-                        .background(Organic.sage600)
+                        .background(deviceCount == 0 ? Organic.neutral500 : Organic.sage600)
                         .clipShape(Capsule())
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
@@ -147,33 +150,6 @@ struct OrganicTitleBar: View {
         .buttonStyle(.plain)
     }
 
-    private var safeModeButton: some View {
-        let on = appState.safeModeTeleport && appState.safeModeJoystick
-        return Button {
-            let next = !on
-            appState.safeModeTeleport = next
-            appState.safeModeJoystick = next
-            appState.statusMessage = next
-                ? "Safe Mode on — speed clamped, cooldown enforced"
-                : "Safe Mode off — no speed ceiling, no jump guard"
-        } label: {
-            HStack(spacing: 5) {
-                OrganicGlyphView(glyph: .shieldCheck, size: 15)
-                Circle()
-                    .fill(on ? Organic.sage600 : Organic.neutral500)
-                    .frame(width: 7, height: 7)
-            }
-            .foregroundStyle(on ? Organic.sage800 : Organic.neutral700)
-            .padding(.horizontal, 9)
-            .frame(height: 32)
-            .background(on ? Organic.sage100 : Organic.neutral200)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(on ? Organic.sage300 : Organic.neutral400, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help("Safe Mode clamps speed, enforces cooldown and confirms absurd jumps")
-    }
-
     private var tunnelButton: some View {
         Button {
             if tunneldManager.isRunning {
@@ -197,6 +173,8 @@ struct OrganicTitleBar: View {
             .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(!hasSelectedDevice)
+        .opacity(hasSelectedDevice ? 1 : 0.55)
         .help(connectionHelp)
     }
 
@@ -307,7 +285,7 @@ struct OrganicTitleBar: View {
     private var deviceSubtitle: String {
         let link = transportIsUSB ? "USB-C" : "Wi-Fi"
         guard let device = appState.selectedDevice else {
-            return "No iOS device · \(link)"
+            return "No iOS device"
         }
         return "iOS \(device.iosVersion) · trusted · \(link)"
     }
@@ -329,6 +307,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelDot: Color {
+        if !hasSelectedDevice { return Organic.neutral500 }
         if tunneldManager.isStarting { return Organic.accent600 }
         if tunneldManager.isRunning { return Organic.sage600 }
         if case .error = tunneldManager.state { return Organic.accent600 }
@@ -336,6 +315,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelInk: Color {
+        if !hasSelectedDevice { return Organic.neutral700 }
         if tunneldManager.isRunning { return Organic.sage800 }
         if tunneldManager.isStarting { return Organic.neutral700 }
         if case .error = tunneldManager.state { return Organic.accent800 }
@@ -343,6 +323,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelFill: Color {
+        if !hasSelectedDevice { return Organic.neutral200 }
         if tunneldManager.isRunning { return Organic.sage100 }
         if tunneldManager.isStarting { return Organic.neutral200 }
         if case .error = tunneldManager.state { return Organic.accent100 }
@@ -361,6 +342,7 @@ struct OrganicTitleBar: View {
     }
 
     private var connectionHelp: String {
+        if !hasSelectedDevice { return "Connect a device to enable RemoteXPC tunnel" }
         if tunneldManager.isRunning { return "Stop RemoteXPC tunnel" }
         if case .error = tunneldManager.state { return "Retry RemoteXPC tunnel start" }
         if directTransportReady {
@@ -551,12 +533,14 @@ struct OrganicTelemetryBar: View {
         HStack(spacing: 16) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(appState.isSimulating ? Organic.sage600 : Organic.neutral500)
+                    .fill(appState.locationPresentation.isSpoofing ? Organic.sage600 : Organic.neutral500)
                     .frame(width: 8, height: 8)
-                Text(appState.isSimulating ? appState.simulationStatusText : "Standby")
+                Text(appState.locationPresentation.applicationLabel)
+                    .accessibilityIdentifier("location.status.application")
                     .font(Organic.body(12.5, weight: .bold))
                     .lineLimit(1)
-                Text((appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                Text(appState.locationPresentation.appliedCoordinateLabel)
+                    .accessibilityIdentifier("location.status.coordinate")
                     .font(Organic.mono(11.5))
                     .foregroundStyle(Organic.neutral700)
                     .padding(.horizontal, 10)
@@ -577,6 +561,18 @@ struct OrganicTelemetryBar: View {
             metric("ALTITUDE", "12.4 m")
             metric("SPEED", speedText)
             Button {
+                appState.pauseSimulation()
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+                    .font(Organic.body(12, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(!appState.locationPresentation.isMovementActive)
+            .accessibilityIdentifier("location.action.pauseMovement")
+
+            Button {
                 Task { await appState.stopSimulation() }
             } label: {
                 HStack(spacing: 6) {
@@ -585,14 +581,15 @@ struct OrganicTelemetryBar: View {
                     Text("Stop")
                         .font(Organic.body(12, weight: .bold))
                 }
-                .foregroundStyle(appState.isSimulating ? Organic.neutral100 : Organic.neutral700)
+                .foregroundStyle(appState.locationPresentation.isMovementActive ? Organic.neutral100 : Organic.neutral700)
                 .padding(.horizontal, 12)
                 .frame(height: 30)
-                .background(appState.isSimulating ? Organic.accent600 : Organic.neutral200)
+                .background(appState.locationPresentation.isMovementActive ? Organic.accent600 : Organic.neutral200)
                 .clipShape(Capsule())
             }
+            .accessibilityIdentifier("location.action.stopMovement")
             .buttonStyle(.plain)
-            .disabled(!appState.isSimulating)
+            .disabled(!appState.locationPresentation.isMovementActive)
         }
         .padding(.horizontal, 14)
         .frame(height: 52)
@@ -606,7 +603,7 @@ struct OrganicTelemetryBar: View {
         // Reads the same accessor as InspectorPanel and ModeContextCard. Previously this used
         // the raw `simulationSpeed.metersPerSecond`, so the telemetry bar showed 1.4 m/s while
         // the other panels showed 1.6 m/s for the same Walking preset.
-        String(format: "%.1f m/s", appState.isSimulating && !appState.isPaused ? appState.effectiveMetersPerSecond : 0)
+        String(format: "%.1f m/s", appState.locationPresentation.isMovementActive && !appState.locationPresentation.isMovementPaused ? appState.effectiveMetersPerSecond : 0)
     }
 
     private func metric(_ title: String, _ value: String) -> some View {

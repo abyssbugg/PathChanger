@@ -58,13 +58,24 @@ final class DeviceStateManager: ObservableObject {
     /// Fires when automatic reconnection gives up, carrying the reason.
     var onReconnectionFailed: ((String) -> Void)?
 
+    /// Publishes typed transport/device changes to the location-session coordinator.
+    var onLocationSessionLoss: ((LocationSessionLossEvent) -> Void)?
+
     // MARK: Debouncing
 
     private var lastTunnelStateChange: Date = .distantPast
     private var lastUSBStateChange: Date = .distantPast
     private let stateDebounceInterval: TimeInterval = 2.5
 
+    /// Transport availability refreshes at most this often on the status poll while a
+    /// device is selected or the tunnel is running: routing (`--udid` vs `--rsd`) must
+    /// not act on minutes-old usbmux visibility, but the 5 s poll must not spawn a
+    /// subprocess on every tick either.
+    private var lastTransportRefresh: Date = .distantPast
+    private let transportRefreshInterval: TimeInterval = 15
+
     private var cancellables = Set<AnyCancellable>()
+    private var isResolvingRecoverySession = false
 
     // MARK: Computed
 
@@ -110,6 +121,8 @@ final class DeviceStateManager: ObservableObject {
         self.usbFallbackManager = usbFallbackManager ?? USBFallbackManager()
         self.tunnelHealthMonitor = tunnelHealthMonitor ?? TunnelHealthMonitor()
 
+        observeDeviceDiscovery()
+
         guard startBackgroundServices else { return }
 
         observeTunnelState()
@@ -119,6 +132,51 @@ final class DeviceStateManager: ObservableObject {
     }
 
     // MARK: Setup
+
+    private func observeDeviceDiscovery() {
+        deviceManager.$devices
+            .dropFirst()
+            .sink { [weak self] devices in
+                self?.synchronizeDiscoveredDevices(devices)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func synchronizeDiscoveredDevices(_ discoveredDevices: [Device]) {
+        var seenUDIDs = Set<String>()
+        let uniqueDevices = discoveredDevices.filter { device in
+            seenUDIDs.insert(device.id).inserted
+        }
+
+        availableDevices = uniqueDevices
+
+        if let selectedDevice,
+           let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
+            let transportChanged = updated.connectionType != selectedDevice.connectionType
+            self.selectedDevice = updated
+            onDeviceSelected?(updated)
+            if transportChanged && !isResolvingRecoverySession {
+                onLocationSessionLoss?(.endpointReplaced)
+            }
+        } else if let selectedDevice {
+            self.selectedDevice = nil
+            connectionStatus = .disconnected
+            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: selectedDevice.id))
+        } else if let first = availableDevices.first {
+            selectedDevice = first
+            onDeviceSelected?(first)
+        }
+
+        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
+        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
+        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
+        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
+
+        connectionStatus = selectedDevice != nil ? .connected : .disconnected
+        if connectionStatus == .connected {
+            reliabilityManager.connectionEstablished()
+        }
+    }
 
     private func observeTunnelState() {
         TunneldManager.shared.$state
@@ -132,6 +190,7 @@ final class DeviceStateManager: ObservableObject {
                     Task { await self.refreshDevices() }
                 } else {
                     self.tunnelHealthMonitor.stopMonitoring()
+                    self.onLocationSessionLoss?(.tunnelHealthLost)
                 }
 
                 self.onTunnelActiveChanged?(state.isActive)
@@ -158,6 +217,9 @@ final class DeviceStateManager: ObservableObject {
         reliabilityManager.onConnectionLost = { [weak self] in
             Task { @MainActor in
                 self?.connectionStatus = .disconnected
+                if let stableDeviceID = self?.selectedDevice?.id {
+                    self?.onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: stableDeviceID))
+                }
                 self?.onConnectionLost?()
             }
         }
@@ -220,39 +282,6 @@ final class DeviceStateManager: ObservableObject {
     /// Refresh available devices from all transports.
     func refreshDevices() async {
         await deviceManager.refreshDevices()
-
-        // Deduplicate by UDID: discovery can report the same device over USB and tunnel.
-        var seenUDIDs = Set<String>()
-        var uniqueDevices: [Device] = []
-
-        for device in deviceManager.devices where !seenUDIDs.contains(device.id) {
-            uniqueDevices.append(device)
-            seenUDIDs.insert(device.id)
-        }
-
-        availableDevices = uniqueDevices
-
-        if let selectedDevice,
-           let updated = availableDevices.first(where: { $0.id == selectedDevice.id }) {
-            // A known pairing placeholder may become a live USB or Network device. Keep
-            // the selection but replace its stale connection type and metadata.
-            self.selectedDevice = updated
-            onDeviceSelected?(updated)
-        } else if selectedDevice == nil, let first = availableDevices.first {
-            selectedDevice = first
-            onDeviceSelected?(first)
-        }
-
-        updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
-        isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
-        usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
-        wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
-
-        connectionStatus = selectedDevice != nil ? .connected : .disconnected
-
-        if connectionStatus == .connected {
-            reliabilityManager.connectionEstablished()
-        }
     }
 
     /// Poll tunnel and transport availability.
@@ -267,7 +296,7 @@ final class DeviceStateManager: ObservableObject {
                 await tunnelManager.adoptRunningTunnelIfPresent()
             }
         }
-        await deviceManager.refreshTransportAvailability()
+        await refreshTransportAvailabilityIfNeeded()
 
         updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
@@ -290,6 +319,71 @@ final class DeviceStateManager: ObservableObject {
         }
     }
 
+    /// Refresh usbmux transport visibility when it is actionable and not too recent.
+    ///
+    /// The `--udid` vs `--rsd` routing decision reads `usbDirectDeviceIds` /
+    /// `wifiDirectDeviceIds`, so visibility is refreshed only while a device is selected
+    /// or the tunnel is running, and never more often than `transportRefreshInterval`.
+    /// `now` is injectable so tests can cross the interval without sleeping.
+    func refreshTransportAvailabilityIfNeeded(now: Date = Date()) async {
+        let shouldRefresh = (selectedDevice != nil || isTunneldRunning)
+            && now.timeIntervalSince(lastTransportRefresh) >= transportRefreshInterval
+
+        guard shouldRefresh else { return }
+
+        // Stamped before the await so an interleaved poll tick cannot double-spawn.
+        lastTransportRefresh = now
+        await deviceManager.refreshTransportAvailability()
+    }
+
+    /// Resolves the same stable device over a currently verified transport and advances generation.
+    func establishRecoverySession(
+        previous: LocationSessionIdentity
+    ) async throws -> LocationSessionIdentity {
+        isResolvingRecoverySession = true
+        defer { isResolvingRecoverySession = false }
+        await refreshDevices()
+
+        guard let device = availableDevices.first(where: { $0.id == previous.stableDeviceID }) else {
+            throw DeviceError.deviceNotFound
+        }
+
+        let transport: LocationTransport
+        let endpointClass: LocationEndpointClass
+        if preferUSBConnection && usbDirectDeviceIds.contains(device.id) {
+            transport = .usb
+            endpointClass = .direct
+        } else if wifiDirectDeviceIds.contains(device.id) {
+            transport = .wifi
+            endpointClass = .direct
+        } else if usbDirectDeviceIds.contains(device.id) {
+            transport = .usb
+            endpointClass = .direct
+        } else if isTunneldRunning,
+                  TunneldManager.shared.getRsdInfo(for: device.id) != nil {
+            transport = .wifi
+            endpointClass = .remoteServiceDiscovery
+        } else {
+            throw DeviceError.connectionFailed("No verified transport is available")
+        }
+
+        self.selectedDevice = Device(
+            id: device.id,
+            displayName: device.displayName,
+            connectionType: transport == .usb ? .usb : .wifi,
+            productType: device.productType,
+            productVersion: device.productVersion
+        )
+        onDeviceSelected?(self.selectedDevice!)
+
+        return LocationSessionIdentity(
+            stableDeviceID: previous.stableDeviceID,
+            transport: transport,
+            endpointClass: endpointClass,
+            generation: previous.generation &+ 1
+        )
+    }
+
     /// Make a device active.
     func selectDevice(_ device: Device) {
         selectedDevice = device
@@ -300,6 +394,9 @@ final class DeviceStateManager: ObservableObject {
 
     /// Report that the connection was lost, starting the recovery cycle.
     func connectionLost() {
+        if let stableDeviceID = selectedDevice?.id {
+            onLocationSessionLoss?(.selectedDeviceLost(stableDeviceID: stableDeviceID))
+        }
         reliabilityManager.connectionLost()
     }
 }

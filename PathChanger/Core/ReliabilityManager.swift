@@ -8,6 +8,21 @@
 import Foundation
 import Combine
 
+protocol RecoverySleeping: Sendable {
+    func sleep(seconds: TimeInterval) async throws
+}
+
+struct TaskRecoverySleeper: RecoverySleeping {
+    func sleep(seconds: TimeInterval) async throws {
+        guard seconds > 0 else {
+            await Task.yield()
+            try Task.checkCancellation()
+            return
+        }
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+}
+
 // MARK: - Reconnection Strategy
 
 /// Strategy for automatic reconnection with exponential backoff and jitter (REL-001)
@@ -246,7 +261,7 @@ struct ErrorClassifier {
                 return .transient
             case .injectionFailed, .clearFailed:
                 return .retryable
-            case .deviceNotFound, .tunneldNotRunning:
+            case .deviceNotFound, .tunneldNotRunning, .endpointUnreachable:
                 return .persistent
             case .developerModeRequired, .unsupportedIOSVersion:
                 return .fatal

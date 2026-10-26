@@ -11,6 +11,21 @@ import Foundation
 class AppSettings: ObservableObject {
     static let shared = AppSettings()
 
+    static let legacyLocationSemanticsKeys = [
+        "safeModeTeleport",
+        "safeModeJoystick",
+        "addGPSDrift",
+        "cooldownReminder",
+        "cooldownSeconds",
+        "autoCooldown",
+    ]
+
+    static func removeLegacyLocationSemantics(from defaults: UserDefaults) {
+        for key in legacyLocationSemanticsKeys {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     // MARK: - Timeout Settings (SEC-02 Fix)
@@ -48,6 +63,7 @@ class AppSettings: ObservableObject {
     // MARK: - Initialization
 
     private init() {
+        Self.removeLegacyLocationSemantics(from: defaults)
         let savedCommandTimeout = defaults.double(forKey: "commandTimeout")
         self.commandTimeout = savedCommandTimeout > 0 ? savedCommandTimeout : AppConstants.Timeout.defaultCommandTimeout
 

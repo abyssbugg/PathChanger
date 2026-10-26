@@ -16,16 +16,26 @@ final class TunneldManagerTests: XCTestCase {
     override func setUp() async throws {
         // Note: Using shared singleton - tests may affect each other
         manager = TunneldManager.shared
+
+        // Hermetic start: earlier suites (e.g. TunnelHealthMonitorTests) drive the shared
+        // state machine into running, whose action starts this manager's health monitor.
+        // Residual consecutive-failure counts would otherwise fire .healthCheckFailed into
+        // the machine within milliseconds of connectionEstablished below.
+        let mirror = Mirror(reflecting: manager as TunneldManager)
+        if let sharedMonitor = mirror.children.first(where: { $0.label == "healthMonitor" })?.value as? TunnelHealthMonitor {
+            sharedMonitor.stopMonitoring()
+            sharedMonitor.resetMetrics()
+        }
     }
 
     func testTunnelCommandsTargetSelectedDeviceWhenProvided() {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
 
         XCTAssertEqual(TunneldManager.arguments(for: .usb, deviceId: udid), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--udid", udid,
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi, deviceId: udid), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi", "--udid", udid,
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native", "--udid", udid,
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
             "-m", "pymobiledevice3", "remote", "tunneld",
@@ -33,7 +43,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationRequiresMatchingUSBDevice() {
-        let selected = "00008130-000C5144019A001C"
+        let selected = "00000000-0000000000000001"
 
         XCTAssertTrue(DevicePreparationPlanner.canPrepareWiFi(
             deviceId: selected,
@@ -52,12 +62,12 @@ final class TunneldManagerTests: XCTestCase {
     func testRemotePairingRecordFilenameYieldsKnownDeviceId() {
         XCTAssertEqual(
             DevicePreparationPlanner.remotePairingDeviceId(
-                from: "remote_00008130-000C5144019A001C.plist"
+                from: "remote_00000000-0000000000000001.plist"
             ),
-            "00008130-000C5144019A001C"
+            "00000000-0000000000000001"
         )
         XCTAssertNil(
-            DevicePreparationPlanner.remotePairingDeviceId(from: "00008130-000C5144019A001C.plist")
+            DevicePreparationPlanner.remotePairingDeviceId(from: "00000000-0000000000000001.plist")
         )
         XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "remote_not-a-udid.plist"))
         XCTAssertNil(DevicePreparationPlanner.remotePairingDeviceId(from: "notes.txt"))
@@ -76,7 +86,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationRunsCommandsInOrder() async throws {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
         var calls: [[String]] = []
         let service = DevicePreparationService { arguments, _ in
             calls.append(arguments)
@@ -90,7 +100,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationStopsAtFirstFailure() async {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
         var calls: [[String]] = []
         let service = DevicePreparationService { arguments, _ in
             calls.append(arguments)
@@ -112,12 +122,12 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testWiFiPreparationCommandsMatchPymobiledevice3ColdStartFlow() {
-        let udid = "00008130-000C5144019A001C"
+        let udid = "00000000-0000000000000001"
 
         XCTAssertEqual(DevicePreparationPlanner.wifiBootstrapCommands(deviceId: udid), [
             [
                 "-m", "pymobiledevice3", "lockdown", "wifi-connections",
-                "--state", "on", "--udid", udid,
+                "on", "--udid", udid,
             ],
             [
                 "-m", "pymobiledevice3", "lockdown", "remotepairing",
@@ -296,8 +306,8 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTunnelModeCommands() {
-        XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel"])
-        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "-t", "wifi"])
+        XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel", "--native"])
+        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "--native"])
         XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
         XCTAssertEqual(TunnelMode.auto.command, [])
     }
@@ -435,14 +445,57 @@ final class TunneldManagerTests: XCTestCase {
 
     func testTunnelCommandsUseFixedArguments() {
         XCTAssertEqual(TunneldManager.arguments(for: .usb), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel",
+            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .wifi), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "-t", "wifi",
+            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
         ])
         XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
             "-m", "pymobiledevice3", "remote", "tunneld",
         ])
+    }
+
+    func testNativeTunnelLaunchDoesNotInvokeAdministratorShell() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
+            encoding: .utf8
+        )
+        guard let start = source.range(of: "private func attemptStart"),
+              let end = source.range(of: "private func checkLogForErrors", range: start.upperBound..<source.endIndex) else {
+            return XCTFail("Unable to isolate attemptStart implementation")
+        }
+        let implementation = source[start.lowerBound..<end.lowerBound]
+        XCTAssertFalse(implementation.contains("runAdministratorShell"))
+        XCTAssertTrue(implementation.contains("Process()"))
+    }
+
+    func testTerminationPreparationRetainsHandlerUntilReply() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
+            encoding: .utf8
+        )
+        guard let function = source.range(of: "private func applicationShouldTerminateOnMainActor"),
+              let start = source.range(
+                of: "Task { @MainActor [weak self",
+                range: function.lowerBound..<source.endIndex
+              ),
+              let end = source.range(
+                of: "return .terminateLater",
+                range: start.lowerBound..<source.endIndex
+              ) else {
+            return XCTFail("Unable to isolate asynchronous termination preparation")
+        }
+        let implementation = source[start.lowerBound..<end.upperBound]
+        XCTAssertTrue(implementation.contains("[weak self, terminationHandler]"))
+        XCTAssertFalse(implementation.contains("weak terminationHandler"))
     }
 
     func testAutoModeHasNoDirectTunnelCommand() {
@@ -509,24 +562,42 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .idle)
     }
 
-    func testSystemServiceProtection() {
-        // Validate that system services like usbmuxd are protected
-        // The new implementation should NOT kill system services
+    func testSystemServiceProtection() throws {
+        let source = try tunneldManagerSource()
 
-        // usbmuxd process pattern should NOT be targeted
-        // This is validated by not having pkill -f "usbmuxd" in the code
-
-        // Note: We can't directly test the private method, but we ensure
-        // the behavior is correct through integration testing
-        XCTAssertTrue(true, "System service protection implemented")
+        XCTAssertTrue(source.contains("guard let process = tunneldProcess"))
+        XCTAssertFalse(source.contains("for pid in trackedPids"))
+        XCTAssertFalse(source.contains("pkill"))
     }
 
-    func testGracefulTerminationStrategy() {
-        // Verify SIGTERM → SIGKILL strategy is documented
-        // The implementation uses SIGTERM (-15) first, then SIGKILL (-9)
+    func testGracefulTerminationStrategy() throws {
+        let source = try tunneldManagerSource()
 
-        // This test validates the security-hardened approach
-        // by ensuring the strategy is implemented correctly
-        XCTAssertTrue(true, "Graceful termination strategy implemented")
+        XCTAssertTrue(source.contains("process.terminate()"))
+        XCTAssertTrue(source.contains("Task { @MainActor"))
+        XCTAssertTrue(source.contains("SIGKILL"))
+        XCTAssertTrue(source.contains("200_000_000"))
+    }
+
+    private func tunneldManagerSource() throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("PathChanger/Device/TunneldManager.swift")
+        // The app-hosted suite's MapKit/XPC plumbing transiently fills the fd table
+        // (~4.7k open PIPEs at peak). Retry the open briefly instead of failing the
+        // source-text assertions on a momentary EMFILE — same assertions, robust read.
+        for attempt in 0..<6 {
+            do {
+                return try String(contentsOf: sourceURL, encoding: .utf8)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile
+                    || (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == 24 {
+                if attempt == 5 { throw error }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+        }
+        throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
     }
 }

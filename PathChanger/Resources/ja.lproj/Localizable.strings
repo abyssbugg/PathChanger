@@ -188,5 +188,73 @@
 "dependency.python" = "Python 3が必要です";
 "dependency.pymobiledevice" = "pymobiledevice3が必要です";
 "dependency.installInstructions" = "インストール手順";
-"dependency.brewCommand" = "brew install python3";
-"dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";
+"dependency.brewCommand" = "brew install python@3.13";
+"dependency.pipCommand" = "PathChanger が管理: Python 3.13 + pymobiledevice3 11.12.5";
+
+// MARK: - Verified Location Session
+"location.status.connection" = "接続";
+"location.status.application" = "適用状態";
+"location.status.movement" = "移動状態";
+"location.status.coordinate" = "適用済み座標";
+"location.action.apply" = "位置情報を適用";
+"location.action.pauseMovement" = "移動を一時停止";
+"location.action.stopMovement" = "移動を停止";
+"location.action.clear" = "模擬位置情報を消去";
+
+// MARK: - Location Status Metrics (Localized Field Labels)
+"location.status.connection.unavailable" = "利用不可";
+"location.status.connection.ready.usb" = "USB経由で準備完了";
+"location.status.connection.ready.wifi" = "Wi-Fi経由で準備完了";
+"location.status.connection.reconnecting" = "再接続中";
+"location.status.connection.failed" = "接続喪失";
+
+"location.status.application.idle" = "アイドル";
+"location.status.application.applying" = "適用中";
+"location.status.application.active.spoofing" = "アクティブ / 保持中";
+"location.status.application.active.uncertain" = "不確定";
+"location.status.application.uncertain" = "不確定";
+"location.status.application.lost" = "失われた";
+"location.status.application.clearing" = "クリア中";
+"location.status.application.failed" = "失敗";
+
+"location.status.movement.idle" = "アイドル";
+"location.status.movement.moving" = "移動中";
+"location.status.movement.paused" = "一時停止";
+"location.status.movement.completed" = "完了";
+
+// MARK: - Location Status Domains
+"location.status.domain.connection" = "接続";
+"location.mode.teleport" = "テレポート";
+"location.mode.jump" = "ジャンプ";
+"location.mode.twoSpot" = "2地点";
+"location.mode.multiSpot" = "複数地点";
+"location.mode.joystick" = "ジョイスティック";
+"location.mode.settings" = "設定";
+"location.mode.state.selected" = "選択済み、展開中";
+"location.mode.state.notSelected" = "未選択";
+"location.savedHistory" = "保存済みと履歴";
+"location.status.domain.application" = "位置";
+"location.status.domain.movement" = "移動";
+"location.status.domain.applied" = "適用済み";
+"location.action.disabled.noDevice" = "移動を有効にするにはデバイスを接続してください。";
+"location.action.disabled.notReady" = "選択したデバイスの準備が完了するまでお待ちください。";
+"location.action.disabled.selectLocation" = "地図または検索で位置を選択すると移動を有効にできます。";
+"location.action.disabled.addWaypoints" = "必要なルート地点を追加すると移動を有効にできます。";
+"location.action.clearTarget" = "ターゲットを消去";
+"location.action.resetRoute" = "ルートをリセット";
+"location.teleport.noTarget" = "ターゲットが選択されていません";
+"location.teleport.targetHint" = "検索、地図のクリック、または座標入力で選択します。";
+
+// MARK: - Location Status Accessibility Values
+"accessibility.location.status.connection" = "接続状態";
+"accessibility.location.status.application" = "適用状態";
+"accessibility.location.status.movement" = "移動状態";
+"accessibility.location.status.coordinate" = "適用済み座標";
+
+// MARK: - Managed Location Quit
+"quit.location.title" = "位置情報がまだ有効です";
+"quit.location.message" = "終了前にシミュレート位置を解除するか、管理ヘルパーで保持してPathChangerの再起動時に復元できます。";
+"quit.clearAndQuit" = "解除して終了";
+"quit.preserveAndQuit" = "保持して終了";
+"quit.cancel" = "キャンセル";
+"quit.failed.title" = "安全に終了できません";

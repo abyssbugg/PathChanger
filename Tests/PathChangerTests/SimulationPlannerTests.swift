@@ -184,4 +184,11 @@ final class SimulationPlannerTests: XCTestCase {
 
         XCTAssertEqual(plan, .failed("Add a start and a destination"))
     }
+
+
+    func testJumpIndexAdvancesOnlyForOneAcknowledgedHop() {
+        XCTAssertEqual(SimulationPlanner.jumpIndexAfterAcknowledging(currentIndex: 0, routeCount: 2), 1)
+        XCTAssertEqual(SimulationPlanner.jumpIndexAfterAcknowledging(currentIndex: 1, routeCount: 2), 2)
+        XCTAssertEqual(SimulationPlanner.jumpIndexAfterAcknowledging(currentIndex: 2, routeCount: 2), 2)
+    }
 }

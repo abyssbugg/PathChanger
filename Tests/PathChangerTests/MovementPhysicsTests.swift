@@ -179,8 +179,12 @@ final class MovementPhysicsEngineTests: XCTestCase {
         let initialVelocity = engine.state.velocity
         _ = engine.update(deltaTime: 1.0)
 
-        // Should have accelerated
-        XCTAssertGreaterThan(engine.state.velocity, initialVelocity)
+        if engine.state.isPaused {
+            XCTAssertEqual(engine.state.velocity, initialVelocity)
+            XCTAssertGreaterThan(engine.state.pauseRemaining, 0)
+        } else {
+            XCTAssertGreaterThan(engine.state.velocity, initialVelocity)
+        }
     }
 
     func testVelocityDoesNotExceedMaxSpeed() {

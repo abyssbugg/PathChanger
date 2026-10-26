@@ -47,7 +47,7 @@ enum DevicePreparationPlanner {
         return [
             [
                 "-m", "pymobiledevice3", "lockdown", "wifi-connections",
-                "--state", "on", "--udid", deviceId,
+                "on", "--udid", deviceId,
             ],
             [
                 "-m", "pymobiledevice3", "lockdown", "remotepairing",

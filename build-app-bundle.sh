@@ -14,13 +14,24 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="PathChanger"
 APP_BUNDLE_NAME="$APP_NAME.app"
-APP_DIR="build/$APP_BUNDLE_NAME"
+ENTITLEMENTS_FILE="Resources/PathChanger.entitlements"
+BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
+APP_BUNDLE_BUILD_ROOT="${APP_BUNDLE_BUILD_ROOT:-build}"
+case "$APP_BUNDLE_BUILD_ROOT" in
+    ""|"/")
+        echo "ERROR: APP_BUNDLE_BUILD_ROOT must be a non-root output directory" >&2
+        exit 1
+        ;;
+esac
+if [ -L "$APP_BUNDLE_BUILD_ROOT" ]; then
+    echo "ERROR: APP_BUNDLE_BUILD_ROOT must not be a symbolic link" >&2
+    exit 1
+fi
+APP_DIR="$APP_BUNDLE_BUILD_ROOT/$APP_BUNDLE_NAME"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
-ENTITLEMENTS_FILE="Resources/PathChanger.entitlements"
-BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
 
 # Check for signing identity argument
 SIGNING_IDENTITY="${1:--}"  # Default to ad-hoc if not specified
@@ -219,19 +230,5 @@ if [ "$SIGNING_IDENTITY" = "-" ]; then
     echo ""
 fi
 
-# Step 12: Install as the only launchable PathChanger.app
-echo -e "${BLUE}Step 12: Installing the single PathChanger.app...${NC}"
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-rm -rf /Applications/PathChanger.app
-cp -R "$APP_DIR" /Applications/PathChanger.app
-# Staging copy in build/ is removed so Spotlight/Dock only see one app.
-rm -rf "$APP_DIR"
-# Sweep leftover FlowDeck / tmp products so rebuilds cannot register extras.
-find /Users/datamatics/Library/Developer/FlowDeck/DerivedData /private/tmp -name 'PathChanger.app' -prune -exec rm -rf {} + 2>/dev/null || true
-if [ -x "$LSREGISTER" ]; then
-    "$LSREGISTER" -f /Applications/PathChanger.app >/dev/null 2>&1 || true
-fi
-echo -e "${GREEN}✓ Installed /Applications/PathChanger.app (only launchable copy)${NC}"
-echo ""
-echo -e "To run:     ${BLUE}open /Applications/PathChanger.app${NC}"
+echo -e "To install explicitly: ${BLUE}./install.sh${NC}"
 echo ""

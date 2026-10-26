@@ -111,22 +111,10 @@ struct InspectorPanel: View {
                 .padding(.top, 12)
                 .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300.opacity(0.8)).frame(height: 1).padding(.top, -1) }
 
-                if let warning = appState.lastTeleportMessage {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "clock")
-                            .foregroundStyle(Organic.accent700)
-                        Text(warning)
-                            .font(Organic.body(11))
-                            .foregroundStyle(Organic.accent800)
-                    }
-                    .padding(10)
-                    .background(Organic.accent100)
-                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-                }
 
                 HStack(spacing: 9) {
                     Button(action: onTeleport) {
-                        Text(appState.isSimulating && mode == .teleport ? "Update location" : "Set location")
+                        Text(appState.locationPresentation.isMovementActive && mode == .teleport ? "Update location" : "Set location")
                     }
                     .buttonStyle(.plain)
                     .primaryButtonStyle(isDisabled: !appState.canStartSimulation)
@@ -234,11 +222,11 @@ struct InspectorPanel: View {
                     Button("Undo") { appState.removeLastRouteWaypoint() }
                         .buttonStyle(.plain)
                         .font(Organic.body(12, weight: .semibold))
-                        .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
+                        .disabled(appState.currentRoute.isEmpty || appState.locationPresentation.isMovementActive)
                     Button("Clear") { appState.clearRoute() }
                         .buttonStyle(.plain)
                         .font(Organic.body(12, weight: .semibold))
-                        .disabled(appState.currentRoute.isEmpty || appState.isSimulating)
+                        .disabled(appState.currentRoute.isEmpty || appState.locationPresentation.isMovementActive)
                 }
                 .padding(.top, 8)
             }
@@ -261,7 +249,7 @@ struct InspectorPanel: View {
                     }
                 )
                 loopToggle
-                if appState.isSimulating && mode == .route {
+                if appState.locationPresentation.isMovementActive && mode == .route {
                     VStack(spacing: 6) {
                         HStack {
                             Text("Playing")
@@ -277,7 +265,7 @@ struct InspectorPanel: View {
                 Button {
                     Task { await appState.startSimulation() }
                 } label: {
-                    Text(appState.isSimulating ? "Pause / continue from Play" : "Run route")
+                    Text(appState.locationPresentation.isMovementActive ? "Pause / continue from Play" : "Run route")
                 }
                 .buttonStyle(.plain)
                 .primaryButtonStyle(isDisabled: !appState.canStartSimulation || appState.currentRoute.count < 2)
@@ -295,11 +283,11 @@ struct InspectorPanel: View {
     private var joystickCards: some View {
         VStack(spacing: 14) {
             inspectorCard {
-                cardHeader(icon: "gamecontroller", tint: Organic.accent600, title: "Manual control", meta: appState.isSimulating ? "Live" : "Standby")
+                cardHeader(icon: "gamecontroller", tint: Organic.accent600, title: "Manual control", meta: appState.locationPresentation.isMovementActive ? "Live" : "Standby")
                 HStack(spacing: 9) {
                     readout("HEADING", headingText)
-                    readout("SPEED", String(format: "%.1f", appState.isSimulating ? appState.effectiveMetersPerSecond : 0))
-                    readout("POSITION", (appState.currentLocation ?? appState.targetLocation)?.formattedShort ?? "—")
+                    readout("SPEED", String(format: "%.1f", appState.locationPresentation.isMovementActive ? appState.effectiveMetersPerSecond : 0))
+                    readout("POSITION", (appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate)?.formattedShort ?? "—")
                 }
             }
 
@@ -307,7 +295,7 @@ struct InspectorPanel: View {
                 cardHeader(icon: "arrow.right", tint: Organic.sage700, title: "Travel & speed", meta: nil)
                 travelModeGrid(travelModes)
                 OrganicSliderRow(
-                    title: "Max speed",
+                    title: "Stick speed",
                     valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
                     value: $appState.customSpeedMps,
                     range: 1...30,
@@ -320,24 +308,19 @@ struct InspectorPanel: View {
                         }
                     }
                 )
-                safeToggle(
-                    title: appState.safeModeJoystick ? "Safe Mode Enabled" : "Safe Mode Off",
-                    body: "Smooths acceleration so movement looks human.",
-                    isOn: $appState.safeModeJoystick
-                )
                 Button {
                     Task {
-                        if appState.isSimulating {
+                        if appState.locationPresentation.isMovementActive {
                             appState.disengageJoystick()
                         } else {
                             await appState.startSimulation()
                         }
                     }
                 } label: {
-                    Text(appState.isSimulating ? "Disengage" : "Engage joystick")
+                    Text(appState.locationPresentation.isMovementActive ? "Disengage" : "Engage joystick")
                 }
                 .buttonStyle(.plain)
-                .primaryButtonStyle(isDisabled: !appState.canStartSimulation && !appState.isSimulating)
+                .primaryButtonStyle(isDisabled: !appState.canStartSimulation && !appState.locationPresentation.isMovementActive)
                 .padding(.top, 8)
                 Text("Drag the on-map joystick or use arrow keys")
                     .font(Organic.body(11))
@@ -370,25 +353,6 @@ struct InspectorPanel: View {
                         appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
                     }
                 }
-            )
-            OrganicSliderRow(
-                title: "Cooldown",
-                valueLabel: String(format: "%.1f s", appState.cooldownSeconds),
-                value: $appState.cooldownSeconds,
-                range: 0...10,
-                step: 0.5,
-                isAuto: appState.autoCooldown,
-                onToggleAuto: {
-                    appState.autoCooldown.toggle()
-                    if appState.autoCooldown {
-                        appState.cooldownSeconds = appState.mockCooldown(for: appState.simulationSpeed)
-                    }
-                }
-            )
-            safeToggle(
-                title: appState.safeModeTeleport ? "Safe Mode Enabled" : "Safe Mode Off",
-                body: "Mimics natural movement and respects cooldown to avoid detection.",
-                isOn: $appState.safeModeTeleport
             )
         }
     }

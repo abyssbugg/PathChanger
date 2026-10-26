@@ -188,5 +188,73 @@
 "dependency.python" = "Python 3 is required";
 "dependency.pymobiledevice" = "pymobiledevice3 is required";
 "dependency.installInstructions" = "Installation Instructions";
-"dependency.brewCommand" = "brew install python3";
-"dependency.pipCommand" = "/usr/bin/python3 -m pip install --user --upgrade pymobiledevice3";
+"dependency.brewCommand" = "brew install python@3.13";
+"dependency.pipCommand" = "Managed automatically by PathChanger: Python 3.13 + pymobiledevice3 11.12.5";
+
+// MARK: - Verified Location Session
+"location.status.connection" = "Connection";
+"location.status.application" = "Application";
+"location.status.movement" = "Movement";
+"location.status.coordinate" = "Applied coordinate";
+"location.action.apply" = "Apply location";
+"location.action.pauseMovement" = "Pause movement";
+"location.action.stopMovement" = "Stop movement";
+"location.action.clear" = "Clear simulated location";
+
+// MARK: - Location Status Metrics (Localized Field Labels)
+"location.status.connection.unavailable" = "Unavailable";
+"location.status.connection.ready.usb" = "Ready over USB";
+"location.status.connection.ready.wifi" = "Ready over Wi-Fi";
+"location.status.connection.reconnecting" = "Reconnecting";
+"location.status.connection.failed" = "Lost";
+
+"location.status.application.idle" = "Idle";
+"location.status.application.applying" = "Applying";
+"location.status.application.active.spoofing" = "Active / Held";
+"location.status.application.active.uncertain" = "Uncertain";
+"location.status.application.uncertain" = "Uncertain";
+"location.status.application.lost" = "Lost";
+"location.status.application.clearing" = "Clearing";
+"location.status.application.failed" = "Failed";
+
+"location.status.movement.idle" = "Idle";
+"location.status.movement.moving" = "Moving";
+"location.status.movement.paused" = "Paused";
+"location.status.movement.completed" = "Completed";
+
+// MARK: - Location Status Domains
+"location.status.domain.connection" = "Connection";
+"location.mode.teleport" = "Teleport";
+"location.mode.jump" = "Jump";
+"location.mode.twoSpot" = "Two-Spot";
+"location.mode.multiSpot" = "Multi-Spot";
+"location.mode.joystick" = "Joystick";
+"location.mode.settings" = "Settings";
+"location.mode.state.selected" = "Selected and expanded";
+"location.mode.state.notSelected" = "Not selected";
+"location.savedHistory" = "Saved & History";
+"location.status.domain.application" = "Location";
+"location.status.domain.movement" = "Movement";
+"location.status.domain.applied" = "Applied";
+"location.action.disabled.noDevice" = "Connect a device to enable Move.";
+"location.action.disabled.notReady" = "Wait for the selected device to become ready.";
+"location.action.disabled.selectLocation" = "Select a location on the map or search to enable Move.";
+"location.action.disabled.addWaypoints" = "Add the required route waypoints to enable Move.";
+"location.action.clearTarget" = "Clear Target";
+"location.action.resetRoute" = "Reset Route";
+"location.teleport.noTarget" = "No target selected";
+"location.teleport.targetHint" = "Search, click the map, or enter coordinates.";
+
+// MARK: - Location Status Accessibility Values
+"accessibility.location.status.connection" = "Connection status";
+"accessibility.location.status.application" = "Application status";
+"accessibility.location.status.movement" = "Movement status";
+"accessibility.location.status.coordinate" = "Applied coordinate";
+
+// MARK: - Managed Location Quit
+"quit.location.title" = "A location is still active";
+"quit.location.message" = "Clear the simulated location before quitting, or preserve it through the managed helper for restoration when PathChanger reopens.";
+"quit.clearAndQuit" = "Clear and Quit";
+"quit.preserveAndQuit" = "Preserve and Quit";
+"quit.cancel" = "Cancel";
+"quit.failed.title" = "Unable to Quit Safely";
