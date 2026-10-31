@@ -826,6 +826,22 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
     var channel: String?
     var endpoint_class: String?
 
+    /// The Python helper emits `actual_channel` on socket responses
+    /// (scripts/location_bridge.py set_location/clear_location success
+    /// payloads). The Swift property stays `channel`; only the wire key
+    /// changes. Pinned by the golden-fixture test.
+    enum CodingKeys: String, CodingKey {
+        case success
+        case request_id
+        case session_generation
+        case error
+        case code
+        case message
+        case ready
+        case channel = "actual_channel"
+        case endpoint_class
+    }
+
     var invalidatesManagedHelperState: Bool {
         code == "UNAUTHORIZED"
     }

@@ -709,7 +709,7 @@ final class PersistentLocationBridgeTests: XCTestCase {
         let requestID = UUID()
         let json = """
         {"success":true,"request_id":"\(requestID.uuidString)",
-         "session_generation":7,"channel":"nativeRSD",
+         "session_generation":7,"actual_channel":"nativeRSD",
          "endpoint_class":"remoteServiceDiscovery"}
         """
         let response = try JSONDecoder().decode(
@@ -725,13 +725,34 @@ final class PersistentLocationBridgeTests: XCTestCase {
     func testWireResponseRejectsUnknownChannelAcknowledgement() throws {
         let json = """
         {"success":true,"request_id":"\(UUID().uuidString)",
-         "session_generation":7,"channel":"future-channel",
+         "session_generation":7,"actual_channel":"future-channel",
          "endpoint_class":"remoteServiceDiscovery"}
         """
         let response = try JSONDecoder().decode(
             PersistentBridgeWireResponse.self, from: Data(json.utf8)
         )
         XCTAssertThrowsError(try response.acknowledgement(physicalTransport: .wifi))
+    }
+
+    func testSocketSuccessResponseGoldenFixtureDecodesToAcknowledgement() throws {
+        // Pins the EXACT JSON scripts/location_bridge.py emits on a successful
+        // socket set_location: the success payload (location_bridge.py:208-212)
+        // plus the validate_request echo and helper_id added by the socket
+        // writer. If Python or Swift changes the wire shape, this test fails.
+        let json = """
+        {"success": true, "actual_channel": "explicitRSD",
+         "endpoint_class": "remoteServiceDiscovery",
+         "request_id": "D81A6845-7B11-43EF-9D19-A3149FD0D097",
+         "session_generation": 1, "helper_id": "golden-fixture"}
+        """
+        let response = try JSONDecoder().decode(
+            PersistentBridgeWireResponse.self, from: Data(json.utf8))
+        let acknowledgement = try response.acknowledgement(physicalTransport: .wifi)
+        XCTAssertEqual(acknowledgement.requestID.uuidString,
+                       "D81A6845-7B11-43EF-9D19-A3149FD0D097")
+        XCTAssertEqual(acknowledgement.sessionGeneration, 1)
+        XCTAssertEqual(acknowledgement.channel, .explicitRSD)
+        XCTAssertEqual(acknowledgement.endpointClass, .remoteServiceDiscovery)
     }
 
     @MainActor
