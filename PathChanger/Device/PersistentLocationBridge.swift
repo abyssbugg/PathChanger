@@ -977,6 +977,26 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var responseTimeAccumulator: TimeInterval = 0
     private var usesTunnelTransport: Bool = false
 
+    /// Tunnel process PID backing the cached tunnel-transport session. When the
+    /// live tunnel PID diverges, the cached RSD endpoint belongs to a dead
+    /// tunnel and must be invalidated before the next request is built
+    /// (live root cause 2026-10-24/31: stale endpoints dialled after reconnect).
+    private var cachedTunnelPID: pid_t?
+
+    /// Detects a cached tunnel-transport session whose backing tunnel process
+    /// was replaced (reconnect/relaunch). Known cached PID vs nil live PID =
+    /// tunnel gone = stale; nil cached PID with a known live PID is also stale
+    /// (the cached session predates PID knowledge — conservatively invalidated).
+    nonisolated static func isStaleTunnelSession(
+        cachedPID: pid_t?,
+        livePID: pid_t?,
+        usesTunnel: Bool
+    ) -> Bool {
+        guard usesTunnel else { return false }
+        guard cachedPID != livePID else { return false }
+        return cachedPID != nil || livePID != nil
+    }
+
     // MARK: - Initialization
 
     private init() {
@@ -1131,6 +1151,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         helperConnection = nil
         isRunning = false
         usesTunnelTransport = false
+        cachedTunnelPID = nil
         currentSession = nil
         adoptedHelperID = nil
         adoptedHelperSessions = []
@@ -1163,6 +1184,23 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
         let pythonConnectionType = device.connectionType == .wifi ? "Network" : "USB"
+
+        let liveTunnelPID = rsdInfo?.processId
+        if Self.isStaleTunnelSession(
+            cachedPID: cachedTunnelPID,
+            livePID: liveTunnelPID,
+            usesTunnel: usesTunnelTransport
+        ) {
+            // Tunnel process was replaced (reconnect/relaunch): the cached RSD
+            // endpoint belongs to a dead tunnel (live root cause 2026-10-24/31).
+            Logger.error(
+                "[PersistentBridge] Tunnel PID changed \(String(describing: cachedTunnelPID)) -> \(String(describing: liveTunnelPID)); invalidating stale RSD session",
+                category: .device
+            )
+            currentSession = nil
+            usesTunnelTransport = false
+        }
+        cachedTunnelPID = liveTunnelPID
 
         var request = BridgeRequest(cmd: "set_location")
         request.lat = coordinate.latitude
@@ -1231,6 +1269,23 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             TunneldManager.shared.getRsdInfo(for: device.id)
         }
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
+
+        let liveTunnelPID = rsdInfo?.processId
+        if Self.isStaleTunnelSession(
+            cachedPID: cachedTunnelPID,
+            livePID: liveTunnelPID,
+            usesTunnel: usesTunnelTransport
+        ) {
+            // Tunnel process was replaced (reconnect/relaunch): the cached RSD
+            // endpoint belongs to a dead tunnel (live root cause 2026-10-24/31).
+            Logger.error(
+                "[PersistentBridge] Tunnel PID changed \(String(describing: cachedTunnelPID)) -> \(String(describing: liveTunnelPID)); invalidating stale RSD session",
+                category: .device
+            )
+            currentSession = nil
+            usesTunnelTransport = false
+        }
+        cachedTunnelPID = liveTunnelPID
 
         var request = BridgeRequest(cmd: "clear_location")
         request.udid = device.id
@@ -1326,6 +1381,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         helperConnection = nil
         isRunning = false
         usesTunnelTransport = false
+        cachedTunnelPID = nil
         currentSession = nil
         adoptedHelperID = nil
         adoptedHelperSessions = []
@@ -1528,6 +1584,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         averageResponseTime = 0
         responseTimeAccumulator = 0
         usesTunnelTransport = false
+        cachedTunnelPID = nil
     }
 }
 

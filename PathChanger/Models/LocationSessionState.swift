@@ -37,6 +37,9 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
 
     static let usbLockdown = Self(rawValue: "usbLockdown")
     static let networkLockdown = Self(rawValue: "networkLockdown")
+    /// Direct usbmux lane (USB or Network visibility) — the proven primary
+    /// injection lane on iOS 17+ (live 2026-10-31). Python emits this string.
+    static let usbmuxDirect = Self(rawValue: "usbmuxDirect")
     static let explicitRSD = Self(rawValue: "explicitRSD")
     static let nativeRSD = Self(rawValue: "nativeRSD")
     static let userspaceRSD = Self(rawValue: "userspaceRSD")
@@ -48,7 +51,7 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
 
     var endpointClass: LocationEndpointClass? {
         switch self {
-        case .usbLockdown, .networkLockdown:
+        case .usbLockdown, .networkLockdown, .usbmuxDirect:
             return .direct
         case .explicitRSD, .nativeRSD, .userspaceRSD, .managedTunneldRSD:
             return .remoteServiceDiscovery
@@ -58,7 +61,7 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
     }
 
     private static let supportedChannels: Set<Self> = [
-        .usbLockdown, .networkLockdown, .explicitRSD,
+        .usbLockdown, .networkLockdown, .usbmuxDirect, .explicitRSD,
         .nativeRSD, .userspaceRSD, .managedTunneldRSD,
     ]
 

@@ -761,6 +761,30 @@ final class PersistentLocationBridgeTests: XCTestCase {
             PersistentLocationBridge.shared.clearLocation
         _ = operation
     }
+
+    func testUsumuxDirectChannelIsSupportedForDirectEndpointClass() {
+        // Python emits "usbmuxDirect" with endpoint_class "direct" as the
+        // proven primary injection lane (scripts/location_bridge.py).
+        let channel = LocationDVTChannel(rawValue: "usbmuxDirect")
+        XCTAssertEqual(channel.rawValue, "usbmuxDirect")
+        XCTAssertEqual(channel.endpointClass, .direct)
+        let acknowledgement = LocationProviderAcknowledgement(
+            requestID: UUID(), sessionGeneration: 1,
+            physicalTransport: .wifi, channel: channel,
+            endpointClass: .direct)
+        XCTAssertNotNil(acknowledgement)
+    }
+
+    func testStaleTunnelSessionDetection() {
+        XCTAssertTrue(PersistentLocationBridge.isStaleTunnelSession(
+            cachedPID: 100, livePID: 200, usesTunnel: true))
+        XCTAssertTrue(PersistentLocationBridge.isStaleTunnelSession(
+            cachedPID: 100, livePID: nil, usesTunnel: true))
+        XCTAssertFalse(PersistentLocationBridge.isStaleTunnelSession(
+            cachedPID: 100, livePID: 100, usesTunnel: true))
+        XCTAssertFalse(PersistentLocationBridge.isStaleTunnelSession(
+            cachedPID: nil, livePID: nil, usesTunnel: false))
+    }
 }
 
 // MARK: - Edge Case Tests (Task 45)
@@ -1157,7 +1181,10 @@ async def verify():
     )
     assert requested_transports == ["Network"]
     assert result["success"] is True
-    assert result["actual_channel"] == "networkLockdown"
+    # Direct usbmux lane (live-proven primary on iOS 17+, 2026-10-31):
+    # "networkLockdown"/"usbLockdown" are retired; the direct lane now
+    # reports "usbmuxDirect" with endpoint_class "direct".
+    assert result["actual_channel"] == "usbmuxDirect"
     assert result["endpoint_class"] == "direct"
     await connection.close_all()
 asyncio.run(verify())
