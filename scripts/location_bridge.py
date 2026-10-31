@@ -64,6 +64,7 @@ class DeviceConnection:
         self._lockdown_module = None
         self._tunnel_module = None
         self._preferred_tunnel_factory = None
+        self._tunnel_required_errors: tuple = ()
         self._initialized = False
     
     def _lazy_import(self):
@@ -77,13 +78,15 @@ class DeviceConnection:
             from pymobiledevice3.lockdown import create_using_usbmux, create_using_tcp
             from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
             from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
-            
+            from pymobiledevice3.exceptions import InvalidServiceError, RSDRequiredError
+
             self._dvt_module = DvtProvider
             self._location_module = LocationSimulation
             self._lockdown_usb = create_using_usbmux
             self._lockdown_tcp = create_using_tcp
             self._rsd_module = RemoteServiceDiscoveryService
             self._preferred_tunnel_factory = PreferredRsdTunnel
+            self._tunnel_required_errors = (InvalidServiceError, RSDRequiredError)
             self._initialized = True
             return True
         except ImportError as e:
@@ -96,7 +99,20 @@ class DeviceConnection:
         rsd_port: Optional[int],
         connection_type: Optional[str] = None,
     ) -> Tuple[any, any, str, str]:
-        """Get a cached DVT service and report the channel that was actually opened."""
+        """Get a cached DVT service and report the channel that was actually opened.
+
+        Dial order mirrors the CLI's proven path for
+        ``pymobiledevice3 developer dvt simulate-location set --udid <UDID>``:
+
+        1. usbmux-direct lockdown (``create_using_usbmux``) — the CLI's first attempt;
+        2. an iOS 17+ device rejects the developer command over lockdown with
+           InvalidServiceError / RSDRequiredError, and the CLI retries over its own
+           no-root userspace tunnel — here the PreferredRsdTunnel chain (userspace
+           first, native remoted fallback on macOS);
+        3. when usbmux cannot reach the device at all and the caller supplied an
+           explicit RSD endpoint, dial that endpoint;
+        4. otherwise the same PreferredRsdTunnel chain is the last resort.
+        """
         if connection_type not in (None, "USB", "Network"):
             raise ValueError("connection_type must be USB or Network")
         cache_key = f"{udid}:{rsd_address}:{rsd_port}:{connection_type}"
@@ -107,27 +123,50 @@ class DeviceConnection:
                 cached["channel"], cached["endpoint_class"],
             )
 
+        fallback_error: Exception
+        try:
+            return await self._open_usbmux_direct(udid, cache_key, connection_type)
+        except Exception as error:
+            if isinstance(error, self._tunnel_required_errors):
+                # The device is usbmux-reachable but this iOS 17+ developer command needs a
+                # tunnel: retry exactly as the CLI does (no-root userspace tunnel first).
+                return await self._open_preferred_rsd(udid, cache_key, error)
+            # usbmux could not serve this device at all; fall through to the fallback lanes.
+            fallback_error = error
+
+        if rsd_address and rsd_port:
+            # Explicit RSD is only a fallback: usbmux was absent, so honor the caller's
+            # supplied endpoint. If it fails too, the preferred tunnel is the last resort.
+            try:
+                return await self._open_explicit_rsd(cache_key, rsd_address, rsd_port)
+            except Exception as rsd_error:
+                fallback_error = rsd_error
+
+        return await self._open_preferred_rsd(udid, cache_key, fallback_error)
+
+    async def _open_usbmux_direct(
+        self, udid: str, cache_key: str, connection_type: Optional[str]
+    ) -> Tuple[any, any, str, str]:
+        """Open DVT over a direct usbmux lockdown — the CLI's first attempt.
+
+        Raises InvalidServiceError / RSDRequiredError unchanged when the device is
+        reachable but the iOS 17+ developer command needs a tunnel (the same signal
+        the CLI uses to retry over its no-root userspace tunnel).
+        """
         stack = AsyncExitStack()
         try:
-            if rsd_address and rsd_port:
-                provider = await stack.enter_async_context(
-                    self._rsd_module((rsd_address, rsd_port))
-                )
-                channel = "explicitRSD"
-                endpoint_class = "remoteServiceDiscovery"
-            else:
-                lockdown_arguments = {"serial": udid}
-                if connection_type is not None:
-                    lockdown_arguments["connection_type"] = connection_type
-                provider = await self._lockdown_usb(**lockdown_arguments)
-                close = getattr(provider, "close", None)
-                if close is not None:
-                    stack.push_async_callback(close)
-                channel = "networkLockdown" if connection_type == "Network" else "usbLockdown"
-                endpoint_class = "direct"
+            lockdown_arguments = {"serial": udid}
+            if connection_type is not None:
+                lockdown_arguments["connection_type"] = connection_type
+            provider = await self._lockdown_usb(**lockdown_arguments)
+            close = getattr(provider, "close", None)
+            if close is not None:
+                stack.push_async_callback(close)
 
             dvt = await stack.enter_async_context(self._dvt_module(provider))
             location = await stack.enter_async_context(self._location_module(dvt))
+            channel = "usbmuxDirect"
+            endpoint_class = "direct"
             self._service_cache[cache_key] = {
                 "stack": stack,
                 "dvt": dvt,
@@ -136,16 +175,44 @@ class DeviceConnection:
                 "endpoint_class": endpoint_class,
             }
             return dvt, location, channel, endpoint_class
-        except Exception as error:
+        except Exception:
             await stack.aclose()
-            if rsd_address or rsd_port or self._preferred_tunnel_factory is None:
-                raise RuntimeError(f"Failed to connect to device: {error}") from error
-            return await self._open_preferred_rsd(udid, cache_key, error)
+            raise
+
+    async def _open_explicit_rsd(
+        self, cache_key: str, rsd_address: str, rsd_port: int
+    ) -> Tuple[any, any, str, str]:
+        """Open DVT over an explicitly supplied RSD endpoint (fallback when usbmux is absent)."""
+        stack = AsyncExitStack()
+        try:
+            provider = await stack.enter_async_context(
+                self._rsd_module((rsd_address, rsd_port))
+            )
+            dvt = await stack.enter_async_context(self._dvt_module(provider))
+            location = await stack.enter_async_context(self._location_module(dvt))
+            channel = "explicitRSD"
+            endpoint_class = "remoteServiceDiscovery"
+            self._service_cache[cache_key] = {
+                "stack": stack,
+                "dvt": dvt,
+                "location": location,
+                "channel": channel,
+                "endpoint_class": endpoint_class,
+            }
+            return dvt, location, channel, endpoint_class
+        except Exception:
+            await stack.aclose()
+            raise
 
     async def _open_preferred_rsd(
-        self, udid: str, cache_key: str, direct_error: Exception
+        self, udid: str, cache_key: str, upstream_error: Exception
     ) -> Tuple[any, any, str, str]:
-        """Open a capability-selected no-root RSD provider and report its backend."""
+        """Open a capability-selected no-root RSD provider and report its backend.
+
+        PreferredRsdTunnel implements the same chain the CLI's default fallback uses:
+        the in-process no-root userspace tunnel first, the native remoted tunnel on
+        macOS when the userspace tunnel cannot serve the device (iOS 17.0-17.3).
+        """
         stack = AsyncExitStack()
         try:
             tunnel = self._preferred_tunnel_factory(serial=udid)
@@ -174,7 +241,7 @@ class DeviceConnection:
         except Exception as fallback_error:
             await stack.aclose()
             raise RuntimeError(
-                f"Direct DVT unavailable ({direct_error}); "
+                f"DVT lanes unavailable ({upstream_error}); "
                 f"preferred RSD failed ({fallback_error})"
             ) from fallback_error
 
