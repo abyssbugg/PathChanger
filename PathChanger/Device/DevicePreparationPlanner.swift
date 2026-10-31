@@ -55,6 +55,20 @@ enum DevicePreparationPlanner {
             ],
         ]
     }
+
+    /// `mounter list` reports mounted images as a JSON array — an empty array
+    /// means the personalized Developer Disk Image is NOT mounted (live root
+    /// cause 2026-10-31: injection silently no-ops without it).
+    static func ddiMountStatusCommand(udid: String) -> [String] {
+        ["-m", "pymobiledevice3", "mounter", "list", "--udid", udid]
+    }
+
+    /// `mounter auto-mount` mounts the personalized Developer Disk Image —
+    /// required for DVT location injection on iOS 17 and later; silently
+    /// missing on CLI-only devices (live root cause 2026-10-31).
+    static func ddiMountCommand(udid: String) -> [String] {
+        ["-m", "pymobiledevice3", "mounter", "auto-mount", "--udid", udid]
+    }
 }
 
 @MainActor

@@ -145,7 +145,8 @@ struct PathChangerApp: App {
     init() {
         _appState = StateObject(wrappedValue: AppState(
             startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup,
-            locationInjector: LocationInjectorFactory.make()
+            locationInjector: LocationInjectorFactory.make(),
+            ddiPreparerFactory: { DeveloperDiskImagePreparer.live(deviceManager: $0) }
         ))
     }
     @StateObject private var tunneldManager = TunneldManager.shared
@@ -450,6 +451,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private let locationInjector: any LocationInjecting
     private let managedLocationSessionSource: any ManagedLocationSessionSource
     private let routeDelay: @MainActor @Sendable (TimeInterval) async -> Void
+    /// DDI mount gate for the injection path. Armed via `ddiPreparerFactory`
+    /// at the production entry point; nil in tests/previews so no device
+    /// commands run outside the real app.
+    private let ddiPreparer: DeveloperDiskImagePreparer?
     private var pendingApplicationModes: [UUID: AppMode] = [:]
     private var applicationTasks: [UUID: Task<LocationInjectionReceipt, Error>] = [:]
     @Published private var locationClearTask: Task<Void, Never>?
@@ -491,6 +496,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         locationInjector: (any LocationInjecting)? = nil,
         managedLocationSessionSource: (any ManagedLocationSessionSource)? = nil,
         deviceManager: DeviceManager? = nil,
+        ddiPreparerFactory: ((DeviceManager) -> DeveloperDiskImagePreparer)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -520,6 +526,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             deviceManager: deviceManager,
             startBackgroundServices: effectiveBackgroundServices
         )
+        let resolvedDDIDeviceManager = device.deviceManager
+        self.ddiPreparer = ddiPreparerFactory.map { factory in
+            factory(resolvedDDIDeviceManager)
+        }
         self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
@@ -909,6 +919,25 @@ class AppState: ObservableObject, LocationTerminationHandling {
         do {
             let request = try locationSessionCoordinator.beginApplication()
             pendingApplicationModes[request.id] = mode
+
+            // Device-readiness gate before injection: with no mounted
+            // personalized Developer Disk Image, DVT injection completes
+            // without error but silently does not apply (live-proven
+            // 2026-10-31 on iOS 27.2). A mount failure is a preparation
+            // failure, not a connection loss — it must surface through the
+            // honest rejection path below, never as connection state.
+            if let ddiPreparer {
+                guard let preparationUDID = selectedDevice?.id else {
+                    throw DeviceError.deviceNotFound
+                }
+                do {
+                    try await ddiPreparer.ensureMounted(udid: preparationUDID)
+                } catch {
+                    Logger.error("[Preparation] DDI mount failed: \(error)", category: .device)
+                    throw error
+                }
+            }
+
             let application = Task { try await locationInjector.apply(request) }
             applicationTasks[request.id] = application
             defer { applicationTasks.removeValue(forKey: request.id) }
