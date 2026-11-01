@@ -160,6 +160,37 @@ final class TunnelHealthMonitorTests: XCTestCase {
 
     // MARK: - Liveness and Ownership
 
+    func testHelperConnectionHealthUsesTheHelperProbeNotAnRSDSocket() async throws {
+        // The helper's userspace tunnel has no OS-reachable RSD address; its health is
+        // the helper's own bounded DVT probe (Option A, 2026-11-01).
+        let info = TunnelInfo(
+            rsdAddress: "", rsdPort: 0, mode: .wifi, interface: nil, processId: nil,
+            channel: .helperUserspace, deviceId: "00008130-000C5144019A001C"
+        )
+        makeSharedTunnelRunning(with: info)
+        try await settleSharedManagerSync(expect: info)
+        var probes: [String] = []
+        var alive = true
+        monitor.helperConnectionProbe = { probed in
+            probes.append(probed.deviceId ?? "")
+            return alive
+        }
+        var failureCount = 0
+        monitor.setFailureNotificationHandler { failureCount += 1 }
+
+        await monitor.performHealthCheck()
+        XCTAssertEqual(monitor.metrics.consecutiveFailures, 0)
+
+        alive = false
+        for _ in 0..<monitor.maxConsecutiveFailures {
+            await monitor.performHealthCheck()
+        }
+
+        XCTAssertEqual(failureCount, 1)
+        XCTAssertEqual(probes.count, 1 + monitor.maxConsecutiveFailures)
+        XCTAssertTrue(prober.probes.isEmpty, "no TCP probe for an in-process tunnel")
+    }
+
     func testProcessLivenessUsesNonBlockingSignalCheck() {
         // kill(pid, 0): no /bin/ps spawn on the main actor every 2 s.
         XCTAssertTrue(TunnelHealthMonitor.isProcessAlive(pid: getpid()))

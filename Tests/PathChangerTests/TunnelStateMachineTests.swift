@@ -34,6 +34,35 @@ final class TunnelStateMachineTests: XCTestCase {
 
     // MARK: - Initial State Tests
 
+    func testProcessLaunchedIsNeverDebounced() {
+        // Live 2026-11-01: processLaunched arrived within 0.3 s of startRequested,
+        // was dropped, and the tunnel PID showed "unknown" from then on.
+        stateMachine.testModeEnabled = false
+        defer { stateMachine.testModeEnabled = true }
+
+        stateMachine.send(.startRequested(mode: .wifi))
+        stateMachine.send(.processLaunched(pid: 4242))
+
+        XCTAssertTrue(stateMachine.currentContext.activeProcessIds.contains(4242))
+    }
+
+    func testConnectionEstablishedIsNeverDebounced() {
+        // Adopting an already-open helper connection sends startRequested,
+        // processLaunched and connectionEstablished back to back.
+        stateMachine.testModeEnabled = false
+        defer { stateMachine.testModeEnabled = true }
+        let info = TunnelInfo(
+            rsdAddress: "", rsdPort: 0, mode: .wifi, interface: nil, processId: 4242,
+            channel: .helperUserspace, deviceId: "00008130-000C5144019A001C"
+        )
+
+        stateMachine.send(.startRequested(mode: .wifi))
+        stateMachine.send(.processLaunched(pid: 4242))
+        stateMachine.send(.connectionEstablished(info: info))
+
+        XCTAssertEqual(stateMachine.currentState, .running)
+    }
+
     func testInitialStateIsIdle() {
         XCTAssertEqual(stateMachine.currentState, .idle)
         XCTAssertFalse(stateMachine.isActive)

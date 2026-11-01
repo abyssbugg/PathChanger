@@ -24,6 +24,7 @@ enum LocationSessionLossEvent: Equatable, Sendable {
   case bridgeTerminated(exitCode: Int32)
   case heldProcessExited
   case tunnelHealthLost
+  case tunnelStoppedByUser
   case selectedDeviceLost(stableDeviceID: String)
   case endpointReplaced
   case appCancelled
@@ -33,9 +34,22 @@ enum LocationSessionLossEvent: Equatable, Sendable {
     case .bridgeTerminated(let exitCode): return "Location bridge terminated (exit \(exitCode))"
     case .heldProcessExited: return "Held location process exited"
     case .tunnelHealthLost: return "Tunnel health lost"
+    case .tunnelStoppedByUser: return "Tunnel stopped"
     case .selectedDeviceLost: return "Selected device lost"
     case .endpointReplaced: return "Location endpoint replaced"
     case .appCancelled: return "Application cancelled recovery"
+    }
+  }
+
+  /// A loss the user caused (Stop Tunnel, Reconnect, transport switch, app cancel) is
+  /// not repaired behind their back: automatic recovery would re-apply the location
+  /// through the helper and undo the Stop.
+  var startsAutomaticRecovery: Bool {
+    switch self {
+    case .tunnelStoppedByUser, .appCancelled:
+      return false
+    case .bridgeTerminated, .heldProcessExited, .tunnelHealthLost, .selectedDeviceLost, .endpointReplaced:
+      return true
     }
   }
 }
@@ -263,6 +277,18 @@ final class LocationSessionCoordinator: ObservableObject {
   func connectionReady(_ session: LocationSessionIdentity) {
     self.currentReadySession = session
     self.state.connection = .ready(identity: session)
+  }
+
+  /// The user stopped the device connection, which ended the held location on the
+  /// device (closing the DVT session is the real clear). Unlike a loss, the outcome
+  /// is known: nothing is applied, there is no receipt to restore, and the desired
+  /// location is kept so Move can apply it again.
+  func locationEndedByStop() {
+    self.pendingRequest = nil
+    self.movementBeforeRecovery = nil
+    self.state.lastAcknowledgedReceipt = nil
+    self.state.application = .idle
+    self.state.movement = .idle
   }
 
   /// Signal connection lost, preserving desired state.

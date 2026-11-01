@@ -484,6 +484,49 @@ final class DeviceStateManagerTests: XCTestCase {
         )
     }
 
+    func testManagerWithoutBackgroundServicesBuildsAQuietDeviceManager() {
+        // Each test AppState used to build a DeviceManager with background services on:
+        // hundreds of hidden managers each watched the shared tunnel state and spawned
+        // pymobiledevice3 discovery on every change (~4.8k pipes, EMFILE in the suite).
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        defer { manager.deviceManager.stopAutoRefresh() }
+
+        let observer = Mirror(reflecting: manager.deviceManager).children
+            .first(where: { $0.label == "tunnelStateObserver" })?.value
+        XCTAssertNotNil(observer.map { String(describing: $0) })
+        XCTAssertEqual(observer.map { String(describing: $0) }, "nil",
+                       "a DeviceManager without background services must not observe the tunnel")
+    }
+
+    func testOnlyARunningTunnelThatStopsCountsAsLost() {
+        XCTAssertNil(DeviceStateManager.tunnelLossEvent(previous: .idle, current: .starting))
+        XCTAssertEqual(DeviceStateManager.tunnelLossEvent(previous: .running, current: .error("x")),
+                       .tunnelHealthLost)
+        // An explicit Stop (or Reconnect/mode switch) is the user's decision: it must
+        // not be undone by automatic recovery re-applying the location.
+        XCTAssertEqual(DeviceStateManager.tunnelLossEvent(previous: .running, current: .stopping),
+                       .tunnelStoppedByUser)
+        XCTAssertEqual(DeviceStateManager.tunnelLossEvent(previous: .running, current: .idle),
+                       .tunnelStoppedByUser)
+        XCTAssertTrue(LocationSessionLossEvent.tunnelHealthLost.startsAutomaticRecovery)
+        XCTAssertFalse(LocationSessionLossEvent.tunnelStoppedByUser.startsAutomaticRecovery)
+        XCTAssertFalse(LocationSessionLossEvent.appCancelled.startsAutomaticRecovery)
+    }
+
+    func testTunnelStopDoesNotShutDownTheLocationHelper() throws {
+        // The helper owns its own connection; stopping the tunnel closes that
+        // connection (TunneldManager.stopTunnel). Shutting the whole helper down on
+        // every tunnel stop raced Reconnect into a helper that was quitting.
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("PathChanger/Device/DevLocationBridge.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.contains("stopIfUsingTunnel"))
+    }
+
+
     func testPublishedDiscoverySynchronizesWrapperState() {
         let deviceManager = DeviceManager()
         deviceManager.stopAutoRefresh()

@@ -26,6 +26,8 @@ enum LocationConnectionArguments {
         if isDaemonTunneld {
             return ["--tunnel", deviceId]
         }
+        // Only an external RSD endpoint (daemon mode) reaches here; the helper's
+        // in-process connection is never exposed, so USB/Wi-Fi fall through to --udid.
         // Single tunnel owner (2026-11-01): a usable app tunnel (TunneldManager) is
         // the one channel for every DVT command, so GUI connection truth and the
         // injection lane can never diverge. The 2026-10-24 "DVT port refused"

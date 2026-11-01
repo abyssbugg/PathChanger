@@ -153,6 +153,20 @@ final class RequestQueueManagerSecurityTests: XCTestCase {
 
     // MARK: - Per-Priority Rate Limit Tests
 
+    func testRemoveAllRequestsEmptiesTheQueueForAStoppedConnection() async {
+        // After Stop Tunnel, queued Joystick/route updates must not reopen the
+        // connection and re-apply a location the user just stopped.
+        let queue = RequestQueueManager(maxQueueSize: 50)
+        _ = await queue.enqueue(makeRequest(priority: .normal))
+        _ = await queue.enqueue(makeRequest(priority: .normal))
+
+        let removed = await queue.removeAllRequests()
+
+        XCTAssertEqual(removed.count, 2)
+        let remaining = await queue.queuedRequestIDs()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testHighPriorityRateLimitEnforced() async {
         let queue = RequestQueueManager(maxQueueSize: 50)
 

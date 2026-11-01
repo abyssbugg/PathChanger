@@ -703,6 +703,16 @@ actor RequestQueueManager {
         Set(queue.map(\.id))
     }
 
+    /// Drop every queued request (the device connection was stopped).
+    func removeAllRequests() -> Set<UUID> {
+        let removed = Set(queue.map(\.id))
+        guard !removed.isEmpty else { return [] }
+        queue.removeAll()
+        lagMetrics.droppedRequests += removed.count
+        lagMetrics.currentDepth = 0
+        return removed
+    }
+
     /// Remove queued requests for one stable device without disturbing other devices.
     /// - Returns: The request identities removed by the cancellation barrier.
     func removeRequests(forDeviceID stableDeviceID: String) -> Set<UUID> {

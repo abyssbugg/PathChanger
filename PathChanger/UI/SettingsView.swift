@@ -191,7 +191,7 @@ struct SettingsView: View {
                 } else {
                     Button("Start Tunnel") {
                         Task {
-                            await tunneldManager.startTunnel()
+                            await appState.startSelectedTunnel()
                         }
                     }
                     .buttonStyle(.borderedProminent)

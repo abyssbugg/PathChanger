@@ -11,9 +11,18 @@ Protocol:
     Response: {"success": true} or {"success": false, "error": "message"}
 
 Commands:
-    - set_location: Set simulated location on device
-    - ping: Health check
+    - connect_device: Open (or reuse) the device connection and prove DVT answers
+    - connection_status: Bounded liveness probe of the device connection
+    - disconnect_device: Close the device connection (ends a held location)
+    - set_location / clear_location: Simulate or stop simulating a location
+    - ping: Helper health check (touches no device)
     - quit: Graceful shutdown
+
+Device connection (owner decision 2026-11-01, "Option A"): this helper owns the
+ONLY connection to each device, one in-process pymobiledevice3 userspace tunnel.
+The app's `remote start-tunnel --native` RSD refused the location service 3/3 on
+iOS 27.2 while this tunnel served it 3/3, so RSD endpoints supplied by the app
+are ignored.
 
 Security:
     - Input validation on all JSON fields
@@ -35,6 +44,13 @@ import time
 import uuid
 from typing import Optional, Tuple
 from contextlib import AsyncExitStack
+
+# Every device call is bounded: a silently dropped Wi-Fi link produces no EOF, and
+# an unbounded await would park the request (and the app's request gate) forever.
+CONNECT_TIMEOUT_SECONDS = 30.0
+DEVICE_OPERATION_TIMEOUT_SECONDS = 10.0
+# A healthy DVT listing answers in ~40 ms; 3 s bounds the loss-detection window.
+PROBE_TIMEOUT_SECONDS = 3.0
 
 # Graceful shutdown state
 _shutdown_requested = False
@@ -65,6 +81,11 @@ class DeviceConnection:
         self._tunnel_module = None
         self._preferred_tunnel_factory = None
         self._tunnel_required_errors: tuple = ()
+        self._device_info_module = None
+        self._open_locks: dict = {}
+        # Called with the device id whenever its connection is closed, so the helper
+        # record never lists a held location on a connection that no longer exists.
+        self.on_connection_closed = None
         self._initialized = False
     
     def _lazy_import(self):
@@ -75,17 +96,17 @@ class DeviceConnection:
         try:
             from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
             from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+            from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
             from pymobiledevice3.lockdown import create_using_usbmux, create_using_tcp
-            from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
             from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
             from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
             from pymobiledevice3.exceptions import InvalidServiceError, RSDRequiredError
 
             self._dvt_module = DvtProvider
             self._location_module = LocationSimulation
+            self._device_info_module = DeviceInfo
             self._lockdown_usb = create_using_usbmux
             self._lockdown_tcp = create_using_tcp
-            self._rsd_module = RemoteServiceDiscoveryService
             self._preferred_tunnel_factory = PreferredRsdTunnel
             self._userspace_tunnel_factory = UserspaceRsdTunnel
             self._tunnel_required_errors = (InvalidServiceError, RSDRequiredError)
@@ -94,25 +115,37 @@ class DeviceConnection:
         except ImportError as e:
             return False
     
+    @staticmethod
+    def _cache_key(udid: str, connection_type: Optional[str]) -> str:
+        # One connection per device, whatever transport hint the caller sends:
+        # pymobiledevice3 allows a single userspace tunnel per process, and the
+        # GUI's Start Tunnel and Move must share it.
+        return udid
+
+    def _open_lock(self, cache_key: str) -> asyncio.Lock:
+        lock = self._open_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._open_locks[cache_key] = lock
+        return lock
+
     async def _get_or_create_service(
         self,
         udid: str,
-        rsd_address: Optional[str],
-        rsd_port: Optional[int],
         connection_type: Optional[str] = None,
     ) -> Tuple[any, any, str, str]:
-        """Get a cached DVT service and report the channel that was actually opened.
+        """Return the device's single connection, opening it on first use.
 
-        SINGLE TUNNEL OWNER (owner decision 2026-11-01): when Swift supplies an RSD
-        endpoint it is the app's TunneldManager tunnel, and it is the ONLY lane —
-        no hidden userspace tunnel, no lockdown lane. A failure raises
-        ``TunnelEndpointUnavailable`` so the app reports connection lost / location
-        uncertain honestly instead of the GUI and the injection drifting onto two
-        different tunnels. (Live 2026-11-01, DDI mounted: the app tunnel's RSD
-        served DVT 5/5 and applied a location on the device.)
+        HELPER-OWNED CONNECTION (owner decision 2026-11-01, Option A): this helper
+        is the only owner of the device connection. RSD endpoints supplied by the
+        app are not dialed: the app's `--native` tunnel refused the location
+        service 3/3 on iOS 27.2 while this helper's own tunnel served it 3/3.
 
-        Without a supplied endpoint (no app tunnel), dial order follows the
-        LIVE-PROVEN CLI behavior (owner-observed 2026-10-31):
+        Opening is serialized per device: pymobiledevice3 allows one userspace
+        tunnel per process, so a concurrent connect and set must share one open.
+        A new connection is reported only after DVT answers a directory listing.
+
+        Dial order follows the LIVE-PROVEN CLI behavior (owner-observed 2026-10-31):
 
         1. no-root userspace tunnel FIRST — ``UserspaceRsdTunnel`` with
            ``remotepairing_fallback=False``, the exact construction the CLI makes
@@ -127,35 +160,119 @@ class DeviceConnection:
         """
         if connection_type not in (None, "USB", "Network"):
             raise ValueError("connection_type must be USB or Network")
-        cache_key = f"{udid}:{rsd_address}:{rsd_port}:{connection_type}"
-        cached = self._service_cache.get(cache_key)
-        if cached is not None:
+        cache_key = self._cache_key(udid, connection_type)
+        async with self._open_lock(cache_key):
+            cached = self._service_cache.get(cache_key)
+            if cached is None:
+                await asyncio.wait_for(
+                    self._open_lanes(udid, cache_key, connection_type),
+                    CONNECT_TIMEOUT_SECONDS,
+                )
+                opened = self._service_cache.get(cache_key)
+                try:
+                    await self._prove_dvt(cache_key)
+                except BaseException:
+                    await self._invalidate(cache_key, opened)
+                    raise
+                cached = self._service_cache.get(cache_key)
+                if cached is None or cached is not opened:
+                    raise RuntimeError("device connection closed while opening")
             return (
                 cached["dvt"], cached["location"],
                 cached["channel"], cached["endpoint_class"],
             )
 
-        if rsd_address and rsd_port:
-            try:
-                return await self._open_explicit_rsd(cache_key, rsd_address, rsd_port)
-            except Exception as rsd_error:
-                raise RuntimeError(
-                    f"TunnelEndpointUnavailable: app tunnel {rsd_address}:{rsd_port} "
-                    f"failed ({type(rsd_error).__name__}: {rsd_error})"
-                ) from rsd_error
-
+    async def _open_lanes(
+        self, udid: str, cache_key: str, connection_type: Optional[str]
+    ) -> None:
         fallback_error: Exception
         try:
-            return await self._open_userspace_tunnel_cli_exact(udid, cache_key)
+            await self._open_userspace_tunnel_cli_exact(udid, cache_key)
+            return
         except Exception as error:
             fallback_error = error
 
         try:
-            return await self._open_usbmux_direct(udid, cache_key, connection_type)
+            await self._open_usbmux_direct(udid, cache_key, connection_type)
+            return
         except Exception as error:
             fallback_error = error
 
-        return await self._open_preferred_rsd(udid, cache_key, fallback_error)
+        await self._open_preferred_rsd(udid, cache_key, fallback_error)
+
+    async def _prove_dvt(self, cache_key: str, cached: Optional[dict] = None) -> None:
+        """Prove the DVT service answers: list `/` over the connection itself."""
+        if cached is None:
+            cached = self._service_cache[cache_key]
+        if self._device_info_module is None:
+            return
+        info = cached.get("device_info")
+        if info is None:
+            info = await asyncio.wait_for(
+                cached["stack"].enter_async_context(self._device_info_module(cached["dvt"])),
+                PROBE_TIMEOUT_SECONDS,
+            )
+            cached["device_info"] = info
+        await asyncio.wait_for(info.ls("/"), PROBE_TIMEOUT_SECONDS)
+
+    async def connect_device(self, udid: str, connection_type: Optional[str] = None) -> dict:
+        """Open (or reuse) the device connection; the GUI's Start Tunnel."""
+        if not self._lazy_import():
+            return {"success": False, "error": "pymobiledevice3 not installed"}
+        cache_key = self._cache_key(udid, connection_type)
+        # An explicit connect must not report a stalled connection as live (probe
+        # timeouts keep connections open): prove it, or replace it and say so -
+        # replacing a connection ends any location held over it.
+        replaced = False
+        async with self._open_lock(cache_key):
+            cached = self._service_cache.get(cache_key)
+            if cached is not None:
+                try:
+                    await self._prove_dvt(cache_key, cached)
+                except Exception:
+                    await self._invalidate(cache_key, cached)
+                    replaced = True
+        try:
+            _, _, channel, endpoint_class = await self._get_or_create_service(
+                udid, connection_type
+            )
+        except Exception as error:
+            return {"success": False, "connected": False, "replaced": replaced,
+                    "error": f"{type(error).__name__}: {error}"}
+        return {"success": True, "connected": True, "replaced": replaced,
+                "actual_channel": channel, "endpoint_class": endpoint_class}
+
+    async def connection_status(self, udid: str, connection_type: Optional[str] = None) -> dict:
+        """Bounded liveness probe. Never opens a connection.
+
+        A probe that only times out (a slow or briefly stalled link) reports
+        not-connected but keeps the connection: closing it would end a held location
+        the device may still be honoring. The app decides after repeated failures.
+        A probe that fails outright means the connection is dead; it is closed.
+        """
+        cache_key = self._cache_key(udid, connection_type)
+        cached = self._service_cache.get(cache_key)
+        if cached is None:
+            return {"success": True, "connected": False, "reason": "not connected"}
+        try:
+            await self._prove_dvt(cache_key, cached)
+        except asyncio.TimeoutError:
+            return {"success": True, "connected": False,
+                    "reason": f"probe timed out after {PROBE_TIMEOUT_SECONDS:g}s"}
+        except Exception as error:
+            await self._invalidate(cache_key, cached)
+            return {"success": True, "connected": False,
+                    "reason": f"{type(error).__name__}: {error}"}
+        return {"success": True, "connected": True,
+                "actual_channel": cached["channel"],
+                "endpoint_class": cached["endpoint_class"]}
+
+    async def disconnect_device(self, udid: str, connection_type: Optional[str] = None) -> dict:
+        """Close the device connection. This ends any location held over it."""
+        cache_key = self._cache_key(udid, connection_type)
+        async with self._open_lock(cache_key):
+            await self._invalidate(cache_key)
+        return {"success": True, "connected": False}
 
     async def _open_userspace_tunnel_cli_exact(
         self, udid: str, cache_key: str,
@@ -216,32 +333,7 @@ class DeviceConnection:
                 "endpoint_class": endpoint_class,
             }
             return dvt, location, channel, endpoint_class
-        except Exception:
-            await stack.aclose()
-            raise
-
-    async def _open_explicit_rsd(
-        self, cache_key: str, rsd_address: str, rsd_port: int
-    ) -> Tuple[any, any, str, str]:
-        """Open DVT over the app-owned tunnel's RSD endpoint (the single injection lane)."""
-        stack = AsyncExitStack()
-        try:
-            provider = await stack.enter_async_context(
-                self._rsd_module((rsd_address, rsd_port))
-            )
-            dvt = await stack.enter_async_context(self._dvt_module(provider))
-            location = await stack.enter_async_context(self._location_module(dvt))
-            channel = "explicitRSD"
-            endpoint_class = "remoteServiceDiscovery"
-            self._service_cache[cache_key] = {
-                "stack": stack,
-                "dvt": dvt,
-                "location": location,
-                "channel": channel,
-                "endpoint_class": endpoint_class,
-            }
-            return dvt, location, channel, endpoint_class
-        except Exception:
+        except BaseException:
             await stack.aclose()
             raise
 
@@ -279,6 +371,9 @@ class DeviceConnection:
                 "endpoint_class": endpoint_class,
             }
             return dvt, location, channel, endpoint_class
+        except asyncio.CancelledError:
+            await stack.aclose()
+            raise
         except Exception as fallback_error:
             await stack.aclose()
             raise RuntimeError(
@@ -286,11 +381,21 @@ class DeviceConnection:
                 f"preferred RSD failed ({fallback_error})"
             ) from fallback_error
 
-    async def _invalidate(self, cache_key: str) -> None:
-        cached = self._service_cache.pop(cache_key, None)
-        if cached is not None:
+    async def _invalidate(self, cache_key: str, expected: Optional[dict] = None) -> None:
+        """Close the device connection. With `expected`, close it only if it is still
+        the connection that failed: a late failure on an old connection must never
+        close a newer one."""
+        cached = self._service_cache.get(cache_key)
+        if cached is None or (expected is not None and cached is not expected):
+            return
+        self._service_cache.pop(cache_key, None)
+        try:
+            await cached["stack"].aclose()
+        except Exception:
+            pass
+        if self.on_connection_closed is not None:
             try:
-                await cached["stack"].aclose()
+                self.on_connection_closed(cache_key)
             except Exception:
                 pass
 
@@ -307,20 +412,25 @@ class DeviceConnection:
         if not self._lazy_import():
             return {"success": False, "error": "pymobiledevice3 not installed"}
 
-        cache_key = f"{udid}:{rsd_address}:{rsd_port}:{connection_type}"
+        # rsd_address / rsd_port are accepted for wire compatibility and ignored:
+        # the helper owns the only device connection.
+        cache_key = self._cache_key(udid, connection_type)
+        used = None
         try:
             _, location, channel, endpoint_class = await self._get_or_create_service(
-                udid, rsd_address, rsd_port, connection_type
+                udid, connection_type
             )
-            await location.set(lat, lng)
+            used = self._service_cache.get(cache_key)
+            await asyncio.wait_for(location.set(lat, lng), DEVICE_OPERATION_TIMEOUT_SECONDS)
             return {
                 "success": True,
                 "actual_channel": channel,
                 "endpoint_class": endpoint_class,
             }
         except Exception as error:
-            await self._invalidate(cache_key)
-            return {"success": False, "error": str(error)}
+            if used is not None:
+                await self._invalidate(cache_key, used)
+            return {"success": False, "error": f"{type(error).__name__}: {error}"}
 
     async def clear_location(
         self,
@@ -333,20 +443,23 @@ class DeviceConnection:
         if not self._lazy_import():
             return {"success": False, "error": "pymobiledevice3 not installed"}
 
-        cache_key = f"{udid}:{rsd_address}:{rsd_port}:{connection_type}"
+        cache_key = self._cache_key(udid, connection_type)
+        used = None
         try:
             _, location, channel, endpoint_class = await self._get_or_create_service(
-                udid, rsd_address, rsd_port, connection_type
+                udid, connection_type
             )
-            await location.clear()
+            used = self._service_cache.get(cache_key)
+            await asyncio.wait_for(location.clear(), DEVICE_OPERATION_TIMEOUT_SECONDS)
             return {
                 "success": True,
                 "actual_channel": channel,
                 "endpoint_class": endpoint_class,
             }
         except Exception as error:
-            await self._invalidate(cache_key)
-            return {"success": False, "error": str(error)}
+            if used is not None:
+                await self._invalidate(cache_key, used)
+            return {"success": False, "error": f"{type(error).__name__}: {error}"}
 
     async def close_all(self) -> None:
         """Close all cached async connections."""
@@ -381,7 +494,10 @@ def validate_request(request: dict) -> Tuple[bool, str]:
     if not cmd:
         return False, "Missing 'cmd' field"
     
-    if cmd not in ("set_location", "clear_location", "ping", "quit"):
+    if cmd not in (
+        "set_location", "clear_location", "ping", "quit",
+        "connect_device", "connection_status", "disconnect_device",
+    ):
         return False, f"Unknown command: {cmd}"
 
     request_id = request.get("request_id")
@@ -405,7 +521,7 @@ def validate_request(request: dict) -> Tuple[bool, str]:
         if not udid or not isinstance(udid, str):
             return False, "Missing or invalid 'udid' field"
     
-    if cmd == "clear_location":
+    if cmd in ("clear_location", "connect_device", "connection_status", "disconnect_device"):
         udid = request.get("udid")
         if not udid or not isinstance(udid, str):
             return False, "Missing or invalid 'udid' field"
@@ -434,6 +550,13 @@ async def process_command(connection: DeviceConnection, request: dict) -> dict:
             udid=request["udid"],
             rsd_address=request.get("rsd_address"),
             rsd_port=request.get("rsd_port"),
+            connection_type=request.get("connection_type"),
+        )
+
+    if cmd in ("connect_device", "connection_status", "disconnect_device"):
+        handler = getattr(connection, cmd)
+        return await handler(
+            udid=request["udid"],
             connection_type=request.get("connection_type"),
         )
 
@@ -673,6 +796,19 @@ def _record_location_result(record_path: str, request: dict, response: dict) -> 
     _replace_helper_record(record_path, record)
 
 
+def _forget_device_sessions(record_path: str, udid: str) -> None:
+    """Drop a device's held session: its connection closed, so the location ended."""
+    record = _read_helper_record(record_path)
+    digest = hashlib.sha256(udid.encode()).hexdigest()
+    remaining = [
+        session for session in record.get("active_sessions", [])
+        if session.get("device_id_sha256") != digest
+    ]
+    if len(remaining) != len(record.get("active_sessions", [])):
+        record["active_sessions"] = remaining
+        _replace_helper_record(record_path, record)
+
+
 def _record_acknowledged_application(record_path: str, request: dict, response: dict) -> None:
     _record_location_result(record_path, request, response)
 
@@ -821,6 +957,15 @@ def main():
         if args.socket:
             auth_token = _load_auth_token(args.token_file)
             helper_id = str(uuid.uuid4())
+            record_file = args.record_file
+
+            def forget_sessions(udid):
+                try:
+                    _forget_device_sessions(record_file, udid)
+                except Exception:
+                    pass
+
+            connection.on_connection_closed = forget_sessions
             loop.run_until_complete(_serve_unix_socket(
                 connection, args.socket, auth_token, args.record_file, helper_id
             ))

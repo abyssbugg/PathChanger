@@ -10,6 +10,9 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// this app session has not started, adopted, or restored them yet.
     var hasRecordedHeldSessions: Bool { get }
 
+    /// Bounded liveness probe of the helper's device connection. Never starts it.
+    func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus
+
     func start() async throws
     func refreshAdoptedHelperSessions() async throws
     func shutdownHelper() async throws
@@ -164,7 +167,8 @@ struct ManagedLocationHelperClient: Sendable {
 
     func send<Request: Encodable & Sendable, Response: Decodable & Sendable>(
         _ request: Request,
-        responseType: Response.Type
+        responseType: Response.Type,
+        timeoutSeconds: Int = 5
     ) async throws -> Response {
         try await Task.detached(priority: .userInitiated) {
             let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -173,7 +177,7 @@ struct ManagedLocationHelperClient: Sendable {
             }
             defer { Darwin.close(descriptor) }
 
-            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            var timeout = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
             _ = withUnsafePointer(to: &timeout) { pointer in
                 setsockopt(
                     descriptor,
@@ -834,6 +838,10 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
     var ready: Bool?
     var channel: String?
     var endpoint_class: String?
+    /// Device-connection commands (connect_device / connection_status).
+    var connected: Bool?
+    var reason: String?
+    var replaced: Bool?
 
     /// The Python helper emits `actual_channel` on socket responses
     /// (scripts/location_bridge.py set_location/clear_location success
@@ -849,6 +857,9 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
         case ready
         case channel = "actual_channel"
         case endpoint_class
+        case connected
+        case reason
+        case replaced
     }
 
     var invalidatesManagedHelperState: Bool {
@@ -889,18 +900,12 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
 /// - Traditional: ~100ms per location update (process creation overhead)
 /// - Persistent: ~10-20ms per location update (reuses process)
 @MainActor
-final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSource {
+final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSource, DeviceConnectionOpening {
 
     // MARK: - Types
 
     /// Request to send to Python bridge
     private typealias BridgeRequest = PersistentBridgeWireRequest
-
-    /// Stop the persistent bridge only when its cached connection was RSD/tunnel-backed.
-    func stopIfUsingTunnel() async {
-        guard usesTunnelTransport else { return }
-        await stop()
-    }
 
     /// Response from Python bridge
     private typealias BridgeResponse = PersistentBridgeWireResponse
@@ -1208,11 +1213,14 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         sessionGeneration: UInt64? = nil
     ) async throws -> LocationProviderAcknowledgement {
         try ArgumentSanitizer.validateDeviceUDID(device.id)
-
-        // Auto-start if not running
-        if !isRunning {
-            try await start()
+        guard !suspendedDeviceIDs.contains(device.id) else {
+            throw PersistentBridgeError.bridgeError(
+                "The device connection was stopped. Press Move or Start Tunnel to connect again."
+            )
         }
+
+        // Auto-start if not running (waiting out a start already in flight)
+        try await startIfNeeded()
 
         let rsdInfo = await MainActor.run {
             TunneldManager.shared.getRsdInfo(for: device.id)
@@ -1220,6 +1228,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
         let pythonConnectionType = physicalTransport.helperWireValue
+        try await ensureDeviceConnection(for: device, transport: physicalTransport)
 
         let liveTunnelPID = rsdInfo?.processId
         if Self.isStaleTunnelSession(
@@ -1256,7 +1265,13 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         )
 
         let startTime = CFAbsoluteTimeGetCurrent()
-        let response = try await sendCommand(request)
+        let response: BridgeResponse
+        do {
+            response = try await sendCommand(request)
+        } catch {
+            currentSession = nil
+            throw error
+        }
         let duration = CFAbsoluteTimeGetCurrent() - startTime
 
         // Update stats
@@ -1265,6 +1280,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         averageResponseTime = responseTimeAccumulator / Double(requestCount)
 
         if !response.success {
+            // The helper closes the connection a location command failed on.
+            currentSession = nil
             throw PersistentBridgeError.bridgeError(response.error ?? "Unknown error")
         }
 
@@ -1296,15 +1313,14 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     ) async throws -> LocationProviderAcknowledgement {
         try ArgumentSanitizer.validateDeviceUDID(device.id)
 
-        // Auto-start if not running
-        if !isRunning {
-            try await start()
-        }
+        // Auto-start if not running (waiting out a start already in flight)
+        try await startIfNeeded()
 
         let rsdInfo = await MainActor.run {
             TunneldManager.shared.getRsdInfo(for: device.id)
         }
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
+        try await ensureDeviceConnection(for: device, transport: physicalTransport)
 
         let liveTunnelPID = rsdInfo?.processId
         if Self.isStaleTunnelSession(
@@ -1343,6 +1359,177 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         try confirmDurableClear(for: device.id)
         currentSession = nil
         return acknowledgement
+    }
+
+    // MARK: - Device connection (the app's single connection to the device)
+
+    /// Opening a userspace tunnel takes ~1-2 s on a healthy link and is bounded at
+    /// 30 s inside the helper; the reply must be awaited at least that long.
+    private static let connectResponseTimeoutSeconds = 40
+    /// The helper bounds its liveness probe at 5 s.
+    private static let statusResponseTimeoutSeconds = 8
+    /// The helper bounds a location command on an open connection at 10 s.
+    private static let locationResponseTimeoutSeconds = 12
+
+    /// Open (or reuse) the helper's connection to the device. Idempotent: the helper
+    /// reuses an open connection, so this is also the preflight before every Move.
+    func connectDevice(
+        _ deviceId: String,
+        transport: LocationTransport
+    ) async throws -> HelperDeviceConnection {
+        try ArgumentSanitizer.validateDeviceUDID(deviceId)
+        try await startIfNeeded()
+        var request = BridgeRequest(cmd: "connect_device")
+        request.udid = deviceId
+        request.connection_type = transport.helperWireValue
+        let response = try await sendControlCommand(
+            request,
+            timeoutSeconds: Self.connectResponseTimeoutSeconds
+        )
+        guard response.success, response.connected == true else {
+            throw PersistentBridgeError.bridgeError(response.error ?? "Device connection failed")
+        }
+        guard let helperPID = helperConnection?.record.pid else {
+            throw PersistentBridgeError.processNotRunning
+        }
+        return HelperDeviceConnection(
+            helperPID: helperPID,
+            channel: response.channel ?? "",
+            replaced: response.replaced ?? false
+        )
+    }
+
+    /// Start or adopt the helper, waiting for a start already in flight (a Move and
+    /// Start Tunnel can race) instead of failing with `requestInProgress`.
+    private func startIfNeeded() async throws {
+        while isStarting {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if !isRunning {
+            try await start()
+        }
+    }
+
+    /// Open the device connection under the connect budget before the first location
+    /// command on it: opening on demand inside a location request could outlast that
+    /// request's reply timeout, leaving the GUI reporting failure while the helper
+    /// later applied the location.
+    private func ensureDeviceConnection(for device: Device, transport: LocationTransport) async throws {
+        guard currentSession?.stableDeviceID != device.id else { return }
+        _ = try await connectDevice(device.id, transport: transport)
+    }
+
+    /// Bounded liveness probe of the device connection. Never starts the helper.
+    func deviceConnectionStatus(
+        _ deviceId: String,
+        transport: LocationTransport
+    ) async -> HelperConnectionStatus {
+        guard isRunning else { return .notConnected("location helper is not running") }
+        var request = BridgeRequest(cmd: "connection_status")
+        request.udid = deviceId
+        request.connection_type = transport.helperWireValue
+        do {
+            let response = try await sendControlCommand(
+                request,
+                timeoutSeconds: Self.statusResponseTimeoutSeconds
+            )
+            if response.success, response.connected == true {
+                return .connected
+            }
+            return .notConnected(response.reason ?? response.error ?? "not connected")
+        } catch {
+            return .notConnected(error.localizedDescription)
+        }
+    }
+
+    /// The health probe found the connection dead or stalled: reopen it under the
+    /// connect budget before the next location command (the helper replaces it).
+    func markDeviceConnectionUnverified(_ deviceId: String) {
+        if currentSession?.stableDeviceID == deviceId {
+            currentSession = nil
+        }
+    }
+
+    /// PID of the running helper, or nil. Used to adopt an existing connection
+    /// without ever launching a helper.
+    func helperProcessIdentifierIfRunning() -> Int32? {
+        isRunning ? helperConnection?.record.pid : nil
+    }
+
+    /// Close the helper's device connection. This ends any location held over it.
+    /// Never starts the helper: with no helper there is no connection to close.
+    @discardableResult
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool {
+        guard isRunning else { return true }
+        var request = BridgeRequest(cmd: "disconnect_device")
+        request.udid = deviceId
+        request.connection_type = transport.helperWireValue
+        let confirmed: Bool
+        do {
+            let response = try await sendControlCommand(
+                request,
+                timeoutSeconds: Self.statusResponseTimeoutSeconds
+            )
+            confirmed = response.success
+        } catch {
+            Logger.error(
+                "[PersistentBridge] Device disconnect failed: \(error.localizedDescription)",
+                category: .device
+            )
+            confirmed = false
+        }
+        if confirmed {
+            currentSession = nil
+            usesTunnelTransport = false
+        }
+        return confirmed
+    }
+
+    /// Devices whose location updates are refused until an explicit user action.
+    private var suspendedDeviceIDs: Set<String> = []
+
+    var activeLocationDeviceId: String? { currentSession?.stableDeviceID }
+
+    func suspendLocationCommands(for deviceId: String) {
+        suspendedDeviceIDs.insert(deviceId)
+    }
+
+    func resumeLocationCommands(for deviceId: String) {
+        suspendedDeviceIDs.remove(deviceId)
+    }
+
+    /// Connection commands bypass the single-flight location gate: the helper serves
+    /// each socket client concurrently, and a liveness probe must not wait behind (or
+    /// fail because of) an in-flight location update.
+    private func sendControlCommand(
+        _ request: BridgeRequest,
+        timeoutSeconds: Int
+    ) async throws -> BridgeResponse {
+        guard let helperConnection else {
+            throw PersistentBridgeError.processNotRunning
+        }
+        do {
+            let response = try await helperConnection.client.send(
+                request,
+                responseType: BridgeResponse.self,
+                timeoutSeconds: timeoutSeconds
+            )
+            if response.invalidatesManagedHelperState {
+                let error = PersistentBridgeError.bridgeError(
+                    response.error ?? "Managed helper authentication failed"
+                )
+                invalidateManagedHelperState(after: error)
+                throw error
+            }
+            return response
+        } catch let error as PersistentBridgeError {
+            throw error
+        } catch let error as ManagedLocationHelperClient.ClientError {
+            if error.invalidatesManagedHelperState {
+                invalidateManagedHelperState(after: error)
+            }
+            throw PersistentBridgeError.invalidResponse(error.localizedDescription)
+        }
     }
 
     /// Health check for the bridge
@@ -1449,9 +1636,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
 
         do {
+            // The helper bounds a location command at 10 s; wait longer so its own
+            // honest error arrives instead of a client-side timeout.
             let response = try await helperConnection.client.send(
                 request,
-                responseType: BridgeResponse.self
+                responseType: BridgeResponse.self,
+                timeoutSeconds: Self.locationResponseTimeoutSeconds
             )
             if response.invalidatesManagedHelperState {
                 let error = PersistentBridgeError.bridgeError(

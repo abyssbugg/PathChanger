@@ -283,6 +283,10 @@ protocol TunnelQuitControlling: AnyObject {
     func stopTunnelForQuit() async -> TunnelQuitStopResult
     /// Keeps the tunnel running past app exit for a preserved location session.
     func retainTunnelForPreservedLocation()
+    /// The close Stop Tunnel started for `deviceId`; true once the helper confirmed it.
+    func pendingHelperStop(for deviceId: String) -> Task<Bool, Never>?
+    /// An explicit user action (Move, Reconnect) lifts a previous Stop's block.
+    func resumeLocationCommands(for deviceId: String)
 }
 
 // MARK: - App State
@@ -660,6 +664,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return
         }
 
+        // Start replaced a stalled helper connection: a location held on it ended.
+        TunneldManager.shared.onHelperConnectionReplaced = { [weak self] deviceId in
+            guard let self, self.selectedDevice?.id == deviceId,
+                  self.locationSessionCoordinator.state.lastAcknowledgedReceipt != nil else { return }
+            self.handleLocationSessionLoss(.endpointReplaced)
+        }
+
         if !usesScriptedInjector {
             bridgeEventTask = Task { [weak self, locationBridge] in
                 let events = await locationBridge.events()
@@ -805,6 +816,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         locationRecoveryTask = nil
 
         await device.refreshDevices()
+        if let selectedDevice {
+            tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
+        }
 
         if userStartedTunnelInSession {
             await TunneldManager.shared.restartTunnel()
@@ -895,6 +909,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     func startSimulation() async {
         guard canStartSimulation else { return }
+        // Move is an explicit user action: it lifts a previous Stop Tunnel's block.
+        if let selectedDevice {
+            tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
+        }
 
         switch SimulationPlanner.plan(
             mode: activeMode,
@@ -1056,6 +1074,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
             }
             return false
         }
+        // The record can outlive a silently dropped link: restore only a location the
+        // helper's connection still carries.
+        let transport: LocationTransport = device.connectionType == .usb ? .usb : .wifi
+        let status = await managedLocationSessionSource.deviceConnectionStatus(device.id, transport: transport)
+        guard status == .connected else {
+            Logger.info("[AppState] Not restoring a recorded location: \(status)", category: .device)
+            return false
+        }
         return await restoreManagedHelperSession(session, helperID: helperID, for: device)
     }
 
@@ -1194,8 +1220,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
                   persistedReceipt.endpointClass == currentReceipt.endpointClass else {
                 return .failed("Managed helper ownership does not match the acknowledged location session")
             }
-            // The helper holds the location over the app tunnel's RSD endpoint, so the
-            // tunnel must stay up with it; both are adopted again on relaunch.
+            // The helper process holds the location over its own connection; keep the
+            // tunnel bookkeeping as-is so a relaunch adopts both again.
             tunnelQuitController.retainTunnelForPreservedLocation()
             return .terminate
 
@@ -1616,13 +1642,41 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.resetJoystick()
         joystickDirection = .zero
 
-        if let reason {
+        if case .tunnelStoppedByUser = event {
+            locationSessionCoordinator.stopMovement()
+            locationRecoveryTask?.cancel()
+            locationRecoveryTask = nil
+            // The location ended only if the helper confirmed it closed the connection
+            // the location was held on; otherwise saying "real location" would be false.
+            let heldDevice = selectedDevice?.id
+            guard let heldDevice,
+                  let close = tunnelQuitController.pendingHelperStop(for: heldDevice) else {
+                if locationSessionCoordinator.state.lastAcknowledgedReceipt != nil {
+                    locationSessionCoordinator.connectionLost(reason: event.reason)
+                }
+                return
+            }
+            Task { @MainActor [weak self] in
+                let ended = await close.value
+                guard let self else { return }
+                if ended {
+                    self.locationSessionCoordinator.locationEndedByStop()
+                    self.simulation.currentLocation = nil
+                    self.statusMessage = "Tunnel stopped — the device is back on its real location"
+                } else {
+                    self.locationSessionCoordinator.connectionLost(
+                        reason: "Tunnel stopped, but the device connection did not confirm it closed"
+                    )
+                }
+            }
+            return
+        } else if let reason {
             locationSessionCoordinator.connectionLost(reason: reason)
         } else {
             locationSessionCoordinator.submit(event)
         }
 
-        if case .appCancelled = event {
+        guard event.startsAutomaticRecovery else {
             locationRecoveryTask?.cancel()
             locationRecoveryTask = nil
             return

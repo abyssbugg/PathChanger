@@ -9,11 +9,27 @@ import XCTest
 final class PrivilegedTunnelCommandTests: XCTestCase {
 
     func testAllowedArgumentListsMatchFixedTunnelModes() {
+        // USB/Wi-Fi connections belong to the managed helper (Option A); the only
+        // tunnel process left is the daemon.
         XCTAssertEqual(PrivilegedTunnelCommand.allowedArgumentLists, [
-            ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
-            ["-m", "pymobiledevice3", "remote", "start-tunnel", "--native"],
             ["-m", "pymobiledevice3", "remote", "tunneld"],
         ])
+    }
+
+    func testStartCommandRejectsTheRetiredNativeTunnel() {
+        for arguments in [
+            ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
+            ["-m", "pymobiledevice3", "remote", "start-tunnel", "--native"],
+        ] {
+            let result = PrivilegedTunnelCommand.startShellCommand(
+                pythonPath: PythonPathResolver.managedPythonPath,
+                arguments: arguments,
+                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+            )
+            guard case .failure(.unapprovedArguments) = result else {
+                return XCTFail("the --native tunnel must not be approved: \(arguments)")
+            }
+        }
     }
 
     func testStartCommandAcceptsValidatedDeviceTarget() {
@@ -21,7 +37,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
             arguments: [
-                "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
+                "-m", "pymobiledevice3", "remote", "tunneld",
                 "--udid", udid,
             ],
             logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
@@ -37,7 +53,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
             arguments: [
-                "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
+                "-m", "pymobiledevice3", "remote", "tunneld",
                 "--udid", "not-a-udid",
             ],
             logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
@@ -51,7 +67,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandQuotesManagedPythonAndLog() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
-            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
+            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
             logFilePath: "/Users/datamatics/Library/Logs/PathChanger/tunnel.log"
         )
 
@@ -61,7 +77,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
 
         XCTAssertEqual(
             command,
-            "HOME='\(NSHomeDirectory())' '\(PythonPathResolver.managedPythonPath)' '-m' 'pymobiledevice3' 'lockdown' 'start-tunnel' '--native' > '/Users/datamatics/Library/Logs/PathChanger/tunnel.log' 2>&1 & echo $!"
+            "HOME='\(NSHomeDirectory())' '\(PythonPathResolver.managedPythonPath)' '-m' 'pymobiledevice3' 'remote' 'tunneld' > '/Users/datamatics/Library/Logs/PathChanger/tunnel.log' 2>&1 & echo $!"
         )
         XCTAssertFalse(command.contains("pip"))
         XCTAssertFalse(command.contains("sudo"))
@@ -89,7 +105,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandRejectsUnknownPython() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: "/Users/datamatics/.pyenv/shims/python3",
-            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
+            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
             logFilePath: "/tmp/tunnel.log"
         )
 
@@ -114,7 +130,7 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandRejectsShellMetacharactersInPath() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
-            arguments: ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"],
+            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
             logFilePath: "/tmp/tunnel'.log"
         )
 

@@ -31,15 +31,297 @@ final class TunneldManagerTests: XCTestCase {
     func testTunnelCommandsTargetSelectedDeviceWhenProvided() {
         let udid = "00000000-0000000000000001"
 
-        XCTAssertEqual(TunneldManager.arguments(for: .usb, deviceId: udid), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native", "--udid", udid,
-        ])
-        XCTAssertEqual(TunneldManager.arguments(for: .wifi, deviceId: udid), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native", "--udid", udid,
-        ])
+        // USB and Wi-Fi no longer launch a tunnel process: the managed helper owns
+        // the device connection (Option A, 2026-11-01). Only the daemon is a process.
+        XCTAssertNil(TunneldManager.arguments(for: .usb, deviceId: udid))
+        XCTAssertNil(TunneldManager.arguments(for: .wifi, deviceId: udid))
         XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
             "-m", "pymobiledevice3", "remote", "tunneld",
         ])
+    }
+
+    // MARK: - Helper-owned device connection (Option A)
+
+    func testStartTunnelOpensTheHelperConnectionForTheSelectedDevice() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+
+        await manager.startTunnel(deviceId: udid)
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls, [FakeDeviceConnector.Call(deviceId: udid, transport: .wifi)])
+        let info = try XCTUnwrap(manager.tunnelInfo)
+        XCTAssertEqual(info.channel, .helperUserspace)
+        XCTAssertEqual(info.deviceId, udid)
+        XCTAssertEqual(info.processId, connector.helperPID)
+        // No external RSD endpoint exists: CLI paths target the device directly and
+        // the helper is never handed an endpoint to dial.
+        XCTAssertNil(manager.getRsdInfo(for: udid))
+        XCTAssertEqual(manager.locationConnectionArguments(for: udid), ["--udid", udid])
+
+        manager.stopTunnel()
+        try await waitUntil { connector.disconnectCalls.count == 1 }
+        XCTAssertEqual(connector.disconnectCalls, [FakeDeviceConnector.Call(deviceId: udid, transport: .wifi)])
+        try await waitUntil { self.manager.state == .idle }
+    }
+
+    func testStartTunnelWithoutADeviceFailsHonestly() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+
+        await manager.startTunnel(deviceId: nil)
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        guard case .error = manager.state else {
+            return XCTFail("expected error without a device, got \(manager.state)")
+        }
+        XCTAssertTrue(connector.connectCalls.isEmpty)
+        XCTAssertTrue((manager.lastError ?? "").lowercased().contains("device"), manager.lastError ?? "")
+    }
+
+    func testHelperConnectFailureSurfacesTheHelperReason() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.bridgeError(
+            "UserspaceTunnelUnavailableError: device not reachable"
+        )
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        guard case .error = manager.state else {
+            return XCTFail("expected error, got \(manager.state)")
+        }
+        XCTAssertTrue((manager.lastError ?? "").contains("device not reachable"), manager.lastError ?? "")
+    }
+
+    func testRestartTunnelReconnectsTheSameDevice() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+
+        await manager.restartTunnel()
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls.map(\.deviceId), [udid, udid],
+                       "Reconnect must not drop the device (it used to restart without --udid)")
+        manager.stopTunnel()
+        try await waitUntil { connector.disconnectCalls.count >= 2 }
+    }
+
+    func testIdleManagerAdoptsAHelperConnectionThatIsAlreadyOpen() async throws {
+        // After Move (the helper opens the connection on demand) or a Preserve
+        // relaunch, the tunnel pill must report the connection that really exists.
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.status = .connected
+        let udid = "00008130-000C5144019A001C"
+
+        await manager.adoptHelperConnectionIfPresent(deviceId: udid, transport: .wifi)
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(manager.tunnelInfo?.channel, .helperUserspace)
+        XCTAssertTrue(connector.connectCalls.isEmpty, "adoption must not open a connection")
+        manager.stopTunnel()
+        try await waitUntil { connector.disconnectCalls.count == 1 }
+    }
+
+    func testIdleManagerStaysIdleWhenTheHelperHasNoConnection() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.status = .notConnected("not connected")
+
+        await manager.adoptHelperConnectionIfPresent(deviceId: "00008130-000C5144019A001C", transport: .wifi)
+
+        try await waitUntil { self.manager.state == .idle }
+    }
+
+    func testQuitClosesTheHelperConnectionWithoutKillingAProcess() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+
+        let result = await manager.stopTunnelForQuit()
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertEqual(connector.disconnectCalls.map(\.deviceId), [udid])
+        try await waitUntil { self.manager.state == .idle }
+    }
+
+    func testHelperStartIsNotOverwrittenByAStaleTunnelLog() async throws {
+        // Live review finding: processLaunched ran parseRsdInfo, which replaced the
+        // helper connection with a dead `--rsd` from an old tunnel.log ~500 ms later.
+        let connector = try installFakeConnector(mode: .wifi)
+        let log = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pathchanger-stale-tunnel-\(UUID().uuidString).log")
+        try "Use the follow connection option:\n--rsd fd8b:e285:f321::1 55823\n"
+            .write(to: log, atomically: true, encoding: .utf8)
+        manager.tunnelLogPathOverride = log.path
+        defer {
+            manager.tunnelLogPathOverride = nil
+            try? FileManager.default.removeItem(at: log)
+        }
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+
+        try await Task.sleep(nanoseconds: 900_000_000)
+
+        XCTAssertEqual(manager.tunnelInfo?.channel, .helperUserspace)
+        XCTAssertNil(manager.getRsdInfo(for: udid))
+        _ = connector
+    }
+
+    func testStartWorksAgainAfterAFailedStart() async throws {
+        // "Start-from-.error dead-end": the state machine had no error -> starting
+        // transition, so Start silently did nothing after any failure.
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.bridgeError("offline")
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+
+        connector.connectError = nil
+        await manager.startTunnel(deviceId: udid)
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls.count, 2)
+    }
+
+    func testErroredManagerAdoptsAHelperConnectionThatIsAlive() async throws {
+        // After a health failure, recovery may reconnect through the helper; the tunnel
+        // pill must not stay "Error" over a live connection.
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.bridgeError("offline")
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        connector.status = .connected
+
+        await manager.adoptHelperConnectionIfPresent(deviceId: udid, transport: .wifi)
+
+        try await waitUntil { self.manager.state == .running }
+    }
+
+    func testStopBlocksLocationCommandsBeforeClosingAndReportsTheOutcome() async throws {
+        // A queued or in-flight Joystick update must not reopen the connection after
+        // Stop; and the app may only claim the location ended once the close is confirmed.
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.resumedDevices, [udid], "an explicit Start lifts a previous Stop")
+
+        manager.stopTunnel()
+
+        XCTAssertEqual(connector.suspendedDevices, [udid], "blocked synchronously, before the close")
+        let pending = try XCTUnwrap(manager.pendingHelperStop(for: udid))
+        let ended = await pending.value
+        XCTAssertTrue(ended)
+        XCTAssertNil(manager.pendingHelperStop(for: "00008130-0000000000000000"))
+    }
+
+    func testDaemonStopClosesTheHelperConnectionThatCarriesTheLocation() async throws {
+        let connector = try installFakeConnector(mode: .daemon)
+        connector.activeLocationDeviceId = "00008130-000C5144019A001C"
+        let mirror = Mirror(reflecting: manager as TunneldManager)
+        let stateMachine = try XCTUnwrap(mirror.children.first(where: { $0.label == "stateMachine" })?.value as? TunnelStateMachine)
+        stateMachine.send(.externalTunnelDetected(mode: .daemon))
+        try await waitUntil { self.manager.state == .running }
+
+        manager.stopTunnel()
+        let pending = try XCTUnwrap(manager.pendingHelperStop(for: "00008130-000C5144019A001C"))
+        _ = await pending.value
+
+        XCTAssertEqual(connector.disconnectCalls.map(\.deviceId), ["00008130-000C5144019A001C"])
+    }
+
+    func testReplacedHelperConnectionIsReportedSoTheLocationIsReapplied() async throws {
+        // connect_device replacing a stalled connection ends any location held on it.
+        let connector = try installFakeConnector(mode: .wifi)
+        connector.replaced = true
+        var replacedDevices: [String] = []
+        manager.onHelperConnectionReplaced = { replacedDevices.append($0) }
+        defer { manager.onHelperConnectionReplaced = nil }
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+        try await waitUntil { self.manager.state == .running }
+
+        XCTAssertEqual(replacedDevices, ["00008130-000C5144019A001C"])
+    }
+
+    func testDaemonModeNeverAdoptsTheHelperConnection() async throws {
+        let connector = try installFakeConnector(mode: .daemon)
+        connector.status = .connected
+
+        await manager.adoptHelperConnectionIfPresent(deviceId: "00008130-000C5144019A001C", transport: .wifi)
+
+        XCTAssertEqual(manager.state, .idle)
+        XCTAssertTrue(connector.statusCalls.isEmpty)
+    }
+
+    func testFailedHealthProbeMakesTheNextMoveReconnectFirst() async throws {
+        // A connection the probe found dead must be reopened under the connect budget
+        // before the next location command, not on demand inside its reply window.
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+        connector.status = .notConnected("TimeoutError")
+
+        let probe = try XCTUnwrap(
+            Mirror(reflecting: manager as TunneldManager).children
+                .first(where: { $0.label == "healthMonitor" })?.value as? TunnelHealthMonitor
+        ).helperConnectionProbe
+        let alive = await probe?(try XCTUnwrap(manager.tunnelInfo))
+
+        XCTAssertEqual(alive, false)
+        XCTAssertEqual(connector.unverifiedCalls, [udid])
+    }
+
+    func testHelperConnectionExposesNoRSDEndpoint() {
+        let helper = TunnelInfo(
+            rsdAddress: "", rsdPort: 0, mode: .wifi, interface: nil, processId: 4242,
+            channel: .helperUserspace, deviceId: "00008130-000C5144019A001C"
+        )
+        XCTAssertTrue(helper.isUsable)
+        XCTAssertFalse(helper.exposesRSDEndpoint)
+
+        let daemon = TunnelInfo(rsdAddress: "fd00::1", rsdPort: 58783, mode: .daemon,
+                                interface: "utun9", processId: 7)
+        XCTAssertTrue(daemon.exposesRSDEndpoint)
+    }
+
+    private func installFakeConnector(mode: TunnelMode) throws -> FakeDeviceConnector {
+        let connector = FakeDeviceConnector()
+        let previousMode = manager.preferredMode
+        let stateMachine = try XCTUnwrap(
+            Mirror(reflecting: manager as TunneldManager).children
+                .first(where: { $0.label == "stateMachine" })?.value as? TunnelStateMachine
+        )
+        #if DEBUG
+        stateMachine.testModeEnabled = true // no debounce between setup stop and start
+        #endif
+        manager.stopTunnel()
+        manager.deviceConnector = connector
+        manager.preferredMode = mode
+        addTeardownBlock { @MainActor [weak self] in
+            guard let self else { return }
+            self.manager.stopTunnel()
+            self.manager.deviceConnector = nil
+            self.manager.preferredMode = previousMode
+            #if DEBUG
+            stateMachine.testModeEnabled = false
+            #endif
+        }
+        return connector
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2.0,
+        _ condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("condition not met within \(timeout)s") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
     }
 
     func testWiFiPreparationRequiresMatchingUSBDevice() {
@@ -306,8 +588,8 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTunnelModeCommands() {
-        XCTAssertEqual(TunnelMode.usb.command, ["lockdown", "start-tunnel", "--native"])
-        XCTAssertEqual(TunnelMode.wifi.command, ["remote", "start-tunnel", "--native"])
+        XCTAssertEqual(TunnelMode.usb.command, [])
+        XCTAssertEqual(TunnelMode.wifi.command, [])
         XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
         XCTAssertEqual(TunnelMode.auto.command, [])
     }
@@ -444,18 +726,14 @@ final class TunneldManagerTests: XCTestCase {
     // MARK: - Tunnel Command Tests
 
     func testTunnelCommandsUseFixedArguments() {
-        XCTAssertEqual(TunneldManager.arguments(for: .usb), [
-            "-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native",
-        ])
-        XCTAssertEqual(TunneldManager.arguments(for: .wifi), [
-            "-m", "pymobiledevice3", "remote", "start-tunnel", "--native",
-        ])
+        XCTAssertNil(TunneldManager.arguments(for: .usb))
+        XCTAssertNil(TunneldManager.arguments(for: .wifi))
         XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
             "-m", "pymobiledevice3", "remote", "tunneld",
         ])
     }
 
-    func testNativeTunnelLaunchDoesNotInvokeAdministratorShell() throws {
+    func testNativeTunnelLaunchDoesNotInvokeAdministratorShell() async throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -470,7 +748,8 @@ final class TunneldManagerTests: XCTestCase {
         }
         let implementation = source[start.lowerBound..<end.lowerBound]
         XCTAssertFalse(implementation.contains("runAdministratorShell"))
-        XCTAssertTrue(implementation.contains("Process()"))
+        XCTAssertFalse(source.contains("\"start-tunnel\", \"--native\""),
+                       "the --native tunnel refused the location service; it must not be launched")
     }
 
     func testTerminationPreparationRetainsHandlerUntilReply() throws {
@@ -581,7 +860,7 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - Quit Teardown (live 2026-11-01: tunnel outlived every normal quit)
 
-    private func launchChild(_ executable: String, _ arguments: [String]) throws -> Process {
+    private func launchChild(_ executable: String, _ arguments: [String]) async throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -593,7 +872,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTerminatorStopsOwnedChildAndWaitsForExit() async throws {
-        let child = try launchChild("/bin/sleep", ["30"])
+        let child = try await launchChild("/bin/sleep", ["30"])
         defer { if child.isRunning { child.terminate() } }
 
         let outcome = await TunnelProcessTerminator.stop(
@@ -609,7 +888,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTerminatorEscalatesToSIGKILLWhenSIGTERMIsIgnored() async throws {
-        let child = try launchChild("/usr/bin/perl", ["-e", "$SIG{TERM}='IGNORE'; sleep 30"])
+        let child = try await launchChild("/usr/bin/perl", ["-e", "$SIG{TERM}='IGNORE'; sleep 30"])
         defer { if child.isRunning { kill(child.processIdentifier, SIGKILL) } }
         try await Task.sleep(nanoseconds: 300_000_000) // let perl install the TERM handler
 
@@ -628,7 +907,7 @@ final class TunneldManagerTests: XCTestCase {
     func testTerminatorRefusesAdoptedPidThatIsNotATunnel() async throws {
         // An adopted tunnel is identified only by PID. If that PID no longer runs the
         // tunnel command (exited and reused), it must never be signalled.
-        let unrelated = try launchChild("/bin/sleep", ["30"])
+        let unrelated = try await launchChild("/bin/sleep", ["30"])
         defer { if unrelated.isRunning { unrelated.terminate() } }
 
         let outcome = await TunnelProcessTerminator.stop(
@@ -646,7 +925,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testTerminatorStopsAdoptedPidWhoseCommandIsTheTunnel() async throws {
-        let decoy = try launchChild(
+        let decoy = try await launchChild(
             "/usr/bin/perl",
             ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
         )
@@ -676,7 +955,7 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(outcome, .notRunning)
     }
 
-    func testExitBackstopSignalsSynchronouslyWithoutDeferredTasks() throws {
+    func testExitBackstopSignalsSynchronouslyWithoutDeferredTasks() async throws {
         // AppKit calls exit() as soon as applicationWillTerminate returns, so a
         // `Task { stopTunnel() }` there never runs. The backstop must be synchronous,
         // and the duplicate willTerminate observer (same dead Task) must be gone.
@@ -694,9 +973,9 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertFalse(source.contains("willTerminateNotification"))
     }
 
-    func testRetainedTunnelIsLeftRunningAtExit() throws {
+    func testRetainedTunnelIsLeftRunningAtExit() async throws {
         let defaults = try isolatedOwnedTunnelDefaults()
-        let child = try launchChild("/bin/sleep", ["30"])
+        let child = try await launchChild("/bin/sleep", ["30"])
         defer { if child.isRunning { child.terminate() } }
         manager.installOwnedTunnelForTesting(child, mode: .wifi)
         defer { manager.stopTunnel(); OwnedTunnelRecord.clear(from: defaults) }
@@ -708,9 +987,9 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertNotNil(OwnedTunnelRecord.load(from: defaults), "the relaunch needs the ownership record")
     }
 
-    func testExitBackstopStopsOwnedTunnelWhenNotRetained() throws {
+    func testExitBackstopStopsOwnedTunnelWhenNotRetained() async throws {
         let defaults = try isolatedOwnedTunnelDefaults()
-        let child = try launchChild("/bin/sleep", ["30"])
+        let child = try await launchChild("/bin/sleep", ["30"])
         defer { if child.isRunning { child.terminate() } }
         manager.installOwnedTunnelForTesting(child, mode: .wifi)
         defer { manager.stopTunnel(); OwnedTunnelRecord.clear(from: defaults) }
@@ -724,7 +1003,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testStopTunnelForQuitStopsOwnedTunnelAndClearsRecord() async throws {
         let defaults = try isolatedOwnedTunnelDefaults()
-        let child = try launchChild("/bin/sleep", ["30"])
+        let child = try await launchChild("/bin/sleep", ["30"])
         defer { if child.isRunning { child.terminate() } }
         manager.installOwnedTunnelForTesting(child, mode: .wifi)
 
@@ -738,7 +1017,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testRelaunchOwnsOnlyTheRecordedTunnelInstance() async throws {
         let defaults = try isolatedOwnedTunnelDefaults()
-        let tunnel = try launchChild(
+        let tunnel = try await launchChild(
             "/usr/bin/perl",
             ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
         )
@@ -760,7 +1039,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testQuitLeavesTunnelPathChangerDidNotStartRunning() async throws {
         let defaults = try isolatedOwnedTunnelDefaults()
-        let foreign = try launchChild(
+        let foreign = try await launchChild(
             "/usr/bin/perl",
             ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
         )
@@ -814,8 +1093,8 @@ final class TunneldManagerTests: XCTestCase {
         return try XCTUnwrap(pid, "logd should always be running as root")
     }
 
-    func testProcessStartTimeIdentifiesOneProcessInstance() throws {
-        let child = try launchChild("/bin/sleep", ["30"])
+    func testProcessStartTimeIdentifiesOneProcessInstance() async throws {
+        let child = try await launchChild("/bin/sleep", ["30"])
         defer { if child.isRunning { child.terminate() } }
         let start = try XCTUnwrap(ProcessStartTime.of(pid: child.processIdentifier))
         let record = OwnedTunnelRecord(pid: child.processIdentifier, startTime: start, mode: .wifi)
@@ -861,5 +1140,52 @@ final class TunneldManagerTests: XCTestCase {
             }
         }
         throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
+    }
+}
+
+@MainActor
+final class FakeDeviceConnector: DeviceConnectionOpening {
+    struct Call: Equatable {
+        let deviceId: String
+        let transport: LocationTransport
+    }
+
+    let helperPID: Int32 = 4242
+    var connectError: Error?
+    var status: HelperConnectionStatus = .connected
+    private(set) var connectCalls: [Call] = []
+    private(set) var disconnectCalls: [Call] = []
+    private(set) var statusCalls: [Call] = []
+    private(set) var unverifiedCalls: [String] = []
+
+    func markDeviceConnectionUnverified(_ deviceId: String) {
+        unverifiedCalls.append(deviceId)
+    }
+
+    var replaced = false
+    var disconnectSucceeds = true
+    var activeLocationDeviceId: String?
+    private(set) var suspendedDevices: [String] = []
+    private(set) var resumedDevices: [String] = []
+
+    func connectDevice(_ deviceId: String, transport: LocationTransport) async throws -> HelperDeviceConnection {
+        connectCalls.append(Call(deviceId: deviceId, transport: transport))
+        if let connectError { throw connectError }
+        return HelperDeviceConnection(helperPID: helperPID, channel: "userspaceRSD", replaced: replaced)
+    }
+
+    func suspendLocationCommands(for deviceId: String) { suspendedDevices.append(deviceId) }
+    func resumeLocationCommands(for deviceId: String) { resumedDevices.append(deviceId) }
+
+    func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus {
+        statusCalls.append(Call(deviceId: deviceId, transport: transport))
+        return status
+    }
+
+    func helperProcessIdentifierIfRunning() -> Int32? { helperPID }
+
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool {
+        disconnectCalls.append(Call(deviceId: deviceId, transport: transport))
+        return disconnectSucceeds
     }
 }

@@ -15,6 +15,8 @@ final class AppStateSimulationTests: XCTestCase {
         var adoptedHelperID: UUID?
         var adoptedHelperSessions: [ManagedLocationHelperSession]
         var hasRecordedHeldSessions = false
+        var connectionStatus: HelperConnectionStatus = .connected
+        private(set) var statusCallCount = 0
         /// Recorded sessions survive shutdown (helper could not be stopped).
         var shutdownLeavesRecordedSessions = false
         private(set) var startCallCount = 0
@@ -34,6 +36,14 @@ final class AppStateSimulationTests: XCTestCase {
             refreshCallCount += 1
         }
 
+        func deviceConnectionStatus(
+            _ deviceId: String,
+            transport: LocationTransport
+        ) async -> HelperConnectionStatus {
+            statusCallCount += 1
+            return connectionStatus
+        }
+
         func shutdownHelper() async throws {
             shutdownCallCount += 1
             if !shutdownLeavesRecordedSessions {
@@ -45,6 +55,16 @@ final class AppStateSimulationTests: XCTestCase {
     private final class FakeTunnelQuitController: TunnelQuitControlling {
         var stopResult: TunnelQuitStopResult = .stopped
         var onStop: (() -> Void)?
+        var helperStop: Task<Bool, Never>?
+
+        func pendingHelperStop(for deviceId: String) -> Task<Bool, Never>? {
+            helperStop
+        }
+
+        private(set) var resumedDevices: [String] = []
+        func resumeLocationCommands(for deviceId: String) {
+            resumedDevices.append(deviceId)
+        }
         private(set) var stopCallCount = 0
         private(set) var retainCallCount = 0
 
@@ -289,12 +309,107 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertTrue(restored)
 
         XCTAssertEqual(source.startCallCount, 1)
+        XCTAssertGreaterThanOrEqual(source.statusCallCount, 1, "restore must probe the live connection")
         XCTAssertEqual(state.currentLocation, coordinate)
         XCTAssertTrue(state.isSimulating)
         XCTAssertEqual(
             state.locationSessionCoordinator.state.movement,
             LocationMovementPhase.idle
         )
+    }
+
+    func testRestoreRefusesARecordedSessionWhoseConnectionIsGone() async throws {
+        // The helper record can outlive a silently dropped link; restoring it without a
+        // probe showed a location as held that the device no longer applied.
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .wifi,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 11,
+            physicalTransport: "Network",
+            actualChannel: "userspaceRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 36.3, longitude: -86.6),
+            acknowledgedAt: 1_725_000_000
+        )
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [session])
+        source.connectionStatus = .notConnected("probe timed out after 3s")
+        let state = AppState(startBackgroundServices: false, managedLocationSessionSource: source)
+
+        state.selectDevice(device)
+        let restored = await state.restoreManagedLocationSessionFromSource()
+
+        XCTAssertFalse(restored)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+    }
+
+    func testStoppingTheTunnelEndsTheHeldLocationTruthfully() async throws {
+        // Closing the helper connection ends the held DVT session: once the helper
+        // confirms the close, the app must say so (not "uncertain"), keep the desired
+        // spot, and not ask Preserve/Clear at quit.
+        let fake = FakeLocationInjector()
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnelController = FakeTunnelQuitController()
+        let stateTunnel: FakeTunnelQuitController? = tunnelController
+        let (state, session) = makeAcknowledgementState(
+            injector: fake, mode: .teleport, managedSessionSource: source,
+            tunnelQuitController: tunnelController
+        )
+        state.stageLocation(first, for: .teleport)
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+
+        let tunnel = try XCTUnwrap(stateTunnel)
+        tunnel.helperStop = Task { true }
+        state.device.onLocationSessionLoss?(.tunnelStoppedByUser)
+        for _ in 0..<50 where state.locationSessionCoordinator.state.application != .idle {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertFalse(state.isSimulating)
+        XCTAssertFalse(state.requiresLocationQuitDecision)
+    }
+
+    func testStopWithoutAConfirmedHelperCloseLeavesTheLocationUncertain() async throws {
+        // If nothing confirms the connection closed (daemon tunnel, failed disconnect),
+        // claiming "back on real location" would be false: report it uncertain.
+        let fake = FakeLocationInjector()
+        let tunnel = FakeTunnelQuitController()
+        let (state, session) = makeAcknowledgementState(
+            injector: fake, mode: .teleport,
+            managedSessionSource: FakeManagedLocationSessionSource(helperID: UUID(), sessions: []),
+            tunnelQuitController: tunnel
+        )
+        state.stageLocation(first, for: .teleport)
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+        tunnel.helperStop = Task { false }
+
+        state.device.onLocationSessionLoss?(.tunnelStoppedByUser)
+        for _ in 0..<50 {
+            if case .uncertain = state.locationSessionCoordinator.state.application { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        guard case .uncertain = state.locationSessionCoordinator.state.application else {
+            return XCTFail("expected uncertain, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertNotNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
     }
 
     func testAddRouteWaypointAppendsWithoutInjecting() {

@@ -79,6 +79,7 @@ final class DeviceStateManager: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var isResolvingRecoverySession = false
+    private var lastObservedTunnelState: TunnelState?
 
     // MARK: Computed
 
@@ -118,7 +119,10 @@ final class DeviceStateManager: ObservableObject {
         usbFallbackManager: USBFallbackManager? = nil,
         startBackgroundServices: Bool = true
     ) {
-        self.deviceManager = deviceManager ?? DeviceManager()
+        // A DeviceManager built here follows this manager's background-services choice;
+        // building it with background services on regardless spawned pymobiledevice3
+        // discovery from every test AppState on each tunnel change (~4.8k pipes).
+        self.deviceManager = deviceManager ?? DeviceManager(startBackgroundServices: startBackgroundServices)
         self.reliabilityManager = reliabilityManager ?? ReliabilityManager()
         self.usbFallbackManager = usbFallbackManager ?? USBFallbackManager()
 
@@ -179,20 +183,37 @@ final class DeviceStateManager: ObservableObject {
         }
     }
 
+    /// Only a tunnel that was running and stopped is a loss. Idle and starting are
+    /// not: reporting them as lost failed the Connection chip before any tunnel
+    /// existed (live 2026-11-01). Running -> error is a health loss; running ->
+    /// stopping/idle is an explicit stop (Stop Tunnel, Reconnect, transport switch).
+    nonisolated static func tunnelLossEvent(
+        previous: TunnelState?,
+        current: TunnelState
+    ) -> LocationSessionLossEvent? {
+        guard previous?.isActive == true, !current.isActive else { return nil }
+        if case .error = current {
+            return .tunnelHealthLost
+        }
+        return .tunnelStoppedByUser
+    }
+
     private func observeTunnelState() {
         TunneldManager.shared.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 guard let self else { return }
+                let previous = self.lastObservedTunnelState
+                self.lastObservedTunnelState = state
                 self.updateTunnelRunning(state.isActive, force: true)
 
-                if state.isActive {
+                if state.isActive, previous?.isActive != true {
                     Task { await self.refreshDevices() }
-                } else {
-                    self.onLocationSessionLoss?(.tunnelHealthLost)
+                    self.onTunnelActiveChanged?(true)
+                } else if let loss = Self.tunnelLossEvent(previous: previous, current: state) {
+                    self.onLocationSessionLoss?(loss)
+                    self.onTunnelActiveChanged?(false)
                 }
-
-                self.onTunnelActiveChanged?(state.isActive)
             }
             .store(in: &cancellables)
     }
@@ -295,6 +316,14 @@ final class DeviceStateManager: ObservableObject {
                 await tunnelManager.adoptRunningTunnelIfPresent()
             }
         }
+        // A connection the location helper already holds (opened by Move, or kept by
+        // Preserve and Quit) is the tunnel: report it rather than "stopped".
+        if !tunnelManager.isRunning, !tunnelManager.isStarting, let selectedDevice {
+            await tunnelManager.adoptHelperConnectionIfPresent(
+                deviceId: selectedDevice.id,
+                transport: selectedDevice.connectionType == .usb ? .usb : .wifi
+            )
+        }
         await refreshTransportAvailabilityIfNeeded()
 
         updateUSBConnected(deviceManager.usbTransportAvailable, force: true)
@@ -359,7 +388,7 @@ final class DeviceStateManager: ObservableObject {
             transport = .usb
             endpointClass = .direct
         } else if isTunneldRunning,
-                  TunneldManager.shared.getRsdInfo(for: device.id) != nil {
+                  TunneldManager.shared.tunnelInfo?.isUsable == true {
             transport = .wifi
             endpointClass = .remoteServiceDiscovery
         } else {

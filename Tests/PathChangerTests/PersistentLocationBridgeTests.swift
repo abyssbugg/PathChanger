@@ -1167,8 +1167,8 @@ assert not result.stderr, result.stderr
             return XCTFail("Missing Python cache invalidation implementation")
         }
         let invalidation = String(source[start..<end])
-        XCTAssertTrue(invalidation.contains("try:\n                await cached[\"stack\"].aclose()"))
-        XCTAssertTrue(invalidation.contains("except Exception:\n                pass"))
+        XCTAssertTrue(invalidation.contains("try:\n            await cached[\"stack\"].aclose()"))
+        XCTAssertTrue(invalidation.contains("except Exception:\n            pass"))
     }
 
     func testPythonCacheInvalidationRebuildsService() throws {
@@ -1375,12 +1375,13 @@ asyncio.run(verify())
         XCTAssertEqual(process.terminationStatus, 0)
     }
 
-    /// Single tunnel owner (owner decision 2026-11-01): when Swift supplies the
-    /// app tunnel's RSD endpoint (TunneldManager), the helper must inject over
-    /// THAT tunnel only — never silently open its own userspace tunnel or a
-    /// lockdown lane — and a dead app tunnel must surface as an honest,
-    /// classifiable endpoint failure instead of a hidden fallback.
-    func testPythonSuppliedAppTunnelIsTheOnlyInjectionLane() throws {
+    /// One device connection, owned by the helper (owner decision 2026-11-01,
+    /// Option A): the app's `--native` tunnel refused the location service 3/3
+    /// while pymobiledevice3's own in-process tunnel served it 3/3. The helper
+    /// therefore opens exactly one userspace tunnel per device, never dials an
+    /// RSD endpoint supplied by Swift, proves DVT answers before reporting a
+    /// connection, and reports the connection's live state honestly.
+    func testPythonHelperOwnsTheOnlyDeviceConnection() throws {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
@@ -1391,60 +1392,222 @@ asyncio.run(verify())
         spec.loader.exec_module(bridge)
 
         calls = []
+        ls_error = None
         class Context:
-            def __init__(self, value=None, error=None):
-                self.value, self.error = value, error
-            async def __aenter__(self):
-                if self.error: raise self.error
-                return self.value or self
+            async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
         class Location(Context):
             async def set(self, lat, lng): calls.append(("set", lat, lng))
             async def clear(self): calls.append(("clear",))
-        def forbidden_userspace(**kwargs):
-            calls.append(("userspace", kwargs)); raise AssertionError("second tunnel opened")
-        async def forbidden_lockdown(**kwargs):
-            calls.append(("lockdown", kwargs)); raise AssertionError("lockdown lane opened")
-        def forbidden_preferred(**kwargs):
-            calls.append(("preferred", kwargs)); raise AssertionError("preferred lane opened")
-        rsd_error = None
-        def make_rsd(endpoint):
-            calls.append(("rsd", endpoint))
-            return Context(error=rsd_error)
+        class Info(Context):
+            async def ls(self, path):
+                calls.append(("ls", path))
+                if ls_error: raise ls_error
+                return ["/usr", "/bin"]
+        class Tunnel:
+            def __init__(self, **kwargs):
+                calls.append(("userspace", kwargs))
+            async def aopen(self):
+                await asyncio.sleep(0.05)  # widen the race window
+                return object()
+            async def aclose(self): calls.append(("aclose",))
+        def forbidden_rsd(endpoint):
+            raise AssertionError("helper dialed a Swift-supplied RSD endpoint")
 
         def make_connection():
             c = bridge.DeviceConnection()
             c._initialized = True
-            c._userspace_tunnel_factory = forbidden_userspace
-            c._lockdown_usb = forbidden_lockdown
-            c._preferred_tunnel_factory = forbidden_preferred
-            c._rsd_module = make_rsd
+            c._userspace_tunnel_factory = Tunnel
+            c._rsd_module = forbidden_rsd
             c._dvt_module = lambda provider: Context()
             c._location_module = lambda dvt: Location()
+            c._device_info_module = lambda dvt: Info()
             return c
 
-        async def verify():
-            global rsd_error
-            c = make_connection()
-            result = await c.set_location(
-                36.3, -86.6, "fake-device",
-                rsd_address="fdc9:1905:6dc0::1", rsd_port=55817, connection_type="Network")
-            assert result["success"] is True, result
-            assert result["actual_channel"] == "explicitRSD", result
-            assert result["endpoint_class"] == "remoteServiceDiscovery", result
-            assert calls == [("rsd", ("fdc9:1905:6dc0::1", 55817)), ("set", 36.3, -86.6)], calls
-            await c.close_all()
+        def count(kind):
+            return sum(1 for call in calls if call[0] == kind)
 
-            calls.clear()
-            rsd_error = ConnectionRefusedError(61, "Connect call failed")
+        async def verify():
+            global ls_error
+            # Validation: the connection commands require a device.
+            assert bridge.validate_request({"cmd": "connect_device", "udid": "d",
+                "request_id": "r", "session_generation": 0}) == (True, "")
+            assert bridge.validate_request({"cmd": "connection_status",
+                "request_id": "r", "session_generation": 0})[0] is False
+            assert bridge.validate_request({"cmd": "disconnect_device", "udid": "d",
+                "request_id": "r", "session_generation": 0}) == (True, "")
+
             c = make_connection()
-            result = await c.set_location(
-                36.3, -86.6, "fake-device",
-                rsd_address="fdc9:1905:6dc0::1", rsd_port=55817, connection_type="Network")
-            assert result["success"] is False, result
-            assert "TunnelEndpointUnavailable" in result["error"], result
-            assert [k for k, *_ in calls] == ["rsd"], calls
+            # Concurrent connect + set open exactly one tunnel (one per process),
+            # even when they carry different transport hints.
+            connected, applied = await asyncio.gather(
+                bridge.process_command(c, {"cmd": "connect_device", "udid": "dev",
+                    "connection_type": "USB"}),
+                c.set_location(36.3, -86.6, "dev", rsd_address="fdc9::1",
+                    rsd_port=55817, connection_type="Network"),
+            )
+            assert connected["success"] is True and connected["connected"] is True, connected
+            assert connected["replaced"] is False, connected
+            assert connected["actual_channel"] == "userspaceRSD", connected
+            assert applied["success"] is True, applied
+            assert applied["actual_channel"] == "userspaceRSD", applied
+            assert count("userspace") == 1, calls
+            assert calls[0] == ("userspace", {"serial": "dev", "autopair": True,
+                "remotepairing_fallback": False}), calls
+            # DVT was proven to answer before the connection was reported.
+            assert count("ls") >= 1, calls
+
+            status = await bridge.process_command(c, {"cmd": "connection_status",
+                "udid": "dev", "connection_type": "Network"})
+            assert status == {"success": True, "connected": True,
+                "actual_channel": "userspaceRSD",
+                "endpoint_class": "remoteServiceDiscovery"}, status
+
+            # A dead connection is reported as not connected and torn down.
+            ls_error = ConnectionResetError("tunnel gone")
+            status = await bridge.process_command(c, {"cmd": "connection_status",
+                "udid": "dev", "connection_type": "Network"})
+            assert status["success"] is True and status["connected"] is False, status
+            assert "tunnel gone" in status["reason"], status
+            assert count("aclose") == 1, calls
+            ls_error = None
+            status = await bridge.process_command(c, {"cmd": "connection_status",
+                "udid": "dev", "connection_type": "Network"})
+            assert status["connected"] is False and status["reason"] == "not connected", status
+
+            # Disconnect closes the tunnel; a later status does not reopen it.
+            await bridge.process_command(c, {"cmd": "connect_device", "udid": "dev",
+                "connection_type": "Network"})
+            closed = await bridge.process_command(c, {"cmd": "disconnect_device",
+                "udid": "dev", "connection_type": "Network"})
+            assert closed == {"success": True, "connected": False}, closed
+            assert count("aclose") == 2, calls
+            status = await bridge.process_command(c, {"cmd": "connection_status",
+                "udid": "dev", "connection_type": "Network"})
+            assert status["connected"] is False, status
+            assert count("userspace") == 2, calls
             await c.close_all()
+        asyncio.run(verify())
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
+        process.arguments = ["-B", "-c", code]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        try? stderr.fileHandleForReading.close()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+    }
+
+    /// The helper record must never list a held location on a connection that is
+    /// gone, a probe that merely times out must not destroy a live connection, and
+    /// a failure must close only the connection it happened on.
+    func testPythonHelperKeepsConnectionTruthHonest() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import asyncio, importlib.util, json, os, tempfile
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        bridge.PROBE_TIMEOUT_SECONDS = 0.2
+
+        calls = []
+        ls_mode = "ok"
+        class Context:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+        class Location(Context):
+            async def set(self, lat, lng): calls.append(("set", lat, lng))
+        class Info(Context):
+            async def ls(self, path):
+                global ls_mode
+                if ls_mode == "stall": await asyncio.sleep(5)
+                if ls_mode == "stall_once":
+                    ls_mode = "ok"
+                    await asyncio.sleep(5)
+                if ls_mode == "dead": raise ConnectionResetError("tunnel gone")
+                return ["/usr"]
+        class Tunnel:
+            def __init__(self, **kwargs): calls.append(("open",))
+            async def aopen(self): return object()
+            async def aclose(self): calls.append(("aclose",))
+
+        def make_connection():
+            c = bridge.DeviceConnection()
+            c._initialized = True
+            c._userspace_tunnel_factory = Tunnel
+            c._dvt_module = lambda provider: Context()
+            c._location_module = lambda dvt: Location()
+            c._device_info_module = lambda dvt: Info()
+            return c
+
+        def sessions(path):
+            with open(path) as f:
+                return json.load(f)["active_sessions"]
+
+        async def verify():
+            global ls_mode
+            with tempfile.TemporaryDirectory() as directory:
+                record = os.path.join(directory, "helper.json")
+                bridge._write_helper_record(record, os.path.join(directory, "s"), "t", "h")
+                c = make_connection()
+                c.on_connection_closed = lambda udid: bridge._forget_device_sessions(record, udid)
+                request = {"cmd": "set_location", "udid": "dev", "lat": 1.0, "lng": 2.0,
+                           "request_id": "r1", "session_generation": 1,
+                           "connection_type": "Network"}
+                response = await bridge.process_command(c, request)
+                bridge._record_location_result(record, request, response)
+                assert len(sessions(record)) == 1
+
+                # A stalled probe reports not-connected but keeps the connection.
+                ls_mode = "stall"
+                status = await bridge.process_command(c, {"cmd": "connection_status",
+                    "udid": "dev", "connection_type": "Network"})
+                assert status["connected"] is False, status
+                assert "timed out" in status["reason"], status
+                assert ("aclose",) not in calls, calls
+                assert len(sessions(record)) == 1
+
+                # A dead connection is closed and its held location leaves the record.
+                ls_mode = "dead"
+                status = await bridge.process_command(c, {"cmd": "connection_status",
+                    "udid": "dev", "connection_type": "Network"})
+                assert status["connected"] is False, status
+                assert calls.count(("aclose",)) == 1, calls
+                assert sessions(record) == [], sessions(record)
+
+                # Disconnect also clears the record.
+                ls_mode = "ok"
+                response = await bridge.process_command(c, request)
+                bridge._record_location_result(record, request, response)
+                assert len(sessions(record)) == 1
+                await bridge.process_command(c, {"cmd": "disconnect_device",
+                    "udid": "dev", "connection_type": "Network"})
+                assert sessions(record) == []
+
+                # connect_device proves a cached connection; a stalled one is replaced.
+                opens_before = calls.count(("open",))
+                await bridge.process_command(c, {"cmd": "connect_device", "udid": "dev",
+                    "connection_type": "Network"})
+                ls_mode = "stall_once"
+                connected = await bridge.process_command(c, {"cmd": "connect_device",
+                    "udid": "dev", "connection_type": "Network"})
+                assert connected["connected"] is True, connected
+                assert connected["replaced"] is True, connected
+                assert calls.count(("open",)) == opens_before + 2, calls
+                ls_mode = "ok"
+
+                # Invalidating a stale entry never closes the newer connection.
+                await bridge.process_command(c, {"cmd": "connect_device", "udid": "dev",
+                    "connection_type": "Network"})
+                stale = {"stack": None}
+                await c._invalidate("dev", stale)
+                assert "dev" in c._service_cache
+                await c.close_all()
         asyncio.run(verify())
         """
         let process = Process()

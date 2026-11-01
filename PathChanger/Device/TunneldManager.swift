@@ -64,27 +64,29 @@ enum TunnelMode: String, CaseIterable, Identifiable, Codable {
         case .auto:
             return "Automatically select best method"
         case .usb:
-            return "Fast tunnel via USB (lockdown start-tunnel)"
+            return "USB connection held by PathChanger's location helper"
         case .wifi:
-            return "True WiFi-only (remote start-tunnel -t wifi)"
+            return "Wi-Fi connection held by PathChanger's location helper"
         case .daemon:
             return "Background daemon (remote tunneld)"
         }
     }
 
+    /// Process command for modes that run a tunnel process. USB and Wi-Fi have none:
+    /// the managed helper owns that connection (Option A, 2026-11-01) because the
+    /// `start-tunnel --native` RSD refused the location service on iOS 27.2.
     var command: [String] {
         switch self {
-        case .auto:
-            return [] // Determined at runtime
-        case .usb:
-            return ["lockdown", "start-tunnel", "--native"]
-        case .wifi:
-            // pymobiledevice3 >= 11.4x: --connection-type is mutually exclusive with --native;
-            // the native tunnel piggybacks remotepairingd and selects the device by --udid only.
-            return ["remote", "start-tunnel", "--native"]
+        case .auto, .usb, .wifi:
+            return []
         case .daemon:
             return ["remote", "tunneld"]
         }
+    }
+
+    /// True for modes whose connection is the managed helper's userspace tunnel.
+    var usesHelperConnection: Bool {
+        self != .daemon
     }
 
     var processPattern: String {
@@ -166,6 +168,15 @@ enum TunnelState: Equatable {
 
 // MARK: - Tunnel Info
 
+/// How the app reaches the device for developer services.
+enum TunnelChannel: Equatable, Sendable {
+    /// An OS-reachable RSD endpoint published by a tunnel process (daemon mode).
+    case rsdEndpoint
+    /// The managed helper's in-process pymobiledevice3 userspace tunnel. Its RSD is
+    /// reachable only inside the helper, so it is never handed to other processes.
+    case helperUserspace
+}
+
 /// Tunnel connection info (RSD address for device communication)
 struct TunnelInfo: Equatable {
     let rsdAddress: String
@@ -173,19 +184,71 @@ struct TunnelInfo: Equatable {
     let mode: TunnelMode
     let interface: String?
     let processId: Int32?
+    var channel: TunnelChannel = .rsdEndpoint
+    /// Device the helper connection serves (helper channel only).
+    var deviceId: String? = nil
 
     var connectionString: String {
         "--rsd \(rsdAddress) \(rsdPort)"
     }
 
-    /// A tunnel is usable only when it produced a real RSD endpoint.
-    /// `127.0.0.1:0` was previously manufactured when parsing failed, which marked the
-    /// UI "Tunnel live" even though no connection could use it.
+    /// A tunnel is usable only when it can actually carry developer services: an RSD
+    /// endpoint must be real (`127.0.0.1:0` was once manufactured when parsing failed,
+    /// which marked the UI "Tunnel live" with nothing behind it); a helper connection
+    /// must name its device.
     var isUsable: Bool {
-        !rsdAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && rsdPort > 0
-            && rsdPort <= 65_535
+        switch channel {
+        case .helperUserspace:
+            return deviceId.map { !$0.isEmpty } ?? false
+        case .rsdEndpoint:
+            return !rsdAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && rsdPort > 0
+                && rsdPort <= 65_535
+        }
     }
+
+    /// True only for an endpoint other processes may dial with `--rsd`.
+    var exposesRSDEndpoint: Bool {
+        channel == .rsdEndpoint && isUsable
+    }
+}
+
+struct HelperDeviceConnection: Equatable, Sendable {
+    let helperPID: Int32
+    let channel: String
+    /// The helper replaced a stalled connection; any location held on it ended.
+    var replaced: Bool = false
+}
+
+enum HelperConnectionStatus: Equatable, Sendable {
+    case connected
+    case notConnected(String)
+}
+
+/// The app's single connection to a device: the managed location helper's in-process
+/// pymobiledevice3 userspace tunnel (Option A, owner decision 2026-11-01). Live on
+/// iOS 27.2 the `start-tunnel --native` RSD refused the location service 3/3 while
+/// this tunnel served it 3/3. `PersistentLocationBridge.shared` is the production
+/// conformer; tests substitute a fake.
+@MainActor
+protocol DeviceConnectionOpening: AnyObject {
+    func connectDevice(_ deviceId: String, transport: LocationTransport) async throws -> HelperDeviceConnection
+    func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus
+    /// PID of the running helper, or nil; never launches one.
+    func helperProcessIdentifierIfRunning() -> Int32?
+    /// Close the connection. True when the helper confirmed it closed (or no helper,
+    /// hence no connection, exists): only then has a held location really ended.
+    @discardableResult
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool
+    /// The health probe failed: the next location command must reopen first.
+    func markDeviceConnectionUnverified(_ deviceId: String)
+    /// Device the last acknowledged location was applied to, if any.
+    var activeLocationDeviceId: String? { get }
+    /// Refuse new location updates for the device (Stop Tunnel); queued or in-flight
+    /// updates must not reopen the connection and re-apply a stopped location.
+    func suspendLocationCommands(for deviceId: String)
+    /// Lift a Stop after an explicit user action (Start Tunnel, Move, Reconnect).
+    func resumeLocationCommands(for deviceId: String)
 }
 
 /// Kernel start time of a process. A PID plus its start time identifies one process
@@ -550,6 +613,34 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     /// Health monitor for tunnel connectivity
     private let healthMonitor = TunnelHealthMonitor()
 
+    /// Opens and closes the helper-owned device connection. Injectable for tests.
+    var deviceConnector: (any DeviceConnectionOpening)?
+    private var connector: any DeviceConnectionOpening {
+        deviceConnector ?? PersistentLocationBridge.shared
+    }
+
+    /// Device the last explicit start targeted, so Reconnect reopens the same device.
+    private var lastStartDeviceId: String?
+
+    /// A Stop of the helper connection closes it in the background; quit, restart,
+    /// adoption and AppState await it. The task reports whether the close was confirmed.
+    private var helperStop: (deviceId: String, task: Task<Bool, Never>)?
+
+    /// Called when Start replaced a stalled helper connection, which ended any location
+    /// held on it, so AppState can report the loss and re-apply.
+    var onHelperConnectionReplaced: ((String) -> Void)?
+
+    /// The in-flight close started by Stop for `deviceId`, if any.
+    func pendingHelperStop(for deviceId: String) -> Task<Bool, Never>? {
+        guard let helperStop, helperStop.deviceId == deviceId else { return nil }
+        return helperStop.task
+    }
+
+    /// An explicit user action (Move, Reconnect) lifts a previous Stop's block.
+    func resumeLocationCommands(for deviceId: String) {
+        connector.resumeLocationCommands(for: deviceId)
+    }
+
     /// Cancellable for state machine observation
     private var stateMachineCancellable: AnyCancellable?
 
@@ -561,8 +652,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         get { stateMachine.currentContext.activeProcessIds }
     }
 
+#if DEBUG
+    /// Test seam: read a planted tunnel log instead of the user's real one.
+    var tunnelLogPathOverride: String?
+#endif
+
     /// Log file in ~/Library/Logs/PathChanger (more secure than /tmp)
     private var logFilePath: String {
+#if DEBUG
+        if let tunnelLogPathOverride { return tunnelLogPathOverride }
+#endif
         let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
             .first!.appendingPathComponent("Logs/PathChanger").path
         return "\(logsDir)/tunnel.log"
@@ -626,6 +725,9 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             terminateOwnedTunnelProcess()
 
         case .parseRsdInfo:
+            // Only a tunnel process publishes an RSD in tunnel.log. For the helper
+            // connection, parsing would replace it with a stale `--rsd` from an old log.
+            guard !(stateMachine.currentContext.activeMode?.usesHelperConnection ?? false) else { return }
             await parseRsdInfo()
 
         case .startHealthMonitor:
@@ -666,25 +768,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     }
 
     nonisolated static func arguments(for mode: TunnelMode, deviceId: String? = nil) -> [String]? {
-        let base: [String]?
+        // Only the daemon runs a tunnel process. USB and Wi-Fi connections belong to
+        // the managed helper (Option A, 2026-11-01).
         switch mode {
-        case .usb:
-            base = ["-m", "pymobiledevice3", "lockdown", "start-tunnel", "--native"]
-        case .wifi:
-            base = ["-m", "pymobiledevice3", "remote", "start-tunnel", "--native"]
         case .daemon:
-            base = ["-m", "pymobiledevice3", "remote", "tunneld"]
-        case .auto:
-            base = nil
+            return ["-m", "pymobiledevice3", "remote", "tunneld"]
+        case .auto, .usb, .wifi:
+            return nil
         }
-
-        guard var arguments = base else { return nil }
-        if mode != .daemon,
-           let deviceId,
-           ArgumentSanitizer.isValidDeviceUDID(deviceId) {
-            arguments += ["--udid", deviceId]
-        }
-        return arguments
     }
 
     /// Start tunnel automatically - called on app launch
@@ -745,6 +836,12 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Start tunnel with preferred mode (with auto-fallback)
     func startTunnel(deviceId: String? = nil) async {
+        // An explicit Start after a failure begins again: the state machine has no
+        // error -> starting transition, so Start used to do nothing at all.
+        if case .error = stateMachine.currentState {
+            stateMachine.reset()
+        }
+
         // Check state via state machine
         guard !stateMachine.isActive && !stateMachine.isTransitioning else {
             Logger.debug(
@@ -755,12 +852,15 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         }
 
         lastError = nil
+        lastStartDeviceId = deviceId
 
         let modesToTry: [TunnelMode]
 
         if preferredMode == .auto {
-            // Auto mode: try in priority order
-            modesToTry = [.usb, .wifi, .daemon]
+            // Auto: USB when cabled, else Wi-Fi, both through the helper connection.
+            // The daemon is not an automatic fallback: it would replace the real
+            // Wi-Fi failure reason with an unrelated one.
+            modesToTry = [.usb, .wifi]
         } else {
             // Specific mode requested
             modesToTry = [preferredMode]
@@ -775,7 +875,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             return
         }
 
-        if let runningMode = await detectRunningTunnel() {
+        if !firstMode.usesHelperConnection, let runningMode = await detectRunningTunnel() {
             await parseRsdInfo()
             if let existingInfo = stateMachine.currentContext.tunnelInfo ?? tunnelInfo, existingInfo.isUsable {
                 guard stateMachine.currentState == .starting else {
@@ -808,6 +908,20 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             }
 
             Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
+
+            if mode.usesHelperConnection {
+                if await connectHelper(mode: mode, deviceId: deviceId) {
+                    return
+                }
+                guard stateMachine.currentState == .starting else { return }
+                if preferredMode != .auto || index == modesToTry.count - 1 {
+                    stateMachine.send(.errorOccurred(lastError ?? "Failed to connect to the device"))
+                    return
+                }
+                Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
+                stateMachine.reset()
+                continue
+            }
 
             let outcome = await attemptStart(mode: mode, deviceId: deviceId)
 
@@ -880,7 +994,31 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Stop the tunnel
     func stopTunnel() {
+        stopTunnel(disconnectHelper: true)
+    }
+
+    private func stopTunnel(disconnectHelper: Bool) {
         isTunnelRetainedForExit = false
+
+        // The helper connection has no process here; closing it is the stop. It ends
+        // any location held over it (the Stop button confirms that first). In daemon
+        // mode the location also rides the helper's connection, so it closes too.
+        let daemonLocationDevice = (stateMachine.currentContext.activeMode ?? activeMode) == .daemon
+            ? (lastStartDeviceId ?? connector.activeLocationDeviceId)
+            : nil
+        let helperToClose = currentHelperConnection
+            ?? daemonLocationDevice.map { (deviceId: $0, transport: LocationTransport.wifi) }
+        if disconnectHelper, let helper = helperToClose {
+            let connector = connector
+            // Block first, synchronously: an update dequeued after this point must not
+            // reopen the connection the Stop is closing.
+            connector.suspendLocationCommands(for: helper.deviceId)
+            let previous = helperStop?.task
+            helperStop = (helper.deviceId, Task { @MainActor in
+                _ = await previous?.value
+                return await connector.disconnectDevice(helper.deviceId, transport: helper.transport)
+            })
+        }
 
         // Send stop event to state machine
         stateMachine.send(.stopRequested)
@@ -946,6 +1084,15 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     /// the UI and a retried quit still see the surviving process.
     func stopTunnelForQuit() async -> TunnelQuitStopResult {
         isTunnelRetainedForExit = false
+
+        _ = await helperStop?.task.value
+        if let helper = currentHelperConnection {
+            // No process to kill: closing the helper's connection is the stop. When the
+            // quit flow already shut the helper down this is a no-op.
+            await connector.disconnectDevice(helper.deviceId, transport: helper.transport)
+            stopTunnel(disconnectHelper: false)
+            return .stopped
+        }
 
         if let inFlight = inFlightAdoptedStop {
             let outcome = await inFlight.task.value
@@ -1067,9 +1214,113 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Restart tunnel
     func restartTunnel() async {
+        let deviceId = lastStartDeviceId ?? currentHelperConnection?.deviceId
         stopTunnel()
+        _ = await helperStop?.task.value
         try? await Task.sleep(nanoseconds: 500_000_000) // Wait 500ms
-        await startTunnel()
+        await startTunnel(deviceId: deviceId)
+    }
+
+    // MARK: - Helper-owned device connection
+
+    private static func mayAdoptHelperConnection(from state: TunnelState) -> Bool {
+        switch state {
+        case .idle, .error:
+            return true
+        case .starting, .running, .stopping:
+            return false
+        }
+    }
+
+    private var currentHelperConnection: (deviceId: String, transport: LocationTransport)? {
+        guard let info = stateMachine.currentContext.tunnelInfo ?? tunnelInfo,
+              info.channel == .helperUserspace,
+              let deviceId = info.deviceId else {
+            return nil
+        }
+        return (deviceId, info.mode == .usb ? .usb : .wifi)
+    }
+
+    private func helperTunnelInfo(mode: TunnelMode, deviceId: String, helperPID: Int32) -> TunnelInfo {
+        TunnelInfo(
+            rsdAddress: "",
+            rsdPort: 0,
+            mode: mode,
+            interface: nil,
+            processId: helperPID,
+            channel: .helperUserspace,
+            deviceId: deviceId
+        )
+    }
+
+    /// Open the helper's connection for an explicit start. Returns true when the
+    /// state machine reached running (or a stop overtook the start).
+    private func connectHelper(mode: TunnelMode, deviceId: String?) async -> Bool {
+        guard let deviceId, ArgumentSanitizer.isValidDeviceUDID(deviceId) else {
+            lastError = "Select a device before connecting."
+            return false
+        }
+        if mode == .usb {
+            guard await usbmuxReportsUSB() else {
+                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — pick Wi‑Fi Only to use it."
+                return false
+            }
+        }
+        let transport: LocationTransport = mode == .usb ? .usb : .wifi
+        // A quick Start after Stop waits for that close, then lifts its block.
+        _ = await helperStop?.task.value
+        connector.resumeLocationCommands(for: deviceId)
+        do {
+            let connection = try await connector.connectDevice(deviceId, transport: transport)
+            if connection.replaced {
+                onHelperConnectionReplaced?(deviceId)
+            }
+            guard stateMachine.currentState == .starting else { return true }
+            let info = helperTunnelInfo(mode: mode, deviceId: deviceId, helperPID: connection.helperPID)
+            stateMachine.send(.processLaunched(pid: connection.helperPID))
+            tunnelInfo = info
+            stateMachine.send(.connectionEstablished(info: info))
+            Logger.info(
+                "[Tunnel] Device connection open via the location helper (\(connection.channel), helper PID \(connection.helperPID))",
+                category: .device
+            )
+            return true
+        } catch {
+            lastError = "Could not connect to the device: \(error.localizedDescription)"
+            Logger.error("[Tunnel] \(lastError ?? "Device connection failed")", category: .device)
+            return false
+        }
+    }
+
+    /// Report a connection the helper already holds (opened by Move, or kept by
+    /// Preserve and Quit) instead of showing the tunnel as stopped. Never opens one.
+    func adoptHelperConnectionIfPresent(deviceId: String, transport: LocationTransport) async {
+        // A Stop's disconnect may still be in flight; never re-adopt what it is closing.
+        _ = await helperStop?.task.value
+        // Daemon mode is a different connection; never report the helper's as it.
+        guard preferredMode.usesHelperConnection,
+              Self.mayAdoptHelperConnection(from: stateMachine.currentState),
+              ArgumentSanitizer.isValidDeviceUDID(deviceId),
+              let helperPID = connector.helperProcessIdentifierIfRunning() else {
+            return
+        }
+        guard await connector.deviceConnectionStatus(deviceId, transport: transport) == .connected else {
+            return
+        }
+        guard Self.mayAdoptHelperConnection(from: stateMachine.currentState) else { return }
+        if case .error = stateMachine.currentState {
+            // Recovery reconnected through the helper after a health failure: report
+            // the live connection instead of leaving the pill on Error.
+            stateMachine.reset()
+        }
+        let mode: TunnelMode = transport == .usb ? .usb : .wifi
+        guard case .success = stateMachine.send(.startRequested(mode: mode)) else { return }
+        let info = helperTunnelInfo(mode: mode, deviceId: deviceId, helperPID: helperPID)
+        stateMachine.send(.processLaunched(pid: helperPID))
+        tunnelInfo = info
+        lastStartDeviceId = deviceId
+        stateMachine.send(.connectionEstablished(info: info))
+        Logger.info("[Tunnel] Adopted the location helper's open device connection", category: .device)
     }
 
     /// True only when usbmux lists a USB attachment (not Network).
@@ -1093,7 +1344,9 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Detect which tunnel mode is currently running
     private func detectRunningTunnel() async -> TunnelMode? {
-        for mode in [TunnelMode.usb, .wifi, .daemon] {
+        // USB/Wi-Fi tunnel processes are no longer started (Option A); a leftover
+        // `start-tunnel --native` from an older build is not adopted.
+        for mode in [TunnelMode.daemon] {
             do {
                 let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
                 if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1437,13 +1690,13 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     /// Get RSD info for a specific device by UDID
     /// Returns nil if no tunnel info is available for this device
     func getRsdInfo(for deviceId: String) -> TunnelInfo? {
-        // First check per-device cache
-        if let info = deviceTunnelInfo[deviceId] {
+        // Only endpoints other processes may dial. The helper's in-process tunnel is
+        // never handed out: CLI paths then target the device with `--udid`.
+        if let info = deviceTunnelInfo[deviceId], info.exposesRSDEndpoint {
             return info
         }
-
-        // Fall back to legacy single tunnel info
-        return tunnelInfo
+        guard let info = tunnelInfo, info.exposesRSDEndpoint else { return nil }
+        return info
     }
 
     /// Refresh device RSD info from tunneld API
@@ -1523,6 +1776,17 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
                     category: .device
                 )
             }
+        }
+
+        // The helper connection's health is the helper's own bounded DVT probe.
+        healthMonitor.helperConnectionProbe = { [weak self] info in
+            guard let self, let deviceId = info.deviceId else { return false }
+            let transport: LocationTransport = info.mode == .usb ? .usb : .wifi
+            let alive = await self.connector.deviceConnectionStatus(deviceId, transport: transport) == .connected
+            if !alive {
+                self.connector.markDeviceConnectionUnverified(deviceId)
+            }
+            return alive
         }
 
         // Start health monitoring

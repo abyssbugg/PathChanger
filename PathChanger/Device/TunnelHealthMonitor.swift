@@ -172,6 +172,11 @@ class TunnelHealthMonitor: ObservableObject {
     /// endpoint. Injectable for tests; the default opens a real TCP connection.
     var endpointProber: TunnelEndpointProbing = NWConnectionEndpointProber()
 
+    /// Liveness of the helper-owned device connection: the helper lists `/` over DVT
+    /// with a bounded timeout. Its RSD is in-process, so there is no socket to probe
+    /// from here. Set by TunneldManager; nil reports the connection unhealthy.
+    var helperConnectionProbe: ((TunnelInfo) async -> Bool)?
+
     // MARK: Failure notification
     private var onFailureDetected: (() -> Void)?
 
@@ -247,6 +252,18 @@ class TunnelHealthMonitor: ObservableObject {
         // Check if tunnel info is available and valid
         guard let tunnelInfo = TunneldManager.shared.tunnelInfo else {
             return false
+        }
+
+        if tunnelInfo.channel == .helperUserspace {
+            if let pid = tunnelInfo.processId, !Self.isProcessAlive(pid: pid) {
+                return false
+            }
+            guard let probe = helperConnectionProbe else { return false }
+            let alive = await probe(tunnelInfo)
+            if !alive {
+                Logger.debug("Helper device connection failed its liveness probe", category: .device)
+            }
+            return alive
         }
 
         // Verify process is still running if we have a PID

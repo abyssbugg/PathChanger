@@ -393,7 +393,11 @@ final class TunnelStateMachine: ObservableObject {
             // Allow critical events through debounce
             let isCriticalEvent: Bool
             switch event {
-            case .stopRequested, .processStopped, .processExited:
+            case .stopRequested, .processStopped, .processExited, .processLaunched, .connectionEstablished:
+                // Facts about a real process/connection are never dropped: processLaunched
+                // follows startRequested within milliseconds (live 2026-11-01 the tunnel
+                // PID was lost: "PID: unknown"), and adopting an already-open helper
+                // connection sends connectionEstablished right behind it.
                 isCriticalEvent = true
             default:
                 isCriticalEvent = false

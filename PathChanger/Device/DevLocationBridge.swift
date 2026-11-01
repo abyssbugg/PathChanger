@@ -646,7 +646,14 @@ actor DevLocationBridge: LocationInjecting {
             }
             await stopHeldSimulation()
         }
-        await PersistentLocationBridge.shared.stopIfUsingTunnel()
+        // Queued rate-limited updates (Joystick, dense routes) would reopen the
+        // connection and re-apply a location the user just stopped.
+        let removed = await requestQueue.removeAllRequests()
+        for requestID in removed {
+            queuedApplicationContexts.removeValue(forKey: requestID)
+        }
+        // The managed helper owns its own device connection (Option A); stopping the
+        // tunnel closes that connection. The helper process itself stays up.
     }
 
     func events() async -> AsyncStream<LocationBridgeEvent> {
@@ -835,8 +842,12 @@ actor DevLocationBridge: LocationInjecting {
         // Validate device UDID
         try ArgumentSanitizer.validateDeviceUDID(device.id)
 
-        // Pre-flight check: Ensure device is properly configured
-        try await performPreflight(for: device)
+        // Pre-flight check: Ensure device is properly configured. The persistent path
+        // needs no CLI preflight: the helper proves DVT answers over its own connection
+        // before applying, and a `dvt ls` subprocess would build a second tunnel.
+        if !(usePersistentBridge && usePerformanceMode) {
+            try await performPreflight(for: device)
+        }
 
         // Rate limiting with token bucket
         let allowed = await rateLimiter.checkRequest()
