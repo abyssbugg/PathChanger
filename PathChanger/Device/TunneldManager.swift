@@ -810,7 +810,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         }
 
         // First check if any tunnel is already running
-        if let runningMode = await detectRunningTunnel() {
+        if mayAdoptRunningDaemon, let runningMode = await detectRunningTunnel() {
             resolveAdoptedOwnership(pid: await discoverPid(for: runningMode))
             stateMachine.send(.externalTunnelDetected(mode: runningMode))
             return
@@ -820,6 +820,17 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         await startTunnel(deviceId: deviceId)
     }
 
+    /// Set by Stop, cleared only by an explicit Start: a `remote tunneld` that survives
+    /// Stop (one PathChanger did not launch is detached, never signalled) must not be
+    /// adopted again by the status poll behind the user's back.
+    private(set) var isDaemonAdoptionSuppressedByStop = false
+
+    /// Only Background Daemon mode adopts a running `remote tunneld`, and not after Stop.
+    /// Auto, USB and Wi-Fi use the helper's connection and never fall back to the daemon.
+    private var mayAdoptRunningDaemon: Bool {
+        preferredMode == .daemon && !isDaemonAdoptionSuppressedByStop
+    }
+
     /// Adopt a tunnel process that survived an app relaunch without requesting elevation.
     ///
     /// The RSD tunnel is a root-owned child and can outlive the UI process. Discovery and
@@ -827,6 +838,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     /// state-machine context so all DVT commands use `--rsd` immediately.
     func adoptRunningTunnelIfPresent() async {
         guard case .idle = state else { return }
+        guard mayAdoptRunningDaemon else { return }
         guard let mode = await detectRunningTunnel() else { return }
 
         stateMachine.reset()
@@ -854,6 +866,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Start tunnel with preferred mode (with auto-fallback)
     func startTunnel(deviceId: String? = nil) async {
+        // An explicit Start is the only thing that lifts Stop's hold on daemon adoption.
+        isDaemonAdoptionSuppressedByStop = false
         // An explicit Start after a failure begins again: the state machine has no
         // error -> starting transition, so Start used to do nothing at all.
         if case .error = stateMachine.currentState {
@@ -1012,6 +1026,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Stop the tunnel
     func stopTunnel() {
+        isDaemonAdoptionSuppressedByStop = true
         stopTunnel(disconnectHelper: true)
     }
 
@@ -1231,6 +1246,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     var adoptedTunnelIsOwnedForTesting: Bool { adoptedOwnedTunnel != nil }
     var hasOwnedTunnelProcessForTesting: Bool { tunneldProcess != nil }
+
+    /// Test seam: replaces the `pgrep` probe for a running `remote tunneld`.
+    var runningTunnelDetectorForTesting: (() async -> TunnelMode?)?
+
+    /// Test seam: forget an earlier Stop so a test can isolate the mode gate.
+    func allowDaemonAdoptionForTesting() {
+        isDaemonAdoptionSuppressedByStop = false
+    }
 #endif
 
     /// Restart tunnel
@@ -1422,6 +1445,11 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     private func detectRunningTunnel() async -> TunnelMode? {
         // USB/Wi-Fi tunnel processes are no longer started (Option A); a leftover
         // `start-tunnel --native` from an older build is not adopted.
+        #if DEBUG
+        if let runningTunnelDetectorForTesting {
+            return await runningTunnelDetectorForTesting()
+        }
+        #endif
         for mode in [TunnelMode.daemon] {
             do {
                 let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])

@@ -330,7 +330,10 @@ final class DeviceStateManager: ObservableObject {
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
         usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
         wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
-        updateTunnelRunning(deviceManager.isTunneldRunning)
+        // Readiness follows the tunnel manager, never a bare process: a `remote tunneld`
+        // the user did not choose (or just stopped) is not a connection (invariant 2).
+        // The process probe above only decides whether adoption is worth trying.
+        updateTunnelRunning(tunnelManager.isRunning)
 
         if tunnelManager.isRunning {
             updateTunnelRunning(true, force: true)

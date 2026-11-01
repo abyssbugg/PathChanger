@@ -421,6 +421,7 @@ final class TunneldManagerTests: XCTestCase {
         addTeardownBlock { @MainActor [weak self] in
             guard let self else { return }
             self.manager.stopTunnel()
+            self.manager.allowDaemonAdoptionForTesting() // later suites start unlatched
             self.manager.deviceConnector = nil
             self.manager.preferredMode = previousMode
             self.manager.deviceVisibilityWait = .standard
@@ -429,6 +430,72 @@ final class TunneldManagerTests: XCTestCase {
             #endif
         }
         return connector
+    }
+
+    // MARK: - Daemon adoption gates (review 2026-11-01, lane C)
+
+    // The pgrep probe for `remote tunneld` now really runs. Adoption must follow the
+    // user's choice: only Background Daemon mode adopts a daemon, and never after Stop.
+
+    final class DetectorCalls { var count = 0 }
+
+    private func installDaemonDetector(returning mode: TunnelMode?) -> DetectorCalls {
+        let calls = DetectorCalls()
+        manager.runningTunnelDetectorForTesting = { calls.count += 1; return mode }
+        manager.tunnelLogPathOverride = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_no_tunnel_\(UUID().uuidString).log").path
+        addTeardownBlock { @MainActor [weak self] in
+            self?.manager.runningTunnelDetectorForTesting = nil
+            self?.manager.tunnelLogPathOverride = nil
+        }
+        return calls
+    }
+
+    func testHelperModesNeverAdoptARunningDaemon() async throws {
+        for mode in [TunnelMode.auto, .usb, .wifi] {
+            _ = try installFakeConnector(mode: mode)
+            manager.allowDaemonAdoptionForTesting()
+            let calls = installDaemonDetector(returning: .daemon)
+
+            await manager.adoptRunningTunnelIfPresent()
+
+            XCTAssertEqual(manager.state, .idle, "\(mode.rawValue) adopted a daemon")
+            XCTAssertEqual(calls.count, 0, "\(mode.rawValue) probed for a daemon")
+        }
+    }
+
+    func testStopKeepsARunningDaemonFromBeingAdoptedAgain() async throws {
+        _ = try installFakeConnector(mode: .daemon)
+        manager.allowDaemonAdoptionForTesting()
+        let calls = installDaemonDetector(returning: .daemon)
+
+        manager.stopTunnel()
+        try await waitUntil { self.manager.state == .idle }
+        await manager.adoptRunningTunnelIfPresent()
+
+        XCTAssertEqual(manager.state, .idle)
+        XCTAssertEqual(calls.count, 0)
+    }
+
+    func testDaemonModeStillLooksForADaemonWhenNotStopped() async throws {
+        _ = try installFakeConnector(mode: .daemon)
+        manager.allowDaemonAdoptionForTesting()
+        let calls = installDaemonDetector(returning: nil)
+
+        await manager.adoptRunningTunnelIfPresent()
+
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(manager.state, .idle)
+    }
+
+    func testExplicitStartClearsTheStopLatch() async throws {
+        _ = try installFakeConnector(mode: .wifi) // stops first, like a user Stop
+        XCTAssertTrue(manager.isDaemonAdoptionSuppressedByStop)
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertFalse(manager.isDaemonAdoptionSuppressedByStop)
     }
 
     private func waitUntil(

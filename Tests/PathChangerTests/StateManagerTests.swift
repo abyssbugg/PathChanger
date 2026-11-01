@@ -626,4 +626,100 @@ final class DeviceStateManagerTests: XCTestCase {
 
         XCTAssertEqual(deviceManager.transportRefreshCount, 1)
     }
+
+    // MARK: Daemon process on the status poll (review 2026-11-01, lane C)
+
+    /// Reports a `remote tunneld` process on every poll, as the fixed pgrep probe does
+    /// whenever any daemon runs, whether or not the user chose it.
+    final class DaemonProcessDeviceManager: DeviceManager {
+        override func checkTunneldStatus() async { isTunneldRunning = true }
+        override func refreshDevices() async {}
+    }
+
+    private func prepareSharedTunnel(mode: TunnelMode) async throws -> TunneldManager {
+        let tunnel = TunneldManager.shared
+        let previousMode = tunnel.preferredMode
+        let stateMachine = try XCTUnwrap(
+            Mirror(reflecting: tunnel as TunneldManager).children
+                .first(where: { $0.label == "stateMachine" })?.value as? TunnelStateMachine
+        )
+        #if DEBUG
+        stateMachine.testModeEnabled = true
+        #endif
+        tunnel.stopTunnel()
+        tunnel.preferredMode = mode
+        tunnel.runningTunnelDetectorForTesting = { .daemon }
+        tunnel.tunnelLogPathOverride = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_no_tunnel_\(UUID().uuidString).log").path
+        addTeardownBlock { @MainActor in
+            tunnel.stopTunnel()
+            tunnel.allowDaemonAdoptionForTesting() // later suites start unlatched
+            tunnel.preferredMode = previousMode
+            tunnel.runningTunnelDetectorForTesting = nil
+            tunnel.tunnelLogPathOverride = nil
+            #if DEBUG
+            stateMachine.testModeEnabled = false
+            #endif
+        }
+        // Idle first, so the poll tests exercise the gate rather than the idle guard.
+        let deadline = Date().addingTimeInterval(2)
+        while tunnel.state != .idle {
+            guard Date() < deadline else {
+                XCTFail("shared tunnel did not reach idle, got \(tunnel.state)")
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return tunnel
+    }
+
+    func testPollAfterStopLeavesTheDaemonStopped() async throws {
+        let tunnel = try await prepareSharedTunnel(mode: .daemon) // includes the user's Stop
+        let manager = makeManager(deviceManager: DaemonProcessDeviceManager(startBackgroundServices: false))
+
+        await manager.checkTunneldStatus()
+        await manager.checkTunneldStatus()
+
+        XCTAssertEqual(tunnel.state, .idle, "the poll undid the user's Stop")
+        XCTAssertFalse(manager.isTunneldRunning)
+    }
+
+    func testPollInDaemonModeAdoptsADaemonThatSurvivedARelaunch() async throws {
+        // Preserve and Quit in daemon mode: autoStart never runs at launch (no
+        // elevation policy), so the poll is the only relaunch adoption path.
+        let tunnel = try await prepareSharedTunnel(mode: .daemon)
+        tunnel.allowDaemonAdoptionForTesting() // a fresh launch has no Stop latched
+        let log = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_daemon_\(UUID().uuidString).log")
+        try "Use the follow connection option:\n--rsd fd8b:e285:f321::1 55823\n"
+            .write(to: log, atomically: true, encoding: .utf8)
+        tunnel.tunnelLogPathOverride = log.path
+        defer { try? FileManager.default.removeItem(at: log) }
+        let manager = makeManager(deviceManager: DaemonProcessDeviceManager(startBackgroundServices: false))
+
+        await manager.checkTunneldStatus()
+        // The published state syncs through RunLoop.main; readiness follows on the next poll.
+        let deadline = Date().addingTimeInterval(2)
+        while tunnel.state != .running, Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        await manager.checkTunneldStatus()
+
+        XCTAssertEqual(tunnel.state, .running)
+        XCTAssertEqual(tunnel.tunnelInfo?.mode, .daemon)
+        XCTAssertTrue(manager.isTunneldRunning, "an adopted daemon is the tunnel")
+    }
+
+    func testPollInHelperModesDoesNotTreatAStrayDaemonAsTheTunnel() async throws {
+        for mode in [TunnelMode.auto, .usb, .wifi] {
+            let tunnel = try await prepareSharedTunnel(mode: mode)
+            tunnel.allowDaemonAdoptionForTesting()
+            let manager = makeManager(deviceManager: DaemonProcessDeviceManager(startBackgroundServices: false))
+
+            await manager.checkTunneldStatus()
+
+            XCTAssertEqual(tunnel.state, .idle, "\(mode.rawValue) adopted a daemon it never chose")
+            XCTAssertFalse(manager.isTunneldRunning, "\(mode.rawValue) reported a bare process as the tunnel")
+        }
+    }
 }
