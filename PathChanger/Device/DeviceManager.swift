@@ -503,6 +503,20 @@ class DeviceManager: ObservableObject {
     // MARK: Tool Paths - Now unified to pymobiledevice3
     private var python3Path: String { PythonPathResolver.path }
 
+    /// Runs a read-only process-listing command (executable, arguments) and returns
+    /// its stdout. Injectable so tunnel-status tests never spawn processes.
+    lazy var processListing: (_ executable: String, _ arguments: [String]) async throws -> String = { [weak self] executable, arguments in
+        guard let self else {
+            throw DeviceError.commandFailed("Device manager is unavailable")
+        }
+        return try await self.runCommand(executable, arguments: arguments)
+    }
+
+    /// Fetches the tunneld HTTP API. Injectable so discovery tests never touch the network.
+    var tunneldAPIFetch: (URL) async throws -> (Data, URLResponse) = { url in
+        try await URLSession.shared.data(from: url)
+    }
+
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
     private var tunnelStateObserver: AnyCancellable?
 
@@ -631,32 +645,32 @@ class DeviceManager: ObservableObject {
     }
 
     // MARK: Tunnel Status
-    /// Check for both lockdown tunnel (iOS 17.4+) and legacy remote tunneld
+    /// Report whether a `pymobiledevice3 remote tunneld` daemon is running.
+    ///
+    /// Only the daemon counts. Since Option A (2026-11-01) the app launches no
+    /// `start-tunnel` process: the managed location helper owns USB/Wi-Fi connections,
+    /// and a leftover `start-tunnel` from an older build is never adopted
+    /// (`TunneldManager.detectRunningTunnel`), so counting one reported a tunnel
+    /// nothing could use.
     func checkTunneldStatus() async {
-        // The tunneld HTTP API exists only while `remote tunneld` runs. Absolute path:
-        // the relative "pgrep" below resolves against the app's working directory.
-        let daemonOutput = try? await runCommand("/usr/bin/pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
-        isTunneldDaemonRunning = !(daemonOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
-        do {
-            // Check for new lockdown tunnel first (iOS 17.4+ method)
-            let startTunnelOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3.*start-tunnel"])
-            if !startTunnelOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updateTunnelRunning(true)
-                return
-            }
-
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            let tunneldOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
-            let isTunnelRunning = !tunneldOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            updateTunnelRunning(isTunnelRunning)
-        } catch {
-            updateTunnelRunning(false)
-        }
+        updateTunnelRunning(await probeTunneldDaemon())
     }
 
-    /// Whether `pymobiledevice3 remote tunneld` was running at the last status check.
+    /// Whether `pymobiledevice3 remote tunneld` was running at the last probe.
     private(set) var isTunneldDaemonRunning = false
+
+    /// One live process probe for the daemon. The executable path is absolute:
+    /// `Process` resolves a relative `URL(fileURLWithPath:)` against the working
+    /// directory (`/` for the app), so a bare "pgrep" never ran.
+    private func probeTunneldDaemon() async -> Bool {
+        let output = try? await processListing(
+            "/usr/bin/pgrep",
+            ["-f", TunnelMode.daemon.processPattern]
+        )
+        let running = !(output ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isTunneldDaemonRunning = running
+        return running
+    }
 
     /// Discovery asks the tunneld HTTP API only while the daemon runs; otherwise every
     /// poll logged "Failed to query tunneld API" (live 2026-11-01, Option A: the location
@@ -1142,11 +1156,14 @@ class DeviceManager: ObservableObject {
     private var tunneldAPIEndpoint: String { AppConstants.Tunnel.tunneldAPIEndpoint }
 
     private func discoverTunneldAPIDevices() async -> [Device] {
-        guard Self.shouldQueryTunneldAPI(daemonRunning: isTunneldDaemonRunning),
+        // Probe live, once per pass: the status poll's answer can be seconds old, and a
+        // daemon that just started (the .running observer refreshes at once) was skipped.
+        let daemonRunning = await probeTunneldDaemon()
+        guard Self.shouldQueryTunneldAPI(daemonRunning: daemonRunning),
               let url = URL(string: tunneldAPIEndpoint) else { return [] }
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await tunneldAPIFetch(url)
 
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
@@ -1215,6 +1232,12 @@ class DeviceManager: ObservableObject {
             return []
         }
     }
+
+    #if DEBUG
+    func discoverTunneldAPIDevicesForTesting() async -> [Device] {
+        await discoverTunneldAPIDevices()
+    }
+    #endif
 
     private func fetchDeviceInfoViaTunnel(udid: String) async -> Device? {
         do {

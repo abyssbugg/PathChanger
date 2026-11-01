@@ -161,6 +161,120 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         XCTAssertTrue(DeviceManager.shouldQueryTunneldAPI(daemonRunning: true))
     }
 
+    /// A fake `pgrep -f`: matches the pattern (as pgrep does, a regular expression)
+    /// against a fixed process table and records every request, so no process spawns.
+    @MainActor
+    private final class ProcessTableProbe {
+        var commandLines: [String]
+        private(set) var requests: [(executable: String, arguments: [String])] = []
+
+        init(_ commandLines: [String]) {
+            self.commandLines = commandLines
+        }
+
+        func list(_ executable: String, _ arguments: [String]) throws -> String {
+            requests.append((executable, arguments))
+            guard executable == "/usr/bin/pgrep",
+                  arguments.count == 2, arguments[0] == "-f" else {
+                // A relative or unexpected executable fails exactly as Process.run does.
+                throw CocoaError(.fileNoSuchFile)
+            }
+            let pattern = arguments[1]
+            return commandLines.enumerated()
+                .filter { $0.element.range(of: pattern, options: .regularExpression) != nil }
+                .map { "\(4000 + $0.offset)\n" }
+                .joined()
+        }
+    }
+
+    private static let strayStartTunnel =
+        "/Users/me/Library/Application Support/PathChanger/runtime/location/bin/python3 -m pymobiledevice3 remote start-tunnel --native"
+    private static let tunneldDaemon =
+        "/Users/me/Library/Application Support/PathChanger/runtime/location/bin/python3 -m pymobiledevice3 remote tunneld"
+
+    @MainActor
+    private func makeManager(probe: ProcessTableProbe, apiFetches: (() -> Void)? = nil) -> DeviceManager {
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.processListing = { executable, arguments in
+            try probe.list(executable, arguments)
+        }
+        manager.tunneldAPIFetch = { url in
+            apiFetches?()
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data("{}".utf8), response)
+        }
+        return manager
+    }
+
+    @MainActor
+    func testTunnelStatusProbeAsksForTheAbsolutePgrep() async {
+        // URL(fileURLWithPath: "pgrep") resolves against the app's working directory,
+        // so a relative probe never ran and its catch reported "no tunnel".
+        let probe = ProcessTableProbe([])
+        let manager = makeManager(probe: probe)
+
+        await manager.checkTunneldStatus()
+
+        XCTAssertFalse(probe.requests.isEmpty)
+        XCTAssertEqual(Set(probe.requests.map(\.executable)), ["/usr/bin/pgrep"])
+    }
+
+    @MainActor
+    func testAStrayStartTunnelProcessAloneDoesNotReportATunnelRunning() async {
+        // Option A launches no start-tunnel, and a leftover one is never adopted;
+        // counting it made readiness claim a tunnel nothing could use.
+        let probe = ProcessTableProbe([Self.strayStartTunnel])
+        let manager = makeManager(probe: probe)
+
+        await manager.checkTunneldStatus()
+
+        XCTAssertFalse(manager.isTunneldRunning)
+        XCTAssertFalse(manager.isTunneldDaemonRunning)
+    }
+
+    @MainActor
+    func testARunningTunneldDaemonReportsTheTunnelRunning() async {
+        let probe = ProcessTableProbe([Self.tunneldDaemon])
+        let manager = makeManager(probe: probe)
+
+        await manager.checkTunneldStatus()
+
+        XCTAssertTrue(manager.isTunneldRunning)
+        XCTAssertTrue(manager.isTunneldDaemonRunning)
+    }
+
+    @MainActor
+    func testDiscoverySkipsTheTunneldAPIWhenNoDaemonRuns() async {
+        let probe = ProcessTableProbe([Self.strayStartTunnel])
+        var fetches = 0
+        let manager = makeManager(probe: probe, apiFetches: { fetches += 1 })
+
+        let devices = await manager.discoverTunneldAPIDevicesForTesting()
+
+        XCTAssertTrue(devices.isEmpty)
+        XCTAssertEqual(fetches, 0)
+        XCTAssertEqual(probe.requests.count, 1, "one live daemon probe per discovery pass")
+    }
+
+    @MainActor
+    func testDiscoveryQueriesTheTunneldAPIForADaemonStartedSinceTheLastStatusPoll() async {
+        // The 5 s status poll saw no daemon; the daemon started afterwards. Discovery
+        // must not wait for the next poll to ask its API.
+        let probe = ProcessTableProbe([])
+        var fetches = 0
+        let manager = makeManager(probe: probe, apiFetches: { fetches += 1 })
+        await manager.checkTunneldStatus()
+        XCTAssertFalse(manager.isTunneldDaemonRunning)
+        probe.commandLines = [Self.tunneldDaemon]
+        let requestsBeforeDiscovery = probe.requests.count
+
+        _ = await manager.discoverTunneldAPIDevicesForTesting()
+
+        XCTAssertEqual(fetches, 1)
+        XCTAssertEqual(probe.requests.count - requestsBeforeDiscovery, 1, "one live daemon probe per discovery pass")
+        XCTAssertTrue(manager.isTunneldDaemonRunning)
+    }
+
     @MainActor
     func testDuplicatePhysicalFingerprintsDoNotTrapOrCollapseDistinctUDIDs() {
         let manager = DeviceManager(startBackgroundServices: false)
