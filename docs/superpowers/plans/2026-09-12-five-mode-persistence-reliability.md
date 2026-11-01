@@ -118,6 +118,13 @@ PRODUCT_REQUIREMENTS.md: e416a8f45848a227692f648e1b2c191249737fa213b44aa3e58b21c
 
 Recomputed after plan updates: verified at execution; documentation authority table updated for WP-1.2 closure and Stage 2 authorization state. Root copies preserved and updated; worktree copies synchronized.
 
+Re-recorded 2026-11-01 (successor record; the planning-time values above are history). Changes since: the 2026-10-23 `AGENTS.md`/`CLAUDE.md` adoption edits, the 2026-11-01 `CLAUDE.md` §2 worktree-per-unit subagent rule, and the owner's Auto jump amendment to `PRODUCT_REQUIREMENTS.md` §3.2 (`6b64f11`):
+
+```text
+CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
+PRODUCT_REQUIREMENTS.md: 5bedf58777352ac324bf30fc04eed6b6f44d86f8013458f9470ea8ab7509c3d7
+```
+
 - [x] **Step 2: Create a global documentation worktree**
 
 Use the normalized `main` as the base:

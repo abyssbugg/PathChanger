@@ -112,6 +112,18 @@ A non-trivial task includes a feature, bug fix, refactor, behavior change, multi
 - A fresh review agent must not repair the work it reviews. Report failures and return them to the implementation lane.
 - If a subagent is interrupted, silent, or inconsistent, inspect its lane and surviving processes before redispatching.
 
+### Worktree-per-unit subagent implementation (owner direction 2026-11-01)
+
+Use this for every non-trivial phase. It is the default, not an option:
+
+1. **Plan first.** Run Sequential Thinking (§3) to state the evidence, root causes, and the split into independent units. Coupled work (one shared file, one lifecycle, one state machine) stays in a single unit.
+2. **One worktree per unit.** The controller creates each unit's worktree from the current `main` under `$HOME/.config/superpowers/worktrees/PathChanger/<unit>` on its own `fix/<unit>` branch. Units own disjoint files; the brief lists the exact files a unit may edit.
+3. **One implementation subagent per unit**, dispatched in parallel. The brief states the problem with evidence, the required behavior, the files it may touch, the FlowDeck commands, and the acceptance tests. Subagents follow TDD (RED observed, then GREEN), run their focused and affected test classes, and report the diff and FlowDeck JSON results. Subagents never commit, push, merge, run the app, start tunnels, or touch a device.
+4. **Controller verification.** Read each lane's diff and evidence; reject overclaims (§2 acceptance language). Return defects to the lane, not to a reviewer.
+5. **Integration.** Apply the accepted lanes into one integration worktree, run the full gate (§11), then a fresh-session review. Fix accepted findings in the integration worktree with TDD and rerun the gate.
+6. **Commit and promote** only with owner approval for that work (§7): product and documentation in separate commits, fast-forward `main`, push, rebuild from `main`.
+7. **Clean up** lane worktrees after promotion only when the owner approves branch/worktree deletion; otherwise list them in the report.
+
 ### Phases sequential, work parallel
 
 **Across phases:** do not start the next phase until the previous phase is **verified working** — not assumed working.
