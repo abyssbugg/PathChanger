@@ -590,7 +590,14 @@ actor DevLocationBridge: LocationInjecting {
     private static let minOutputSize = 1024
 
     // MARK: Rate Limiting
-    private let rateLimiter = RateLimiter(capacity: 10, refillRate: 5.0, minIntervalMs: 100)
+    /// Admits the fastest update rate Settings offers (10 Hz) indefinitely, with room for
+    /// main-actor jitter between steps on the 100 ms grid (50 ms floor). The old 5/s refill and 100 ms gap stalled every 10 Hz route after
+    /// about two seconds with "Location update queued" (review 2026-11-01). Movement
+    /// engines already send one update at a time, so this only bounds runaway callers.
+    static func makeRateLimiter() -> RateLimiter {
+        RateLimiter(capacity: 10, refillRate: 12.0, minIntervalMs: 50)
+    }
+    private let rateLimiter = DevLocationBridge.makeRateLimiter()
     private let requestQueue = RequestQueueManager(maxQueueSize: 50)
 
     // MARK: Statistics

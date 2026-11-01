@@ -874,4 +874,75 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     XCTAssertEqual(coordinator.state.desiredLocation, coordinate)
     XCTAssertEqual(coordinator.state.movement, .idle)
   }
+
+  func testARestoredSessionAcceptsTheHelperReopeningOnAnotherLane() throws {
+    // The helper picks its lane: after a relaunch-restored userspace-RSD session drops,
+    // it may reopen over usbmux direct. Pinning the restored class rejected every later
+    // hop as requestMismatch (review 2026-11-01).
+    let coordinate = LocationCoordinate(latitude: 36.30430, longitude: -86.64136)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123", transport: .wifi, endpointClass: .remoteServiceDiscovery, generation: 9
+    )
+    let restored = LocationInjectionReceipt(
+      requestID: UUID(), session: UUID(), coordinate: coordinate, transport: .wifi,
+      actualChannel: .userspaceRSD, endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 9, completedAt: Date(), outcome: .applied
+    )
+    XCTAssertNil(coordinator.adoptHeldSession(identity: identity, receipt: restored))
+
+    coordinator.select(coordinate, mode: .teleport)
+    let request = try coordinator.beginApplication()
+    let overDirect = LocationInjectionReceipt(
+      requestID: request.id, session: UUID(), coordinate: coordinate, transport: .wifi,
+      actualChannel: .usbmuxDirect, endpointClass: .direct,
+      sessionGeneration: 9, completedAt: Date(), outcome: .applied
+    )
+    XCTAssertNil(coordinator.accept(overDirect))
+    XCTAssertTrue(coordinator.state.application.isActive)
+  }
+
+  func testOnlyAnApplicationThatFollowsAnActiveLocationCarriesItAsHeld() throws {
+    // The GUI shows the previous location as held during a movement step only when it
+    // was active when the step began. After a failed step the helper has closed the
+    // connection (the location ended), so the retry holds nothing (review 2026-11-01).
+    let coordinate = LocationCoordinate(latitude: 36.30430, longitude: -86.64136)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123", transport: .wifi, endpointClass: .unresolved, generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(coordinate, mode: .multiSpot)
+    let first = try coordinator.beginApplication()
+    XCTAssertNil(coordinator.state.heldWhileApplying, "nothing is held before the first receipt")
+    let receipt = LocationInjectionReceipt(
+      requestID: first.id, session: UUID(), coordinate: coordinate, transport: .wifi,
+      actualChannel: .userspaceRSD, endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 1, completedAt: Date(), outcome: .applied
+    )
+    XCTAssertNil(coordinator.accept(receipt))
+
+    let step = try coordinator.beginApplication()
+    XCTAssertEqual(coordinator.state.heldWhileApplying, receipt)
+
+    _ = coordinator.reject(requestID: step.id, error: LocationInjectionError.injectionFailed("DVT closed"))
+    let retry = try coordinator.beginApplication()
+    XCTAssertNil(coordinator.state.heldWhileApplying, "a retry after a failure holds nothing")
+
+    // Stopping that retry before it was sent must not resurrect the ended location.
+    XCTAssertNil(coordinator.cancelPendingApplication(requestID: retry.id))
+    guard case .failed = coordinator.state.application else {
+      return XCTFail("a cancelled retry restores Failed, got \(coordinator.state.application)")
+    }
+
+    // A cancelled step over an active location restores that location.
+    coordinator.select(coordinate, mode: .multiSpot)
+    let fresh = try coordinator.beginApplication()
+    XCTAssertNil(coordinator.accept(LocationInjectionReceipt(
+      requestID: fresh.id, session: UUID(), coordinate: coordinate, transport: .wifi,
+      actualChannel: .userspaceRSD, endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 1, completedAt: Date(), outcome: .applied
+    )))
+    let cancelled = try coordinator.beginApplication()
+    XCTAssertNil(coordinator.cancelPendingApplication(requestID: cancelled.id))
+    XCTAssertTrue(coordinator.state.application.isActive)
+  }
 }

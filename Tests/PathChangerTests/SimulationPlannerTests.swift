@@ -68,6 +68,33 @@ final class SimulationPlannerTests: XCTestCase {
         XCTAssertEqual(points.last?.latitude ?? 0, farther.latitude, accuracy: 1e-9)
     }
 
+    func testRouteStepsFollowTheShownTravelSpeed() {
+        // Live 2026-11-01: routes spaced points by the preset's raw speed and update
+        // interval while playback ticks at the app's update rate, so Walking moved ~5x
+        // faster than the 1.6 m/s shown and the speed slider did nothing. A step is now
+        // exactly speed / update rate: 1.6 m/s at 5 Hz = 0.32 m.
+        let plan = SimulationPlanner.plan(
+            mode: .route,
+            targetLocation: nil,
+            currentLocation: nil,
+            route: [tokyo, nearby],
+            speed: .walking,
+            stepMeters: 0.32
+        )
+        guard case .route(let points) = plan else {
+            return XCTFail("Expected interpolated route, got \(plan)")
+        }
+        let distance = RouteInterpolator.haversineDistance(from: tokyo, to: nearby)
+        XCTAssertEqual(Double(points.count - 1), (distance / 0.32).rounded(.up), accuracy: 1)
+        for index in 1..<(points.count - 1) {
+            XCTAssertEqual(
+                RouteInterpolator.haversineDistance(from: points[index - 1], to: points[index]),
+                0.32, accuracy: 0.01
+            )
+        }
+        XCTAssertEqual(points.last, nearby)
+    }
+
     func testJoystickPrefersTargetLocation() {
         let plan = SimulationPlanner.plan(
             mode: .joystick,

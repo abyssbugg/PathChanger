@@ -153,6 +153,14 @@ final class DeviceManagerIntegrationTests: XCTestCase {
 }
 
 final class DeviceDiscoveryReconciliationTests: XCTestCase {
+    func testTheTunneldAPIIsQueriedOnlyWhileTheDaemonRuns() {
+        // Live 2026-11-01: every discovery poll asked 127.0.0.1:49151 although no
+        // `remote tunneld` was running (the helper owns the connection), logging
+        // "Failed to query tunneld API" every few seconds.
+        XCTAssertFalse(DeviceManager.shouldQueryTunneldAPI(daemonRunning: false))
+        XCTAssertTrue(DeviceManager.shouldQueryTunneldAPI(daemonRunning: true))
+    }
+
     @MainActor
     func testDuplicatePhysicalFingerprintsDoNotTrapOrCollapseDistinctUDIDs() {
         let manager = DeviceManager(startBackgroundServices: false)

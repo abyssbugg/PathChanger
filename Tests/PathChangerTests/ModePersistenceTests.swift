@@ -719,6 +719,168 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertEqual(applied.last, second)
     }
 
+    func testAutoJumpAppliesEveryStopInOrderWithThePauseBetween() async throws {
+        // Owner decision 2026-11-01: with Auto jump on, one Move jumps through every stop,
+        // holding each for the chosen pause; the index still advances only on receipts.
+        let fake = FakeLocationInjector()
+        var pauses: [TimeInterval] = []
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: fake,
+            routeDelay: { seconds in pauses.append(seconds) }
+        )
+        state.selectedDevice = Device(id: "jump-device", displayName: "Jump Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .jump
+        for stop in [first, second, third] { state.stageLocation(stop, for: .jump) }
+        state.autoJump = true
+        state.autoJumpPauseSeconds = 7
+        let session = LocationSessionIdentity(
+            stableDeviceID: "jump-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+
+        let run = Task { await state.startSimulation() }
+        for (index, stop) in [first, second, third].enumerated() {
+            try await waitForPendingApplication(fake)
+            XCTAssertEqual(state.jumpIndex, index, "the index advances only on a receipt")
+            if index > 0 {
+                XCTAssertEqual(state.locationSessionCoordinator.state.movement, .moving(.jumpTeleport))
+            }
+            XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, stop)
+            await fake.releaseNextApplication(session: session)
+        }
+        await run.value
+
+        XCTAssertEqual(state.jumpIndex, 3)
+        XCTAssertEqual(state.currentLocation, third)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.jumpTeleport))
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive, "the last stop holds")
+        XCTAssertEqual(pauses, [7, 7], "a pause between stops, none after the last")
+    }
+
+    func testAutoJumpEndsWhenTheModeChangesOrAutoJumpIsTurnedOff() async throws {
+        // Review 2026-11-01: the engine kept running after a mode change and, after its
+        // pause, jumped back to stop 1 with no Move. Leaving Jump (or turning Auto jump
+        // off) ends it and holds the last applied stop.
+        for leave in ["mode", "toggle"] {
+            let fake = FakeLocationInjector()
+            let pause = ControlledRouteDelay(
+                entered: expectation(description: "pause \(leave)"),
+                cancelled: expectation(description: "cancelled \(leave)")
+            )
+            let state = AppState(
+                startBackgroundServices: false,
+                locationInjector: fake,
+                routeDelay: { _ in await pause.wait() }
+            )
+            state.selectedDevice = Device(id: "jump-device", displayName: "Jump Device", connectionType: .wifi)
+            state.isTunneldRunning = true
+            state.activeMode = .jump
+            for stop in [first, second, third] { state.stageLocation(stop, for: .jump) }
+            state.autoJump = true
+            let session = LocationSessionIdentity(
+                stableDeviceID: "jump-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+            )
+            state.locationSessionCoordinator.connectionReady(session)
+
+            let run = Task { await state.startSimulation() }
+            try await waitForPendingApplication(fake)
+            await fake.releaseNextApplication(session: session)
+            await fulfillment(of: [pause.entered], timeout: 2)
+
+            if leave == "mode" { state.activeMode = .teleport } else { state.autoJump = false }
+            await fulfillment(of: [pause.cancelled], timeout: 2)
+            pause.release()  // the test pause does not return by itself on cancellation
+            await run.value
+
+            let applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }
+            XCTAssertEqual(applies.count, 1, "no stop after leaving (\(leave))")
+            XCTAssertEqual(state.currentLocation, first)
+            XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive, "the stop holds")
+            XCTAssertFalse(state.isMovementEngineRunning)
+        }
+    }
+
+    func testASecondMoveWhileARouteIsStartingDoesNotStartASecondRoute() async throws {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeRouteState(injector: fake, mode: .route, route: [first, second, third])
+
+        let playback = Task { await state.startSimulation() }
+        try await waitForPendingApplication(fake)
+        XCTAssertTrue(state.isMovementEngineRunning, "Move shows Stop from the start of the run")
+        let secondMove = Task { await state.startSimulation() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let pending = await fake.pendingApplicationCount()
+        XCTAssertEqual(pending, 1)
+
+        await state.stopSimulation()
+        await fake.releaseNextApplication(session: session)
+        await playback.value
+        await secondMove.value
+    }
+
+    func testAutoJumpWithoutStopsDoesNotClaimToHaveJumped() async {
+        let fake = FakeLocationInjector()
+        let state = AppState(startBackgroundServices: false, locationInjector: fake, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "jump-device", displayName: "Jump Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .jump
+        state.autoJump = true
+        state.targetLocation = first
+        let session = LocationSessionIdentity(
+            stableDeviceID: "jump-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+        state.locationSessionCoordinator.select(first, mode: .jumpTeleport)
+
+        let run = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await run.value
+
+        XCTAssertEqual(state.currentLocation, first, "with no stops, Move applies the selected spot")
+        XCTAssertNotEqual(state.statusMessage, "All jumps done; holding the last stop")
+    }
+
+    func testAMoveWhileTheLastOneIsStillApplyingIsIgnored() async throws {
+        // A double click on Move raced two applications: the second replaced the first
+        // pending request and the bridge answered "request in progress".
+        let fake = FakeLocationInjector()
+        let state = AppState(startBackgroundServices: false, locationInjector: fake, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "move-device", displayName: "Move Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .teleport
+        state.stageLocation(first, for: .teleport)
+        let session = LocationSessionIdentity(
+            stableDeviceID: "move-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+
+        let firstMove = Task { await state.startSimulation() }
+        try await waitForPendingApplication(fake)
+        let secondMove = Task { await state.startSimulation() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let pendingWhileFirstApplies = await fake.pendingApplicationCount()
+        XCTAssertEqual(pendingWhileFirstApplies, 1, "the second Move must not start a second application")
+        await fake.releaseNextApplication(session: session)
+        await fake.releaseNextApplication(session: session)  // drains a second one if it exists
+        await firstMove.value
+        await secondMove.value
+
+        let applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }
+        XCTAssertEqual(applies.count, 1)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
+    }
+
+    func testRouteStepIsTheShownSpeedPerUpdate() {
+        let state = AppState(startBackgroundServices: false, locationInjector: FakeLocationInjector())
+        state.autoSpeed = false
+        state.customSpeedMps = 4
+        state.updateFrequencyHz = 5
+        XCTAssertEqual(state.routeStepMeters, 0.8, accuracy: 1e-9)
+    }
+
     func testRapidJoystickInputKeepsOneApplyInFlightAndUsesLatestDirectionNext() async {
         let fake = FakeLocationInjector()
         let (state, session) = makeJoystickState(injector: fake)

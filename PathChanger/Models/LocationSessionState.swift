@@ -251,6 +251,11 @@ struct LocationSessionState: Equatable, Sendable {
     var connection: LocationConnectionPhase = .unavailable
     var application: LocationApplicationPhase = .idle
     var movement: LocationMovementPhase = .idle
+    /// While `.applying`: the receipt that was active when this application began, i.e.
+    /// the location still held on the device until the new receipt replaces it. Nil when
+    /// the previous phase was not `.active` (a failed step, a loss, a first application):
+    /// then nothing is known to be held (review 2026-11-01).
+    var heldWhileApplying: LocationInjectionReceipt? = nil
 }
 
 // MARK: - LocationInjectionTarget

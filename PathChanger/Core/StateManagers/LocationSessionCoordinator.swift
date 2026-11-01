@@ -70,6 +70,9 @@ final class LocationSessionCoordinator: ObservableObject {
   private var previousSession: LocationSessionIdentity?
   private var pendingRequest: LocationApplicationRequest?
   private var movementBeforeRecovery: LocationMovementPhase?
+  /// The application phase when the current run of `.applying` began; a cancelled
+  /// application restores it.
+  private var phaseBeforeApplying: LocationApplicationPhase?
 
   init(injector: any LocationInjecting) {
     self.injector = injector
@@ -119,6 +122,19 @@ final class LocationSessionCoordinator: ObservableObject {
       sessionGeneration: currentReadySession.generation
     )
 
+    // What is held on the device while this application is in flight: the active
+    // receipt, or the one an in-flight application was already carrying (a joystick
+    // step replacing a pending step). Nothing after a failure, loss or Clear.
+    switch self.state.application {
+    case .active(let receipt):
+      self.state.heldWhileApplying = receipt
+      self.phaseBeforeApplying = self.state.application
+    case .applying:
+      break
+    case .idle, .uncertain, .lost, .clearing, .failed:
+      self.state.heldWhileApplying = nil
+      self.phaseBeforeApplying = self.state.application
+    }
     self.pendingRequest = request
     self.state.application = .applying(requestID: request.id, coordinate: desiredLocation)
 
@@ -210,7 +226,12 @@ final class LocationSessionCoordinator: ObservableObject {
     guard let pendingRequest else { return .noPendingRequest }
     if let requestID, requestID != pendingRequest.id { return .requestMismatch }
     self.pendingRequest = nil
-    state.application = state.lastAcknowledgedReceipt.map(LocationApplicationPhase.active) ?? .idle
+    // Restore what was true before this application: the active location it began
+    // over, or the earlier phase. Restoring the last receipt as active after a failure
+    // claimed a location the helper had already ended (review 2026-11-01).
+    state.application = phaseBeforeApplying
+      ?? state.lastAcknowledgedReceipt.map(LocationApplicationPhase.active)
+      ?? .idle
     return nil
   }
 
@@ -444,7 +465,15 @@ final class LocationSessionCoordinator: ObservableObject {
       return .requestMismatch
     }
 
-    currentReadySession = identity
+    // The helper picks its own lane; a restored session must accept a later receipt
+    // over another one (review 2026-11-01). The published connection keeps the
+    // restored class until a receipt says otherwise.
+    currentReadySession = LocationSessionIdentity(
+      stableDeviceID: identity.stableDeviceID,
+      transport: identity.transport,
+      endpointClass: .unresolved,
+      generation: identity.generation
+    )
     previousSession = nil
     pendingRequest = nil
     selectedMode = .teleport

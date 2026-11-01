@@ -409,7 +409,7 @@ struct ContentView: View {
                 reconnectButton
             }
             statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
-                       tone: applicationTone(for: state.application),
+                       tone: status.isSpoofing ? Organic.sage600 : applicationTone(for: state.application),
                        localizationKey: "accessibility.location.status.application", id: "location.status.application")
             statusChip(titleKey: "location.status.domain.movement", value: status.movementLabel,
                        tone: movementTone(for: state.movement),
@@ -709,7 +709,8 @@ struct ContentView: View {
     }
 
     private func performMove() {
-        if appState.locationPresentation.isMovementActive, selectedMode == .route || selectedMode == .twospot {
+        if appState.locationPresentation.isMovementActive || appState.isMovementEngineRunning,
+           selectedMode == .route || selectedMode == .twospot || selectedMode == .jump {
             Task { await appState.stopSimulation() }
             return
         }

@@ -21,17 +21,19 @@ enum SimulationPlanner {
         currentLocation: LocationCoordinate?,
         route: [LocationCoordinate],
         speed: SimulationSpeed,
-        jumpIndex: Int = 0
+        jumpIndex: Int = 0,
+        stepMeters: Double? = nil
     ) -> SimulationStartPlan {
         switch mode {
         case .route:
-            return planRoute(route: route, speed: speed)
+            return planRoute(route: route, speed: speed, stepMeters: stepMeters)
         case .twospot:
             return planTwoSpot(
                 targetLocation: targetLocation,
                 currentLocation: currentLocation,
                 route: route,
-                speed: speed
+                speed: speed,
+                stepMeters: stepMeters
             )
         case .jump:
             return planJump(targetLocation: targetLocation, route: route, jumpIndex: jumpIndex)
@@ -72,27 +74,36 @@ enum SimulationPlanner {
         targetLocation: LocationCoordinate?,
         currentLocation: LocationCoordinate?,
         route: [LocationCoordinate],
-        speed: SimulationSpeed
+        speed: SimulationSpeed,
+        stepMeters: Double?
     ) -> SimulationStartPlan {
         let stops = route.filter(\.isValid)
         if stops.count >= 2 {
-            return planRoute(route: Array(stops.prefix(2)), speed: speed)
+            return planRoute(route: Array(stops.prefix(2)), speed: speed, stepMeters: stepMeters)
         }
         if let start = currentLocation ?? (stops.count == 2 ? stops.first : nil),
            let dest = stops.last ?? targetLocation,
            start != dest {
-            return planRoute(route: [start, dest], speed: speed)
+            return planRoute(route: [start, dest], speed: speed, stepMeters: stepMeters)
         }
         return .failed("Add a start and a destination")
     }
 
-    private static func planRoute(route: [LocationCoordinate], speed: SimulationSpeed) -> SimulationStartPlan {
+    /// - Parameter stepMeters: distance per playback update (shown speed / update rate).
+    ///   When nil, the preset's legacy spacing is used.
+    private static func planRoute(
+        route: [LocationCoordinate],
+        speed: SimulationSpeed,
+        stepMeters: Double? = nil
+    ) -> SimulationStartPlan {
         let waypoints = route.filter(\.isValid)
         guard waypoints.count >= 2 else {
             return .failed("Add at least two spots on the map")
         }
 
-        let points = RouteInterpolator.interpolateRoute(waypoints: waypoints, speed: speed)
+        let points = stepMeters.map {
+            RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: $0)
+        } ?? RouteInterpolator.interpolateRoute(waypoints: waypoints, speed: speed)
         guard points.count >= 2 else {
             return .failed("Route is too short to play")
         }

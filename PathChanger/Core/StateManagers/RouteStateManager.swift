@@ -94,6 +94,9 @@ final class RouteStateManager: ObservableObject {
     /// Whether Jump mode advances automatically
     @Published var autoJump: Bool = false
 
+    /// How long Auto jump holds each stop before the next one (seconds).
+    @Published var autoJumpPauseSeconds: TimeInterval = 5
+
     // MARK: Dependencies
 
     let routeLibrary: RouteLibraryManager

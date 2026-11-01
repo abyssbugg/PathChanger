@@ -29,7 +29,22 @@ struct LocationStatusPresentation: Equatable {
 
     init(state: LocationSessionState, deviceVisible: Bool, hasUnresolvedClear: Bool = false) {
         let ready: LocationSessionIdentity? = { if case .ready(let value) = state.connection { return value }; return nil }()
-        let active: LocationInjectionReceipt? = { if case .active(let value) = state.application { return value }; return nil }()
+        let active: LocationInjectionReceipt? = {
+            switch state.application {
+            case .active(let value):
+                return value
+            case .applying:
+                // A movement step is in flight: the location that was active when it
+                // began is still the one held on the device until the next receipt
+                // replaces it. Showing Applying for every step flickered Location, the
+                // Applied chip and the map pin up to five times a second (live
+                // 2026-11-01). After a failure or loss nothing is held (the helper
+                // closed the connection), and the first application still reads Applying.
+                return state.heldWhileApplying
+            case .idle, .uncertain, .lost, .clearing, .failed:
+                return nil
+            }
+        }()
         let current: LocationInjectionReceipt? = active.flatMap { receipt -> LocationInjectionReceipt? in
             guard let ready, receipt.sessionGeneration == ready.generation,
                   receipt.transport == ready.transport, receipt.endpointClass == ready.endpointClass,
@@ -61,7 +76,9 @@ struct LocationStatusPresentation: Equatable {
         case .idle:
             applicationLabel = Self.localizedStatus("location.status.application.idle", comment: "Application idle")
         case .applying:
-            applicationLabel = Self.localizedStatus("location.status.application.applying", comment: "Application applying")
+            applicationLabel = isSpoofing
+                ? Self.localizedStatus("location.status.application.active.spoofing", comment: "Application active")
+                : Self.localizedStatus("location.status.application.applying", comment: "Application applying")
         case .active:
             let key = isSpoofing ? "location.status.application.active.spoofing" : "location.status.application.active.uncertain"
             applicationLabel = Self.localizedStatus(key, comment: "Application active")
@@ -360,7 +377,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
     var activeMode: AppMode {
         get { simulation.activeMode }
-        set { simulation.activeMode = newValue }
+        set {
+            simulation.activeMode = newValue
+            // Auto jump belongs to Jump: leaving the mode ends it and holds the stop
+            // (it used to keep running and jump back to stop 1 with no Move).
+            if newValue != .jump { endAutoJumpIfRunning() }
+        }
     }
     var autoSpeed: Bool {
         get { simulation.autoSpeed }
@@ -388,7 +410,19 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
     var autoJump: Bool {
         get { route.autoJump }
-        set { route.autoJump = newValue }
+        set {
+            route.autoJump = newValue
+            if !newValue { endAutoJumpIfRunning() }
+        }
+    }
+    var autoJumpPauseSeconds: TimeInterval {
+        get { route.autoJumpPauseSeconds }
+        set { route.autoJumpPauseSeconds = min(max(newValue, 1), 60) }
+    }
+    /// Distance per route update: the shown travel speed divided by the update rate, so
+    /// Two-Spot and Multi-Spot travel at the speed the card displays.
+    var routeStepMeters: Double {
+        effectiveMetersPerSecond / max(updateFrequencyHz, 1)
     }
 
 
@@ -479,12 +513,20 @@ class AppState: ObservableObject, LocationTerminationHandling {
     @Published private var locationClearTask: Task<Void, Never>?
     @Published private var unresolvedClearSession: LocationSessionIdentity?
     private var locationOperationGeneration: UInt64 = 0
-    private var simulationTask: Task<Void, Never>?
+    private var simulationTask: Task<Void, Never>? {
+        didSet { isMovementEngineRunning = simulationTask != nil }
+    }
     private var routePlaybackID: UUID?
     private var joystickTask: Task<Void, Never>?
     /// The one joystick engagement in flight: a drag sends many direction samples, and
     /// each used to spawn its own start until the first injection returned.
     private var joystickStartTask: Task<Void, Never>?
+    /// A Teleport or single Jump hop started by Move is still applying.
+    private var isOneShotMoveInFlight = false
+    /// A route or Auto jump engine is running (from Move until it ends). The Move button
+    /// shows Stop for this whole time, not only after the first acknowledged point.
+    @Published private(set) var isMovementEngineRunning = false
+    private var autoJumpPlaybackID: UUID?
     private var isStartingJoystick = false
     /// Bumped by Stop movement: a start still in flight must not engage afterwards.
     private var joystickEngagementID: UInt64 = 0
@@ -915,6 +957,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     func startSimulation() async {
         guard canStartSimulation else { return }
+        // A one-shot Move (Teleport, one Jump hop) still applying: a second click raced
+        // it, replaced its pending request and hit the bridge's request gate.
+        guard !isOneShotMoveInFlight else { return }
         // Move is an explicit user action: it lifts a previous Stop Tunnel's block.
         if let selectedDevice {
             tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
@@ -926,12 +971,23 @@ class AppState: ObservableObject, LocationTerminationHandling {
             currentLocation: currentLocation,
             route: currentRoute,
             speed: simulationSpeed,
-            jumpIndex: jumpIndex
+            jumpIndex: jumpIndex,
+            stepMeters: routeStepMeters
         ) {
+        case .teleport where activeMode == .jump && autoJump && !currentRoute.isEmpty:
+            // A second Move while the engine starts is the double click, not a restart.
+            guard !isMovementEngineRunning else { return }
+            await playAutoJump()
         case .teleport(let coordinate):
+            // A one-shot Move replaces any engine still running (latest intent wins)
+            // instead of racing it on the device.
+            if isMovementEngineRunning { await stopSimulation() }
             isPaused = false
+            isOneShotMoveInFlight = true
+            defer { isOneShotMoveInFlight = false }
             await applyPlannedLocation(coordinate, mode: activeMode)
         case .route(let points):
+            guard !isMovementEngineRunning else { return }
             await playRoute(points)
         case .joystick(let start):
             await startJoystick(at: start)
@@ -957,8 +1013,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return nil
         }
 
+        // The caller's own request: a cancelled step must not cancel a newer one.
+        var ownRequestID: UUID?
         do {
             let request = try locationSessionCoordinator.beginApplication()
+            ownRequestID = request.id
             pendingApplicationModes[request.id] = mode
 
             // Device-readiness gate before injection: with no mounted
@@ -1018,7 +1077,20 @@ class AppState: ObservableObject, LocationTerminationHandling {
         } catch {
             guard locationClearTask == nil,
                   operationGeneration == locationOperationGeneration else { return nil }
-            if case .applying(let requestID, _) = locationSessionCoordinator.state.application {
+            if error is CancellationError {
+                // Cancelled before the command reached the device (Stop, mode change,
+                // loss): nothing was applied, so the previous truth stands.
+                if let ownRequestID {
+                    _ = locationSessionCoordinator.cancelPendingApplication(requestID: ownRequestID)
+                    pendingApplicationModes.removeValue(forKey: ownRequestID)
+                }
+                return nil
+            }
+            // Only this caller's own request; a newer one may already be pending.
+            if let requestID = ownRequestID ?? {
+                if case .applying(let current, _) = locationSessionCoordinator.state.application { return current }
+                return nil
+            }() {
                 _ = locationSessionCoordinator.reject(requestID: requestID, error: error)
                 pendingApplicationModes.removeValue(forKey: requestID)
             }
@@ -1446,7 +1518,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             targetLocation: targetLocation,
             currentLocation: currentLocation,
             route: currentRoute,
-            speed: simulationSpeed
+            speed: simulationSpeed,
+            stepMeters: routeStepMeters
         ) {
         case .route(let points):
             await playRoute(points)
@@ -1474,6 +1547,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         let mode = activeMode
         let movementMode = mode.locationMode ?? .multiSpot
+        // Frozen with the step distance planned at Move: changing the rate mid-route
+        // changed the travelled speed (review 2026-11-01).
+        let interval = 1.0 / max(updateFrequencyHz, 1)
         let playbackID = UUID()
         routePlaybackID = playbackID
         let task = Task { @MainActor [weak self] in
@@ -1487,6 +1563,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     }
                     guard !Task.isCancelled else { return }
 
+                    let stepStarted = Date()
                     guard await self.applyPlannedLocation(coordinate, mode: mode) != nil else {
                         self.isSimulating = self.currentLocation != nil
                         self.locationSessionCoordinator.pauseMovement()
@@ -1498,8 +1575,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     }
                     self.route.acknowledgeWaypoint(at: index, totalCount: points.count)
 
-                    let interval = 1.0 / max(self.updateFrequencyHz, 1)
-                    await self.routeDelay(interval)
+                    // One point per update interval, counted from when the step began, so
+                    // the device round trip does not slow the shown travel speed.
+                    let remaining = interval - Date().timeIntervalSince(stepStarted)
+                    await self.routeDelay(max(remaining, 0))
                 }
             } while self.loopRoute && !Task.isCancelled
 
@@ -1514,6 +1593,88 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if routePlaybackID == playbackID {
             simulationTask = nil
             routePlaybackID = nil
+        }
+    }
+
+    /// Auto jump (owner decision 2026-11-01): one Move jumps through every remaining
+    /// stop, holding each for `autoJumpPauseSeconds`. The index still advances only on
+    /// an acknowledged injection; the last stop holds; Stop ends it and holds.
+    private func playAutoJump() async {
+        let operationGeneration = locationOperationGeneration
+        simulationTask?.cancel()
+        joystickTask?.cancel()
+        joystickTask = nil
+        isPaused = false
+        guard locationClearTask == nil,
+              operationGeneration == locationOperationGeneration else { return }
+
+        // The stops this run jumps through; editing them, leaving Jump or turning Auto
+        // jump off ends the run (holding the last applied stop).
+        let hops = currentRoute
+        let playbackID = UUID()
+        routePlaybackID = playbackID
+        autoJumpPlaybackID = playbackID
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var engaged = false
+            // The engine's own position; anything else moving the index ends the run.
+            var expectedIndex = self.jumpIndex
+            let stillWanted = {
+                self.autoJump && self.activeMode == .jump && self.currentRoute == hops
+                    && self.jumpIndex == expectedIndex
+            }
+            while !Task.isCancelled, stillWanted(), self.jumpIndex < hops.count {
+                while self.isPaused && !Task.isCancelled {
+                    await self.routeDelay(0.1)
+                }
+                guard !Task.isCancelled, stillWanted() else { break }
+                let hop = hops[self.jumpIndex]
+                guard await self.applyPlannedLocation(hop, mode: .jump) != nil else {
+                    self.isSimulating = self.currentLocation != nil
+                    self.locationSessionCoordinator.pauseMovement()
+                    return
+                }
+                expectedIndex += 1
+                if !engaged {
+                    self.locationSessionCoordinator.beginMovement(.jumpTeleport)
+                    engaged = true
+                }
+                guard self.jumpIndex < hops.count else { break }
+                await self.routeDelay(self.autoJumpPauseSeconds)
+            }
+            guard !Task.isCancelled else { return }
+            if engaged {
+                self.locationSessionCoordinator.completeMovement()
+            }
+            if self.jumpIndex >= hops.count {
+                self.statusMessage = "All jumps done; holding the last stop"
+            }
+        }
+        simulationTask = task
+        await task.value
+        if routePlaybackID == playbackID {
+            simulationTask = nil
+            routePlaybackID = nil
+        }
+        if autoJumpPlaybackID == playbackID {
+            autoJumpPlaybackID = nil
+        }
+    }
+
+    /// Ends a running Auto jump and holds the last applied stop.
+    private func endAutoJumpIfRunning() {
+        guard let playbackID = autoJumpPlaybackID, routePlaybackID == playbackID else { return }
+        simulationTask?.cancel()
+        simulationTask = nil
+        routePlaybackID = nil
+        autoJumpPlaybackID = nil
+        isPaused = false
+        // Completed only if a hop was actually reached (nothing moved otherwise).
+        switch locationSessionCoordinator.state.movement {
+        case .moving, .paused:
+            locationSessionCoordinator.completeMovement()
+        case .idle, .completed:
+            break
         }
     }
 

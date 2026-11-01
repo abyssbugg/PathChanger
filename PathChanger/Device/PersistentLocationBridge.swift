@@ -761,6 +761,52 @@ final class ManagedLocationHelperController {
     }
 }
 
+/// FIFO admission for location commands (PRODUCT_REQUIREMENTS 8: serialize persistent
+/// bridge requests). A second caller waits its turn; the single-slot gate alone threw
+/// "request in progress" at it (a double click on Move, a queued update meeting a
+/// direct one).
+@MainActor
+final class PersistentBridgeRequestSerializer {
+    private var busy = false
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
+
+    /// Waits for the slot. A caller cancelled while waiting leaves the queue and throws
+    /// CancellationError: its command must never reach the device (review 2026-11-01).
+    func acquire() async throws {
+        try Task.checkCancellation()
+        guard busy else {
+            busy = true
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await enqueue(id)
+        } onCancel: {
+            Task { @MainActor in self.cancelWaiter(id) }
+        }
+    }
+
+    private func enqueue(_ id: UUID) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            waiters.append((id, continuation))
+        }
+    }
+
+    /// Hands the slot to the next waiter, in arrival order.
+    func release() {
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            waiters.removeFirst().continuation.resume()
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+}
+
 struct PersistentBridgeRequestGate {
     private var pending: (requestID: UUID, generation: UInt64)?
 
@@ -987,6 +1033,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var readyContinuation: CheckedContinuation<Bool, Never>?
     private var readyTimeoutTask: Task<Void, Never>?
     private var requestGate = PersistentBridgeRequestGate()
+    private let requestSerializer = PersistentBridgeRequestSerializer()
     private var readinessGate = PersistentBridgeReadinessGate()
     private var terminationEvents = PersistentBridgeTerminationEvents()
     private let eventHub = PersistentBridgeEventHub()
@@ -1637,6 +1684,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     /// Send one authenticated command through the managed helper socket.
     private func sendCommand(_ request: BridgeRequest) async throws -> BridgeResponse {
+        try await requestSerializer.acquire()
+        defer { requestSerializer.release() }
+        // Handed the slot just as it was cancelled: still never send.
+        try Task.checkCancellation()
         guard let helperConnection else {
             throw PersistentBridgeError.processNotRunning
         }

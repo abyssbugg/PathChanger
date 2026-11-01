@@ -290,3 +290,21 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertLessThan(elapsed, .seconds(1))
     }
 }
+
+final class DevLocationBridgeRateLimitTests: XCTestCase {
+    func testTheFastestOfferedUpdateRateIsNeverThrottled() async throws {
+        // Settings offers 10 Hz; a 10 Hz route stalled after ~2 s because the limiter
+        // refilled 5 tokens per second (review 2026-11-01). Three seconds at 10 Hz with
+        // a little timer jitter must all be admitted.
+        let limiter = DevLocationBridge.makeRateLimiter()
+        var throttled = 0
+        for tick in 0..<30 {
+            if await !limiter.checkRequest() { throttled += 1 }
+            // Gaps as short as 60 ms (a delayed step followed by an on-time one),
+            // averaging the 100 ms grid.
+            let jitter: UInt64 = tick.isMultiple(of: 3) ? 60_000_000 : 120_000_000
+            try await Task.sleep(nanoseconds: jitter)
+        }
+        XCTAssertEqual(throttled, 0)
+    }
+}

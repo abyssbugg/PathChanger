@@ -2,6 +2,57 @@ import Darwin
 import XCTest
 @testable import PathChanger
 
+@MainActor
+final class PersistentBridgeRequestSerializerTests: XCTestCase {
+    func testConcurrentHelperRequestsRunOneAtATimeInArrivalOrder() async {
+        // PRODUCT_REQUIREMENTS 8: serialize persistent bridge requests. The single-slot
+        // gate threw "request in progress" at a second caller instead of letting it wait.
+        let serializer = PersistentBridgeRequestSerializer()
+        var events: [String] = []
+
+        await withTaskGroup(of: Void.self) { group in
+            for name in ["a", "b", "c"] {
+                group.addTask { @MainActor in
+                    try? await serializer.acquire()
+                    events.append("start \(name)")
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                    events.append("end \(name)")
+                    serializer.release()
+                }
+                await Task.yield()
+            }
+        }
+
+        XCTAssertEqual(events, ["start a", "end a", "start b", "end b", "start c", "end c"])
+    }
+
+    func testACancelledWaiterNeverSendsAndDoesNotBlockTheQueue() async throws {
+        // Review 2026-11-01: a request cancelled while waiting (Stop, mode change, loss)
+        // still reached the device once admitted, while the app restored the previous
+        // location as held.
+        let serializer = PersistentBridgeRequestSerializer()
+        try await serializer.acquire()
+
+        let cancelled = Task { @MainActor () -> Bool in
+            do {
+                try await serializer.acquire()
+                serializer.release()
+                return true
+            } catch {
+                return false
+            }
+        }
+        await Task.yield()
+        cancelled.cancel()
+        let admitted = await cancelled.value
+        XCTAssertFalse(admitted, "a cancelled waiter must not be admitted")
+
+        serializer.release()
+        try await serializer.acquire()  // the slot is free again
+        serializer.release()
+    }
+}
+
 /// Performance and unit tests for PersistentLocationBridge
 /// Tests the high-performance persistent Python bridge implementation
 final class ManagedLocationHelperRecordTests: XCTestCase {

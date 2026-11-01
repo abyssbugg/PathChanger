@@ -633,6 +633,11 @@ class DeviceManager: ObservableObject {
     // MARK: Tunnel Status
     /// Check for both lockdown tunnel (iOS 17.4+) and legacy remote tunneld
     func checkTunneldStatus() async {
+        // The tunneld HTTP API exists only while `remote tunneld` runs. Absolute path:
+        // the relative "pgrep" below resolves against the app's working directory.
+        let daemonOutput = try? await runCommand("/usr/bin/pgrep", arguments: ["-f", "pymobiledevice3 remote tunneld"])
+        isTunneldDaemonRunning = !(daemonOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
         do {
             // Check for new lockdown tunnel first (iOS 17.4+ method)
             let startTunnelOutput = try await runCommand("pgrep", arguments: ["-f", "pymobiledevice3.*start-tunnel"])
@@ -648,6 +653,16 @@ class DeviceManager: ObservableObject {
         } catch {
             updateTunnelRunning(false)
         }
+    }
+
+    /// Whether `pymobiledevice3 remote tunneld` was running at the last status check.
+    private(set) var isTunneldDaemonRunning = false
+
+    /// Discovery asks the tunneld HTTP API only while the daemon runs; otherwise every
+    /// poll logged "Failed to query tunneld API" (live 2026-11-01, Option A: the location
+    /// helper owns the connection and no daemon runs).
+    nonisolated static func shouldQueryTunneldAPI(daemonRunning: Bool) -> Bool {
+        daemonRunning
     }
 
     // MARK: Device Discovery - Unified pymobiledevice3
@@ -1127,7 +1142,8 @@ class DeviceManager: ObservableObject {
     private var tunneldAPIEndpoint: String { AppConstants.Tunnel.tunneldAPIEndpoint }
 
     private func discoverTunneldAPIDevices() async -> [Device] {
-        guard let url = URL(string: tunneldAPIEndpoint) else { return [] }
+        guard Self.shouldQueryTunneldAPI(daemonRunning: isTunneldDaemonRunning),
+              let url = URL(string: tunneldAPIEndpoint) else { return [] }
 
         do {
             let (data, response) = try await URLSession.shared.data(from: url)

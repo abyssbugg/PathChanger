@@ -347,9 +347,33 @@ struct ModeContextCard: View {
             }
             if mode == .jump {
                 toggleLine(
-                    "Auto jump after each applied waypoint",
+                    "Auto jump through every stop",
                     Binding(get: { appState.autoJump }, set: { appState.autoJump = $0 })
                 )
+                if appState.autoJump {
+                    HStack(spacing: 10) {
+                        Text("Pause")
+                            .font(Organic.body(12, weight: .semibold))
+                            .foregroundStyle(Organic.neutral700)
+                        Slider(
+                            value: Binding(
+                                get: { appState.autoJumpPauseSeconds },
+                                set: { appState.autoJumpPauseSeconds = $0.rounded() }
+                            ),
+                            in: 1...60,
+                            step: 1
+                        )
+                        .tint(Organic.accent600)
+                        Text(String(format: "%.0f s", appState.autoJumpPauseSeconds))
+                            .font(Organic.mono(11, weight: .bold))
+                            .frame(width: 36, alignment: .trailing)
+                    }
+                    .padding(.vertical, 5)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Pause at each stop")
+                    .accessibilityValue(String(format: "%.0f seconds", appState.autoJumpPauseSeconds))
+                    .accessibilityIdentifier("location.jump.autoPause")
+                }
             }
         }
     }
@@ -458,7 +482,7 @@ struct ModeContextCard: View {
                     .background(canMove ? Organic.accent : Organic.neutral400)
                     .clipShape(Capsule())
                     .disabled(!canMove)
-                    .accessibilityIdentifier(appState.locationPresentation.isMovementActive ? "location.action.stopMovement" : "location.action.apply")
+                    .accessibilityIdentifier(showsStop ? "location.action.stopMovement" : "location.action.apply")
 
                     Button(resetActionLabel) {
                         resetContext()
@@ -541,6 +565,7 @@ struct ModeContextCard: View {
         // A device exposed directly by usbmux over USB or Network/Wi-Fi is ready without
         // RemoteXPC. The old app worked over Wi-Fi through this exact `--udid` path; gating
         // only on `tunneldManager.isRunning` disabled every mode in the fixed build.
+        if showsStop { return true }
         if !appState.canStartSimulation { return false }
         switch mode {
         case .teleport: return appState.locationPresentation.desiredCoordinate != nil
@@ -552,8 +577,14 @@ struct ModeContextCard: View {
         }
     }
 
+    /// Move acts as Stop while a route or Auto jump runs, from Move until it ends.
+    private var showsStop: Bool {
+        (appState.locationPresentation.isMovementActive || appState.isMovementEngineRunning)
+            && (mode == .route || mode == .twospot || mode == .jump)
+    }
+
     private var moveLabel: String {
-        if appState.locationPresentation.isMovementActive, mode == .route || mode == .twospot {
+        if showsStop {
             return "Stop"
         }
         if mode == .jump, !appState.currentRoute.isEmpty {
@@ -563,7 +594,7 @@ struct ModeContextCard: View {
     }
 
     private var moveIcon: String {
-        if appState.locationPresentation.isMovementActive, mode == .route || mode == .twospot { return "stop.fill" }
+        if showsStop { return "stop.fill" }
         return "play.fill"
     }
 

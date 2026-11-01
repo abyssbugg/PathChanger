@@ -54,6 +54,37 @@ final class LocationStatusPresentationTests: XCTestCase {
         XCTAssertEqual(LocationStatusPresentation(state: state, deviceVisible: true).movementLabel, "Paused")
     }
 
+    func testAMovementStepKeepsTheHeldLocationShownWhileItsUpdateIsInFlight() {
+        // Live 2026-11-01: every route/joystick step set Applying, so Location flipped
+        // Applying <-> Active / Held, the Applied chip vanished and the pin jumped, up to
+        // five times a second. While a step is in flight the last acknowledged location
+        // is still held on a healthy session.
+        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: coordinate, transport: .wifi, endpointClass: .remoteServiceDiscovery, sessionGeneration: 7, completedAt: Date(timeIntervalSince1970: 1), outcome: .applied)
+        let next = LocationCoordinate(latitude: 35.6763, longitude: 139.6504)
+        var state = LocationSessionState(desiredLocation: next, lastAcknowledgedReceipt: receipt, connection: .ready(identity: session), application: .applying(requestID: UUID(), coordinate: next), movement: .moving(.twoSpot), heldWhileApplying: receipt)
+
+        let p = LocationStatusPresentation(state: state, deviceVisible: true)
+        XCTAssertTrue(p.isSpoofing)
+        XCTAssertEqual(p.applicationLabel, "Active / Held")
+        XCTAssertEqual(p.appliedCoordinate, coordinate)
+        XCTAssertEqual(p.appliedCoordinateLabel, coordinate.formattedShort)
+        XCTAssertFalse(p.canApply, "a request in flight still blocks a second Apply")
+
+        // After a failed step the helper closed the connection and the location ended:
+        // a retry must not show the old receipt as held (review 2026-11-01).
+        state.heldWhileApplying = nil
+        XCTAssertEqual(LocationStatusPresentation(state: state, deviceVisible: true).applicationLabel, "Applying")
+        XCTAssertFalse(LocationStatusPresentation(state: state, deviceVisible: true).isSpoofing)
+        // The first application (nothing held yet) still says Applying.
+        state.lastAcknowledgedReceipt = nil
+        XCTAssertEqual(LocationStatusPresentation(state: state, deviceVisible: true).applicationLabel, "Applying")
+        // A held receipt from an older session proves nothing.
+        state.lastAcknowledgedReceipt = receipt
+        state.heldWhileApplying = receipt
+        state.connection = .ready(identity: LocationSessionIdentity(stableDeviceID: "private-udid", transport: .wifi, endpointClass: .remoteServiceDiscovery, generation: 8))
+        XCTAssertEqual(LocationStatusPresentation(state: state, deviceVisible: true).applicationLabel, "Applying")
+    }
+
     func testDiagnosticsRedactStableIdentifierAndExposeSafeMetadata() {
         var state = LocationSessionState(desiredLocation: coordinate, connection: .ready(identity: session))
         let receipt = LocationInjectionReceipt(requestID: UUID(uuidString: "00000000-0000-0000-0000-00000000ABCD")!, session: UUID(), coordinate: coordinate, transport: .wifi, endpointClass: .remoteServiceDiscovery, sessionGeneration: 7, completedAt: Date(), outcome: .applied)
