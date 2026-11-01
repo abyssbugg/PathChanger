@@ -101,6 +101,15 @@ enum SimulationPlanner {
             return .failed("Add at least two spots on the map")
         }
 
+        // Never widen the step to fit a long route: that would move faster than shown.
+        if let stepMeters,
+           RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: stepMeters)
+            > RouteInterpolator.maxRoutePoints {
+            return .failed(
+                "This route has too many points for the chosen speed and update frequency. Raise the speed, lower Update frequency in Settings, or use fewer or closer stops."
+            )
+        }
+
         let points = stepMeters.map {
             RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: $0)
         } ?? RouteInterpolator.interpolateRoute(waypoints: waypoints, speed: speed)

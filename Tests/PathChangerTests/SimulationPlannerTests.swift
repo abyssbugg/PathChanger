@@ -95,6 +95,72 @@ final class SimulationPlannerTests: XCTestCase {
         XCTAssertEqual(points.last, nearby)
     }
 
+    /// A northbound route of `legs` equal legs (0.1° latitude is ~11.1 km, inside the
+    /// 100 km per-leg guard).
+    private func longRoute(legs: Int, legDegrees: Double) -> [LocationCoordinate] {
+        (0...legs).map {
+            LocationCoordinate(latitude: tokyo.latitude + Double($0) * legDegrees, longitude: tokyo.longitude)
+        }
+    }
+
+    func testRouteTooLongForTheShownSpeedFailsInsteadOfMovingFaster() {
+        // ~44.5 km at Walking (0.32 m per update) needs ~139,000 points, over the
+        // 100,000-point cap. The interpolator used to widen the step to fit, so the
+        // route travelled faster than the speed shown. It must refuse plainly instead.
+        let plan = SimulationPlanner.plan(
+            mode: .route,
+            targetLocation: nil,
+            currentLocation: nil,
+            route: longRoute(legs: 4, legDegrees: 0.1),
+            speed: .walking,
+            stepMeters: 0.32
+        )
+
+        guard case .failed(let message) = plan else {
+            if case .route(let points) = plan {
+                return XCTFail("Expected a refusal, got a coarsened route of \(points.count) points")
+            }
+            return XCTFail("Expected a refusal, got \(plan)")
+        }
+        XCTAssertEqual(
+            message,
+            "This route has too many points for the chosen speed and update frequency. Raise the speed, lower Update frequency in Settings, or use fewer or closer stops."
+        )
+    }
+
+    func testRouteJustUnderTheCapKeepsTheExactStep() {
+        // ~30 km at 0.32 m per update needs ~93,800 points: within the cap, so the
+        // step stays exactly the shown speed's step.
+        let waypoints = longRoute(legs: 3, legDegrees: 0.09)
+        let plan = SimulationPlanner.plan(
+            mode: .route,
+            targetLocation: nil,
+            currentLocation: nil,
+            route: waypoints,
+            speed: .walking,
+            stepMeters: 0.32
+        )
+        guard case .route(let points) = plan else {
+            return XCTFail("Expected interpolated route, got \(plan)")
+        }
+
+        var expectedCount = 1
+        for index in 1..<waypoints.count {
+            let leg = RouteInterpolator.haversineDistance(from: waypoints[index - 1], to: waypoints[index])
+            expectedCount += Int((leg / 0.32).rounded(.up))
+        }
+        XCTAssertGreaterThan(expectedCount, 90_000)
+        XCTAssertLessThanOrEqual(expectedCount, RouteInterpolator.maxRoutePoints)
+        XCTAssertEqual(points.count, expectedCount)
+        for index in 1..<100 {
+            XCTAssertEqual(
+                RouteInterpolator.haversineDistance(from: points[index - 1], to: points[index]),
+                0.32, accuracy: 0.01
+            )
+        }
+        XCTAssertEqual(points.last, waypoints.last)
+    }
+
     func testJoystickPrefersTargetLocation() {
         let plan = SimulationPlanner.plan(
             mode: .joystick,

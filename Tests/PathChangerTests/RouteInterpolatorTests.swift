@@ -172,4 +172,32 @@ final class RouteInterpolatorTests: XCTestCase {
             XCTAssertTrue(coord.isValid, "All interpolated coordinates should be valid")
         }
     }
+
+    // MARK: - Stepped Route Tests
+
+    func testSteppedPointCountMatchesTheBuiltRoute() {
+        let start = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
+        let mid = LocationCoordinate(latitude: 35.6862, longitude: 139.6603)
+        let tooFar = LocationCoordinate(latitude: 37.6862, longitude: 139.6603) // > 100 km leg, skipped
+        let waypoints = [start, mid, mid, tooFar, start]
+
+        let points = RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: 0.32)
+
+        XCTAssertGreaterThan(points.count, 2)
+        XCTAssertEqual(RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: 0.32), points.count)
+    }
+
+    func testSteppedRouteOverTheCapIsNotCoarsened() {
+        // ~44.5 km at 0.32 m needs ~139,000 points. The step must never widen to fit
+        // the cap (that moved faster than the shown speed); the route is refused.
+        let waypoints = (0...4).map {
+            LocationCoordinate(latitude: 35.6762 + Double($0) * 0.1, longitude: 139.6503)
+        }
+
+        XCTAssertGreaterThan(
+            RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: 0.32),
+            RouteInterpolator.maxRoutePoints
+        )
+        XCTAssertTrue(RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: 0.32).isEmpty)
+    }
 }

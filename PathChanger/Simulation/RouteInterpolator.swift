@@ -47,16 +47,18 @@ struct RouteInterpolator {
     /// Generate points along a route so consecutive points are `stepMeters` apart
     /// (the final step of each leg may be shorter). Playback sends one point per update,
     /// so `stepMeters = speed / update rate` makes the travelled speed the shown one.
+    ///
+    /// The step is never widened to fit a long route (that would travel faster than the
+    /// shown speed). A route needing more than `maxRoutePoints` points returns `[]`;
+    /// check `steppedPointCount(waypoints:stepMeters:)` first to report why.
     static func interpolateRoute(waypoints: [LocationCoordinate], stepMeters: Double) -> [LocationCoordinate] {
         let validWaypoints = waypoints.filter { $0.isValid }
         guard validWaypoints.count > 1 else { return validWaypoints }
-        // Bound the work on the main actor: a very long route at a slow speed is
-        // spaced out to at most `maxRoutePoints` points (a coarser step, same path).
-        var total = 0.0
-        for index in 1..<validWaypoints.count {
-            total += haversineDistance(from: validWaypoints[index - 1], to: validWaypoints[index])
+        // Bound the work on the main actor without changing the step.
+        guard steppedPointCount(waypoints: validWaypoints, stepMeters: stepMeters) <= maxRoutePoints else {
+            return []
         }
-        let step = max(stepMeters, 0.01, total / Double(maxRoutePoints))
+        let step = steppedStep(stepMeters)
 
         var allPoints: [LocationCoordinate] = []
         for index in 0..<validWaypoints.count - 1 {
@@ -67,7 +69,7 @@ struct RouteInterpolator {
                 if distance == 0 { allPoints.append(start) }
                 continue
             }
-            let steps = max(1, Int((distance / step).rounded(.up)))
+            let steps = steppedLegPointCount(distance: distance, step: step)
             for stepIndex in 0..<steps {
                 // Constant distance per step, the last one landing on the waypoint.
                 let fraction = min(Double(stepIndex) * step / distance, 1)
@@ -81,6 +83,32 @@ struct RouteInterpolator {
             allPoints.append(last)
         }
         return allPoints
+    }
+
+    /// The number of points `interpolateRoute(waypoints:stepMeters:)` builds for this
+    /// route at this step, computed without building them.
+    static func steppedPointCount(waypoints: [LocationCoordinate], stepMeters: Double) -> Int {
+        let validWaypoints = waypoints.filter { $0.isValid }
+        guard validWaypoints.count > 1 else { return validWaypoints.count }
+        let step = steppedStep(stepMeters)
+        var count = 1 // the final waypoint
+        for index in 0..<validWaypoints.count - 1 {
+            let distance = haversineDistance(from: validWaypoints[index], to: validWaypoints[index + 1])
+            if distance == 0 {
+                count += 1
+            } else if distance > 0, distance < maxDistanceMeters {
+                count += steppedLegPointCount(distance: distance, step: step)
+            }
+        }
+        return count
+    }
+
+    private static func steppedStep(_ stepMeters: Double) -> Double {
+        max(stepMeters, 0.01)
+    }
+
+    private static func steppedLegPointCount(distance: Double, step: Double) -> Int {
+        max(1, Int((distance / step).rounded(.up)))
     }
 
     /// Generate interpolated points between two coordinates
