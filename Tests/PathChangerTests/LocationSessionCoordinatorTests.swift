@@ -9,6 +9,35 @@ final class LocationSessionCoordinatorTests: XCTestCase {
 
   // MARK: - Persistent-Bridge Error Mapping on Reject
 
+  func test_reject_withDeviceNotVisible_marksConnectionFailed() throws {
+    // A Move after an idle Wi-Fi drop reconnects first; the helper then reports the
+    // phone as not visible. That is connection loss, never a one-off application
+    // failure over a "connected" connection (review 2026-11-01).
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(LocationCoordinate(latitude: 36.30, longitude: -86.62), mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(
+      requestID: request.id,
+      error: PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(
+        "DeviceLanesUnavailable: DVT lanes unavailable (userspace tunnel: DeviceNotFoundError: gone)"
+      )
+    )
+
+    guard case .failed = coordinator.state.connection else {
+      return XCTFail("Expected connection .failed when the phone is not visible")
+    }
+    guard case .uncertain = coordinator.state.application else {
+      return XCTFail("Expected application .uncertain when the phone is not visible")
+    }
+  }
+
   func test_reject_withPersistentBridgeConnectionLossText_marksConnectionFailed() throws {
     // The default five-mode path surfaces provider failures as PersistentBridgeError
     // with raw provider text; the coordinator must recognize the connection-loss

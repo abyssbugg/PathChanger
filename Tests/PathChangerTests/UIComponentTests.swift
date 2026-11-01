@@ -519,7 +519,9 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         let chrome = try sourceFile("PathChanger/UI/OrganicChrome.swift")
 
         XCTAssertTrue(chrome.contains("private var hasSelectedDevice: Bool"))
-        XCTAssertTrue(chrome.contains(".disabled(!hasSelectedDevice)"))
+        // The tunnel pill stays clickable while a Start waits for the phone, so the
+        // wait can always be cancelled even if discovery drops the selection.
+        XCTAssertTrue(chrome.contains(".disabled(!hasSelectedDevice && !tunneldManager.isWaitingForDevice)"))
         let transportStart = try XCTUnwrap(chrome.range(of: "HStack(spacing: 2)"))
         let transportSuffix = chrome[transportStart.lowerBound...]
         let transportEnd = try XCTUnwrap(transportSuffix.range(of: ".padding(.leading, 11)"))

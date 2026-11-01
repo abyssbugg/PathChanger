@@ -584,6 +584,24 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     @Published var lastError: String?
     @Published var statusMessage: String?
 
+    /// True while a Wi-Fi Start waits for the phone to reappear in usbmux. An idle
+    /// Wi-Fi phone drops out for seconds to minutes (live 2026-11-01); the GUI shows
+    /// "Waiting for iPhone…" and the user can stop the wait.
+    @Published private(set) var isWaitingForDevice = false
+
+    struct DeviceVisibilityWait: Equatable {
+        var timeout: TimeInterval
+        var interval: TimeInterval
+        /// Observed gaps reached about 2 minutes with the phone unlocked.
+        static let standard = DeviceVisibilityWait(timeout: 150, interval: 2)
+    }
+
+    /// How long Start keeps trying while the phone is not visible. Internal for tests.
+    var deviceVisibilityWait: DeviceVisibilityWait = .standard
+
+    static let wifiDeviceNotReachableMessage =
+        "iPhone is not reachable over Wi‑Fi. Unlock it, keep it on the same Wi‑Fi network as this Mac, then press Start again."
+
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .auto {
         didSet {
@@ -999,6 +1017,9 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     private func stopTunnel(disconnectHelper: Bool) {
         isTunnelRetainedForExit = false
+        // End any Start still waiting for the phone; it must not reconnect after Stop.
+        connectAttempt &+= 1
+        isWaitingForDevice = false
 
         // The helper connection has no process here; closing it is the stop. It ends
         // any location held over it (the Stop button confirms that first). In daemon
@@ -1270,26 +1291,81 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         // A quick Start after Stop waits for that close, then lifts its block.
         _ = await helperStop?.task.value
         connector.resumeLocationCommands(for: deviceId)
-        do {
-            let connection = try await connector.connectDevice(deviceId, transport: transport)
-            if connection.replaced {
-                onHelperConnectionReplaced?(deviceId)
+        connectAttempt &+= 1
+        let attempt = connectAttempt
+        // Still this Start's to finish: no Stop and no newer Start since it began.
+        let isCurrent = { self.connectAttempt == attempt && self.stateMachine.currentState == .starting }
+        let wait = deviceVisibilityWait
+        let deadline = Date().addingTimeInterval(wait.timeout)
+        defer { if connectAttempt == attempt { isWaitingForDevice = false } }
+        while true {
+            do {
+                let connection = try await connector.connectDevice(deviceId, transport: transport)
+                if connection.replaced {
+                    onHelperConnectionReplaced?(deviceId)
+                }
+                guard isCurrent() else {
+                    // Stopped (or superseded) while the connect was in flight.
+                    await closeUnownedConnection(deviceId: deviceId, transport: transport)
+                    return true
+                }
+                let info = helperTunnelInfo(mode: mode, deviceId: deviceId, helperPID: connection.helperPID)
+                stateMachine.send(.processLaunched(pid: connection.helperPID))
+                tunnelInfo = info
+                stateMachine.send(.connectionEstablished(info: info))
+                Logger.info(
+                    "[Tunnel] Device connection open via the location helper (\(connection.channel), helper PID \(connection.helperPID))",
+                    category: .device
+                )
+                return true
+            } catch PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(let detail)
+                where mode == .wifi {
+                guard isCurrent() else { return true }
+                guard Date() < deadline else {
+                    lastError = Self.wifiDeviceNotReachableMessage
+                    Logger.error("[Tunnel] Gave up waiting for the device on Wi‑Fi: \(detail)", category: .device)
+                    return false
+                }
+                if !isWaitingForDevice {
+                    isWaitingForDevice = true
+                    Logger.info("[Tunnel] Device not visible on Wi‑Fi yet; waiting (\(detail))", category: .device)
+                }
+                try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
+                guard isCurrent() else { return true }
+            } catch {
+                guard isCurrent() else { return true }
+                lastError = "Could not connect to the device: \(error.localizedDescription)"
+                Logger.error("[Tunnel] \(lastError ?? "Device connection failed")", category: .device)
+                return false
             }
-            guard stateMachine.currentState == .starting else { return true }
-            let info = helperTunnelInfo(mode: mode, deviceId: deviceId, helperPID: connection.helperPID)
-            stateMachine.send(.processLaunched(pid: connection.helperPID))
-            tunnelInfo = info
-            stateMachine.send(.connectionEstablished(info: info))
-            Logger.info(
-                "[Tunnel] Device connection open via the location helper (\(connection.channel), helper PID \(connection.helperPID))",
-                category: .device
-            )
-            return true
-        } catch {
-            lastError = "Could not connect to the device: \(error.localizedDescription)"
-            Logger.error("[Tunnel] \(lastError ?? "Device connection failed")", category: .device)
-            return false
         }
+    }
+
+    /// Bumped by every helper connect and every Stop; a connect loop whose number is
+    /// no longer current stops retrying and claims nothing.
+    private var connectAttempt: UInt64 = 0
+
+    /// A connect that finished after Stop, or after a newer Start for another device,
+    /// opened a connection no one owns: close it, unless a newer Start for this device
+    /// or a held location now uses it (the helper keeps one connection per device).
+    /// Registered as `helperStop` so adoption, restart, quit and the next Start wait.
+    private func closeUnownedConnection(deviceId: String, transport: LocationTransport) async {
+        let ownedByNewerStart: Bool
+        switch stateMachine.currentState {
+        case .starting, .running:
+            ownedByNewerStart = lastStartDeviceId == deviceId
+        case .idle, .stopping, .error:
+            ownedByNewerStart = false
+        }
+        guard !ownedByNewerStart, connector.activeLocationDeviceId != deviceId else { return }
+        let connector = connector
+        let previous = helperStop?.task
+        let close = Task { @MainActor in
+            _ = await previous?.value
+            return await connector.disconnectDevice(deviceId, transport: transport)
+        }
+        helperStop = (deviceId, close)
+        _ = await close.value
     }
 
     /// Report a connection the helper already holds (opened by Move, or kept by

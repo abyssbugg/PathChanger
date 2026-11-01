@@ -65,6 +65,123 @@ final class TunneldManagerTests: XCTestCase {
         try await waitUntil { self.manager.state == .idle }
     }
 
+    // MARK: - Wi-Fi Start waits for the phone (live 2026-11-01)
+
+    // usbmux drops an idle Wi-Fi phone for seconds to minutes (07:13:57-07:16:14,
+    // 07:19:45-07:20:02 with the phone unlocked); a Start in such a gap failed at
+    // once with a usbmux error. Start now waits for the phone, visibly, until it
+    // appears, the user stops, or the wait runs out.
+
+    private static let notVisible = PersistentLocationBridge.PersistentBridgeError
+        .deviceNotVisible("Device not found: usbmux has no device matching udid over Network")
+
+    func testWiFiStartWaitsUntilThePhoneBecomesVisible() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 5, interval: 0.02)
+        connector.connectErrors = [Self.notVisible, Self.notVisible]
+        let udid = "00008130-000C5144019A001C"
+
+        await manager.startTunnel(deviceId: udid)
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls.count, 3)
+        XCTAssertFalse(manager.isWaitingForDevice)
+        XCTAssertNil(manager.lastError)
+    }
+
+    func testWiFiStartGivesUpWithAPlainMessageWhenThePhoneNeverAppears() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 0.15, interval: 0.02)
+        connector.connectError = Self.notVisible
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        guard case .error = manager.state else {
+            return XCTFail("expected error after the wait ran out, got \(manager.state)")
+        }
+        XCTAssertGreaterThan(connector.connectCalls.count, 1)
+        XCTAssertFalse(manager.isWaitingForDevice)
+        let message = manager.lastError ?? ""
+        XCTAssertTrue(message.contains("not reachable over Wi‑Fi"), message)
+        XCTAssertTrue(message.contains("Unlock"), message)
+        XCTAssertFalse(message.contains("usbmux"), message)
+    }
+
+    func testStopWhileWaitingForThePhoneCancelsTheStart() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 30, interval: 0.02)
+        connector.connectError = Self.notVisible
+
+        let start = Task { await self.manager.startTunnel(deviceId: "00008130-000C5144019A001C") }
+        try await waitUntil { self.manager.isWaitingForDevice }
+        manager.stopTunnel()
+        await start.value
+
+        try await waitUntil { self.manager.state == .idle }
+        XCTAssertFalse(manager.isWaitingForDevice)
+        let callsAfterStop = connector.connectCalls.count
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(connector.connectCalls.count, callsAfterStop, "Start kept retrying after Stop")
+    }
+
+    func testAConnectionThatOpensAfterStopIsClosedNotLeftBehind() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 30, interval: 0.02)
+        let udid = "00008130-000C5144019A001C"
+        connector.onConnect = { [weak self] in self?.manager.stopTunnel() }
+
+        await manager.startTunnel(deviceId: udid)
+
+        try await waitUntil { self.manager.state == .idle }
+        try await waitUntil { connector.disconnectCalls.count == 1 }
+        XCTAssertEqual(connector.disconnectCalls, [FakeDeviceConnector.Call(deviceId: udid, transport: .wifi)])
+    }
+
+    func testALateConnectNeverClosesAConnectionAHeldLocationUses() async throws {
+        // Stop during the connect, then a Move applied a location over the same
+        // per-device helper connection: the stale Start must not close it.
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        connector.onConnect = { [weak self] in
+            self?.manager.stopTunnel()
+            connector.activeLocationDeviceId = udid
+        }
+
+        await manager.startTunnel(deviceId: udid)
+
+        try await waitUntil { self.manager.state == .idle }
+        XCTAssertTrue(connector.disconnectCalls.isEmpty, "\(connector.disconnectCalls)")
+    }
+
+    func testOtherConnectFailuresDoNotWait() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 5, interval: 0.02)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.bridgeError("pairing rejected")
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        guard case .error = manager.state else { return XCTFail("expected error, got \(manager.state)") }
+        XCTAssertEqual(connector.connectCalls.count, 1)
+        XCTAssertTrue((manager.lastError ?? "").contains("pairing rejected"), manager.lastError ?? "")
+    }
+
+    func testHelperNotVisibleReasonMapsToDeviceNotVisible() {
+        XCTAssertEqual(
+            PersistentLocationBridge.connectFailure(error: "lanes failed", reason: "device_not_visible"),
+            .deviceNotVisible("lanes failed")
+        )
+        XCTAssertEqual(
+            PersistentLocationBridge.connectFailure(error: "lanes failed", reason: nil),
+            .bridgeError("lanes failed")
+        )
+        XCTAssertEqual(
+            PersistentLocationBridge.connectFailure(error: nil, reason: nil),
+            .bridgeError("Device connection failed")
+        )
+    }
+
     func testStartTunnelWithoutADeviceFailsHonestly() async throws {
         let connector = try installFakeConnector(mode: .wifi)
 
@@ -306,6 +423,7 @@ final class TunneldManagerTests: XCTestCase {
             self.manager.stopTunnel()
             self.manager.deviceConnector = nil
             self.manager.preferredMode = previousMode
+            self.manager.deviceVisibilityWait = .standard
             #if DEBUG
             stateMachine.testModeEnabled = false
             #endif
@@ -1152,6 +1270,10 @@ final class FakeDeviceConnector: DeviceConnectionOpening {
 
     let helperPID: Int32 = 4242
     var connectError: Error?
+    /// Thrown in order, one per connect, before `connectError` applies.
+    var connectErrors: [Error] = []
+    /// Runs inside a successful connect, before it returns.
+    var onConnect: (() -> Void)?
     var status: HelperConnectionStatus = .connected
     private(set) var connectCalls: [Call] = []
     private(set) var disconnectCalls: [Call] = []
@@ -1170,7 +1292,9 @@ final class FakeDeviceConnector: DeviceConnectionOpening {
 
     func connectDevice(_ deviceId: String, transport: LocationTransport) async throws -> HelperDeviceConnection {
         connectCalls.append(Call(deviceId: deviceId, transport: transport))
+        if !connectErrors.isEmpty { throw connectErrors.removeFirst() }
         if let connectError { throw connectError }
+        onConnect?()
         return HelperDeviceConnection(helperPID: helperPID, channel: "userspaceRSD", replaced: replaced)
     }
 

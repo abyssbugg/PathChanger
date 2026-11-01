@@ -159,6 +159,9 @@ struct OrganicTitleBar: View {
                 } else {
                     tunneldManager.stopTunnel()
                 }
+            } else if tunneldManager.isWaitingForDevice {
+                // The wait can run for minutes; clicking again cancels it.
+                tunneldManager.stopTunnel()
             } else if !tunneldManager.isStarting {
                 Task { await appState.startSelectedTunnel() }
             }
@@ -178,8 +181,8 @@ struct OrganicTitleBar: View {
             .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectedDevice)
-        .opacity(hasSelectedDevice ? 1 : 0.55)
+        .disabled(!hasSelectedDevice && !tunneldManager.isWaitingForDevice)
+        .opacity(hasSelectedDevice || tunneldManager.isWaitingForDevice ? 1 : 0.55)
         .help(connectionHelp)
         .confirmationDialog(
             "Stop the tunnel?",
@@ -314,6 +317,7 @@ struct OrganicTitleBar: View {
     }
 
     private var tunnelLabel: String {
+        if tunneldManager.isWaitingForDevice { return "Waiting for iPhone…" }
         if tunneldManager.isStarting { return "Connecting…" }
         if tunneldManager.isRunning { return "Tunnel live" }
         if case .error = tunneldManager.state { return "Tunnel error" }
@@ -358,7 +362,13 @@ struct OrganicTitleBar: View {
     private var connectionHelp: String {
         if !hasSelectedDevice { return "Connect a device to enable RemoteXPC tunnel" }
         if tunneldManager.isRunning { return "Stop RemoteXPC tunnel" }
-        if case .error = tunneldManager.state { return "Retry RemoteXPC tunnel start" }
+        if tunneldManager.isWaitingForDevice {
+            return "Waiting for the iPhone to appear on Wi‑Fi. Unlock it and keep it on this network. Click to cancel."
+        }
+        if case .error = tunneldManager.state {
+            if let error = tunneldManager.lastError { return "\(error)\nClick to try again." }
+            return "Retry RemoteXPC tunnel start"
+        }
         if directTransportReady {
             return appState.selectedDevice?.isWireless == true
                 ? "Direct Wi-Fi connection ready. Click to start RemoteXPC tunnel."

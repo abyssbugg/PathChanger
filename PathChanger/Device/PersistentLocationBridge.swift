@@ -918,6 +918,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         case timeout
         case invalidResponse(String)
         case bridgeError(String)
+        /// usbmux does not list the phone right now (an idle or locked Wi-Fi phone
+        /// drops out); waiting can succeed. Carries the helper's per-lane detail.
+        case deviceNotVisible(String)
         case pythonNotFound
 
         var errorDescription: String? {
@@ -934,10 +937,20 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 return "Invalid response from bridge: \(response)"
             case .bridgeError(let message):
                 return "Bridge error: \(message)"
+            case .deviceNotVisible(let detail):
+                // Transport-neutral; the detail keeps the provider markers
+                // (DeviceNotFoundError) the connection-loss classifier matches.
+                return "The iPhone is not visible to this Mac right now (\(detail))"
             case .pythonNotFound:
                 return "Python3 not found in PATH"
             }
         }
+    }
+
+    /// Maps a failed `connect_device` reply to the error the app acts on.
+    static func connectFailure(error: String?, reason: String?) -> PersistentBridgeError {
+        let detail = error ?? "Device connection failed"
+        return reason == "device_not_visible" ? .deviceNotVisible(detail) : .bridgeError(detail)
     }
 
     // MARK: - Properties
@@ -1387,7 +1400,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             timeoutSeconds: Self.connectResponseTimeoutSeconds
         )
         guard response.success, response.connected == true else {
-            throw PersistentBridgeError.bridgeError(response.error ?? "Device connection failed")
+            throw Self.connectFailure(error: response.error, reason: response.reason)
         }
         guard let helperPID = helperConnection?.record.pid else {
             throw PersistentBridgeError.processNotRunning

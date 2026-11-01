@@ -52,6 +52,25 @@ DEVICE_OPERATION_TIMEOUT_SECONDS = 10.0
 # A healthy DVT listing answers in ~40 ms; 3 s bounds the loss-detection window.
 PROBE_TIMEOUT_SECONDS = 3.0
 
+# pymobiledevice3 raises these when usbmux does not list the device right now. An
+# idle Wi-Fi phone drops out of usbmux for seconds to minutes (live 2026-11-01), so
+# when every lane says this, the phone is not visible yet - not broken.
+_DEVICE_ABSENT_ERRORS = frozenset({"DeviceNotFoundError", "NoDeviceConnectedError"})
+
+
+class DeviceLanesUnavailable(RuntimeError):
+    """Every connection lane failed; carries each lane's own error, in order."""
+
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.device_not_visible = bool(self.failures) and all(
+            type(error).__name__ in _DEVICE_ABSENT_ERRORS for _, error in self.failures
+        )
+        details = "; ".join(
+            f"{lane}: {type(error).__name__}: {error}" for lane, error in self.failures
+        )
+        super().__init__(f"DVT lanes unavailable ({details})")
+
 # Graceful shutdown state
 _shutdown_requested = False
 _shutdown_event: Optional[asyncio.Event] = None
@@ -185,20 +204,27 @@ class DeviceConnection:
     async def _open_lanes(
         self, udid: str, cache_key: str, connection_type: Optional[str]
     ) -> None:
-        fallback_error: Exception
+        # Each lane's own error is kept: reporting only the last lane's hid why the
+        # primary lane failed (the GUI always showed the usbmux lane's message).
+        failures = []
         try:
             await self._open_userspace_tunnel_cli_exact(udid, cache_key)
             return
         except Exception as error:
-            fallback_error = error
+            failures.append(("userspace tunnel", error))
 
         try:
             await self._open_usbmux_direct(udid, cache_key, connection_type)
             return
         except Exception as error:
-            fallback_error = error
+            failures.append(("usbmux direct", error))
 
-        await self._open_preferred_rsd(udid, cache_key, fallback_error)
+        try:
+            await self._open_preferred_rsd(udid, cache_key)
+            return
+        except Exception as error:
+            failures.append(("preferred RSD", error))
+        raise DeviceLanesUnavailable(failures) from failures[-1][1]
 
     async def _prove_dvt(self, cache_key: str, cached: Optional[dict] = None) -> None:
         """Prove the DVT service answers: list `/` over the connection itself."""
@@ -237,8 +263,11 @@ class DeviceConnection:
                 udid, connection_type
             )
         except Exception as error:
-            return {"success": False, "connected": False, "replaced": replaced,
-                    "error": f"{type(error).__name__}: {error}"}
+            failure = {"success": False, "connected": False, "replaced": replaced,
+                       "error": f"{type(error).__name__}: {error}"}
+            if isinstance(error, DeviceLanesUnavailable) and error.device_not_visible:
+                failure["reason"] = "device_not_visible"
+            return failure
         return {"success": True, "connected": True, "replaced": replaced,
                 "actual_channel": channel, "endpoint_class": endpoint_class}
 
@@ -338,7 +367,7 @@ class DeviceConnection:
             raise
 
     async def _open_preferred_rsd(
-        self, udid: str, cache_key: str, upstream_error: Exception
+        self, udid: str, cache_key: str
     ) -> Tuple[any, any, str, str]:
         """Open a capability-selected no-root RSD provider and report its backend.
 
@@ -374,12 +403,9 @@ class DeviceConnection:
         except asyncio.CancelledError:
             await stack.aclose()
             raise
-        except Exception as fallback_error:
+        except Exception:
             await stack.aclose()
-            raise RuntimeError(
-                f"DVT lanes unavailable ({upstream_error}); "
-                f"preferred RSD failed ({fallback_error})"
-            ) from fallback_error
+            raise
 
     async def _invalidate(self, cache_key: str, expected: Optional[dict] = None) -> None:
         """Close the device connection. With `expected`, close it only if it is still

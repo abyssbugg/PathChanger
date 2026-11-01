@@ -218,6 +218,11 @@ final class LocationSessionCoordinator: ObservableObject {
         break
       }
     }
+    // The phone dropped out of usbmux: connection loss by definition.
+    if case .deviceNotVisible? = error as? PersistentLocationBridge.PersistentBridgeError {
+      connectionLost(reason: errorText)
+      return nil
+    }
     // The default five-mode path surfaces provider failures as PersistentBridgeError
     // carrying raw provider text (the socket helper does not type them). Recognize the
     // connection-loss signatures in that text so the primary path cannot report a

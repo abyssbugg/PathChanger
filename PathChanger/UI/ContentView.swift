@@ -234,6 +234,11 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
+                if let notice = tunnelNotice {
+                    tunnelNoticeView(notice)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
                 Spacer().allowsHitTesting(false)
             }
             .allowsHitTesting(true)
@@ -348,6 +353,41 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    /// Why the tunnel is not live, in words, without hovering: the pill alone only
+    /// said "Tunnel error".
+    private var tunnelNotice: (text: String, isError: Bool)? {
+        if tunneldManager.isWaitingForDevice {
+            return ("Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel.", false)
+        }
+        if case .error = tunneldManager.state, let error = tunneldManager.lastError {
+            return (error, true)
+        }
+        return nil
+    }
+
+    private func tunnelNoticeView(_ notice: (text: String, isError: Bool)) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "wifi")
+                .foregroundStyle(notice.isError ? Organic.accent700 : Organic.neutral700)
+            Text(notice.text)
+                .font(Organic.body(11.5))
+                .foregroundStyle(Organic.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(notice.isError ? Organic.accent100 : Organic.neutral100)
+        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                .stroke(notice.isError ? Organic.accent300 : Organic.neutral300, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("tunnel.notice")
     }
 
     private var displayedConnectionLabel: String {

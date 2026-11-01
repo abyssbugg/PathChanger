@@ -1501,6 +1501,97 @@ asyncio.run(verify())
         XCTAssertEqual(process.terminationStatus, 0, errorOutput)
     }
 
+    /// Live 2026-11-01: usbmux drops a Wi-Fi phone for seconds to minutes while no
+    /// connection is open. A connect in such a gap must say "not visible" so the app
+    /// can wait for the phone, and a lane's own failure must never be hidden behind
+    /// the next lane's (the GUI showed only the last lane's usbmux error).
+    func testPythonHelperReportsDeviceNotVisibleAndEveryLanesError() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import asyncio, importlib.util
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+
+        class DeviceNotFoundError(Exception): pass
+        lane_errors = {}
+        def raiser(lane):
+            error = lane_errors[lane]
+            if error is not None: raise error
+        class Context:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+        class Info(Context):
+            async def ls(self, path): return ["/usr"]
+        class Userspace:
+            def __init__(self, **kwargs): pass
+            async def aopen(self): raiser("userspace"); return object()
+            async def aclose(self): pass
+        async def lockdown(**kwargs): raiser("usbmux"); return object()
+        class Preferred:
+            def __init__(self, serial): pass
+            async def aopen(self): raiser("preferred"); return object()
+            async def aclose(self): pass
+
+        def make_connection():
+            c = bridge.DeviceConnection()
+            c._initialized = True
+            c._userspace_tunnel_factory = Userspace
+            c._lockdown_usb = lockdown
+            c._preferred_tunnel_factory = Preferred
+            c._dvt_module = lambda provider: Context()
+            c._location_module = lambda dvt: Context()
+            c._device_info_module = lambda dvt: Info()
+            return c
+
+        async def connect():
+            c = make_connection()
+            try:
+                return await bridge.process_command(c, {"cmd": "connect_device",
+                    "udid": "dev", "connection_type": "Network"})
+            finally:
+                await c.close_all()
+
+        async def verify():
+            # Every lane says the device is absent: report it as not visible.
+            lane_errors.update(
+                userspace=DeviceNotFoundError("no device dev (userspace)"),
+                usbmux=DeviceNotFoundError("no device dev over Network"),
+                preferred=DeviceNotFoundError("no device dev (preferred)"))
+            result = await connect()
+            assert result["success"] is False and result["connected"] is False, result
+            assert result["reason"] == "device_not_visible", result
+            for text in ("(userspace)", "over Network", "(preferred)", "userspace tunnel: DeviceNotFoundError"):
+                assert text in result["error"], result
+
+            # The primary lane failed for another reason: not a visibility gap,
+            # and that lane's own error is what the user sees first.
+            lane_errors["userspace"] = PermissionError("pairing rejected")
+            result = await connect()
+            assert result["success"] is False, result
+            assert result.get("reason") is None, result
+            assert result["error"].index("pairing rejected") < result["error"].index("over Network"), result
+
+            # A lane that works still wins.
+            lane_errors.update(userspace=None, usbmux=None, preferred=None)
+            result = await connect()
+            assert result["success"] is True and result["actual_channel"] == "userspaceRSD", result
+        asyncio.run(verify())
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
+        process.arguments = ["-B", "-c", code]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        try? stderr.fileHandleForReading.close()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+    }
+
     /// The helper record must never list a held location on a connection that is
     /// gone, a probe that merely times out must not destroy a live connection, and
     /// a failure must close only the connection it happened on.
