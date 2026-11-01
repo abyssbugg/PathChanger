@@ -512,9 +512,6 @@ class DeviceManager: ObservableObject {
            let saved = ConnectionMode(rawValue: raw) {
             connectionMode = saved
         }
-        TunneldManager.shared.directDeviceReachability = { [weak self] udid in
-            self?.isDirectlyReachable(udid) ?? false
-        }
         guard startBackgroundServices else { return }
         setupTunnelStateObserver()
         Task {

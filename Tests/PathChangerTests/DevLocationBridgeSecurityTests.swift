@@ -40,6 +40,15 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         }
     }
 
+    func testClassifyProviderOutputTreatsDeadAppTunnelAsEndpointUnreachable() {
+        // The helper reports a dead app-owned tunnel with this marker (no hidden
+        // fallback tunnel); it must drive the honest connection-lost/uncertain path.
+        let output = "TunnelEndpointUnavailable: app tunnel fdc9:1905:6dc0::1:55817 failed (timed out)"
+        guard case .endpointUnreachable? = DevLocationBridge.classifyProviderOutput(output) else {
+            return XCTFail("Expected endpointUnreachable for: \(output)")
+        }
+    }
+
     func testClassifyProviderOutputRecognizesModernDeviceGoneWording() {
         guard case .deviceNotFound? = DevLocationBridge.classifyProviderOutput(
             "Device not found: usbmux has no device matching udid 00008130-000C5144019A001C"

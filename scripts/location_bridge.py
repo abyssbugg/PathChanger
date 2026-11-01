@@ -103,7 +103,16 @@ class DeviceConnection:
     ) -> Tuple[any, any, str, str]:
         """Get a cached DVT service and report the channel that was actually opened.
 
-        Dial order follows the LIVE-PROVEN CLI behavior (owner-observed 2026-10-31):
+        SINGLE TUNNEL OWNER (owner decision 2026-11-01): when Swift supplies an RSD
+        endpoint it is the app's TunneldManager tunnel, and it is the ONLY lane —
+        no hidden userspace tunnel, no lockdown lane. A failure raises
+        ``TunnelEndpointUnavailable`` so the app reports connection lost / location
+        uncertain honestly instead of the GUI and the injection drifting onto two
+        different tunnels. (Live 2026-11-01, DDI mounted: the app tunnel's RSD
+        served DVT 5/5 and applied a location on the device.)
+
+        Without a supplied endpoint (no app tunnel), dial order follows the
+        LIVE-PROVEN CLI behavior (owner-observed 2026-10-31):
 
         1. no-root userspace tunnel FIRST — ``UserspaceRsdTunnel`` with
            ``remotepairing_fallback=False``, the exact construction the CLI makes
@@ -113,8 +122,7 @@ class DeviceConnection:
            nothing usbmux/lockdown had been attempted in the process before it.
         2. usbmux-direct lockdown (``create_using_usbmux``) — devices whose
            developer commands are served over lockdown directly.
-        3. when both fail and the caller supplied an explicit RSD endpoint, dial it.
-        4. the full ``PreferredRsdTunnel`` chain (native remoted included) last —
+        3. the full ``PreferredRsdTunnel`` chain (native remoted included) last —
            covers iOS 17.0-17.3 (no CoreDeviceProxy) and exotic deployments.
         """
         if connection_type not in (None, "USB", "Network"):
@@ -127,6 +135,15 @@ class DeviceConnection:
                 cached["channel"], cached["endpoint_class"],
             )
 
+        if rsd_address and rsd_port:
+            try:
+                return await self._open_explicit_rsd(cache_key, rsd_address, rsd_port)
+            except Exception as rsd_error:
+                raise RuntimeError(
+                    f"TunnelEndpointUnavailable: app tunnel {rsd_address}:{rsd_port} "
+                    f"failed ({type(rsd_error).__name__}: {rsd_error})"
+                ) from rsd_error
+
         fallback_error: Exception
         try:
             return await self._open_userspace_tunnel_cli_exact(udid, cache_key)
@@ -137,12 +154,6 @@ class DeviceConnection:
             return await self._open_usbmux_direct(udid, cache_key, connection_type)
         except Exception as error:
             fallback_error = error
-
-        if rsd_address and rsd_port:
-            try:
-                return await self._open_explicit_rsd(cache_key, rsd_address, rsd_port)
-            except Exception as rsd_error:
-                fallback_error = rsd_error
 
         return await self._open_preferred_rsd(udid, cache_key, fallback_error)
 
@@ -212,7 +223,7 @@ class DeviceConnection:
     async def _open_explicit_rsd(
         self, cache_key: str, rsd_address: str, rsd_port: int
     ) -> Tuple[any, any, str, str]:
-        """Open DVT over an explicitly supplied RSD endpoint (fallback when usbmux is absent)."""
+        """Open DVT over the app-owned tunnel's RSD endpoint (the single injection lane)."""
         stack = AsyncExitStack()
         try:
             provider = await stack.enter_async_context(

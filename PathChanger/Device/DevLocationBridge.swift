@@ -1253,6 +1253,11 @@ actor DevLocationBridge: LocationInjecting {
     /// (2026-10-24): "No route to host", "ConnectionRefusedError … Connect call
     /// failed", and "Device not found: usbmux has no device matching udid".
     static func classifyProviderOutput(_ output: String) -> LocationInjectionError? {
+        // The helper's single-tunnel-owner lane reports a dead app tunnel with this
+        // marker. Checked first: the wrapped upstream text may contain other markers.
+        if output.contains("TunnelEndpointUnavailable") {
+            return .endpointUnreachable
+        }
         if output.contains("InvalidServiceError") || output.contains("Unable to connect to Tunneld") {
             return .tunneldNotRunning
         }

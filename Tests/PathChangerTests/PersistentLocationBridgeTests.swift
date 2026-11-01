@@ -1331,6 +1331,90 @@ asyncio.run(verify())
         XCTAssertEqual(process.terminationStatus, 0)
     }
 
+    /// Single tunnel owner (owner decision 2026-11-01): when Swift supplies the
+    /// app tunnel's RSD endpoint (TunneldManager), the helper must inject over
+    /// THAT tunnel only — never silently open its own userspace tunnel or a
+    /// lockdown lane — and a dead app tunnel must surface as an honest,
+    /// classifiable endpoint failure instead of a hidden fallback.
+    func testPythonSuppliedAppTunnelIsTheOnlyInjectionLane() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import asyncio, importlib.util
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+
+        calls = []
+        class Context:
+            def __init__(self, value=None, error=None):
+                self.value, self.error = value, error
+            async def __aenter__(self):
+                if self.error: raise self.error
+                return self.value or self
+            async def __aexit__(self, *args): pass
+        class Location(Context):
+            async def set(self, lat, lng): calls.append(("set", lat, lng))
+            async def clear(self): calls.append(("clear",))
+        def forbidden_userspace(**kwargs):
+            calls.append(("userspace", kwargs)); raise AssertionError("second tunnel opened")
+        async def forbidden_lockdown(**kwargs):
+            calls.append(("lockdown", kwargs)); raise AssertionError("lockdown lane opened")
+        def forbidden_preferred(**kwargs):
+            calls.append(("preferred", kwargs)); raise AssertionError("preferred lane opened")
+        rsd_error = None
+        def make_rsd(endpoint):
+            calls.append(("rsd", endpoint))
+            return Context(error=rsd_error)
+
+        def make_connection():
+            c = bridge.DeviceConnection()
+            c._initialized = True
+            c._userspace_tunnel_factory = forbidden_userspace
+            c._lockdown_usb = forbidden_lockdown
+            c._preferred_tunnel_factory = forbidden_preferred
+            c._rsd_module = make_rsd
+            c._dvt_module = lambda provider: Context()
+            c._location_module = lambda dvt: Location()
+            return c
+
+        async def verify():
+            global rsd_error
+            c = make_connection()
+            result = await c.set_location(
+                36.3, -86.6, "fake-device",
+                rsd_address="fdc9:1905:6dc0::1", rsd_port=55817, connection_type="Network")
+            assert result["success"] is True, result
+            assert result["actual_channel"] == "explicitRSD", result
+            assert result["endpoint_class"] == "remoteServiceDiscovery", result
+            assert calls == [("rsd", ("fdc9:1905:6dc0::1", 55817)), ("set", 36.3, -86.6)], calls
+            await c.close_all()
+
+            calls.clear()
+            rsd_error = ConnectionRefusedError(61, "Connect call failed")
+            c = make_connection()
+            result = await c.set_location(
+                36.3, -86.6, "fake-device",
+                rsd_address="fdc9:1905:6dc0::1", rsd_port=55817, connection_type="Network")
+            assert result["success"] is False, result
+            assert "TunnelEndpointUnavailable" in result["error"], result
+            assert [k for k, *_ in calls] == ["rsd"], calls
+            await c.close_all()
+        asyncio.run(verify())
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
+        process.arguments = ["-B", "-c", code]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        try? stderr.fileHandleForReading.close()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+    }
+
     func testPythonCommandLoopPropagatesConnectionType() throws {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

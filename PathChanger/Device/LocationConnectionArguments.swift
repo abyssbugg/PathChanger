@@ -21,19 +21,17 @@ enum LocationConnectionArguments {
         deviceId: String,
         isDaemonTunneld: Bool,
         rsdAddress: String?,
-        rsdPort: Int?,
-        deviceDirectlyReachable: Bool = false
+        rsdPort: Int?
     ) -> [String] {
         if isDaemonTunneld {
             return ["--tunnel", deviceId]
         }
-        // Directly-reachable devices (usbmux USB/Network visibility) always use the
-        // direct `--udid` path: pymobiledevice3 self-tunnels developer commands on
-        // iOS 17+ (no-root userspace fallback), while the native tunnel's RSD
-        // endpoint refuses its allocated DVT service port on iOS 27.2 (verified
-        // live 2026-10-24: RSD handshake OK, DVT port refused, --udid works).
-        if !deviceDirectlyReachable,
-           let rsdAddress, let rsdPort, rsdPort > 0, rsdPort <= 65535 {
+        // Single tunnel owner (2026-11-01): a usable app tunnel (TunneldManager) is
+        // the one channel for every DVT command, so GUI connection truth and the
+        // injection lane can never diverge. The 2026-10-24 "DVT port refused"
+        // finding that preferred `--udid` was confounded by an unmounted Developer
+        // Disk Image. Without a tunnel, `--udid` lets pymobiledevice3 self-tunnel.
+        if let rsdAddress, let rsdPort, rsdPort > 0, rsdPort <= 65535 {
             return ["--rsd", rsdAddress, String(rsdPort)]
         }
         return ["--udid", deviceId]
@@ -55,15 +53,13 @@ enum LocationConnectionArguments {
         physicalTransport: LocationTransport,
         isDaemonTunneld: Bool,
         rsdAddress: String?,
-        rsdPort: Int?,
-        deviceDirectlyReachable: Bool = false
+        rsdPort: Int?
     ) -> LocationConnectionDescriptor {
         let arguments = make(
             deviceId: deviceId,
             isDaemonTunneld: isDaemonTunneld,
             rsdAddress: rsdAddress,
-            rsdPort: rsdPort,
-            deviceDirectlyReachable: deviceDirectlyReachable
+            rsdPort: rsdPort
         )
         return classify(arguments: arguments, physicalTransport: physicalTransport)
     }

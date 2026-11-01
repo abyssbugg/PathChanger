@@ -38,44 +38,41 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         )
     }
 
-    func testDirectlyReachableDevicePrefersUdidOverRsd() {
-        // Verified live 2026-10-24 (iOS 27.2 + pymobiledevice3 11.43.1): the native
-        // tunnel's RSD handshake succeeds but its allocated DVT service port is
-        // refused, while the direct --udid path works (pymobiledevice3 self-tunnels
-        // developer commands on iOS 17+). Direct reachability must win over RSD.
+    func testUsableAppTunnelRsdWinsEvenWhenDeviceIsDirectlyReachable() {
+        // Single tunnel owner (2026-11-01): the 2026-10-24 "DVT port refused"
+        // finding was confounded by an unmounted Developer Disk Image; with the
+        // DDI mounted the app tunnel's RSD served DVT 5/5 live and applied a
+        // location on the device. Every DVT command must use the ONE app tunnel.
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
                 isDaemonTunneld: false,
                 rsdAddress: "fddf:4f3f:cd60::1",
-                rsdPort: 52569,
-                deviceDirectlyReachable: true
-            ),
-            ["--udid", "00000000-0000000000000001"]
-        )
-    }
-
-    func testUnreachableDeviceStillUsesRsd() {
-        XCTAssertEqual(
-            LocationConnectionArguments.make(
-                deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: false,
-                rsdAddress: "fddf:4f3f:cd60::1",
-                rsdPort: 52569,
-                deviceDirectlyReachable: false
+                rsdPort: 52569
             ),
             ["--rsd", "fddf:4f3f:cd60::1", "52569"]
         )
     }
 
-    func testDaemonTunnelStillPreferredWhenDirectlyReachable() {
+    func testNoTunnelFallsBackToDirectUdid() {
+        XCTAssertEqual(
+            LocationConnectionArguments.make(
+                deviceId: "00000000-0000000000000001",
+                isDaemonTunneld: false,
+                rsdAddress: nil,
+                rsdPort: nil
+            ),
+            ["--udid", "00000000-0000000000000001"]
+        )
+    }
+
+    func testDaemonTunnelStillPreferredOverRsd() {
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
                 isDaemonTunneld: true,
                 rsdAddress: "fddf:4f3f:cd60::1",
-                rsdPort: 52569,
-                deviceDirectlyReachable: true
+                rsdPort: 52569
             ),
             ["--tunnel", "00000000-0000000000000001"]
         )
