@@ -78,6 +78,7 @@ class DeviceConnection:
             from pymobiledevice3.lockdown import create_using_usbmux, create_using_tcp
             from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
             from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
+            from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
             from pymobiledevice3.exceptions import InvalidServiceError, RSDRequiredError
 
             self._dvt_module = DvtProvider
@@ -86,6 +87,7 @@ class DeviceConnection:
             self._lockdown_tcp = create_using_tcp
             self._rsd_module = RemoteServiceDiscoveryService
             self._preferred_tunnel_factory = PreferredRsdTunnel
+            self._userspace_tunnel_factory = UserspaceRsdTunnel
             self._tunnel_required_errors = (InvalidServiceError, RSDRequiredError)
             self._initialized = True
             return True
@@ -101,17 +103,19 @@ class DeviceConnection:
     ) -> Tuple[any, any, str, str]:
         """Get a cached DVT service and report the channel that was actually opened.
 
-        Dial order mirrors the CLI's proven path for
-        ``pymobiledevice3 developer dvt simulate-location set --udid <UDID>``:
+        Dial order follows the LIVE-PROVEN CLI behavior (owner-observed 2026-10-31):
 
-        1. usbmux-direct lockdown (``create_using_usbmux``) — the CLI's first attempt;
-        2. an iOS 17+ device rejects the developer command over lockdown with
-           InvalidServiceError / RSDRequiredError, and the CLI retries over its own
-           no-root userspace tunnel — here the PreferredRsdTunnel chain (userspace
-           first, native remoted fallback on macOS);
-        3. when usbmux cannot reach the device at all and the caller supplied an
-           explicit RSD endpoint, dial that endpoint;
-        4. otherwise the same PreferredRsdTunnel chain is the last resort.
+        1. no-root userspace tunnel FIRST — ``UserspaceRsdTunnel`` with
+           ``remotepairing_fallback=False``, the exact construction the CLI makes
+           after its InvalidServiceError re-exec. The previous usbmux-first order
+           silently broke device-side application: the tunnel lane connected and
+           ``set()`` succeeded, but the device never applied the location unless
+           nothing usbmux/lockdown had been attempted in the process before it.
+        2. usbmux-direct lockdown (``create_using_usbmux``) — devices whose
+           developer commands are served over lockdown directly.
+        3. when both fail and the caller supplied an explicit RSD endpoint, dial it.
+        4. the full ``PreferredRsdTunnel`` chain (native remoted included) last —
+           covers iOS 17.0-17.3 (no CoreDeviceProxy) and exotic deployments.
         """
         if connection_type not in (None, "USB", "Network"):
             raise ValueError("connection_type must be USB or Network")
@@ -125,24 +129,50 @@ class DeviceConnection:
 
         fallback_error: Exception
         try:
+            return await self._open_userspace_tunnel_cli_exact(udid, cache_key)
+        except Exception as error:
+            fallback_error = error
+
+        try:
             return await self._open_usbmux_direct(udid, cache_key, connection_type)
         except Exception as error:
-            if isinstance(error, self._tunnel_required_errors):
-                # The device is usbmux-reachable but this iOS 17+ developer command needs a
-                # tunnel: retry exactly as the CLI does (no-root userspace tunnel first).
-                return await self._open_preferred_rsd(udid, cache_key, error)
-            # usbmux could not serve this device at all; fall through to the fallback lanes.
             fallback_error = error
 
         if rsd_address and rsd_port:
-            # Explicit RSD is only a fallback: usbmux was absent, so honor the caller's
-            # supplied endpoint. If it fails too, the preferred tunnel is the last resort.
             try:
                 return await self._open_explicit_rsd(cache_key, rsd_address, rsd_port)
             except Exception as rsd_error:
                 fallback_error = rsd_error
 
         return await self._open_preferred_rsd(udid, cache_key, fallback_error)
+
+    async def _open_userspace_tunnel_cli_exact(
+        self, udid: str, cache_key: str,
+    ) -> Tuple[any, any, str, str]:
+        """Lane 1 — the CLI's proven construction, verbatim (live 2026-10-31):
+        ``UserspaceRsdTunnel(serial, autopair=True, remotepairing_fallback=False)``
+        established BEFORE any usbmux/lockdown attempt in this process."""
+        stack = AsyncExitStack()
+        try:
+            tunnel = self._userspace_tunnel_factory(
+                serial=udid, autopair=True, remotepairing_fallback=False)
+            rsd = await tunnel.aopen()
+            stack.push_async_callback(tunnel.aclose)
+            dvt = await stack.enter_async_context(self._dvt_module(rsd))
+            location = await stack.enter_async_context(self._location_module(dvt))
+            channel = "userspaceRSD"
+            endpoint_class = "remoteServiceDiscovery"
+            self._service_cache[cache_key] = {
+                "stack": stack,
+                "dvt": dvt,
+                "location": location,
+                "channel": channel,
+                "endpoint_class": endpoint_class,
+            }
+            return dvt, location, channel, endpoint_class
+        except BaseException:
+            await stack.aclose()
+            raise
 
     async def _open_usbmux_direct(
         self, udid: str, cache_key: str, connection_type: Optional[str]
