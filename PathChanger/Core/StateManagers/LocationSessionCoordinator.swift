@@ -115,7 +115,8 @@ final class LocationSessionCoordinator: ObservableObject {
       id: UUID(),
       target: target,
       coordinate: desiredLocation,
-      mode: selectedMode
+      mode: selectedMode,
+      sessionGeneration: currentReadySession.generation
     )
 
     self.pendingRequest = request
@@ -144,14 +145,19 @@ final class LocationSessionCoordinator: ObservableObject {
     }
 
     guard let currentReadySession,
-          receipt.sessionGeneration == currentReadySession.generation else {
+          receipt.sessionGeneration >= currentReadySession.generation else {
       return .staleGeneration
     }
+    // The bridge started a newer session for this exact request (it does after a
+    // Clear, so older acknowledgements cannot reactivate). The receipt proves the
+    // location applied on that session; the session is adopted below.
+    let adoptsNewerSession = receipt.sessionGeneration > currentReadySession.generation
 
     guard receipt.transport == currentReadySession.transport else {
       return .requestMismatch
     }
-    guard currentReadySession.endpointClass == .unresolved
+    guard adoptsNewerSession
+            || currentReadySession.endpointClass == .unresolved
             || receipt.endpointClass == currentReadySession.endpointClass else {
       return .requestMismatch
     }
@@ -159,8 +165,23 @@ final class LocationSessionCoordinator: ObservableObject {
     // Validate outcome
     switch receipt.outcome {
     case .applied:
-      // Only provider acknowledgement may resolve a provisional endpoint.
-      if currentReadySession.endpointClass == .unresolved {
+      if adoptsNewerSession {
+        // Same provisional endpoint rule as below: only the published connection
+        // carries the acknowledged class; later lane fallbacks stay acceptable.
+        self.currentReadySession = LocationSessionIdentity(
+          stableDeviceID: currentReadySession.stableDeviceID,
+          transport: currentReadySession.transport,
+          endpointClass: currentReadySession.endpointClass,
+          generation: receipt.sessionGeneration
+        )
+        self.state.connection = .ready(identity: LocationSessionIdentity(
+          stableDeviceID: currentReadySession.stableDeviceID,
+          transport: currentReadySession.transport,
+          endpointClass: receipt.endpointClass,
+          generation: receipt.sessionGeneration
+        ))
+      } else if currentReadySession.endpointClass == .unresolved {
+        // Only provider acknowledgement may resolve a provisional endpoint.
         self.state.connection = .ready(identity: LocationSessionIdentity(
           stableDeviceID: currentReadySession.stableDeviceID,
           transport: currentReadySession.transport,

@@ -99,7 +99,7 @@ struct SimulationView: View {
                     }
                 }
 
-                if mode.showsRouteList && appState.currentRoute.count >= 2 {
+                if mode.showsRouteList && polylineCoordinates.count >= 2 {
                     MapPolyline(coordinates: polylineCoordinates)
                         .stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round, dash: [1, 5]))
                 }
@@ -235,7 +235,8 @@ struct SimulationView: View {
 
     private var polylineCoordinates: [CLLocationCoordinate2D] {
         var points = appState.currentRoute.map(\.clLocationCoordinate2D)
-        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate {
+        if mode == .twospot, appState.currentRoute.count < 2,
+           let start = appState.locationPresentation.appliedCoordinate {
             points.insert(start.clLocationCoordinate2D, at: 0)
         }
         return points

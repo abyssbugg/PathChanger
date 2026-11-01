@@ -225,6 +225,53 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertNil(lastReceipt)
     }
 
+    func testDiscoverySyncNeverReplacesThisSessionsOwnLocationWithTheHelperRecord() async throws {
+        // Live 2026-11-01: every discovery sync re-adopted the helper's recorded session,
+        // which dropped the in-flight hop and set Movement to Idle in every moving mode.
+        // Adoption is for a relaunch (no location truth of our own), not mid-session.
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .wifi,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 1,
+            physicalTransport: "Network",
+            actualChannel: "userspaceRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 36.3, longitude: -86.6),
+            acknowledgedAt: 1_725_000_000
+        )
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [session])
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: AdoptionRecordingLocationInjector(),
+            managedLocationSessionSource: source
+        )
+        state.selectDevice(device)
+        _ = try await awaitReadyIdentity(in: state)
+
+        // This session is applying a hop of a moving route...
+        state.locationSessionCoordinator.select(first, mode: .multiSpot)
+        state.locationSessionCoordinator.beginMovement(.multiSpot)
+        let request = try state.locationSessionCoordinator.beginApplication()
+        // ...when the helper record (now holding the previous hop) is published.
+        source.adoptedHelperID = UUID()
+
+        state.selectDevice(device)
+        await drainSelectionCallbacks()
+
+        guard case .applying(let requestID, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the in-flight hop must survive a discovery sync")
+        }
+        XCTAssertEqual(requestID, request.id)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .moving(.multiSpot))
+    }
+
     func testRestoreManagedHelperSessionPublishesHeldProviderTruth() async throws {
         let locationInjector = AdoptionRecordingLocationInjector()
         let state = makeState(locationInjector: locationInjector)

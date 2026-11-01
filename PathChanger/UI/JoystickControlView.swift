@@ -80,9 +80,8 @@ struct JoystickControlView: View {
             ]
             guard let direction = mapping[event.keyCode] else { return event }
             if event.type == .keyDown {
-                if !appState.locationPresentation.isMovementActive {
-                    Task { await appState.startSimulation() }
-                }
+                // updateJoystickDirection engages the joystick when it is not running;
+                // a second start here raced it (and repeated on key-repeat).
                 appState.updateJoystickDirection(direction)
             } else {
                 appState.updateJoystickDirection(.zero)

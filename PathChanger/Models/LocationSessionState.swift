@@ -267,4 +267,8 @@ struct LocationApplicationRequest: Equatable, Sendable {
     let target: LocationInjectionTarget
     let coordinate: LocationCoordinate
     let mode: LocationMode
+    /// The coordinator's session generation when the request was made. The bridge
+    /// never acknowledges on an older one: after a loss the coordinator moves ahead
+    /// first, and a bridge left behind made every reapply "stale" (review 2026-11-01).
+    var sessionGeneration: UInt64? = nil
 }

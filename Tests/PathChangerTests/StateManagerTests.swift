@@ -484,6 +484,33 @@ final class DeviceStateManagerTests: XCTestCase {
         )
     }
 
+    func testRecoverySessionLeavesTheEndpointToTheProviderAcknowledgement() async throws {
+        // Option A: the helper chooses its lane (userspace RSD first) whatever usbmux
+        // shows. A recovery candidate that claimed `.direct` rejected every reapply as
+        // requestMismatch until recovery was exhausted (review 2026-11-01).
+        final class QuietDeviceManager: DeviceManager {
+            override func refreshDevices() async {}
+        }
+        let deviceManager = QuietDeviceManager(startBackgroundServices: false)
+        let manager = makeManager(deviceManager: deviceManager)
+        let device = Device(
+            id: "00008130-0011223344556677", displayName: "Test Device",
+            connectionType: .wifi, productType: "iPhone17,1", productVersion: "27.0"
+        )
+        manager.availableDevices = [device]
+        manager.wifiDirectDeviceIds = [device.id]
+        let previous = LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .wifi,
+            endpointClass: .remoteServiceDiscovery, generation: 3
+        )
+
+        let candidate = try await manager.establishRecoverySession(previous: previous)
+
+        XCTAssertEqual(candidate.transport, .wifi)
+        XCTAssertEqual(candidate.endpointClass, .unresolved)
+        XCTAssertEqual(candidate.generation, 4)
+    }
+
     func testManagerWithoutBackgroundServicesBuildsAQuietDeviceManager() {
         // Each test AppState used to build a DeviceManager with background services on:
         // hundreds of hidden managers each watched the shared tunnel state and spawned

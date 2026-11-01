@@ -30,6 +30,41 @@ private final class ControlledRouteDelay {
     }
 }
 
+/// Applies through the real `LocationSessionGenerationTracker` and acknowledgement
+/// router exactly as `DevLocationBridge.apply` does on the helper lane: Swift asks over
+/// `--udid` (.direct) and the helper acknowledges its userspace RSD tunnel.
+private actor HelperLaneGenerationInjector: LocationInjecting {
+    private var tracker = LocationSessionGenerationTracker()
+    private var applied: [LocationCoordinate] = []
+
+    func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+        let session = tracker.resolve(
+            stableDeviceID: request.target.stableDeviceID,
+            transport: request.target.transport,
+            endpointClass: .direct,
+            minimumGeneration: request.sessionGeneration
+        )
+        guard let acknowledgement = LocationProviderAcknowledgement(
+            requestID: request.id, sessionGeneration: session.generation,
+            physicalTransport: request.target.transport, channel: .userspaceRSD,
+            endpointClass: .remoteServiceDiscovery
+        ) else { throw LocationInjectionError.injectionFailed("bad acknowledgement") }
+        applied.append(request.coordinate)
+        return try LocationApplicationAcknowledgementRouter.accept(
+            request: request, provisionalSession: session,
+            acknowledgement: acknowledgement, generationTracker: &tracker
+        )
+    }
+
+    func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
+        guard let session else { throw LocationInjectionError.injectionFailed("no session") }
+        try tracker.beginClear(session)
+        try tracker.completeClear(session)
+    }
+
+    func appliedCoordinates() -> [LocationCoordinate] { applied }
+}
+
 @MainActor
 final class ModePersistenceTests: XCTestCase {
     private let first = LocationCoordinate(latitude: 35.67620, longitude: 139.65030)
@@ -108,6 +143,28 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         calls = await fake.calls()
         XCTAssertTrue(calls.contains { if case .clear = $0 { return true }; return false })
+    }
+
+    func testTwoSpotLetsTheUserPickBothEndpoints() {
+        // PRODUCT_REQUIREMENTS 3.3: the user defines exactly two endpoints. Each map
+        // click used to replace the single staged point, so only one spot could exist.
+        let state = AppState(startBackgroundServices: false, locationInjector: FakeLocationInjector())
+        state.activeMode = .twospot
+
+        state.stageLocation(first, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [first])
+        state.stageLocation(second, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [first, second])
+        // A third click moves the destination; the start stays.
+        state.stageLocation(third, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [first, third])
+
+        guard case .route(let points) = SimulationPlanner.plan(
+            mode: .twospot, targetLocation: state.targetLocation, currentLocation: nil,
+            route: state.currentRoute, speed: .teleport
+        ) else { return XCTFail("two picked spots must plan a traversal") }
+        XCTAssertEqual(points.first, first)
+        XCTAssertEqual(points.last, third)
     }
 
     func testMultiSpotProgressTracksOnlyAcknowledgedPointsAndHoldsFinalWaypoint() async {
@@ -553,6 +610,113 @@ final class ModePersistenceTests: XCTestCase {
         await fake.waitUntilApplicationPending()
         state.disengageJoystick()
         await fake.releaseNextApplication(session: session)
+    }
+
+    /// Bounded wait: a regression that never applies must fail, not hang the suite.
+    private func waitForPendingApplication(
+        _ fake: FakeLocationInjector,
+        timeout: TimeInterval = 2
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while await fake.pendingApplicationCount() == 0 {
+            guard Date() < deadline else {
+                XCTFail("no location application was started within \(timeout)s")
+                throw CancellationError()
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    func testJoystickDragStartsOneEngagementEvenAfterAnEarlierLocation() async throws {
+        // Live 2026-11-01: one drag sends many direction samples; each spawned its own
+        // start, the starts cancelled each other, and none engaged (requestInProgress /
+        // staleAcknowledgement). A location applied earlier (isSimulating) also blocked
+        // the stick from starting at all.
+        let fake = FakeLocationInjector()
+        let (state, session) = makeJoystickState(injector: fake)
+        state.isSimulating = true
+
+        for _ in 0..<8 {
+            state.updateJoystickDirection(CGPoint(x: 0, y: 1))
+        }
+        try await waitForPendingApplication(fake)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        var applyCount = await fake.calls().filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count
+        XCTAssertEqual(applyCount, 1, "one drag must start one engagement")
+
+        await fake.releaseNextApplication(session: session)
+        try await waitForPendingApplication(fake)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .moving(.joystick))
+        applyCount = await fake.calls().filter {
+            if case .apply = $0 { return true }
+            return false
+        }.count
+        XCTAssertEqual(applyCount, 2, "the engaged loop sends the next step")
+
+        state.disengageJoystick()
+        await fake.releaseNextApplication(session: session)
+    }
+
+    func testHelperLaneKeepsEveryModeAcknowledgedThroughClearAndConnectionLoss() async throws {
+        // The live failure needed the real generation logic: the plain fake echoes the
+        // session it is given, so it never showed every hop after the first going stale.
+        let injector = HelperLaneGenerationInjector()
+        let state = AppState(startBackgroundServices: false, locationInjector: injector, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "helper-device", displayName: "Helper Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.simulationSpeed = .teleport
+
+        // Teleport twice.
+        state.activeMode = .teleport
+        state.stageLocation(first, for: .teleport)
+        await state.startSimulation()
+        state.stageLocation(second, for: .teleport)
+        await state.startSimulation()
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, second)
+
+        // Jump: stops added after a Teleport, one hop per Move, index advances.
+        state.activeMode = .jump
+        state.clearRoute()
+        state.stageLocation(first, for: .jump)
+        state.stageLocation(third, for: .jump)
+        XCTAssertEqual(state.currentRoute, [first, third])
+        await state.startSimulation()
+        XCTAssertEqual(state.jumpIndex, 1)
+        await state.startSimulation()
+        XCTAssertEqual(state.jumpIndex, 2)
+        XCTAssertEqual(state.currentLocation, third)
+
+        // Multi-Spot traverses every point and holds the last.
+        state.activeMode = .route
+        state.clearRoute()
+        state.stageLocation(first, for: .route)
+        state.stageLocation(second, for: .route)
+        state.stageLocation(third, for: .route)
+        await state.startSimulation()
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.multiSpot))
+        XCTAssertEqual(state.currentLocation, third)
+
+        // Clear, then Teleport again on the bridge's next generation.
+        await state.clearLocation()
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        state.activeMode = .teleport
+        state.stageLocation(first, for: .teleport)
+        await state.startSimulation()
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
+
+        // A connection loss, then Move reapplies on the app's next generation.
+        state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Wi-Fi dropped"))
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        state.stageLocation(second, for: .teleport)
+        await state.startSimulation()
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, second)
+
+        let applied = await injector.appliedCoordinates()
+        XCTAssertEqual(applied.last, second)
     }
 
     func testRapidJoystickInputKeepsOneApplyInFlightAndUsesLatestDirectionNext() async {

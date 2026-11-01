@@ -305,7 +305,12 @@ struct LocationSessionGenerationTracker: Sendable {
     private struct Record: Sendable {
         var session: LocationBridgeSession
         var transport: LocationTransport
+        /// The class the provider acknowledged (what Clear validates against).
         var endpointClass: LocationEndpointClass
+        /// The class Swift last asked for (`--udid` is .direct). The helper may serve a
+        /// `--udid` request over its own userspace RSD tunnel and acknowledge
+        /// remoteServiceDiscovery; that is the same session, not a replacement.
+        var requestedEndpointClass: LocationEndpointClass?
         var lost: Bool
     }
     private var records: [String: Record] = [:]
@@ -313,21 +318,53 @@ struct LocationSessionGenerationTracker: Sendable {
     mutating func resolve(
         stableDeviceID: String,
         transport: LocationTransport,
+        endpointClass: LocationEndpointClass,
+        minimumGeneration: UInt64? = nil
+    ) -> LocationBridgeSession {
+        let session = resolveIgnoringMinimum(
+            stableDeviceID: stableDeviceID, transport: transport, endpointClass: endpointClass
+        )
+        // The app's session can be ahead of this record: after a connection loss it
+        // starts the next generation before reapplying. Acknowledging on the older one
+        // made every reapply and Move stale (review 2026-11-01). Generation = max(both).
+        guard let minimumGeneration, session.generation < minimumGeneration,
+              var record = records[stableDeviceID] else {
+            return session
+        }
+        record.session = LocationBridgeSession(sessionID: UUID(), generation: minimumGeneration)
+        records[stableDeviceID] = record
+        return record.session
+    }
+
+    private mutating func resolveIgnoringMinimum(
+        stableDeviceID: String,
+        transport: LocationTransport,
         endpointClass: LocationEndpointClass
     ) -> LocationBridgeSession {
         if var record = records[stableDeviceID] {
-            if record.lost || record.transport != transport || record.endpointClass != endpointClass {
+            // The connection kind changed only when the request matches neither what was
+            // asked for nor what the provider acknowledged on this session. Rotating on
+            // every apply (asked .direct, acknowledged RSD) rejected every hop after the
+            // first as stale (live 2026-11-01).
+            let endpointReplaced = endpointClass != record.endpointClass
+                && (record.requestedEndpointClass.map { endpointClass != $0 } ?? false)
+            if record.lost || record.transport != transport || endpointReplaced {
                 record.session = LocationBridgeSession(sessionID: UUID(), generation: record.session.generation + 1)
                 record.transport = transport
                 record.endpointClass = endpointClass
+                record.requestedEndpointClass = endpointClass
                 record.lost = false
-                records[stableDeviceID] = record
+            } else if record.requestedEndpointClass == nil {
+                // First request on a restored (relaunch-adopted) session.
+                record.requestedEndpointClass = endpointClass
             }
+            records[stableDeviceID] = record
             return record.session
         }
         let session = LocationBridgeSession(sessionID: UUID(), generation: 1)
         records[stableDeviceID] = Record(
-            session: session, transport: transport, endpointClass: endpointClass, lost: false
+            session: session, transport: transport, endpointClass: endpointClass,
+            requestedEndpointClass: endpointClass, lost: false
         )
         return session
     }
@@ -369,6 +406,7 @@ struct LocationSessionGenerationTracker: Sendable {
             session: session,
             transport: receipt.transport,
             endpointClass: receipt.endpointClass,
+            requestedEndpointClass: nil,
             lost: false
         )
         return session
@@ -705,7 +743,8 @@ actor DevLocationBridge: LocationInjecting {
         let session = generationTracker.resolve(
             stableDeviceID: device.id,
             transport: connection.transport,
-            endpointClass: connection.endpointClass
+            endpointClass: connection.endpointClass,
+            minimumGeneration: request.sessionGeneration
         )
         do {
             guard let acknowledgement = try await setLocation(

@@ -693,6 +693,42 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     }
   }
   
+  func testAcceptAdoptsAReceiptFromANewerBridgeSession() throws {
+    // The bridge starts a new session generation after a Clear (old acknowledgements
+    // must not reactivate). The receipt for the exact pending request on that newer
+    // session proves the location applied; rejecting it as stale left Teleport after
+    // Clear, and every moving mode, unacknowledged while the device held it
+    // (live 2026-11-01).
+    let coordinate = LocationCoordinate(latitude: 36.30430, longitude: -86.64136)
+    coordinator.select(coordinate, mode: .teleport)
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123", transport: .wifi, endpointClass: .unresolved, generation: 1
+    )
+    coordinator.connectionReady(identity)
+    let request = try coordinator.beginApplication()
+    let receipt = LocationInjectionReceipt(
+      requestID: request.id, session: UUID(), coordinate: coordinate,
+      transport: .wifi, endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 2, completedAt: Date(), outcome: .applied
+    )
+
+    XCTAssertNil(coordinator.accept(receipt))
+    XCTAssertTrue(coordinator.state.application.isActive)
+    XCTAssertEqual(coordinator.state.connection, .ready(identity: LocationSessionIdentity(
+      stableDeviceID: "device-123", transport: .wifi, endpointClass: .remoteServiceDiscovery, generation: 2
+    )))
+
+    // The next application on that session is bound to the adopted generation.
+    coordinator.select(coordinate, mode: .teleport)
+    let next = try coordinator.beginApplication()
+    let older = LocationInjectionReceipt(
+      requestID: next.id, session: UUID(), coordinate: coordinate,
+      transport: .wifi, endpointClass: .remoteServiceDiscovery,
+      sessionGeneration: 1, completedAt: Date(), outcome: .applied
+    )
+    XCTAssertEqual(coordinator.accept(older), .staleGeneration)
+  }
+
   func testAcceptRejectsReceiptFromStaleGeneration() throws {
     let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
     coordinator.select(coordinate, mode: .teleport)

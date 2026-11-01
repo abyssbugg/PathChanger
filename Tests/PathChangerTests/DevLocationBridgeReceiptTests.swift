@@ -35,6 +35,57 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertEqual(rsd.generation, afterLoss.generation + 1)
     }
 
+    func testHelperAcknowledgedEndpointDoesNotRotateTheNextApply() throws {
+        // Live 2026-11-01: Swift asks over `--udid` (.direct) while the helper's
+        // userspace tunnel acknowledges remoteServiceDiscovery. Every next apply then
+        // minted a new generation, so the app rejected each hop after the first as
+        // stale although the helper had applied it (Jump/Two-Spot/Multi-Spot/Joystick).
+        var tracker = LocationSessionGenerationTracker()
+        let first = tracker.resolve(stableDeviceID: "device", transport: .wifi, endpointClass: .direct)
+        let acknowledgement = try XCTUnwrap(LocationProviderAcknowledgement(
+            requestID: UUID(), sessionGeneration: first.generation,
+            physicalTransport: .wifi, channel: .userspaceRSD,
+            endpointClass: .remoteServiceDiscovery
+        ))
+        _ = try tracker.adopt(acknowledgement, stableDeviceID: "device", sessionID: first.sessionID)
+
+        for _ in 0..<3 {
+            XCTAssertEqual(
+                tracker.resolve(stableDeviceID: "device", transport: .wifi, endpointClass: .direct),
+                first
+            )
+        }
+
+        // A real change of transport still starts a new session.
+        let usb = tracker.resolve(stableDeviceID: "device", transport: .usb, endpointClass: .direct)
+        XCTAssertEqual(usb.generation, first.generation + 1)
+    }
+
+    func testAppSessionAheadOfTheTrackerSetsTheGeneration() {
+        // After a connection loss the app starts generation N+1 before reapplying; the
+        // tracker had no loss signal and kept N, so every reapply was stale (review
+        // 2026-11-01). The acknowledged generation is the larger of the two.
+        var tracker = LocationSessionGenerationTracker()
+        let first = tracker.resolve(stableDeviceID: "device", transport: .wifi, endpointClass: .direct)
+        let ahead = tracker.resolve(
+            stableDeviceID: "device", transport: .wifi, endpointClass: .direct,
+            minimumGeneration: first.generation + 1
+        )
+        XCTAssertEqual(ahead.generation, first.generation + 1)
+        XCTAssertNotEqual(ahead.sessionID, first.sessionID)
+        // Not lowered by an older app generation, and stable once in step.
+        XCTAssertEqual(
+            tracker.resolve(stableDeviceID: "device", transport: .wifi, endpointClass: .direct,
+                            minimumGeneration: first.generation),
+            ahead
+        )
+        XCTAssertEqual(
+            tracker.resolve(stableDeviceID: "device", transport: .wifi, endpointClass: .direct,
+                            minimumGeneration: ahead.generation),
+            ahead
+        )
+    }
+
     func testTrackerAdoptsActualAcknowledgedEndpointWithoutAdvancingGeneration() throws {
         var tracker = LocationSessionGenerationTracker()
         let provisional = tracker.resolve(

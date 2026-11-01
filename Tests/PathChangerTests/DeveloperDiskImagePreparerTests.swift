@@ -47,4 +47,25 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
         try await preparer.ensureMounted(udid: "00008130-001234567890ABCD")
         XCTAssertEqual(listCalls, 1)  // second call served from cache
     }
+
+    func testAlreadyMountedStatusIsCachedUntilForgotten() async throws {
+        // Live 2026-11-01: an already-mounted image was never cached, so every Jump hop,
+        // route point and joystick tick ran `mounter list` first (measured 1.1-1.2 s).
+        var listCalls = 0
+        let preparer = DeveloperDiskImagePreparer(runner: { command in
+            if command.contains("list") { listCalls += 1; return "[{\"ImageType\": \"Personalized\"}]" }
+            XCTFail("must not mount an already-mounted image: \(command)")
+            return ""
+        })
+        let udid = "00008130-001234567890ABCD"
+        try await preparer.ensureMounted(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(listCalls, 1)
+
+        // A lost connection (e.g. a reboot unmounts the image) re-checks next time.
+        await preparer.forget(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(listCalls, 2)
+    }
 }

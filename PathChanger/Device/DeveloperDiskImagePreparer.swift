@@ -56,6 +56,10 @@ actor DeveloperDiskImagePreparer {
               let entries = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
             throw PreparationError.statusUnparseable(String(output.prefix(200)))
         }
+        // An image already mounted is cached like one this preparer mounted: the status
+        // check costs ~1.2 s and ran before every hop, point and joystick tick (live
+        // 2026-11-01). `forget` drops it when the connection is lost (a reboot unmounts).
+        if !entries.isEmpty { mountedUDIDs.insert(udid) }
         return !entries.isEmpty
     }
 
@@ -66,5 +70,10 @@ actor DeveloperDiskImagePreparer {
             throw PreparationError.mountFailed(String(output.suffix(300)))
         }
         mountedUDIDs.insert(udid)
+    }
+
+    /// Re-check the mount next time (the device connection was lost).
+    func forget(udid: String) {
+        mountedUDIDs.remove(udid)
     }
 }

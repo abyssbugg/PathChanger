@@ -510,7 +510,9 @@ struct ModeContextCard: View {
         if mode == .teleport {
             latitudeInput = ""
             longitudeInput = ""
-        } else if let current = appState.locationPresentation.appliedCoordinate {
+        } else if mode == .twospot, let current = appState.locationPresentation.appliedCoordinate {
+            // Two-Spot starts from where the device is; Jump and Multi-Spot start empty
+            // (staging the held location as Jump hop 1 re-applied it on the next Move).
             appState.stageLocation(current, for: mode)
         }
     }
@@ -573,12 +575,7 @@ struct ModeContextCard: View {
     }
 
     private var routeDistance: String {
-        let points = displayStops.map(\.coordinate)
-        guard points.count + (appState.locationPresentation.appliedCoordinate == nil ? 0 : 0) >= 1 else { return "—" }
-        var coords = points
-        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
-            coords.insert(start, at: 0)
-        }
+        let coords = metricCoordinates
         guard coords.count > 1 else { return "—" }
         var meters = 0.0
         for index in 1..<coords.count {
@@ -588,17 +585,24 @@ struct ModeContextCard: View {
     }
 
     private var routeETA: String {
-        let points = displayStops.map(\.coordinate)
-        var coords = points
-        if mode == .twospot, let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
-            coords.insert(start, at: 0)
-        }
+        let coords = metricCoordinates
         guard coords.count > 1 else { return "00:00:00" }
         var meters = 0.0
         for index in 1..<coords.count {
             meters += RouteInterpolator.haversineDistance(from: coords[index - 1], to: coords[index])
         }
         return Self.hms(meters / max(appState.effectiveMetersPerSecond, 0.1))
+    }
+
+    /// The points Move will travel through, in order (Two-Spot from the current
+    /// location only while a single spot is picked, exactly as the planner does).
+    private var metricCoordinates: [LocationCoordinate] {
+        var coords = displayStops.map(\.coordinate)
+        if mode == .twospot, appState.currentRoute.count < 2,
+           let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
+            coords.insert(start, at: 0)
+        }
+        return coords
     }
 
     private struct DisplayStop {
@@ -609,6 +613,13 @@ struct ModeContextCard: View {
 
     private var displayStops: [DisplayStop] {
         if mode == .twospot {
+            let spots = appState.currentRoute
+            if spots.count >= 2 {
+                return [
+                    DisplayStop(name: "Start", coordinate: spots[0], fromRoute: true),
+                    DisplayStop(name: spots[1].formattedShort, coordinate: spots[1], fromRoute: true),
+                ]
+            }
             var rows: [DisplayStop] = []
             if let current = appState.locationPresentation.appliedCoordinate {
                 rows.append(DisplayStop(name: address.isEmpty ? "Start" : address, coordinate: current, fromRoute: false))
@@ -635,11 +646,15 @@ struct ModeContextCard: View {
 
     private func removeDisplayStop(at index: Int) {
         if mode == .twospot {
+            if appState.currentRoute.count >= 2 {
+                appState.removeRouteWaypoint(at: index)
+                return
+            }
+            // One spot picked: row 0 is the current location, which is not removable.
             if index == 0, appState.locationPresentation.appliedCoordinate != nil, displayStops.count > 1 {
                 return
             }
             appState.clearRoute()
-            if let current = appState.locationPresentation.appliedCoordinate { appState.stageLocation(current, for: mode) }
             return
         }
         appState.removeRouteWaypoint(at: index)

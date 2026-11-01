@@ -482,6 +482,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private var simulationTask: Task<Void, Never>?
     private var routePlaybackID: UUID?
     private var joystickTask: Task<Void, Never>?
+    /// The one joystick engagement in flight: a drag sends many direction samples, and
+    /// each used to spawn its own start until the first injection returned.
+    private var joystickStartTask: Task<Void, Never>?
+    private var isStartingJoystick = false
+    /// Bumped by Stop movement: a start still in flight must not engage afterwards.
+    private var joystickEngagementID: UInt64 = 0
     private var joystickDeliveryID: UUID?
     private let automaticRecoveryEnabled: Bool
     private var locationRecoveryTask: Task<Void, Never>?
@@ -862,7 +868,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
         let clearing = Task { @MainActor in
             defer { locationClearTask = nil }
-            let producers = [simulationTask, joystickTask, locationRecoveryTask].compactMap { $0 }
+            let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask].compactMap { $0 }
             let applications = Array(applicationTasks.values)
             producers.forEach { $0.cancel() }
             applications.forEach { $0.cancel() }
@@ -1059,6 +1065,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     private func restorePublishedManagedLocationSession(for device: Device) async -> Bool {
+        // Adopting the helper's record is for a relaunch or Preserve, when this app
+        // session holds no location of its own. Run on every discovery sync, it dropped
+        // the in-flight hop and set Movement to Idle in every moving mode (live
+        // 2026-11-01).
+        guard !ownsLocationOperation else { return false }
         guard let helperID = managedLocationSessionSource.adoptedHelperID else {
             return false
         }
@@ -1082,7 +1093,23 @@ class AppState: ObservableObject, LocationTerminationHandling {
             Logger.info("[AppState] Not restoring a recorded location: \(status)", category: .device)
             return false
         }
+        // The probe awaited; this session may have started its own operation meanwhile.
+        guard !ownsLocationOperation else { return false }
         return await restoreManagedHelperSession(session, helperID: helperID, for: device)
+    }
+
+    /// This app session is applying, holding, clearing or moving a location itself.
+    private var ownsLocationOperation: Bool {
+        if simulationTask != nil || joystickTask != nil || joystickStartTask != nil
+            || locationClearTask != nil || !applicationTasks.isEmpty {
+            return true
+        }
+        switch locationSessionCoordinator.state.application {
+        case .applying, .active, .clearing:
+            return true
+        case .idle, .uncertain, .lost, .failed:
+            return false
+        }
     }
 
     /// Restore provider-acknowledged held truth from an authenticated managed helper.
@@ -1288,6 +1315,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.loadRoute(from: coordinates)
     }
 
+    /// A route is playing or paused mid-route: its stops must not change under it.
+    private var isRouteMovementActive: Bool {
+        switch locationSessionCoordinator.state.movement {
+        case .moving, .paused:
+            return simulationTask != nil || isPaused
+        case .idle, .completed:
+            return false
+        }
+    }
+
     /// Updates only local planning state. Device injection remains exclusively in
     /// `startSimulation`, which is invoked by the explicit Move action.
     func stageLocation(_ coordinate: LocationCoordinate, for mode: AppMode) {
@@ -1301,16 +1338,33 @@ class AppState: ObservableObject, LocationTerminationHandling {
         case .teleport, .settings:
             loadRoute(from: [coordinate])
         case .jump:
-            guard !isSimulating else { return }
+            // Adding a stop never interrupts a Jump: each Move applies one hop.
+            // (`isSimulating` is true after ANY applied location, so the old guard
+            // silently dropped every stop clicked after a Teleport.) A route that
+            // another mode is playing must not change under it.
+            guard !isRouteMovementActive else { return }
             guard currentRoute.count < mode.maxStops else {
                 statusMessage = "Jump holds 12 stops"
                 return
             }
             addRouteWaypoint(coordinate)
         case .twospot:
-            loadRoute(from: [coordinate])
+            // Two endpoints (PRODUCT_REQUIREMENTS 3.3): the first click is the start,
+            // the second the destination; later clicks move the destination.
+            guard !isRouteMovementActive else { return }
+            if currentRoute.count >= 2 {
+                route.removeLastWaypoint()
+            }
+            addRouteWaypoint(coordinate)
+            if currentRoute.count >= 2 {
+                statusMessage = "Destination spot set"
+            } else if currentLocation != nil {
+                statusMessage = "Spot set: Move travels there from the current location, or click a second spot"
+            } else {
+                statusMessage = "Start spot set: click the destination"
+            }
         case .route:
-            guard !isSimulating else { return }
+            guard !isRouteMovementActive else { return }
             guard currentRoute.count < mode.maxStops else {
                 statusMessage = "Multi-spot holds 24 stops"
                 return
@@ -1468,20 +1522,32 @@ class AppState: ObservableObject, LocationTerminationHandling {
     func updateJoystickDirection(_ direction: CGPoint) {
         joystickDirection = direction
 
+        // A location applied earlier (isSimulating) must not stop the stick from
+        // engaging; only a running or starting joystick loop does.
         let engaged = hypot(direction.x, direction.y) >= JoystickMovement.deadZone
         guard engaged,
-              !isSimulating,
               joystickTask == nil,
+              joystickStartTask == nil,
+              !isStartingJoystick,
+              simulationTask == nil,
               canStartSimulation,
               activeMode == .joystick,
               (targetLocation ?? currentLocation) != nil else {
             return
         }
 
-        Task { await startSimulation() }
+        joystickStartTask = Task { @MainActor [weak self] in
+            await self?.startSimulation()
+            self?.joystickStartTask = nil
+        }
     }
 
     private func startJoystick(at start: LocationCoordinate) async {
+        // Single flight: the Move button, the stick and the arrow keys can all start it.
+        guard !isStartingJoystick else { return }
+        isStartingJoystick = true
+        defer { isStartingJoystick = false }
+        let engagementID = joystickEngagementID
         let operationGeneration = locationOperationGeneration
         simulationTask?.cancel()
         joystickTask?.cancel()
@@ -1498,6 +1564,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         guard await applyPlannedLocation(start, mode: .joystick) != nil,
               operationGeneration == locationOperationGeneration,
+              engagementID == joystickEngagementID,
               locationClearTask == nil,
               locationSessionCoordinator.state.application.isActive else {
             return
@@ -1551,6 +1618,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     func disengageJoystick() {
+        // A start still in flight applies its start point but does not engage.
+        joystickEngagementID &+= 1
         joystickTask?.cancel()
         joystickTask = nil
         joystickDeliveryID = nil
@@ -1631,6 +1700,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         _ event: LocationSessionLossEvent,
         reason: String? = nil
     ) {
+        // The device may have rebooted (which unmounts the Developer Disk Image):
+        // check the mount again before the next injection. Discovery clears the
+        // selection before reporting the lost device, so prefer the event's ID.
+        let lostDeviceID: String? = {
+            if case .selectedDeviceLost(let stableDeviceID) = event { return stableDeviceID }
+            return selectedDevice?.id
+        }()
+        if let ddiPreparer, let lostDeviceID {
+            Task { await ddiPreparer.forget(udid: lostDeviceID) }
+        }
         simulationTask?.cancel()
         joystickTask?.cancel()
         simulationTask = nil

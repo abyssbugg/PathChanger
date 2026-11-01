@@ -377,20 +377,15 @@ final class DeviceStateManager: ObservableObject {
         }
 
         let transport: LocationTransport
-        let endpointClass: LocationEndpointClass
         if preferUSBConnection && usbDirectDeviceIds.contains(device.id) {
             transport = .usb
-            endpointClass = .direct
         } else if wifiDirectDeviceIds.contains(device.id) {
             transport = .wifi
-            endpointClass = .direct
         } else if usbDirectDeviceIds.contains(device.id) {
             transport = .usb
-            endpointClass = .direct
         } else if isTunneldRunning,
                   TunneldManager.shared.tunnelInfo?.isUsable == true {
             transport = .wifi
-            endpointClass = .remoteServiceDiscovery
         } else {
             throw DeviceError.connectionFailed("No verified transport is available")
         }
@@ -404,10 +399,13 @@ final class DeviceStateManager: ObservableObject {
         )
         onDeviceSelected?(self.selectedDevice!)
 
+        // The endpoint class is the provider's to state: the location helper picks its
+        // own lane (userspace RSD first, usbmux direct as fallback). A class guessed here
+        // from usbmux visibility rejected every recovery reapply (review 2026-11-01).
         return LocationSessionIdentity(
             stableDeviceID: previous.stableDeviceID,
             transport: transport,
-            endpointClass: endpointClass,
+            endpointClass: .unresolved,
             generation: previous.generation &+ 1
         )
     }
