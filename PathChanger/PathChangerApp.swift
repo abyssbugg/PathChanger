@@ -1038,6 +1038,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 }
             }
 
+            // Stop, Clear or a mode change during the mount check: nothing was sent, so
+            // nothing may be sent now (the phone used to move once more after Stop).
+            if Task.isCancelled || locationClearTask != nil
+                || operationGeneration != locationOperationGeneration {
+                _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
+                pendingApplicationModes.removeValue(forKey: request.id)
+                return nil
+            }
+
             let application = Task { try await locationInjector.apply(request) }
             applicationTasks[request.id] = application
             defer { applicationTasks.removeValue(forKey: request.id) }
@@ -1046,11 +1055,24 @@ class AppState: ObservableObject, LocationTerminationHandling {
             } onCancel: {
                 application.cancel()
             }
-            guard !Task.isCancelled,
-                  locationClearTask == nil,
+            guard locationClearTask == nil,
                   operationGeneration == locationOperationGeneration else {
                 _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                 pendingApplicationModes.removeValue(forKey: request.id)
+                return nil
+            }
+            if Task.isCancelled {
+                // Stop or a mode change cancelled the producer mid round trip, but the
+                // helper finished the command: an applied receipt is what the phone now
+                // holds, so it is committed as held. Clear (above) still wins. Returning
+                // nil ends the producer without resuming movement.
+                if case .applied = receipt.outcome,
+                   locationSessionCoordinator.accept(receipt) == nil {
+                    commitAcknowledgedReceipt(receipt)
+                } else {
+                    _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
+                    pendingApplicationModes.removeValue(forKey: request.id)
+                }
                 return nil
             }
             let result = locationSessionCoordinator.accept(receipt)

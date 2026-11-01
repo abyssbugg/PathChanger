@@ -192,7 +192,10 @@ final class ModePersistenceTests: XCTestCase {
     }
 
 
-    func testStoppingWhileReceiptIsPendingRejectsLateRouteUpdate() async {
+    func testStoppingWhileAReceiptIsPendingHoldsThePointTheDeviceApplied() async {
+        // PRODUCT_REQUIREMENTS 3.3/3.4/4: Stop ends movement but holds the latest
+        // applied coordinate. The helper finishes a command already sent, so a receipt
+        // arriving after Stop is what the phone holds; dropping it showed the old point.
         let fake = FakeLocationInjector()
         let (state, session) = makeRouteState(
             injector: fake,
@@ -206,12 +209,121 @@ final class ModePersistenceTests: XCTestCase {
         await fake.releaseNextApplication(session: session)
         await playback.value
 
-        XCTAssertNil(state.currentLocation)
-        XCTAssertEqual(state.routeProgress, 0)
-        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
-        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
+        guard case .active(let held) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the applied point must show as held, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertEqual(held.coordinate, first)
+        if case .moving = state.locationSessionCoordinator.state.movement {
+            XCTFail("Stop ended movement; a late receipt must not resume it")
+        }
+        let applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }
+        XCTAssertEqual(applies.count, 1, "no further point is applied after Stop")
+        let pending = await fake.pendingApplicationCount()
+        XCTAssertEqual(pending, 0)
     }
 
+    func testStoppingARetriedStepAfterAFailureHoldsThePointTheDeviceApplied() async {
+        let fake = FakeLocationInjector()
+        let (state, session) = makeRouteState(
+            injector: fake,
+            mode: .twospot,
+            route: [first, second]
+        )
+
+        let failing = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.failNextApplication(code: "timeout")
+        await failing.value
+        guard case .failed = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the first attempt must fail, got \(state.locationSessionCoordinator.state.application)")
+        }
+
+        let retry = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await state.stopSimulation()
+        await fake.releaseNextApplication(session: session)
+        await retry.value
+
+        XCTAssertEqual(state.currentLocation, first)
+        guard case .active(let held) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the retried point applied on the device must not show Failed, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertEqual(held.coordinate, first)
+        if case .moving = state.locationSessionCoordinator.state.movement {
+            XCTFail("Stop ended movement; a late receipt must not resume it")
+        }
+        let pending = await fake.pendingApplicationCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    /// Holds the DDI status check open until the test releases it.
+    actor DDIStatusGate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var entered = false
+        func hold() async {
+            entered = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func waitUntilEntered() async {
+            while !entered { await Task.yield() }
+        }
+        func release() {
+            waiter?.resume()
+            waiter = nil
+        }
+    }
+
+    func testStopDuringTheDDICheckSendsNothingToTheDevice() async {
+        // Review 2026-11-01: Stop while the mount check is awaited still created the
+        // application task, so the phone moved once more after Stop.
+        let fake = FakeLocationInjector()
+        let gate = DDIStatusGate()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: fake,
+            ddiPreparerFactory: { _ in
+                DeveloperDiskImagePreparer(runner: { _ in
+                    await gate.hold()
+                    return "[{\"image\":\"DeveloperDiskImage\"}]"
+                })
+            },
+            routeDelay: { _ in }
+        )
+        state.selectedDevice = Device(id: "route-device", displayName: "Route Device", connectionType: .usb)
+        state.isTunneldRunning = true
+        state.activeMode = .twospot
+        state.simulationSpeed = .teleport
+        state.loadRoute(from: [first, second])
+        state.targetLocation = second
+        state.locationSessionCoordinator.select(second, mode: .twoSpot)
+        let session = LocationSessionIdentity(
+            stableDeviceID: "route-device", transport: .usb, endpointClass: .direct, generation: 1
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+
+        let playback = Task { await state.startSimulation() }
+        await gate.waitUntilEntered()
+        await state.stopSimulation()
+        await gate.release()
+        // Without the guard the step reaches the injector; release it so the test ends.
+        for _ in 0..<50 {
+            if await fake.pendingApplicationCount() > 0 {
+                await fake.releaseNextApplication(session: session)
+                break
+            }
+            await Task.yield()
+        }
+        await playback.value
+
+        let applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }
+        XCTAssertEqual(applies.count, 0, "Stop during the DDI check must not move the phone")
+        XCTAssertNil(state.currentLocation)
+        if case .applying = state.locationSessionCoordinator.state.application {
+            XCTFail("a cancelled step must not stay Applying")
+        }
+    }
 
     func testClearWaitsForPendingRouteApplicationBeforeClearingAdapter() async {
         let fake = FakeLocationInjector()
