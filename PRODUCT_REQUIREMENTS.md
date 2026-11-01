@@ -63,6 +63,7 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 
 - The user creates an ordered list of discrete destinations.
 - Each explicit Move action applies exactly one next destination.
+- Optional Auto jump (owner decision 2026-11-01): when the user turns Auto jump on, one Move applies every remaining destination in order, holding each for a user-chosen pause (1–60 s) before the next. Movement reports running during the sequence and completed at the end; Stop, Clear, leaving Jump mode, editing the stops, or turning Auto jump off ends the sequence and holds the last applied destination.
 - The jump index advances only after successful injection.
 - The most recently successful jump remains active while waiting for the next action.
 - Reaching the final destination holds that destination; it does not clear spoofing.
