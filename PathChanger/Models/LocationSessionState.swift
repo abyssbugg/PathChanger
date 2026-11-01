@@ -24,6 +24,30 @@ enum LocationTransport: String, Codable, Sendable {
     case wifi
 }
 
+extension LocationTransport {
+    /// The value exchanged with `scripts/location_bridge.py`: Swift sends it as
+    /// the request's `connection_type` (pymobiledevice3/usbmux vocabulary) and
+    /// the helper echoes it back verbatim as `physical_transport` in
+    /// `helper.json`. This is the single Swift<->Python transport mapping —
+    /// the Swift raw values (`usb`/`wifi`) are NOT the wire vocabulary.
+    var helperWireValue: String {
+        switch self {
+        case .usb: return "USB"
+        case .wifi: return "Network"
+        }
+    }
+
+    /// Parses a helper wire value. Case-insensitive; also accepts the Swift
+    /// raw values so records written by older builds remain readable.
+    init?(helperWireValue value: String) {
+        switch value.lowercased() {
+        case "usb": self = .usb
+        case "network", "wifi": self = .wifi
+        default: return nil
+        }
+    }
+}
+
 // MARK: - LocationEndpointClass
 
 enum LocationEndpointClass: String, Codable, Sendable {

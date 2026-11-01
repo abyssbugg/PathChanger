@@ -260,6 +260,49 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         XCTAssertEqual(receipt.outcome, .applied)
     }
 
+    func testHelperRecordGoldenFixtureWithPythonTransportValuesBuildsReceipt() throws {
+        // Pins the EXACT active_sessions entry scripts/location_bridge.py writes
+        // to helper.json: physical_transport echoes the request's
+        // connection_type, which Swift sends as "Network" (Wi-Fi) or "USB".
+        // Regression (live 2026-11-01): "Network" failed to parse, so every
+        // successful Wi-Fi injection was reported to the GUI as failed.
+        let cases: [(wire: String, expected: LocationTransport)] = [
+            ("Network", .wifi), ("USB", .usb)
+        ]
+        for (wire, expected) in cases {
+            let json = """
+            {"device_id_sha256": "\(ManagedLocationHelperSession.deviceIDHash("device-123"))",
+             "request_id": "D81A6845-7B11-43EF-9D19-A3149FD0D097",
+             "session_generation": 3,
+             "physical_transport": "\(wire)",
+             "actual_channel": "userspaceRSD",
+             "endpoint_class": "remoteServiceDiscovery",
+             "coordinate": {"latitude": 36.3043026, "longitude": -86.6413561},
+             "acknowledged_at": 1761969911.5}
+            """
+            let session = try JSONDecoder().decode(
+                ManagedLocationHelperSession.self, from: Data(json.utf8))
+            let receipt = try XCTUnwrap(
+                session.locationReceipt(helperID: UUID()),
+                "physical_transport \(wire) must produce a receipt")
+            XCTAssertEqual(receipt.transport, expected)
+            XCTAssertEqual(receipt.actualChannel, .userspaceRSD)
+        }
+    }
+
+    func testLocationTransportHelperWireValueRoundTrips() {
+        XCTAssertEqual(LocationTransport.wifi.helperWireValue, "Network")
+        XCTAssertEqual(LocationTransport.usb.helperWireValue, "USB")
+        for transport in [LocationTransport.usb, .wifi] {
+            XCTAssertEqual(LocationTransport(helperWireValue: transport.helperWireValue), transport)
+        }
+        XCTAssertEqual(LocationTransport(helperWireValue: "usb"), .usb)
+        XCTAssertEqual(LocationTransport(helperWireValue: "wifi"), .wifi)
+        XCTAssertEqual(LocationTransport(helperWireValue: "network"), .wifi)
+        XCTAssertNil(LocationTransport(helperWireValue: "bluetooth"))
+        XCTAssertNil(LocationTransport(helperWireValue: ""))
+    }
+
     func testUnauthorizedWireResponsePreservesStructuredFailureCode() throws {
         let json = #"{"success":false,"error":"Invalid helper authentication","code":"UNAUTHORIZED"}"#
         let response = try JSONDecoder().decode(

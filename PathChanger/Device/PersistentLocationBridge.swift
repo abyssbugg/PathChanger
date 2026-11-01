@@ -355,7 +355,7 @@ struct ManagedLocationHelperSession: Codable, Equatable {
 
     func locationReceipt(helperID: UUID) -> LocationInjectionReceipt? {
         guard let parsedRequestID = UUID(uuidString: requestID),
-              let parsedTransport = LocationTransport(rawValue: physicalTransport),
+              let parsedTransport = LocationTransport(helperWireValue: physicalTransport),
               let parsedEndpoint = LocationEndpointClass(rawValue: endpointClass),
               coordinate.latitude.isFinite,
               coordinate.longitude.isFinite,
@@ -1183,7 +1183,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
 
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
-        let pythonConnectionType = device.connectionType == .wifi ? "Network" : "USB"
+        let pythonConnectionType = physicalTransport.helperWireValue
 
         let liveTunnelPID = rsdInfo?.processId
         if Self.isStaleTunnelSession(
@@ -1289,7 +1289,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
         var request = BridgeRequest(cmd: "clear_location")
         request.udid = device.id
-        request.connection_type = device.connectionType == .wifi ? "Network" : "USB"
+        request.connection_type = physicalTransport.helperWireValue
         request.rsd_address = rsdInfo?.rsdAddress
         request.rsd_port = rsdInfo.map { Int($0.rsdPort) }
         request.request_id = requestID
@@ -1336,6 +1336,15 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
               persisted.actualChannel == acknowledgement.channel,
               persisted.endpointClass == acknowledgement.endpointClass,
               persisted.coordinate == coordinate else {
+            Logger.error(
+                "[PersistentBridge] Durable-application check failed after provider success: " +
+                "matchingSessions=\(matches.count) " +
+                "recordTransport=\(matches.first?.physicalTransport ?? "nil") " +
+                "recordChannel=\(matches.first?.actualChannel ?? "nil") " +
+                "receiptParsed=\(matches.first?.locationReceipt(helperID: helperID) != nil) " +
+                "ackChannel=\(acknowledgement.channel.rawValue)",
+                category: .device
+            )
             throw PersistentBridgeError.invalidResponse(
                 "Managed helper did not persist the acknowledged location session"
             )
