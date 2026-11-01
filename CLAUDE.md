@@ -423,7 +423,7 @@ While these scripts remain present and their fail-open/destructive behavior rema
 
 Known hazards include suppressed signing failures, non-fatal verification, false success reporting, direct `/Applications` mutation, conflicting staged-app expectations, and deletion of generated products. Treat any later removal of this prohibition as a separately verified governance change.
 
-The current CI workflow contains legacy raw Apple commands and invokes the unsafe bundler. Do not copy CI commands into an agent workflow and do not treat a CI job as authoritative without inspecting its actual checks and known limitations.
+The current **release** workflows (`release.yml`, `release-validation.yml`) still invoke the unsafe bundler; `ci.yml` was remediated on `main` (2026-10-25) and no longer does. Do not copy workflow commands into an agent workflow and do not treat a CI job as authoritative without inspecting its actual checks and known limitations.
 
 ---
 
