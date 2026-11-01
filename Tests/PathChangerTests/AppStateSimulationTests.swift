@@ -14,6 +14,9 @@ final class AppStateSimulationTests: XCTestCase {
     private final class FakeManagedLocationSessionSource: ManagedLocationSessionSource {
         var adoptedHelperID: UUID?
         var adoptedHelperSessions: [ManagedLocationHelperSession]
+        var hasRecordedHeldSessions = false
+        /// Recorded sessions survive shutdown (helper could not be stopped).
+        var shutdownLeavesRecordedSessions = false
         private(set) var startCallCount = 0
         private(set) var refreshCallCount = 0
         private(set) var shutdownCallCount = 0
@@ -33,6 +36,26 @@ final class AppStateSimulationTests: XCTestCase {
 
         func shutdownHelper() async throws {
             shutdownCallCount += 1
+            if !shutdownLeavesRecordedSessions {
+                hasRecordedHeldSessions = false
+            }
+        }
+    }
+
+    private final class FakeTunnelQuitController: TunnelQuitControlling {
+        var stopResult: TunnelQuitStopResult = .stopped
+        var onStop: (() -> Void)?
+        private(set) var stopCallCount = 0
+        private(set) var retainCallCount = 0
+
+        func stopTunnelForQuit() async -> TunnelQuitStopResult {
+            stopCallCount += 1
+            onStop?()
+            return stopResult
+        }
+
+        func retainTunnelForPreservedLocation() {
+            retainCallCount += 1
         }
     }
 
@@ -470,13 +493,15 @@ final class AppStateSimulationTests: XCTestCase {
         injector: FakeLocationInjector,
         mode: AppMode,
         managedSessionSource: (any ManagedLocationSessionSource)? = nil,
-        deviceManager: DeviceManager? = nil
+        deviceManager: DeviceManager? = nil,
+        tunnelQuitController: (any TunnelQuitControlling)? = nil
     ) -> (AppState, LocationSessionIdentity) {
         let state = AppState(
             startBackgroundServices: false,
             locationInjector: injector,
             managedLocationSessionSource: managedSessionSource,
-            deviceManager: deviceManager
+            deviceManager: deviceManager,
+            tunnelQuitController: tunnelQuitController
         )
         state.selectedDevice = Device(id: "ack-device", displayName: "Ack Device", connectionType: .usb)
         state.isTunneldRunning = true
@@ -493,9 +518,11 @@ final class AppStateSimulationTests: XCTestCase {
 
     func testCancelQuitPerformsNoManagedHelperOperation() async {
         let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
         let state = AppState(
             startBackgroundServices: false,
-            managedLocationSessionSource: source
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
         )
 
         let result = await state.prepareForQuit(.cancel)
@@ -504,29 +531,147 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(source.startCallCount, 0)
         XCTAssertEqual(source.refreshCallCount, 0)
         XCTAssertEqual(source.shutdownCallCount, 0)
+        XCTAssertEqual(tunnel.stopCallCount, 0)
+        XCTAssertEqual(tunnel.retainCallCount, 0)
     }
 
     func testQuitWithoutHeldLocationShutsDownEmptyManagedHelper() async {
         let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
         let state = AppState(
             startBackgroundServices: false,
-            managedLocationSessionSource: source
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
         )
 
         let result = await state.prepareForQuitWithoutLocation()
 
         XCTAssertEqual(result, .terminate)
         XCTAssertEqual(source.shutdownCallCount, 1)
+        // Quitting with nothing held must leave nothing running: the tunnel is
+        // stopped and awaited before AppKit is told to terminate (live 2026-11-01:
+        // the tunnel outlived every normal quit).
+        XCTAssertEqual(tunnel.stopCallCount, 1)
+        XCTAssertEqual(tunnel.retainCallCount, 0)
+    }
+
+    func testQuitStopsHelperBeforeTunnel() async {
+        // The helper's DVT session rides the tunnel; stop it first.
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
+        var helperShutdownsWhenTunnelStopped: Int?
+        tunnel.onStop = { helperShutdownsWhenTunnelStopped = source.shutdownCallCount }
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+
+        _ = await state.prepareForQuitWithoutLocation()
+
+        XCTAssertEqual(helperShutdownsWhenTunnelStopped, 1)
+    }
+
+    func testUnrestoredPreservedSessionRequiresQuitDecision() {
+        // After a Preserve relaunch the helper record still holds the location even
+        // before any device is selected; a plain quit must not silently end it.
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.hasRecordedHeldSessions = true
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: FakeTunnelQuitController()
+        )
+
+        XCTAssertTrue(state.requiresLocationQuitDecision)
+    }
+
+    func testPreserveAndQuitKeepsUnrestoredSessionRunning() async {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.hasRecordedHeldSessions = true
+        let tunnel = FakeTunnelQuitController()
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+
+        let result = await state.prepareForQuit(.preserveAndQuit)
+
+        XCTAssertEqual(result, .terminate)
+        XCTAssertEqual(source.shutdownCallCount, 0)
+        XCTAssertEqual(tunnel.stopCallCount, 0)
+        XCTAssertEqual(tunnel.retainCallCount, 1)
+    }
+
+    func testClearAndQuitEndsUnrestoredSessionByStoppingHelper() async {
+        // Terminating the helper's held session is the real Clear for a session this
+        // app session never restored (nothing for the coordinator to clear).
+        let fake = FakeLocationInjector()
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.hasRecordedHeldSessions = true
+        let tunnel = FakeTunnelQuitController()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: fake,
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+
+        let result = await state.prepareForQuit(.clearAndQuit)
+
+        XCTAssertEqual(result, .terminate)
+        XCTAssertEqual(source.shutdownCallCount, 1)
+        XCTAssertEqual(tunnel.stopCallCount, 1)
+    }
+
+    func testClearAndQuitReportsUnrestoredSessionThatSurvived() async {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.hasRecordedHeldSessions = true
+        source.shutdownLeavesRecordedSessions = true
+        let tunnel = FakeTunnelQuitController()
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+
+        let result = await state.prepareForQuit(.clearAndQuit)
+
+        guard case .failed = result else {
+            return XCTFail("A held location that survived Clear must be reported, got \(result)")
+        }
+        XCTAssertEqual(tunnel.stopCallCount, 0, "the tunnel carries the surviving session")
+    }
+
+    func testQuitWithoutHeldLocationReportsTunnelThatWouldNotStop() async {
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
+        tunnel.stopResult = .failed("tunnel PID 4242 is still running")
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+
+        let result = await state.prepareForQuitWithoutLocation()
+
+        guard case .failed(let message) = result else {
+            return XCTFail("A tunnel that survives quit must be reported, got \(result)")
+        }
+        XCTAssertTrue(message.contains("tunnel PID 4242 is still running"), message)
     }
 
     func testPreserveAndQuitKeepsHeldTruthAndManagedHelperAlive() async throws {
         let fake = FakeLocationInjector()
         let helperID = UUID()
         let source = FakeManagedLocationSessionSource(helperID: helperID, sessions: [])
+        let tunnel = FakeTunnelQuitController()
         let (state, session) = makeAcknowledgementState(
             injector: fake,
             mode: .teleport,
-            managedSessionSource: source
+            managedSessionSource: source,
+            tunnelQuitController: tunnel
         )
         state.stageLocation(first, for: .teleport)
 
@@ -557,6 +702,10 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(source.startCallCount, 1)
         XCTAssertEqual(source.refreshCallCount, 1)
         XCTAssertEqual(source.shutdownCallCount, 0)
+        // The helper injects only over the app tunnel's RSD endpoint (885ea3a), so a
+        // preserved location needs the tunnel kept alive deliberately, not stopped.
+        XCTAssertEqual(tunnel.stopCallCount, 0)
+        XCTAssertEqual(tunnel.retainCallCount, 1)
         XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
         XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
         let preserveCalls = await fake.calls()
@@ -617,10 +766,12 @@ final class AppStateSimulationTests: XCTestCase {
     func testClearAndQuitRequiresClearThenShutsDownManagedHelper() async throws {
         let fake = FakeLocationInjector()
         let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
         let (state, session) = makeAcknowledgementState(
             injector: fake,
             mode: .teleport,
-            managedSessionSource: source
+            managedSessionSource: source,
+            tunnelQuitController: tunnel
         )
         state.stageLocation(first, for: .teleport)
 
@@ -633,6 +784,8 @@ final class AppStateSimulationTests: XCTestCase {
 
         XCTAssertEqual(result, .terminate)
         XCTAssertEqual(source.shutdownCallCount, 1)
+        XCTAssertEqual(tunnel.stopCallCount, 1)
+        XCTAssertEqual(tunnel.retainCallCount, 0)
         XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         let clearCalls = await fake.calls()

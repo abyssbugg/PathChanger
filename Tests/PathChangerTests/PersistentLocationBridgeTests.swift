@@ -421,6 +421,50 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
     }
 
     @MainActor
+    func testNeverStartedBridgeShutsDownHelperLeftByEarlierSession() async throws {
+        // Quit in a session that never used the helper must still stop a helper an
+        // earlier session left running; shutdownHelper used to return early.
+        guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {
+            throw XCTSkip("Managed Python runtime is unavailable")
+        }
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let bridgeScript = repositoryRoot.appendingPathComponent("scripts/location_bridge.py")
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-orphan-helper-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = ManagedLocationHelperPaths(baseDirectory: root)
+        let earlierSession = ManagedLocationHelperController(
+            paths: paths,
+            pythonPath: PythonPathResolver.managedPythonPath,
+            bridgePath: bridgeScript.path
+        )
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths,
+            pythonPath: PythonPathResolver.managedPythonPath,
+            bridgePath: bridgeScript.path
+        ))
+
+        _ = try await earlierSession.connectOrLaunch()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path))
+        XCTAssertFalse(bridge.isRunning)
+
+        do {
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await earlierSession.shutdown()
+            throw error
+        }
+
+        let stillRunning = FileManager.default.fileExists(atPath: paths.recordURL.path)
+            || FileManager.default.fileExists(atPath: paths.socketURL.path)
+        if stillRunning { try? await earlierSession.shutdown() }
+        XCTAssertFalse(stillRunning, "the earlier session's helper must be shut down")
+    }
+
+    @MainActor
     func testPersistentBridgeUsesManagedHelperForStartPingAndShutdown() async throws {
         guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {
             throw XCTSkip("Managed Python runtime is unavailable")

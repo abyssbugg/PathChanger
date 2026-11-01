@@ -158,6 +158,27 @@ final class TunnelHealthMonitorTests: XCTestCase {
         XCTAssertEqual(prober.probes.first?.port, rsdPort)
     }
 
+    // MARK: - Liveness and Ownership
+
+    func testProcessLivenessUsesNonBlockingSignalCheck() {
+        // kill(pid, 0): no /bin/ps spawn on the main actor every 2 s.
+        XCTAssertTrue(TunnelHealthMonitor.isProcessAlive(pid: getpid()))
+        XCTAssertFalse(TunnelHealthMonitor.isProcessAlive(pid: Int32.max))
+        // launchd is root-owned: EPERM still means alive.
+        XCTAssertTrue(TunnelHealthMonitor.isProcessAlive(pid: 1))
+    }
+
+    func testDeviceStateManagerDoesNotRunASecondHealthMonitor() {
+        // TunneldManager's monitor is the only one wired to the state machine. A second,
+        // handler-less monitor doubled every probe and could never change state.
+        let deviceManager = DeviceManager()
+        deviceManager.stopAutoRefresh()
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+
+        let monitors = Mirror(reflecting: manager).children.filter { $0.value is TunnelHealthMonitor }
+        XCTAssertTrue(monitors.isEmpty, "DeviceStateManager must not own a TunnelHealthMonitor")
+    }
+
     func testReachableEndpointKeepsStatusHealthy() async throws {
         makeSharedTunnelRunning(with: usableTunnelInfo(processId: nil))
         prober.result = true

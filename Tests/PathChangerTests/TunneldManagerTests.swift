@@ -579,6 +579,268 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(source.contains("200_000_000"))
     }
 
+    // MARK: - Quit Teardown (live 2026-11-01: tunnel outlived every normal quit)
+
+    private func launchChild(_ executable: String, _ arguments: [String]) throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        return process
+    }
+
+    func testTerminatorStopsOwnedChildAndWaitsForExit() async throws {
+        let child = try launchChild("/bin/sleep", ["30"])
+        defer { if child.isRunning { child.terminate() } }
+
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: child.processIdentifier,
+            requiredCommandPattern: nil,
+            isAlive: { child.isRunning },
+            termGrace: 2.0,
+            killGrace: 1.0
+        )
+
+        XCTAssertEqual(outcome, .exited)
+        XCTAssertFalse(child.isRunning, "stop must not return before the process has exited")
+    }
+
+    func testTerminatorEscalatesToSIGKILLWhenSIGTERMIsIgnored() async throws {
+        let child = try launchChild("/usr/bin/perl", ["-e", "$SIG{TERM}='IGNORE'; sleep 30"])
+        defer { if child.isRunning { kill(child.processIdentifier, SIGKILL) } }
+        try await Task.sleep(nanoseconds: 300_000_000) // let perl install the TERM handler
+
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: child.processIdentifier,
+            requiredCommandPattern: nil,
+            isAlive: { child.isRunning },
+            termGrace: 0.3,
+            killGrace: 1.0
+        )
+
+        XCTAssertEqual(outcome, .exited)
+        XCTAssertFalse(child.isRunning)
+    }
+
+    func testTerminatorRefusesAdoptedPidThatIsNotATunnel() async throws {
+        // An adopted tunnel is identified only by PID. If that PID no longer runs the
+        // tunnel command (exited and reused), it must never be signalled.
+        let unrelated = try launchChild("/bin/sleep", ["30"])
+        defer { if unrelated.isRunning { unrelated.terminate() } }
+
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: unrelated.processIdentifier,
+            requiredCommandPattern: TunnelMode.wifi.processPattern,
+            isAlive: { unrelated.isRunning },
+            termGrace: 0.3,
+            killGrace: 0.3
+        )
+
+        guard case .refused = outcome else {
+            return XCTFail("Expected refusal for a non-tunnel PID, got \(outcome)")
+        }
+        XCTAssertTrue(unrelated.isRunning, "a refused PID must not be signalled")
+    }
+
+    func testTerminatorStopsAdoptedPidWhoseCommandIsTheTunnel() async throws {
+        let decoy = try launchChild(
+            "/usr/bin/perl",
+            ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
+        )
+        defer { if decoy.isRunning { kill(decoy.processIdentifier, SIGKILL) } }
+        try await Task.sleep(nanoseconds: 300_000_000) // let perl rename its argv
+
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: decoy.processIdentifier,
+            requiredCommandPattern: TunnelMode.wifi.processPattern,
+            isAlive: { decoy.isRunning },
+            termGrace: 2.0,
+            killGrace: 1.0
+        )
+
+        XCTAssertEqual(outcome, .exited)
+        XCTAssertFalse(decoy.isRunning)
+    }
+
+    func testTerminatorReportsAlreadyExitedPid() async {
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: Int32.max,
+            requiredCommandPattern: nil,
+            isAlive: { false },
+            termGrace: 0.1,
+            killGrace: 0.1
+        )
+        XCTAssertEqual(outcome, .notRunning)
+    }
+
+    func testExitBackstopSignalsSynchronouslyWithoutDeferredTasks() throws {
+        // AppKit calls exit() as soon as applicationWillTerminate returns, so a
+        // `Task { stopTunnel() }` there never runs. The backstop must be synchronous,
+        // and the duplicate willTerminate observer (same dead Task) must be gone.
+        let source = try tunneldManagerSource()
+        guard let start = source.range(of: "func applicationWillTerminate"),
+              let end = source.range(
+                of: "applicationShouldTerminateAfterLastWindowClosed",
+                range: start.upperBound..<source.endIndex
+              ) else {
+            return XCTFail("Unable to isolate applicationWillTerminate")
+        }
+        let body = source[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(body.contains("stopTunnelBeforeExit()"), String(body))
+        XCTAssertFalse(body.contains("Task {"), String(body))
+        XCTAssertFalse(source.contains("willTerminateNotification"))
+    }
+
+    func testRetainedTunnelIsLeftRunningAtExit() throws {
+        let defaults = try isolatedOwnedTunnelDefaults()
+        let child = try launchChild("/bin/sleep", ["30"])
+        defer { if child.isRunning { child.terminate() } }
+        manager.installOwnedTunnelForTesting(child, mode: .wifi)
+        defer { manager.stopTunnel(); OwnedTunnelRecord.clear(from: defaults) }
+
+        manager.retainTunnelForPreservedLocation()
+        manager.stopTunnelBeforeExit()
+
+        XCTAssertTrue(child.isRunning, "Preserve keeps the tunnel the helper's session rides on")
+        XCTAssertNotNil(OwnedTunnelRecord.load(from: defaults), "the relaunch needs the ownership record")
+    }
+
+    func testExitBackstopStopsOwnedTunnelWhenNotRetained() throws {
+        let defaults = try isolatedOwnedTunnelDefaults()
+        let child = try launchChild("/bin/sleep", ["30"])
+        defer { if child.isRunning { child.terminate() } }
+        manager.installOwnedTunnelForTesting(child, mode: .wifi)
+        defer { manager.stopTunnel(); OwnedTunnelRecord.clear(from: defaults) }
+
+        manager.stopTunnelBeforeExit()
+
+        let deadline = Date().addingTimeInterval(1.0)
+        while child.isRunning, Date() < deadline { usleep(20_000) }
+        XCTAssertFalse(child.isRunning)
+    }
+
+    func testStopTunnelForQuitStopsOwnedTunnelAndClearsRecord() async throws {
+        let defaults = try isolatedOwnedTunnelDefaults()
+        let child = try launchChild("/bin/sleep", ["30"])
+        defer { if child.isRunning { child.terminate() } }
+        manager.installOwnedTunnelForTesting(child, mode: .wifi)
+
+        let result = await manager.stopTunnelForQuit()
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertFalse(child.isRunning, "quit must return only after the tunnel exited")
+        XCTAssertNil(OwnedTunnelRecord.load(from: defaults))
+        XCTAssertFalse(manager.hasOwnedTunnelProcessForTesting)
+    }
+
+    func testRelaunchOwnsOnlyTheRecordedTunnelInstance() async throws {
+        let defaults = try isolatedOwnedTunnelDefaults()
+        let tunnel = try launchChild(
+            "/usr/bin/perl",
+            ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
+        )
+        defer { if tunnel.isRunning { kill(tunnel.processIdentifier, SIGKILL) } }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Session 1 launched it (record written), then Preserve-and-Quit left it running.
+        manager.installOwnedTunnelForTesting(tunnel, mode: .wifi)
+        // Session 2 adopts it by PID: the record proves ownership.
+        manager.adoptTunnelForTesting(pid: tunnel.processIdentifier)
+        XCTAssertTrue(manager.adoptedTunnelIsOwnedForTesting)
+
+        let result = await manager.stopTunnelForQuit()
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertFalse(tunnel.isRunning)
+        XCTAssertNil(OwnedTunnelRecord.load(from: defaults))
+    }
+
+    func testQuitLeavesTunnelPathChangerDidNotStartRunning() async throws {
+        let defaults = try isolatedOwnedTunnelDefaults()
+        let foreign = try launchChild(
+            "/usr/bin/perl",
+            ["-e", "$0='python3 -m \(TunnelMode.wifi.processPattern) --native'; sleep 30"]
+        )
+        defer { if foreign.isRunning { kill(foreign.processIdentifier, SIGKILL) } }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        OwnedTunnelRecord.clear(from: defaults)
+
+        manager.adoptTunnelForTesting(pid: foreign.processIdentifier)
+        XCTAssertFalse(manager.adoptedTunnelIsOwnedForTesting)
+
+        let result = await manager.stopTunnelForQuit()
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertTrue(foreign.isRunning, "a tunnel started outside PathChanger is never signalled")
+    }
+
+    func testFailedQuitStopKeepsTunnelStateForRetry() async throws {
+        try XCTSkipIf(getuid() == 0, "requires an unprivileged test host")
+        let defaults = try isolatedOwnedTunnelDefaults()
+        // A root-owned system daemon stands in for a root-owned leftover tunnel: SIGTERM
+        // from this user fails with EPERM. `.auto` skips the command-line check.
+        let rootPID = try rootOwnedDaemonPID()
+        let rootStart = try XCTUnwrap(ProcessStartTime.of(pid: rootPID))
+        OwnedTunnelRecord(pid: rootPID, startTime: rootStart, mode: .auto).save(to: defaults)
+        manager.adoptTunnelForTesting(pid: rootPID)
+        defer { OwnedTunnelRecord.clear(from: defaults); manager.adoptTunnelForTesting(pid: 0) }
+        XCTAssertTrue(manager.adoptedTunnelIsOwnedForTesting)
+
+        let first = await manager.stopTunnelForQuit()
+        guard case .failed = first else { return XCTFail("expected failure, got \(first)") }
+        XCTAssertTrue(manager.adoptedTunnelIsOwnedForTesting, "failure must not forget the survivor")
+        XCTAssertNotNil(OwnedTunnelRecord.load(from: defaults))
+
+        let retry = await manager.stopTunnelForQuit()
+        guard case .failed = retry else {
+            return XCTFail("a retried quit must still see the surviving tunnel, got \(retry)")
+        }
+    }
+
+    private func rootOwnedDaemonPID() throws -> Int32 {
+        let pgrep = Process()
+        let pipe = Pipe()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-U", "0", "-x", "logd"]
+        pgrep.standardOutput = pipe
+        defer { try? pipe.fileHandleForReading.close() }
+        try pgrep.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        pgrep.waitUntilExit()
+        let pid = output.split(whereSeparator: \.isNewline).compactMap { Int32($0) }.first { $0 > 1 }
+        return try XCTUnwrap(pid, "logd should always be running as root")
+    }
+
+    func testProcessStartTimeIdentifiesOneProcessInstance() throws {
+        let child = try launchChild("/bin/sleep", ["30"])
+        defer { if child.isRunning { child.terminate() } }
+        let start = try XCTUnwrap(ProcessStartTime.of(pid: child.processIdentifier))
+        let record = OwnedTunnelRecord(pid: child.processIdentifier, startTime: start, mode: .wifi)
+        XCTAssertTrue(record.isLive)
+
+        let reused = OwnedTunnelRecord(
+            pid: child.processIdentifier,
+            startTime: ProcessStartTime(seconds: start.seconds - 60, microseconds: start.microseconds),
+            mode: .wifi
+        )
+        XCTAssertFalse(reused.isLive, "same PID with another start time is a different process")
+        XCTAssertNil(ProcessStartTime.of(pid: Int32.max))
+    }
+
+    private func isolatedOwnedTunnelDefaults() throws -> UserDefaults {
+        let suite = "com.pathchanger.tests.ownedtunnel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        manager.ownedTunnelDefaults = defaults
+        addTeardownBlock { @MainActor [weak self] in
+            defaults.removePersistentDomain(forName: suite)
+            self?.manager.ownedTunnelDefaults = .standard
+        }
+        return defaults
+    }
+
     private func tunneldManagerSource() throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

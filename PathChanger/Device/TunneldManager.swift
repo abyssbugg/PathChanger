@@ -51,7 +51,7 @@ enum TunnelStartPolicy {
 /// manager.preferredMode = .wifi  // Set preferred mode
 /// await manager.startTunnel(mode: .auto)  // Auto will respect preference
 /// ```
-enum TunnelMode: String, CaseIterable, Identifiable {
+enum TunnelMode: String, CaseIterable, Identifiable, Codable {
     case auto = "Auto"
     case usb = "USB (Lockdown)"
     case wifi = "WiFi Only"
@@ -185,6 +185,175 @@ struct TunnelInfo: Equatable {
         !rsdAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && rsdPort > 0
             && rsdPort <= 65_535
+    }
+}
+
+/// Kernel start time of a process. A PID plus its start time identifies one process
+/// instance, so a reused PID never matches a recorded tunnel.
+struct ProcessStartTime: Codable, Equatable, Sendable {
+    let seconds: Int
+    let microseconds: Int32
+
+    static func of(pid: Int32) -> ProcessStartTime? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0,
+              size > 0,
+              info.kp_proc.p_pid == pid else {
+            return nil
+        }
+        let start = info.kp_proc.p_un.__p_starttime
+        return ProcessStartTime(seconds: Int(start.tv_sec), microseconds: start.tv_usec)
+    }
+}
+
+/// The tunnel process PathChanger launched, persisted so a relaunch can prove that a
+/// surviving tunnel (kept by Preserve and Quit) is ours before it may be stopped.
+/// Tunnels started by anything else are adopted read-only and never signalled.
+struct OwnedTunnelRecord: Codable, Equatable, Sendable {
+    let pid: Int32
+    let startTime: ProcessStartTime
+    let mode: TunnelMode
+
+    static let defaultsKey = "ownedTunnelProcess"
+
+    static func load(from defaults: UserDefaults) -> OwnedTunnelRecord? {
+        guard let data = defaults.data(forKey: defaultsKey) else { return nil }
+        return try? JSONDecoder().decode(OwnedTunnelRecord.self, from: data)
+    }
+
+    func save(to defaults: UserDefaults) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+
+    static func clear(from defaults: UserDefaults) {
+        defaults.removeObject(forKey: defaultsKey)
+    }
+
+    /// True only while this exact process instance is still running.
+    var isLive: Bool {
+        ProcessStartTime.of(pid: pid) == startTime
+    }
+}
+
+/// Stops one tunnel process and waits for it to exit (SIGTERM, then SIGKILL).
+///
+/// Quit must not return before the tunnel has exited: AppKit calls `exit()` right
+/// after termination is approved, and anything still deferred to a Task never runs
+/// (live 2026-11-01: the tunnel outlived every normal quit).
+enum TunnelProcessTerminator {
+    enum Outcome: Equatable {
+        /// The process was signalled and has exited.
+        case exited
+        /// Nothing to stop: the PID was already gone.
+        case notRunning
+        /// The PID is no longer the recorded tunnel instance; it was not signalled.
+        case refused(String)
+        /// The PID is a tunnel this user may not signal (root-owned leftover).
+        case notPermitted(String)
+        /// Still alive after SIGKILL.
+        case stillRunning(String)
+    }
+
+    /// - Parameters:
+    ///   - expectedStartTime: when set, the PID must still be this exact process
+    ///     instance; it is re-checked before SIGTERM and again before SIGKILL.
+    ///   - requiredCommandPattern: when set, the PID's command line must contain it.
+    static func stop(
+        pid: Int32,
+        expectedStartTime: ProcessStartTime? = nil,
+        requiredCommandPattern: String?,
+        isAlive: @escaping () -> Bool,
+        termGrace: TimeInterval = 2.0,
+        killGrace: TimeInterval = 1.0
+    ) async -> Outcome {
+        guard pid > 1 else { return .refused("invalid PID \(pid)") }
+        guard isAlive() else { return .notRunning }
+
+        func identityHolds() -> Bool {
+            if let expectedStartTime, ProcessStartTime.of(pid: pid) != expectedStartTime {
+                return false
+            }
+            if let requiredCommandPattern,
+               commandLine(of: pid)?.contains(requiredCommandPattern) != true {
+                return false
+            }
+            return true
+        }
+
+        guard identityHolds() else {
+            return isAlive() ? .refused("PID \(pid) is not the recorded tunnel process") : .notRunning
+        }
+
+        if kill(pid, SIGTERM) != 0 {
+            let code = errno
+            if code == ESRCH { return .notRunning }
+            let message = "PID \(pid) cannot be signalled: \(String(cString: strerror(code)))"
+            return code == EPERM ? .notPermitted(message) : .stillRunning(message)
+        }
+        if await waitForExit(isAlive: isAlive, timeout: termGrace) { return .exited }
+
+        // Re-verify before escalating: never SIGKILL a PID that was reused meanwhile.
+        guard identityHolds() else { return .exited }
+        if kill(pid, SIGKILL) != 0, errno != ESRCH {
+            return .stillRunning("SIGKILL to PID \(pid) failed: \(String(cString: strerror(errno)))")
+        }
+        if await waitForExit(isAlive: isAlive, timeout: killGrace) { return .exited }
+        return .stillRunning("PID \(pid) did not exit after SIGKILL")
+    }
+
+    /// Last-chance synchronous stop for `applicationWillTerminate`, where no awaited
+    /// work can run. Bounded so app exit is never held up for more than `termGrace`.
+    static func stopBeforeExit(pid: Int32, isAlive: () -> Bool, termGrace: TimeInterval = 0.5) {
+        guard pid > 1, isAlive(), kill(pid, SIGTERM) == 0 else { return }
+        let deadline = Date().addingTimeInterval(termGrace)
+        while isAlive(), Date() < deadline {
+            usleep(20_000)
+        }
+        if isAlive() {
+            kill(pid, SIGKILL)
+        }
+    }
+
+    /// Existence check for a PID that is not our child (adopted tunnel).
+    /// EPERM means the process exists but belongs to another user.
+    static func isAlive(pid: Int32) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    /// Full command line of `pid`, or nil when the process is gone.
+    static func commandLine(of pid: Int32) -> String? {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "command=", "-p", String(pid)]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        defer { try? pipe.fileHandleForReading.close() }
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let command = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
+    }
+
+    private static func waitForExit(isAlive: () -> Bool, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while isAlive() {
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return true
     }
 }
 
@@ -328,7 +497,7 @@ enum TunnelStartupWaiter {
 /// - ``stopTunnel()``
 /// - ``checkIfRunning()``
 @MainActor
-class TunneldManager: ObservableObject {
+class TunneldManager: ObservableObject, TunnelQuitControlling {
     // MARK: Published State
 
     /// Formal state machine for validated transitions
@@ -440,17 +609,9 @@ class TunneldManager: ObservableObject {
                 self?.syncStateWithStateMachine()
             }
 
-        // Register for app termination to clean up
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let strongSelf = self else { return }
-            Task { @MainActor in
-                strongSelf.stopTunnel()
-            }
-        }
+        // App-exit cleanup is AppDelegate.applicationWillTerminate -> stopTunnelBeforeExit()
+        // (synchronous). The observer that used to live here only enqueued a Task that
+        // never ran before exit().
     }
 
     /// Handle actions emitted by the state machine
@@ -541,6 +702,7 @@ class TunneldManager: ObservableObject {
 
         // First check if any tunnel is already running
         if let runningMode = await detectRunningTunnel() {
+            resolveAdoptedOwnership(pid: await discoverPid(for: runningMode))
             stateMachine.send(.externalTunnelDetected(mode: runningMode))
             return
         }
@@ -577,6 +739,7 @@ class TunneldManager: ObservableObject {
             processId: pid
         )
         tunnelInfo = adopted
+        resolveAdoptedOwnership(pid: pid)
         stateMachine.send(.connectionEstablished(info: adopted))
     }
 
@@ -622,6 +785,7 @@ class TunneldManager: ObservableObject {
                     "Adopting existing \(runningMode.rawValue) tunnel with usable endpoint",
                     category: .device
                 )
+                resolveAdoptedOwnership(pid: await discoverPid(for: runningMode))
                 stateMachine.send(.externalTunnelDetected(mode: runningMode))
                 return
             }
@@ -716,6 +880,8 @@ class TunneldManager: ObservableObject {
 
     /// Stop the tunnel
     func stopTunnel() {
+        isTunnelRetainedForExit = false
+
         // Send stop event to state machine
         stateMachine.send(.stopRequested)
 
@@ -724,6 +890,26 @@ class TunneldManager: ObservableObject {
 
         // Terminate only the concrete Process instance launched by this manager.
         terminateOwnedTunnelProcess()
+
+        // A tunnel PathChanger started in an earlier session (Preserve and Quit) has no
+        // Process handle; stop it by its recorded PID + start time. Tunnels started by
+        // anything else are only detached, never signalled.
+        if let record = adoptedOwnedTunnel {
+            let stop = Task { @MainActor [weak self] () -> TunnelProcessTerminator.Outcome in
+                let outcome = await Self.stopRecordedTunnel(record)
+                switch outcome {
+                case .notPermitted(let reason), .stillRunning(let reason):
+                    self?.lastError = "Tunnel did not stop: \(reason)"
+                    Logger.error("[SECURITY] Adopted tunnel did not stop: \(reason)", category: .security)
+                case .exited, .notRunning, .refused:
+                    self?.clearOwnedTunnelRecord(ifMatching: record)
+                }
+                return outcome
+            }
+            inFlightAdoptedStop = (record, stop)
+        }
+        adoptedOwnedTunnel = nil
+
         tunneldProcess = nil
         outputPipe = nil
         errorPipe = nil
@@ -733,6 +919,151 @@ class TunneldManager: ObservableObject {
         // Mark process as stopped
         stateMachine.send(.processStopped)
     }
+
+    // MARK: - Quit Teardown
+
+    /// Where the owned-tunnel record persists. Internal so tests use an isolated suite.
+    var ownedTunnelDefaults: UserDefaults = .standard
+
+    /// The PathChanger-started tunnel adopted from an earlier session (PID + start time
+    /// matched the persisted record). Nil for tunnels started by anything else.
+    private var adoptedOwnedTunnel: OwnedTunnelRecord?
+
+    /// An explicit Stop of an adopted tunnel escalates in the background; quit awaits it.
+    private var inFlightAdoptedStop: (record: OwnedTunnelRecord, task: Task<TunnelProcessTerminator.Outcome, Never>)?
+
+    /// Set when the user chose Preserve and Quit: the preserved location is held by
+    /// the helper over this tunnel's RSD endpoint, so the tunnel must outlive the app.
+    private(set) var isTunnelRetainedForExit = false
+
+    func retainTunnelForPreservedLocation() {
+        isTunnelRetainedForExit = true
+        Logger.info("[Tunnel] Retaining tunnel past app exit for a preserved location", category: .device)
+    }
+
+    /// Stops the tunnel PathChanger started (this session, or adopted by record) and
+    /// returns only after its process exited. On failure, tunnel state is left as-is so
+    /// the UI and a retried quit still see the surviving process.
+    func stopTunnelForQuit() async -> TunnelQuitStopResult {
+        isTunnelRetainedForExit = false
+
+        if let inFlight = inFlightAdoptedStop {
+            let outcome = await inFlight.task.value
+            inFlightAdoptedStop = nil
+            if case .notPermitted(let reason) = outcome { return .failed(reason) }
+            if case .stillRunning(let reason) = outcome { return .failed(reason) }
+        }
+
+        let outcome: TunnelProcessTerminator.Outcome?
+        if let process = tunneldProcess {
+            outcome = await TunnelProcessTerminator.stop(
+                pid: process.processIdentifier,
+                requiredCommandPattern: nil,
+                isAlive: { process.isRunning }
+            )
+        } else if let record = adoptedOwnedTunnel {
+            outcome = await Self.stopRecordedTunnel(record)
+        } else {
+            outcome = nil
+        }
+
+        switch outcome {
+        case .notPermitted(let reason), .stillRunning(let reason):
+            Logger.error("[SECURITY] Tunnel did not stop at quit: \(reason)", category: .security)
+            lastError = "Tunnel did not stop: \(reason)"
+            return .failed(reason)
+        case nil, .exited, .notRunning, .refused:
+            break
+        }
+
+        // The process has exited; clear lifecycle state exactly as an explicit Stop
+        // does, without re-signalling anything. A tunnel PathChanger did not start is
+        // only detached.
+        if isRunning, adoptedOwnedTunnel == nil, tunneldProcess == nil {
+            Logger.info("[Tunnel] Leaving a tunnel PathChanger did not start running at quit", category: .device)
+        }
+        tunneldProcess = nil
+        adoptedOwnedTunnel = nil
+        OwnedTunnelRecord.clear(from: ownedTunnelDefaults)
+        stopTunnel()
+        return .stopped
+    }
+
+    /// Synchronous backstop for `applicationWillTerminate` (quit paths that never ran
+    /// `stopTunnelForQuit`, e.g. termination before a window appeared).
+    func stopTunnelBeforeExit() {
+        guard !isTunnelRetainedForExit else {
+            Logger.info("[Tunnel] Leaving retained tunnel running at exit", category: .device)
+            return
+        }
+        if let process = tunneldProcess {
+            TunnelProcessTerminator.stopBeforeExit(
+                pid: process.processIdentifier,
+                isAlive: { process.isRunning }
+            )
+        } else if let record = adoptedOwnedTunnel, record.isLive {
+            TunnelProcessTerminator.stopBeforeExit(
+                pid: record.pid,
+                isAlive: { record.isLive }
+            )
+        }
+        if !(tunneldProcess?.isRunning ?? false), !(adoptedOwnedTunnel?.isLive ?? false) {
+            OwnedTunnelRecord.clear(from: ownedTunnelDefaults)
+        }
+    }
+
+    /// Records the tunnel this manager just launched so a relaunch can prove ownership.
+    private func recordOwnedTunnel(pid: Int32, mode: TunnelMode) {
+        guard let startTime = ProcessStartTime.of(pid: pid) else { return }
+        OwnedTunnelRecord(pid: pid, startTime: startTime, mode: mode).save(to: ownedTunnelDefaults)
+    }
+
+    private func clearOwnedTunnelRecord(ifMatching record: OwnedTunnelRecord) {
+        if OwnedTunnelRecord.load(from: ownedTunnelDefaults) == record {
+            OwnedTunnelRecord.clear(from: ownedTunnelDefaults)
+        }
+    }
+
+    /// After adopting a running tunnel at `pid`, decide whether PathChanger owns it.
+    private func resolveAdoptedOwnership(pid: Int32?) {
+        guard let pid,
+              let record = OwnedTunnelRecord.load(from: ownedTunnelDefaults),
+              record.pid == pid,
+              record.isLive else {
+            adoptedOwnedTunnel = nil
+            if let record = OwnedTunnelRecord.load(from: ownedTunnelDefaults), !record.isLive {
+                OwnedTunnelRecord.clear(from: ownedTunnelDefaults)
+            }
+            return
+        }
+        adoptedOwnedTunnel = record
+    }
+
+    private static func stopRecordedTunnel(_ record: OwnedTunnelRecord) async -> TunnelProcessTerminator.Outcome {
+        await TunnelProcessTerminator.stop(
+            pid: record.pid,
+            expectedStartTime: record.startTime,
+            requiredCommandPattern: record.mode == .auto ? nil : record.mode.processPattern,
+            isAlive: { record.isLive }
+        )
+    }
+
+#if DEBUG
+    /// Test seam: install a launched process as this session's owned tunnel.
+    func installOwnedTunnelForTesting(_ process: Process, mode: TunnelMode) {
+        tunneldProcess = process
+        recordOwnedTunnel(pid: process.processIdentifier, mode: mode)
+    }
+
+    /// Test seam: run the relaunch ownership decision for an adopted PID.
+    func adoptTunnelForTesting(pid: Int32) {
+        tunneldProcess = nil
+        resolveAdoptedOwnership(pid: pid)
+    }
+
+    var adoptedTunnelIsOwnedForTesting: Bool { adoptedOwnedTunnel != nil }
+    var hasOwnedTunnelProcessForTesting: Bool { tunneldProcess != nil }
+#endif
 
     /// Restart tunnel
     func restartTunnel() async {
@@ -825,6 +1156,7 @@ class TunneldManager: ObservableObject {
 
         tunneldProcess = process
         let pid = process.processIdentifier
+        recordOwnedTunnel(pid: pid, mode: mode)
         stateMachine.send(.processLaunched(pid: pid))
 
         let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
@@ -847,6 +1179,10 @@ class TunneldManager: ObservableObject {
         do {
             let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
             let pids = output.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            // Prefer the tunnel PathChanger itself launched when it is among the matches.
+            if let recorded = OwnedTunnelRecord.load(from: ownedTunnelDefaults)?.pid, pids.contains(recorded) {
+                return recorded
+            }
             return pids.first { $0 > 1 }
         } catch {
             return nil
@@ -1387,8 +1723,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     nonisolated func applicationWillTerminate(_ notification: Notification) {
-        Task { @MainActor in
-            TunneldManager.shared.stopTunnel()
+        // AppKit calls exit() as soon as this returns: only synchronous work runs here.
+        MainActor.assumeIsolated {
+            TunneldManager.shared.stopTunnelBeforeExit()
         }
     }
 

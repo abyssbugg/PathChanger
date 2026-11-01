@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
     @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = true
     @State private var showDiagnostics: Bool = false
+    @State private var confirmTunnelStop = false
 
     var body: some View {
         Form {
@@ -169,10 +170,20 @@ struct SettingsView: View {
                 // Control buttons
                 if tunneldManager.isRunning {
                     Button("Stop Tunnel") {
-                        tunneldManager.stopTunnel()
+                        if appState.requiresLocationQuitDecision {
+                            confirmTunnelStop = true
+                        } else {
+                            tunneldManager.stopTunnel()
+                        }
                     }
                     .buttonStyle(.bordered)
                     .tint(.red)
+                    .confirmationDialog("Stop the tunnel?", isPresented: $confirmTunnelStop) {
+                        Button("Stop Tunnel", role: .destructive) { tunneldManager.stopTunnel() }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("The simulated location is held over this tunnel. Stopping it ends the location on the device.")
+                    }
                 } else if tunneldManager.isStarting {
                     Button("Starting...") { }
                         .buttonStyle(.bordered)

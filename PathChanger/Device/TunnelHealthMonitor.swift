@@ -175,6 +175,15 @@ class TunnelHealthMonitor: ObservableObject {
     // MARK: Failure notification
     private var onFailureDetected: (() -> Void)?
 
+    /// Non-blocking liveness check. `kill(pid, 0)` replaces a `/bin/ps` spawn that ran
+    /// with `waitUntilExit()` on the main actor every 2 s. EPERM means the process
+    /// exists but belongs to another user (a root-owned leftover tunnel).
+    nonisolated static func isProcessAlive(pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
     // MARK: Monitoring Control
 
     func startMonitoring() {
@@ -242,17 +251,7 @@ class TunnelHealthMonitor: ObservableObject {
 
         // Verify process is still running if we have a PID
         if let pid = tunnelInfo.processId {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/ps")
-            process.arguments = ["-p", String(pid)]
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else {
-                    return false
-                }
-            } catch {
+            guard Self.isProcessAlive(pid: pid) else {
                 return false
             }
         } else {

@@ -270,6 +270,21 @@ protocol LocationTerminationHandling: AnyObject {
     func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult
 }
 
+enum TunnelQuitStopResult: Equatable, Sendable {
+    case stopped
+    case failed(String)
+}
+
+/// Tunnel teardown used by the quit flow. `TunneldManager.shared` is the only
+/// production conformer; tests substitute a fake.
+@MainActor
+protocol TunnelQuitControlling: AnyObject {
+    /// Stops the tunnel and returns only after its process has exited.
+    func stopTunnelForQuit() async -> TunnelQuitStopResult
+    /// Keeps the tunnel running past app exit for a preserved location session.
+    func retainTunnelForPreservedLocation()
+}
+
 // MARK: - App State
 
 /// Global application state with full simulation control
@@ -444,12 +459,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     var deviceManager: DeviceManager { device.deviceManager }
     var reliabilityManager: ReliabilityManager { device.reliabilityManager }
     var usbFallbackManager: USBFallbackManager { device.usbFallbackManager }
-    var tunnelHealthMonitor: TunnelHealthMonitor { device.tunnelHealthMonitor }
 
     // MARK: Private
     private let locationBridge: DevLocationBridge
     private let locationInjector: any LocationInjecting
     private let managedLocationSessionSource: any ManagedLocationSessionSource
+    private let tunnelQuitController: any TunnelQuitControlling
     private let routeDelay: @MainActor @Sendable (TimeInterval) async -> Void
     /// DDI mount gate for the injection path. Armed via `ddiPreparerFactory`
     /// at the production entry point; nil in tests/previews so no device
@@ -497,6 +512,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         managedLocationSessionSource: (any ManagedLocationSessionSource)? = nil,
         deviceManager: DeviceManager? = nil,
         ddiPreparerFactory: ((DeviceManager) -> DeveloperDiskImagePreparer)? = nil,
+        tunnelQuitController: (any TunnelQuitControlling)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -518,6 +534,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.locationBridge = sharedBridge
         self.locationInjector = resolvedInjector
         self.managedLocationSessionSource = resolvedManagedSessionSource
+        self.tunnelQuitController = tunnelQuitController ?? TunneldManager.shared
         self.routeDelay = routeDelay
         self.automaticRecoveryEnabled = effectiveBackgroundServices
         self.errorHandler = sharedErrorHandler
@@ -1106,6 +1123,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     var requiresLocationQuitDecision: Bool {
+        hasCoordinatorHeldLocation || managedLocationSessionSource.hasRecordedHeldSessions
+    }
+
+    /// A location this app session applied or restored (as opposed to one only listed
+    /// in the helper record, e.g. before a Preserve relaunch found its device).
+    private var hasCoordinatorHeldLocation: Bool {
         locationSessionCoordinator.state.lastAcknowledgedReceipt != nil
             || locationSessionCoordinator.state.application.isActive
             || !canBeginLocationOperation
@@ -1113,11 +1136,23 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult {
         await stopSimulation()
+        await locationBridge.stopHeldSimulation()
         do {
             try await managedLocationSessionSource.shutdownHelper()
-            return .terminate
         } catch {
             return .failed("Managed helper shutdown failed: \(error.localizedDescription)")
+        }
+        return await stopTunnelBeforeTerminating()
+    }
+
+    /// Quit must leave nothing running unless the user chose Preserve: the tunnel is
+    /// stopped and awaited here, before AppKit is allowed to exit.
+    private func stopTunnelBeforeTerminating() async -> LocationQuitPreparationResult {
+        switch await tunnelQuitController.stopTunnelForQuit() {
+        case .stopped:
+            return .terminate
+        case .failed(let reason):
+            return .failed("The device tunnel did not stop: \(reason)")
         }
     }
 
@@ -1128,6 +1163,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         case .preserveAndQuit:
             await stopSimulation()
+            if !hasCoordinatorHeldLocation, managedLocationSessionSource.hasRecordedHeldSessions {
+                // Preserved by an earlier session and not restored yet: leave the helper
+                // and its tunnel exactly as they are.
+                tunnelQuitController.retainTunnelForPreservedLocation()
+                return .terminate
+            }
             do {
                 try await managedLocationSessionSource.start()
                 try await managedLocationSessionSource.refreshAdoptedHelperSessions()
@@ -1153,21 +1194,33 @@ class AppState: ObservableObject, LocationTerminationHandling {
                   persistedReceipt.endpointClass == currentReceipt.endpointClass else {
                 return .failed("Managed helper ownership does not match the acknowledged location session")
             }
+            // The helper holds the location over the app tunnel's RSD endpoint, so the
+            // tunnel must stay up with it; both are adopted again on relaunch.
+            tunnelQuitController.retainTunnelForPreservedLocation()
             return .terminate
 
         case .clearAndQuit:
-            await clearLocation()
-            guard locationSessionCoordinator.state.lastAcknowledgedReceipt == nil,
-                  !locationSessionCoordinator.state.application.isActive,
-                  canBeginLocationOperation else {
-                return .failed(lastError ?? "Location Clear was not acknowledged")
+            if hasCoordinatorHeldLocation {
+                await clearLocation()
+                guard locationSessionCoordinator.state.lastAcknowledgedReceipt == nil,
+                      !locationSessionCoordinator.state.application.isActive,
+                      canBeginLocationOperation else {
+                    return .failed(lastError ?? "Location Clear was not acknowledged")
+                }
+            } else {
+                await stopSimulation()
             }
+            // For a session this app never restored, stopping the helper ends its held
+            // DVT session: that is the real Clear.
             do {
                 try await managedLocationSessionSource.shutdownHelper()
-                return .terminate
             } catch {
                 return .failed("Location cleared, but managed helper shutdown failed: \(error.localizedDescription)")
             }
+            guard !managedLocationSessionSource.hasRecordedHeldSessions else {
+                return .failed("The location helper is still holding a location; it could not be cleared")
+            }
+            return await stopTunnelBeforeTerminating()
         }
     }
 

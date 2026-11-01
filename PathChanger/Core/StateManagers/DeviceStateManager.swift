@@ -39,7 +39,10 @@ final class DeviceStateManager: ObservableObject {
     let deviceManager: DeviceManager
     let reliabilityManager: ReliabilityManager
     let usbFallbackManager: USBFallbackManager
-    let tunnelHealthMonitor: TunnelHealthMonitor
+
+    // Tunnel health is monitored only by TunneldManager's own TunnelHealthMonitor,
+    // which is wired to the tunnel state machine. A second monitor here had no
+    // failure handler: it doubled every liveness and endpoint probe to no effect.
 
     // MARK: Callbacks
     //
@@ -113,13 +116,11 @@ final class DeviceStateManager: ObservableObject {
         deviceManager: DeviceManager? = nil,
         reliabilityManager: ReliabilityManager? = nil,
         usbFallbackManager: USBFallbackManager? = nil,
-        tunnelHealthMonitor: TunnelHealthMonitor? = nil,
         startBackgroundServices: Bool = true
     ) {
         self.deviceManager = deviceManager ?? DeviceManager()
         self.reliabilityManager = reliabilityManager ?? ReliabilityManager()
         self.usbFallbackManager = usbFallbackManager ?? USBFallbackManager()
-        self.tunnelHealthMonitor = tunnelHealthMonitor ?? TunnelHealthMonitor()
 
         observeDeviceDiscovery()
 
@@ -186,10 +187,8 @@ final class DeviceStateManager: ObservableObject {
                 self.updateTunnelRunning(state.isActive, force: true)
 
                 if state.isActive {
-                    self.tunnelHealthMonitor.startMonitoring()
                     Task { await self.refreshDevices() }
                 } else {
-                    self.tunnelHealthMonitor.stopMonitoring()
                     self.onLocationSessionLoss?(.tunnelHealthLost)
                 }
 

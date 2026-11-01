@@ -6,6 +6,9 @@ import Foundation
 protocol ManagedLocationSessionSource: AnyObject {
     var adoptedHelperID: UUID? { get }
     var adoptedHelperSessions: [ManagedLocationHelperSession] { get }
+    /// True when a live helper's identity record lists held location sessions, even if
+    /// this app session has not started, adopted, or restored them yet.
+    var hasRecordedHeldSessions: Bool { get }
 
     func start() async throws
     func refreshAdoptedHelperSessions() async throws
@@ -668,6 +671,12 @@ final class ManagedLocationHelperController {
         return try loadRecord()
     }
 
+    /// Held sessions listed by a helper whose recorded process is still alive.
+    func liveRecordedSessions() -> [ManagedLocationHelperSession] {
+        guard let record = try? currentRecord(), processIsAlive(record.pid) else { return [] }
+        return record.activeSessions
+    }
+
     private func authenticate(
         record: ManagedLocationHelperRecord,
         token: String,
@@ -1051,32 +1060,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         guard PythonPathResolver.isAvailable else {
             throw PersistentBridgeError.pythonNotFound
         }
-        guard let scriptPath = bridgeScriptPath else {
-            throw PersistentBridgeError.processStartFailed("Bridge script not found")
-        }
-
-        let controller: ManagedLocationHelperController
-        if let helperController {
-            controller = helperController
-        } else {
-            guard let applicationSupport = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first else {
-                throw PersistentBridgeError.processStartFailed("Application Support is unavailable")
-            }
-            let paths = ManagedLocationHelperPaths(
-                baseDirectory: applicationSupport
-                    .appendingPathComponent("PathChanger", isDirectory: true)
-                    .appendingPathComponent("location-helper", isDirectory: true)
-            )
-            controller = ManagedLocationHelperController(
-                paths: paths,
-                pythonPath: python3Path,
-                bridgePath: scriptPath
-            )
-            helperController = controller
-        }
+        let controller = try resolveHelperController()
 
         Logger.info("[PersistentBridge] Starting or adopting managed helper", category: .device)
         do {
@@ -1141,8 +1125,60 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
     }
 
+    /// The managed-helper controller (injected in tests, otherwise built once for the
+    /// production Application Support location).
+    private func resolveHelperController() throws -> ManagedLocationHelperController {
+        if let helperController {
+            return helperController
+        }
+        guard let scriptPath = bridgeScriptPath else {
+            throw PersistentBridgeError.processStartFailed("Bridge script not found")
+        }
+        guard let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            throw PersistentBridgeError.processStartFailed("Application Support is unavailable")
+        }
+        let paths = ManagedLocationHelperPaths(
+            baseDirectory: applicationSupport
+                .appendingPathComponent("PathChanger", isDirectory: true)
+                .appendingPathComponent("location-helper", isDirectory: true)
+        )
+        let controller = ManagedLocationHelperController(
+            paths: paths,
+            pythonPath: python3Path,
+            bridgePath: scriptPath
+        )
+        helperController = controller
+        return controller
+    }
+
+    var hasRecordedHeldSessions: Bool {
+        guard let controller = try? resolveHelperController() else { return false }
+        return !controller.liveRecordedSessions().isEmpty
+    }
+
     func shutdownHelper() async throws {
-        guard isRunning else { return }
+        guard isRunning else {
+            // This session never started or adopted the helper, but one left by an
+            // earlier session may still be running; the controller adopts it from its
+            // validated identity record and stops it (no record = nothing to stop).
+            // This session never relied on it, so a failure here (for example a record
+            // written by a different build) is logged and must not block quit.
+            guard let controller = try? resolveHelperController() else { return }
+            isIntentionalStop = true
+            do {
+                try await controller.shutdown()
+                Logger.info("[PersistentBridge] Managed helper from an earlier session stopped", category: .device)
+            } catch {
+                Logger.error(
+                    "[PersistentBridge] Helper from an earlier session was left running: \(error.localizedDescription)",
+                    category: .device
+                )
+            }
+            return
+        }
         guard let helperController else {
             throw PersistentBridgeError.processNotRunning
         }

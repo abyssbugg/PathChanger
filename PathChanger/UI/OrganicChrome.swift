@@ -17,6 +17,7 @@ struct OrganicTitleBar: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @Binding var showDeviceMenu: Bool
+    @State private var confirmTunnelStop = false
     @Binding var showSettings: Bool
     @Binding var appearanceRaw: String
     let onRefresh: () -> Void
@@ -153,7 +154,11 @@ struct OrganicTitleBar: View {
     private var tunnelButton: some View {
         Button {
             if tunneldManager.isRunning {
-                tunneldManager.stopTunnel()
+                if appState.requiresLocationQuitDecision {
+                    confirmTunnelStop = true
+                } else {
+                    tunneldManager.stopTunnel()
+                }
             } else if !tunneldManager.isStarting {
                 Task { await appState.startSelectedTunnel() }
             }
@@ -176,6 +181,15 @@ struct OrganicTitleBar: View {
         .disabled(!hasSelectedDevice)
         .opacity(hasSelectedDevice ? 1 : 0.55)
         .help(connectionHelp)
+        .confirmationDialog(
+            "Stop the tunnel?",
+            isPresented: $confirmTunnelStop
+        ) {
+            Button("Stop Tunnel", role: .destructive) { tunneldManager.stopTunnel() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The simulated location is held over this tunnel. Stopping it ends the location on the device.")
+        }
     }
 
     private var devicePopover: some View {
