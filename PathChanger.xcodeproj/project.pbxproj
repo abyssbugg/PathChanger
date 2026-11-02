@@ -41,6 +41,7 @@
 		4825F2E4696AC50F9DF1B46C /* TunnelHealthMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C74C7D0AE8568059EDFE862 /* TunnelHealthMonitorTests.swift */; };
 		487FDDB005A7849E4D93CAFF /* ArgumentSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3728FC3F30EB53874CDDEBCF /* ArgumentSanitizerTests.swift */; };
 		4A8536E2B4187986013229CD /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D2A57DF7CBDBE6AFDE91D4 /* SidebarView.swift */; };
+		4D683DB86A1A0865820688D2 /* StopTravelCardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10BA144F0EFD9E5B0FF46BAC /* StopTravelCardText.swift */; };
 		4EA6C1C954021A0083AEA67B /* TelemetryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6415B5AA220D4AE2A519C8E6 /* TelemetryService.swift */; };
 		55041FA7AD52D3783CAE29BF /* PersistentLocationBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3389753A94510B1DDF9E16E8 /* PersistentLocationBridgeTests.swift */; };
 		5815CA4F07AEB0A9A5C65011 /* ReliabilityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18BFA22E645A1549A4008B1 /* ReliabilityManager.swift */; };
@@ -94,6 +95,7 @@
 		A3E16EA07BE2908DDB40B225 /* TunnelHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E2EA23209F788806DB32594 /* TunnelHealthMonitor.swift */; };
 		A618FEB09E385B066B1C13C2 /* TunneldManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C961C7385901C0ECAD9850 /* TunneldManager.swift */; };
 		A62A1DDA4359C76A5DBCA02E /* Accessibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77A1796E162E608C12CA409E /* Accessibility.swift */; };
+		A7FD1C4176B6F8BF610C0F5E /* StopTravelCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 046749519C835A8E683DA074 /* StopTravelCardTests.swift */; };
 		AD23CE7E98E4F559226881D6 /* DeveloperDiskImagePreparerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96C69369ECD02E8B8D129BA1 /* DeveloperDiskImagePreparerTests.swift */; };
 		AD6E7F544ED9F702DB0F30C1 /* StopTravelPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388D5FD2854647FC6EE72D56 /* StopTravelPlanTests.swift */; };
 		AE98A734BB403BAF60CF2D1A /* DevLocationBridgeSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */; };
@@ -160,10 +162,12 @@
 		02AF801AB11E75DB1A06BBCC /* LocalizationHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationHelper.swift; sourceTree = "<group>"; };
 		02C82018B5370288EB8A97BC /* GPXParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXParserTests.swift; sourceTree = "<group>"; };
 		02D910F1C07F69576C380BC2 /* LocationSessionRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSessionRecoveryTests.swift; sourceTree = "<group>"; };
+		046749519C835A8E683DA074 /* StopTravelCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopTravelCardTests.swift; sourceTree = "<group>"; };
 		06303B8433AE84457D0DF09E /* UpdaterController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterController.swift; sourceTree = "<group>"; };
 		0820621D1AAFBA4523C2D6C6 /* HealthCheckServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckServer.swift; sourceTree = "<group>"; };
 		0E310520845BC420D1E96BEF /* DevLocationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridge.swift; sourceTree = "<group>"; };
 		0ED2D04A4D28AEF9570F42B8 /* LocationSessionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSessionState.swift; sourceTree = "<group>"; };
+		10BA144F0EFD9E5B0FF46BAC /* StopTravelCardText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopTravelCardText.swift; sourceTree = "<group>"; };
 		10F58022AF3CC771A8D33AEB /* PersistentLocationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentLocationBridge.swift; sourceTree = "<group>"; };
 		12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckServerTests.swift; sourceTree = "<group>"; };
 		184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryServiceTests.swift; sourceTree = "<group>"; };
@@ -525,6 +529,7 @@
 				36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */,
 				E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */,
 				E714C119DB1B67F7A0CB290D /* StateManagerTests.swift */,
+				046749519C835A8E683DA074 /* StopTravelCardTests.swift */,
 				B9E85E41F59133B4FD2A1492 /* StopTravelEngineTests.swift */,
 				388D5FD2854647FC6EE72D56 /* StopTravelPlanTests.swift */,
 				184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */,
@@ -579,6 +584,7 @@
 				27ECC9466B049C71277C942D /* SettingsView.swift */,
 				D7D2A57DF7CBDBE6AFDE91D4 /* SidebarView.swift */,
 				49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */,
+				10BA144F0EFD9E5B0FF46BAC /* StopTravelCardText.swift */,
 				25D3DC43F9AE02C06CBDD830 /* ToastView.swift */,
 			);
 			path = UI;
@@ -731,6 +737,7 @@
 				7F15CA3E0E06A432171099F8 /* SimulationEngineTests.swift in Sources */,
 				648D7CA000A33E1E81BCE958 /* SimulationPlannerTests.swift in Sources */,
 				902C9F465A9AEE515A1204D3 /* StateManagerTests.swift in Sources */,
+				A7FD1C4176B6F8BF610C0F5E /* StopTravelCardTests.swift in Sources */,
 				1D5E4406FDF318C852EBE636 /* StopTravelEngineTests.swift in Sources */,
 				AD6E7F544ED9F702DB0F30C1 /* StopTravelPlanTests.swift in Sources */,
 				D7ED8A375FEEB98D53CAD8C9 /* TelemetryServiceTests.swift in Sources */,
@@ -812,6 +819,7 @@
 				8BE5FC903D34B1168C4E272C /* SimulationStateManager.swift in Sources */,
 				3FD11ED2475492BA41285369 /* SimulationTypes.swift in Sources */,
 				18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */,
+				4D683DB86A1A0865820688D2 /* StopTravelCardText.swift in Sources */,
 				9D952109B395CC36BA217A29 /* StopTravelPlan.swift in Sources */,
 				4EA6C1C954021A0083AEA67B /* TelemetryService.swift in Sources */,
 				DEC66ED2198A3C2FBEDD3F68 /* ToastView.swift in Sources */,

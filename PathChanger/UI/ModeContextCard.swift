@@ -85,6 +85,9 @@ struct ModeContextCard: View {
                     if showsTravelMotion {
                         motionBlock
                     }
+                    if StopTravelCardText.showsStopOptions(for: mode) {
+                        stopOptionsBlock
+                    }
                     if mode == .joystick {
                         joystickBlock
                     }
@@ -330,21 +333,6 @@ struct ModeContextCard: View {
                     }
                 }
             )
-            if mode == .route || mode == .twospot {
-                HStack(spacing: 9) {
-                    Text("Repeat")
-                        .font(Organic.body(12, weight: .semibold))
-                        .foregroundStyle(Organic.neutral700)
-                        .frame(width: 56, alignment: .leading)
-                    Toggle("Loop", isOn: $appState.loopRoute)
-                        .toggleStyle(.switch)
-                        .tint(Organic.accent600)
-                        .labelsHidden()
-                    Text(appState.loopRoute ? "Loop around" : "One way")
-                        .font(Organic.body(12, weight: .semibold))
-                    Spacer()
-                }
-            }
         }
         .padding(10)
         .background(Organic.bg)
@@ -394,36 +382,139 @@ struct ModeContextCard: View {
                     Binding(get: { appState.smoothTurns }, set: { appState.smoothTurns = $0 })
                 )
             }
-            if mode == .jump {
-                toggleLine(
-                    "Auto jump through every stop",
-                    Binding(get: { appState.autoJump }, set: { appState.autoJump = $0 })
-                )
-                if appState.autoJump {
-                    HStack(spacing: 10) {
-                        Text("Pause")
-                            .font(Organic.body(12, weight: .semibold))
-                            .foregroundStyle(Organic.neutral700)
-                        Slider(
-                            value: Binding(
-                                get: { appState.autoJumpPauseSeconds },
-                                set: { appState.autoJumpPauseSeconds = $0.rounded() }
-                            ),
-                            in: 1...60,
-                            step: 1
-                        )
-                        .tint(Organic.accent600)
-                        Text(String(format: "%.0f s", appState.autoJumpPauseSeconds))
-                            .font(Organic.mono(11, weight: .bold))
-                            .frame(width: 36, alignment: .trailing)
-                    }
-                    .padding(.vertical, 5)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Pause at each stop")
-                    .accessibilityValue(String(format: "%.0f seconds", appState.autoJumpPauseSeconds))
-                    .accessibilityIdentifier("location.jump.autoPause")
+        }
+    }
+
+    // MARK: Stop-by-stop options (Jump, Two-Spot, Multi-Spot; PRODUCT_REQUIREMENTS 3.6)
+
+    private var stopSettings: StopTravelSettings { appState.stopTravelSettings(for: mode) }
+
+    /// A stop run (or a route playback) of this mode is running, from Move until it ends.
+    private var isStopRunActive: Bool {
+        StopTravelCardText.showsStopOptions(for: mode)
+            && (appState.stopProgress != nil || appState.isMovementEngineRunning)
+    }
+
+    private var stopOptionsBlock: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("STOPS")
+                .font(Organic.body(10, weight: .bold))
+                .tracking(0.6)
+                .foregroundStyle(Organic.neutral600)
+                .accessibilityAddTraits(.isHeader)
+            // Controls stay enabled mid-run: see `StopTravelCardText.runEditNote`.
+            ForEach(StopTravelCardText.visibleControls(for: mode, settings: stopSettings)) { control in
+                stopControlRow(control)
+            }
+            if let note = StopTravelCardText.runEditNote(isRunActive: isStopRunActive) {
+                Text(note)
+                    .font(Organic.body(10))
+                    .foregroundStyle(Organic.neutral600)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(Organic.bg)
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                .stroke(Organic.neutral300, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func stopControlRow(_ control: StopTravelCardText.Control) -> some View {
+        switch control {
+        case .arrival:
+            stopSegmented(control, selection: appState.stopSettingBinding(\.arrival, for: mode),
+                          options: StopTravelSettings.Arrival.allCases, title: StopTravelCardText.title)
+        case .jumpTiming:
+            VStack(alignment: .leading, spacing: 4) {
+                stopSegmented(control, selection: appState.stopSettingBinding(\.jumpTiming, for: mode),
+                              options: StopTravelSettings.JumpTiming.allCases, title: StopTravelCardText.title)
+                Text(StopTravelCardText.jumpTimingCaption)
+                    .font(Organic.body(10))
+                    .foregroundStyle(Organic.neutral600)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .hold:
+            stopHoldRow
+        case .progression:
+            stopSegmented(control, selection: appState.stopSettingBinding(\.progression, for: mode),
+                          options: StopTravelSettings.Progression.allCases, title: StopTravelCardText.title)
+        case .repeatMode:
+            stopSegmented(control, selection: appState.stopSettingBinding(\.repeatMode, for: mode),
+                          options: StopTravelSettings.RepeatMode.allCases, title: StopTravelCardText.title)
+        }
+    }
+
+    /// A labelled segmented picker. The visible title is hidden from VoiceOver because
+    /// the picker carries the same label, so it is read once.
+    private func stopSegmented<Option: Hashable>(
+        _ control: StopTravelCardText.Control,
+        selection: Binding<Option>,
+        options: [Option],
+        title: @escaping (Option) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(control.label)
+                .font(Organic.body(12, weight: .semibold))
+                .foregroundStyle(Organic.neutral700)
+                .accessibilityHidden(true)
+            Picker(control.label, selection: selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(title(option)).tag(option)
                 }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .accessibilityLabel(control.label)
+            .accessibilityIdentifier(control.accessibilityIdentifier)
+        }
+    }
+
+    private var stopHoldRow: some View {
+        let control = StopTravelCardText.Control.hold
+        let seconds = stopSettings.holdSeconds
+        return HStack(spacing: 10) {
+            Text(control.label)
+                .font(Organic.body(12, weight: .semibold))
+                .foregroundStyle(Organic.neutral700)
+                .accessibilityHidden(true)
+            Slider(
+                value: appState.stopHoldBinding(for: mode),
+                in: StopTravelCardText.holdRange,
+                step: StopTravelCardText.holdStep
+            )
+            .tint(Organic.accent600)
+            .controlSize(.small)
+            .accessibilityLabel(control.label)
+            .accessibilityValue(StopTravelCardText.holdAccessibilityValue(seconds))
+            .accessibilityIdentifier(control.accessibilityIdentifier)
+            Text(StopTravelCardText.holdLabel(seconds))
+                .font(Organic.mono(11, weight: .bold))
+                .frame(width: 52, alignment: .trailing)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// The running stop run: one line per fact, each read on its own.
+    @ViewBuilder
+    private var stopProgressReadout: some View {
+        if StopTravelCardText.showsStopOptions(for: mode), let progress = appState.stopProgress {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(StopTravelCardText.progressLines(progress)) { line in
+                    Text(line.text)
+                        .font(line.kind == .fallback ? Organic.body(11) : Organic.body(11, weight: .semibold))
+                        .foregroundStyle(line.kind == .fallback ? Organic.accent800 : Organic.neutral700)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Stop progress")
+            .accessibilityIdentifier(StopTravelCardText.progressIdentifier)
         }
     }
 
@@ -499,6 +590,7 @@ struct ModeContextCard: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 7) {
+            stopProgressReadout
             HStack(spacing: 8) {
                 if mode == .joystick {
                     Button("Stop movement") {
@@ -532,6 +624,30 @@ struct ModeContextCard: View {
                     .clipShape(Capsule())
                     .disabled(!canMove)
                     .accessibilityIdentifier(showsStop ? "location.action.stopMovement" : "location.action.apply")
+
+                    if let pause = StopTravelCardText.pauseButton(progress: appState.stopProgress, isPaused: appState.isPaused),
+                       StopTravelCardText.showsStopOptions(for: mode) {
+                        Button {
+                            StopTravelCardText.perform(pause.action, on: appState)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: pause.systemImage)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .accessibilityHidden(true)
+                                Text(pause.title)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(Organic.body(12, weight: .bold))
+                        .foregroundStyle(Organic.sage800)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                        .background(Organic.sage100)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
+                        .accessibilityLabel(pause.title)
+                        .accessibilityIdentifier(StopTravelCardText.pauseIdentifier)
+                    }
 
                     Button(resetActionLabel) {
                         resetContext()
