@@ -68,6 +68,7 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 - The most recently successful jump remains active while waiting for the next action.
 - Reaching the final destination holds that destination; it does not clear spoofing.
 - Cooldown behavior, if retained, must never create a false successful jump or a false active state.
+- Stop-by-stop options (owner decision 2026-11-02, §3.6) apply to Jump. Jump defaults: Getting there = Jump, Jump timing = Fixed, At each stop = 5 s, Go through = one stop per Move, Repeat = One way. With Getting there = Travel, Jump moves between destinations along real roads at the travel-mode speed.
 
 ### 3.3 Two-Spot Mode
 
@@ -78,6 +79,7 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 - Normal completion holds the destination.
 - Looping, if enabled, repeats between the endpoints without clearing location between cycles.
 - Clear/Reset is separate from Pause, Stop, and completion.
+- Stop-by-stop options (§3.6) apply. Two-Spot defaults: Getting there = Travel, At each stop = 0 s, Go through = every stop automatically, Repeat = One way. With a held location and one spot, travel starts from the held location.
 
 ### 3.4 Multi-Spot Mode
 
@@ -88,6 +90,7 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 - Normal completion holds the final waypoint.
 - Looping restarts from the defined route policy without returning to real GPS between loops.
 - Route progress may advance only for acknowledged coordinate updates.
+- Stop-by-stop options (§3.6) apply, with the Two-Spot defaults.
 
 ### 3.5 Joystick
 
@@ -98,6 +101,21 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 - Connection loss must stop movement immediately, preserve the desired coordinate, and enter an uncertain/reconnecting state.
 - Successful recovery must reapply the last desired coordinate before movement can resume.
 - Clear/Reset is the only normal action that intentionally returns the device to real GPS.
+- (Owner decision 2026-11-02) The last heading stays shown after the stick is released, until the next movement or Clear. While a location is held, the map follows the spoofed position without changing the user's zoom. The GUI shows the place or street name of the current spoofed location next to its coordinates when one can be looked up. Joystick speed comes only from its own speed control; travel modes do not apply to Joystick.
+
+### 3.6 Stop-by-stop options (Jump, Two-Spot, Multi-Spot)
+
+Owner decision 2026-11-02. One shared set of options, each with per-mode defaults (§3.2–3.4), so every mode offers every combination:
+
+- **Getting there:** Travel (move along real roads at the travel-mode speed) or Jump (teleport to the next stop).
+- **Jump timing** (Getting there = Jump): Fixed (wait the At each stop time) or Realistic (wait as long as the trip would take at the selected travel mode, using road distance when available, else straight-line distance).
+- **At each stop:** hold each reached stop for 0–60 s before continuing (0 = continue at once).
+- **Go through:** every stop automatically after one Move, or one stop per Move.
+- **Repeat:** One way, Loop back to the start (travelling home the same way as the other legs), or Back and forth.
+- **Travel modes:** Walking 1.6 m/s, Cycling 5.4 m/s, Riding 11.2 m/s, Driving 15.6 m/s, or a custom speed. Real-road paths come from Apple Maps directions (walking, cycling, and automobile for riding and driving). When no road route is available, the leg is travelled in a straight line and the GUI says so.
+- **Pause and Resume** are available while moving; resume continues from the latest acknowledged coordinate. Stop ends the run and holds.
+- The GUI shows the next stop, the time left, and a countdown while holding at a stop.
+- Every applied point, hop and hold follows §4: progress advances only on acknowledged updates.
 
 ## 4. State model and GUI truth
 
@@ -171,6 +189,8 @@ Returning to real GPS is a distinct, destructive product action. It requires an 
 
 Pause, Stop Movement, Disconnect Transport, Stop Tunnel, and Clear Location must not be presented as equivalent operations. If stopping a tunnel necessarily ends a tunnel-backed spoof session, the GUI must warn that location persistence will be lost and must update state truthfully after the stop.
 
+After a successful Clear (owner decision 2026-11-02), the last spoofed coordinate stays on the map as a staged starting point for the next mode. It is shown as staged, not applied, and nothing is sent to the device until the user starts a mode.
+
 ### 5.3 App termination and relaunch
 
 The application must not promise persistence across app termination unless the underlying retained service is proven to survive. On relaunch, PathChanger may discover/adopt an existing session or offer to reapply the previous desired location, but it must not silently claim active spoofing from stored UI state alone.
@@ -213,6 +233,7 @@ Current disposition:
 - Recovery must use bounded retries/backoff and remain cancelable.
 - After reconnection, rebuild pymobiledevice3/tunnel state as required and reapply the desired coordinate.
 - If recovery is exhausted, report lost/error honestly and retain the desired coordinate for an explicit retry.
+- Automatic reconnect (owner decision 2026-11-02): when the phone becomes reachable again after a connection loss the user did not cause (not after Stop Tunnel), PathChanger reopens the helper's unprivileged device connection and reapplies the held desired coordinate without waiting for Start. This never elevates privileges, never starts a privileged tunnel or daemon, stays cancelable, and reports reconnecting until the reapplication is acknowledged.
 - Wi-Fi availability must not be inferred from a paired placeholder alone.
 
 ### 7.4 Transport failover

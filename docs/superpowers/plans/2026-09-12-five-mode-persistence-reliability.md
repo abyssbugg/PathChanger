@@ -125,6 +125,13 @@ CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
 PRODUCT_REQUIREMENTS.md: 5bedf58777352ac324bf30fc04eed6b6f44d86f8013458f9470ea8ab7509c3d7
 ```
 
+Re-recorded 2026-11-02 after the owner's stop-by-stop, joystick, Clear and automatic-reconnect decisions in `PRODUCT_REQUIREMENTS.md` §3.2–3.6, §5.2 and §7.3:
+
+```text
+CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
+PRODUCT_REQUIREMENTS.md: 858dd8139b39fd3444aac73ad09cc9975c924e388ca68d150650e740914ac946
+```
+
 - [x] **Step 2: Create a global documentation worktree**
 
 Use the normalized `main` as the base:
