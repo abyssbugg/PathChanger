@@ -372,13 +372,18 @@ final class LocationSessionCoordinator: ObservableObject {
   /// A movement the loss paused ends (idle) once a current-generation receipt is applied:
   /// AppState cancels every movement engine on a loss, so restoring `.moving` showed a run
   /// with no worker (§4.4). The location holds; the user starts movement again.
+  /// `prepareSession` readies the device for injection after the session is rebuilt and
+  /// before the reapply (the Developer Disk Image mount: with none mounted the DVT command
+  /// completes and the phone does not move). It throwing is a failed attempt; the
+  /// connection stays reconnecting until a reapply is acknowledged.
   func recover(
     strategy: ReconnectionStrategy,
     sleeper: any RecoverySleeping = TaskRecoverySleeper(),
     establishSession: @escaping @MainActor (
       _ attempt: Int,
       _ previousSession: LocationSessionIdentity?
-    ) async throws -> LocationSessionIdentity
+    ) async throws -> LocationSessionIdentity,
+    prepareSession: (@MainActor (_ candidate: LocationSessionIdentity) async throws -> Void)? = nil
   ) async -> LocationSessionTransitionError? {
     guard state.desiredLocation != nil else { return .noDesiredLocation }
     guard let originalSession = previousSession else { return .noReadySession }
@@ -406,6 +411,11 @@ final class LocationSessionCoordinator: ObservableObject {
         }
         guard candidate.generation > previous.generation else {
           throw LocationSessionTransitionError.staleGeneration
+        }
+        if let prepareSession {
+          try await prepareSession(candidate)
+          // Clear, Stop, Reconnect or Move during the preparation: send nothing.
+          try Task.checkCancellation()
         }
 
         connectionReady(candidate)
@@ -445,6 +455,13 @@ final class LocationSessionCoordinator: ObservableObject {
       }
     }
 
+    // A burst cancelled while its last helper command was out (Move, Reconnect, Clear,
+    // Quit) did not run out of attempts: whoever cancelled it owns what happens next, so
+    // it must not re-arm automatic reconnect behind them.
+    if Task.isCancelled {
+      finishRecoveryFailure(reason: "Recovery cancelled")
+      return .recoveryCancelled
+    }
     finishRecoveryFailure(reason: "Recovery exhausted")
     return .recoveryExhausted
   }

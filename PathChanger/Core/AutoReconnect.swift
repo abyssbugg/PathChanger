@@ -166,6 +166,12 @@ final class AutoReconnectWaiter {
                 if Task.isCancelled {
                     continuation.resume(returning: .cancelled)
                 } else {
+                    // One wait at a time: a wait still stored (its cancel hop not run yet)
+                    // ends as cancelled instead of being dropped, which hung its task.
+                    if let previous = self.continuation {
+                        self.continuation = nil
+                        previous.resume(returning: .cancelled)
+                    }
                     self.continuation = continuation
                 }
             }

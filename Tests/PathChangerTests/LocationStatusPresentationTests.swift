@@ -155,4 +155,54 @@ final class LocationStatusPresentationTests: XCTestCase {
         XCTAssertTrue(LocationStatusPresentation(state: state, deviceVisible: true).canApply)
     }
 
+    // MARK: Review 2026-11-02
+
+    func testAnAppliedButUnconfirmedPointIsMarkedUncertainNotStaged() {
+        let other = LocationCoordinate(latitude: 1, longitude: 2)
+        XCTAssertEqual(
+            LocationMarker.resolve(applied: nil, uncertain: coordinate, stagedStart: other, desired: other),
+            LocationMarker(coordinate: coordinate, style: .uncertain)
+        )
+        XCTAssertEqual(
+            LocationMarker.resolve(applied: other, uncertain: coordinate, stagedStart: nil, desired: nil),
+            LocationMarker(coordinate: other, style: .spoofed),
+            "a current applied receipt wins"
+        )
+        XCTAssertEqual(LocationMarker(coordinate: coordinate, style: .uncertain).accessibilityLabel, "Location uncertain")
+    }
+
+    func testWaitingForTheLostPhoneReadsReconnectingAndOffersClear() {
+        let receipt = LocationInjectionReceipt(requestID: UUID(), session: UUID(), coordinate: coordinate, transport: .wifi, endpointClass: .remoteServiceDiscovery, sessionGeneration: 7, completedAt: Date(timeIntervalSince1970: 1), outcome: .applied)
+        let state = LocationSessionState(desiredLocation: coordinate, lastAcknowledgedReceipt: receipt, connection: .failed("lost"), application: .uncertain(lastReceipt: receipt, reason: "lost"))
+
+        let waiting = LocationStatusPresentation(state: state, deviceVisible: false, isAwaitingAutomaticReconnect: true)
+        XCTAssertEqual(waiting.connectionLabel, "Reconnecting")
+        XCTAssertTrue(waiting.canClear, "Clear stops the wait")
+        XCTAssertFalse(waiting.canMove)
+
+        let notWaiting = LocationStatusPresentation(state: state, deviceVisible: false)
+        XCTAssertEqual(notWaiting.connectionLabel, "Lost")
+        XCTAssertFalse(notWaiting.canClear)
+    }
+
+    func testATunnelErrorIsShownBeforeTheReconnectNotice() {
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, automaticReconnectNotice: "Reconnecting…", tunnelError: "Tunnel failed"),
+            TunnelNotice(text: "Tunnel failed\nReconnecting…", isError: true)
+        )
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, automaticReconnectNotice: nil, tunnelError: "Tunnel failed"),
+            TunnelNotice(text: "Tunnel failed", isError: true)
+        )
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, automaticReconnectNotice: "Reconnecting…", tunnelError: nil),
+            TunnelNotice(text: "Reconnecting…", isError: false)
+        )
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: true, automaticReconnectNotice: "Reconnecting…", tunnelError: "Tunnel failed"),
+            TunnelNotice(text: TunnelNotice.waitingForDeviceText, isError: false)
+        )
+        XCTAssertNil(TunnelNotice.resolve(isWaitingForDevice: false, automaticReconnectNotice: nil, tunnelError: nil))
+    }
+
 }

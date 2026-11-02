@@ -90,9 +90,12 @@ struct SimulationView: View {
                 if let marker = appState.locationMarker {
                     Annotation(marker.accessibilityLabel, coordinate: marker.coordinate.clLocationCoordinate2D) {
                         // Staged (nothing sent, PRODUCT_REQUIREMENTS 5.2): a hollow dashed
-                        // ring in a neutral color. Spoofed: the filled accent dot.
+                        // ring in a neutral color. Spoofed: the filled accent dot. Uncertain
+                        // (applied, but the session holding it is lost or unconfirmed): a
+                        // hollow dashed ring in the accent color.
                         ZStack {
-                            if marker.style == .spoofed {
+                            switch marker.style {
+                            case .spoofed:
                                 Circle()
                                     .fill(Organic.accent300.opacity(0.45))
                                     .frame(width: 34, height: 34)
@@ -101,7 +104,15 @@ struct SimulationView: View {
                                     .frame(width: 15, height: 15)
                                     .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
                                     .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
-                            } else {
+                            case .uncertain:
+                                Circle()
+                                    .fill(Organic.accent100.opacity(0.6))
+                                    .frame(width: 26, height: 26)
+                                    .overlay(
+                                        Circle().stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
+                                    )
+                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
+                            case .staged:
                                 Circle()
                                     .fill(Organic.neutral100.opacity(0.6))
                                     .frame(width: 22, height: 22)

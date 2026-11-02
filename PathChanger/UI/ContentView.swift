@@ -10,6 +10,31 @@ import MapKit
 import Combine
 import AppKit
 
+/// The notice under the tunnel pill. A failed tunnel's error comes first: a reconnect
+/// notice shown alone hid why Start failed (review 2026-11-02); with both, both show.
+struct TunnelNotice: Equatable {
+    let text: String
+    let isError: Bool
+
+    static let waitingForDeviceText =
+        "Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel."
+
+    static func resolve(
+        isWaitingForDevice: Bool,
+        automaticReconnectNotice: String?,
+        tunnelError: String?
+    ) -> TunnelNotice? {
+        if isWaitingForDevice {
+            return TunnelNotice(text: waitingForDeviceText, isError: false)
+        }
+        if let tunnelError {
+            let text = automaticReconnectNotice.map { "\(tunnelError)\n\($0)" } ?? tunnelError
+            return TunnelNotice(text: text, isError: true)
+        }
+        // After a loss the user did not cause, PathChanger waits for the phone itself.
+        return automaticReconnectNotice.map { TunnelNotice(text: $0, isError: false) }
+    }
+}
 enum AppMode: String, CaseIterable, Identifiable {
     case teleport = "Teleport"
     case jump = "Jump"
@@ -358,17 +383,15 @@ struct ContentView: View {
     /// Why the tunnel is not live, in words, without hovering: the pill alone only
     /// said "Tunnel error".
     private var tunnelNotice: (text: String, isError: Bool)? {
-        if tunneldManager.isWaitingForDevice {
-            return ("Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel.", false)
-        }
-        // After a loss the user did not cause, PathChanger waits for the phone itself.
-        if let notice = appState.automaticReconnectNotice {
-            return (notice, false)
-        }
-        if case .error = tunneldManager.state, let error = tunneldManager.lastError {
-            return (error, true)
-        }
-        return nil
+        let errorText: String? = {
+            if case .error = tunneldManager.state { return tunneldManager.lastError }
+            return nil
+        }()
+        return TunnelNotice.resolve(
+            isWaitingForDevice: tunneldManager.isWaitingForDevice,
+            automaticReconnectNotice: appState.automaticReconnectNotice,
+            tunnelError: errorText
+        ).map { ($0.text, $0.isError) }
     }
 
     private func tunnelNoticeView(_ notice: (text: String, isError: Bool)) -> some View {
@@ -395,11 +418,17 @@ struct ContentView: View {
     }
 
     private var displayedConnectionLabel: String {
-        let status = appState.locationPresentation
-        guard appState.selectedDevice == nil, status.appliedCoordinate == nil else {
-            return status.connectionLabel
+        appState.connectionChipLabel
+    }
+
+    /// The connection phase the chip's color follows: a wait for the lost phone reads as
+    /// reconnecting, like its label.
+    private var displayedConnectionPhase: LocationConnectionPhase {
+        let phase = appState.locationSessionCoordinator.state.connection
+        if appState.isAwaitingAutomaticReconnect, case .failed = phase {
+            return .reconnecting(previousGeneration: nil, attempt: 0)
         }
-        return NSLocalizedString("location.status.connection.unavailable", comment: "No device connection state")
+        return phase
     }
 
     private var statusCluster: some View {
@@ -407,7 +436,7 @@ struct ContentView: View {
         let state = appState.locationSessionCoordinator.state
         return HStack(spacing: 6) {
             statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
-                       tone: connectionTone(for: state.connection),
+                       tone: connectionTone(for: displayedConnectionPhase),
                        localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
             if case .failed = state.connection {
                 reconnectButton

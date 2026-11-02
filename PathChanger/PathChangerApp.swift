@@ -27,7 +27,15 @@ struct LocationStatusPresentation: Equatable {
     let canMove: Bool
     let canClear: Bool
 
-    init(state: LocationSessionState, deviceVisible: Bool, hasUnresolvedClear: Bool = false) {
+    /// `isAwaitingAutomaticReconnect`: PathChanger is waiting for the lost phone to reapply
+    /// its held location (PRODUCT_REQUIREMENTS 7.3). The connection then reads Reconnecting,
+    /// not Lost, and Clear stays usable: it is how the user stops the wait.
+    init(
+        state: LocationSessionState,
+        deviceVisible: Bool,
+        hasUnresolvedClear: Bool = false,
+        isAwaitingAutomaticReconnect: Bool = false
+    ) {
         let ready: LocationSessionIdentity? = { if case .ready(let value) = state.connection { return value }; return nil }()
         let active: LocationInjectionReceipt? = {
             switch state.application {
@@ -70,7 +78,9 @@ struct LocationStatusPresentation: Equatable {
         case .reconnecting:
             connectionLabel = Self.localizedStatus("location.status.connection.reconnecting", comment: "Connection reconnecting")
         case .failed:
-            connectionLabel = Self.localizedStatus("location.status.connection.failed", comment: "Connection failed")
+            connectionLabel = isAwaitingAutomaticReconnect
+                ? Self.localizedStatus("location.status.connection.reconnecting", comment: "Connection reconnecting")
+                : Self.localizedStatus("location.status.connection.failed", comment: "Connection failed")
         }
         switch state.application {
         case .idle:
@@ -115,7 +125,7 @@ struct LocationStatusPresentation: Equatable {
                 if case .idle = state.application { return state.lastAcknowledgedReceipt != nil }
                 return true
             }()
-            canClear = hasUnresolvedClear || (ready != nil && deviceMayHoldLocation)
+            canClear = hasUnresolvedClear || isAwaitingAutomaticReconnect || (ready != nil && deviceMayHoldLocation)
         }
         let source = ready?.stableDeviceID ?? "unknown"
         let checksum = source.utf8.reduce(UInt32(5381)) { (($0 << 5) &+ $0) &+ UInt32($1) } & 0xFFFF
@@ -160,11 +170,13 @@ struct LocationStatusPresentation: Equatable {
 }
 
 /// How the map marks the location (PRODUCT_REQUIREMENTS 5.2): spoofed when the device
-/// holds it (a current applied receipt), staged when it is only planned and nothing was
+/// holds it (a current applied receipt), uncertain when it was applied but the session
+/// that holds it is lost or not confirmed, staged when it is only planned and nothing was
 /// sent, such as the last spot a Clear left behind.
 struct LocationMarker: Equatable {
     enum Style: Equatable {
         case spoofed
+        case uncertain
         case staged
     }
 
@@ -174,19 +186,23 @@ struct LocationMarker: Equatable {
     var accessibilityLabel: String {
         switch style {
         case .spoofed: return "Spoofed location"
+        case .uncertain: return "Location uncertain"
         case .staged: return "Staged location"
         }
     }
 
-    /// The applied point when there is one; else the start a Clear staged (where the next
-    /// Move leaves from, also once a Two-Spot destination is picked); else the selected
-    /// point. Nil when there is nothing to mark.
+    /// The applied point when there is one; else the last acknowledged point the phone may
+    /// still hold (uncertain); else the start a Clear staged (where the next Move leaves
+    /// from, also once a Two-Spot destination is picked); else the selected point. Nil when
+    /// there is nothing to mark.
     static func resolve(
         applied: LocationCoordinate?,
+        uncertain: LocationCoordinate? = nil,
         stagedStart: LocationCoordinate?,
         desired: LocationCoordinate?
     ) -> LocationMarker? {
         if let applied { return LocationMarker(coordinate: applied, style: .spoofed) }
+        if let uncertain { return LocationMarker(coordinate: uncertain, style: .uncertain) }
         return (stagedStart ?? desired).map { LocationMarker(coordinate: $0, style: .staged) }
     }
 }
@@ -387,8 +403,20 @@ class AppState: ObservableObject, LocationTerminationHandling {
         return LocationStatusPresentation(
             state: presentationState,
             deviceVisible: selectedDevice != nil,
-            hasUnresolvedClear: unresolvedClearSession != nil
+            hasUnresolvedClear: unresolvedClearSession != nil,
+            isAwaitingAutomaticReconnect: isAwaitingAutomaticReconnect
         )
+    }
+
+    /// The Connection chip's words. With no device selected and nothing applied it reads
+    /// Unavailable, except while PathChanger waits for the lost phone: discovery has
+    /// deselected it then, and the chip says Reconnecting (PRODUCT_REQUIREMENTS 7.3).
+    var connectionChipLabel: String {
+        let status = locationPresentation
+        guard selectedDevice == nil, status.appliedCoordinate == nil, !isAwaitingAutomaticReconnect else {
+            return status.connectionLabel
+        }
+        return NSLocalizedString("location.status.connection.unavailable", comment: "No device connection state")
     }
 
     // MARK: Location State (forwarded to `simulation`)
@@ -404,6 +432,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// (PRODUCT_REQUIREMENTS 5.2). It is staged, never applied: nothing is sent until the
     /// user starts a mode. Ends when any location is applied or a new point is staged.
     @Published private(set) var stagedStartAfterClear: LocationCoordinate?
+    static let clearWithoutConnectionText =
+        "The phone is not connected, so it could not be cleared. It may keep the spoofed location until it reconnects or restarts. To clear it, press Reconnect when the phone is back, then Clear."
     /// Where the next Move leaves from: the applied location, or the start a Clear staged.
     var moveStartCoordinate: LocationCoordinate? {
         locationPresentation.appliedCoordinate ?? stagedStartAfterClear
@@ -412,6 +442,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let presentation = locationPresentation
         return LocationMarker.resolve(
             applied: presentation.appliedCoordinate,
+            // A receipt exists but is not current (lost, uncertain, older session): the
+            // phone may still hold that point. Never "Staged": that says nothing was sent.
+            uncertain: locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate,
             stagedStart: stagedStartAfterClear,
             desired: presentation.desiredCoordinate
         )
@@ -1119,9 +1152,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     private func runReconnectNow() async {
         guard canBeginLocationOperation else { return }
+        // Reconnect reapplies only a location the phone held (a receipt). After a confirmed
+        // Clear the last spot is staged with no receipt: Reconnect then only reconnects and
+        // leaves it staged (PRODUCT_REQUIREMENTS 5.2), and Clear's hold on automatic
+        // reconnect stays, because nothing it could defend was reapplied.
+        let reappliesHeldLocation = locationSessionCoordinator.state.lastAcknowledgedReceipt != nil
         // Reconnect is explicit: it lifts a Stop's latch and replaces any automatic wait.
         // A Reconnect that does not get the location back waits again (as after a burst).
-        isAutomaticReconnectLatchedByUser = false
+        if reappliesHeldLocation { isAutomaticReconnectLatchedByUser = false }
         await stopAutomaticReconnect(reason: "Reconnect pressed")
         defer { armAutomaticReconnectIfEligible(afterFailedBurst: true) }
         // Manual reconnect supersedes an in-flight automatic recovery; cancelling
@@ -1143,7 +1181,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             statusMessage = "Connect and select an iOS device to reconnect"
             return
         }
-        guard let desired = locationSessionCoordinator.state.desiredLocation else { return }
+        guard reappliesHeldLocation,
+              let desired = locationSessionCoordinator.state.desiredLocation else { return }
         await applyPlannedLocation(desired, mode: .teleport)
     }
 
@@ -1170,8 +1209,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return
         }
         locationOperationGeneration &+= 1
-        // The point the device held, staged for the next mode if this Clear succeeds.
-        let lastSpoofed = locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate ?? currentLocation
+        // Pressing Clear is how the user stops a wait for the lost phone (the GUI offers it
+        // while waiting); the outcome is reported in those words below.
+        let wasAwaitingReconnect = isAwaitingAutomaticReconnect
         // Clear is the user's "back to real GPS": even a Clear the phone cannot confirm
         // (no connection) must not be undone by an automatic reapply later.
         isAutomaticReconnectLatchedByUser = true
@@ -1202,8 +1242,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
             simulation.isPaused = false
             route.pausePlayback()
             locationSessionCoordinator.stopMovement()
+            // A step the phone applied while this Clear drained (its receipt is dropped,
+            // Clear wins) was the last spoofed point: an applied receipt is device truth.
+            var appliedDuringDrain: LocationInjectionReceipt?
             for application in applications {
-                _ = await application.result
+                if case .success(let receipt) = await application.result, case .applied = receipt.outcome,
+                   appliedDuringDrain.map({ receipt.completedAt >= $0.completedAt }) ?? true {
+                    appliedDuringDrain = receipt
+                }
             }
             for producer in producers {
                 await producer.value
@@ -1220,7 +1266,26 @@ class AppState: ObservableObject, LocationTerminationHandling {
             route.pausePlayback()
             locationSessionCoordinator.stopMovement()
 
+            // The point the device held, read once the producers drained (a step applied
+            // during the drain is the newest), staged for the next mode if Clear succeeds.
+            let lastSpoofed = appliedDuringDrain?.coordinate
+                ?? locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate
+                ?? currentLocation
+
             if let error = await locationSessionCoordinator.clear(targetSession: sessionToClear) {
+                if error == .clearUnavailable, sessionToClear == nil {
+                    // No connection to the phone, so nothing could reach it. The location
+                    // stays Uncertain (the phone may still hold it) and Move is not blocked:
+                    // a retry has no session to clear and would wedge every later Move.
+                    Logger.info(
+                        "[Clear] Not sent: no connection to the phone"
+                            + (wasAwaitingReconnect ? "; stopped waiting for it to come back" : ""),
+                        category: .session
+                    )
+                    statusMessage = (wasAwaitingReconnect ? "Stopped reconnecting. " : "")
+                        + Self.clearWithoutConnectionText
+                    return
+                }
                 let detail: String
                 switch locationSessionCoordinator.state.application {
                 case .failed(let reason): detail = "application failed: \(reason)"
@@ -1350,6 +1415,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // still running (its burst is awaited, so the two never drive the coordinator).
         isAutomaticReconnectLatchedByUser = false
         await stopAutomaticReconnect(reason: "Move pressed")
+        // That await can last as long as a helper command already sent (up to its own
+        // timeout): the phone, a Clear or the device may have changed meanwhile.
+        guard canStartSimulation else {
+            Logger.info("[Move] Not started (\(activeMode)): the device is not ready after the reconnect ended", category: .session)
+            statusMessage = "The phone is not ready. Keep it unlocked and on this Wi‑Fi or connected by USB, then press Move again."
+            return
+        }
 
         // Jump (with stops), Two-Spot and Multi-Spot run stop by stop (3.2-3.4, 3.6).
         switch activeMode {
@@ -1638,10 +1710,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
         )
     }
 
-    /// This app session is applying, holding, clearing or moving a location itself.
+    /// This app session is applying, holding, clearing, moving or recovering a location
+    /// itself. A recovery burst (or the wait that runs bursts) owns the session: its
+    /// re-selection of the phone must not let the helper-record restore adopt over it.
     private var ownsLocationOperation: Bool {
         if simulationTask != nil || joystickTask != nil || joystickStartTask != nil
-            || locationClearTask != nil || !applicationTasks.isEmpty {
+            || locationClearTask != nil || !applicationTasks.isEmpty
+            || locationRecoveryTask != nil || automaticReconnectTask != nil {
             return true
         }
         switch locationSessionCoordinator.state.application {
@@ -1757,7 +1832,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult {
-        await stopAutomaticReconnect(reason: "Quit")
+        await stopAutomaticReconnectForQuit()
         await stopSimulation()
         await locationBridge.stopHeldSimulation()
         do {
@@ -1781,7 +1856,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult {
         if choice != .cancel {
-            await stopAutomaticReconnect(reason: "Quit")
+            await stopAutomaticReconnectForQuit()
         }
         switch choice {
         case .cancel:
@@ -2786,11 +2861,31 @@ class AppState: ObservableObject, LocationTerminationHandling {
               locationSessionCoordinator.state.lastAcknowledgedReceipt != nil,
               locationRecoveryTask == nil else { return }
         let strategy = strategy ?? reliabilityManager.strategy
+        // The same Developer Disk Image gate as every Move (`applyPlannedLocation`): a
+        // phone that rebooted while away has none mounted, and the reapply would then be
+        // acknowledged while the phone stays on its real location.
+        let prepareSession: (@MainActor (LocationSessionIdentity) async throws -> Void)?
+        if let preparer = ddiPreparer {
+            prepareSession = { candidate in
+                do {
+                    try await preparer.ensureMounted(udid: candidate.stableDeviceID)
+                } catch {
+                    Logger.error(
+                        "[Recovery] DDI mount failed: " + LogRedaction.redactingDeviceIdentifiers("\(error)"),
+                        category: .device
+                    )
+                    throw error
+                }
+            }
+        } else {
+            prepareSession = nil
+        }
         locationRecoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.locationSessionCoordinator.recover(
                 strategy: strategy,
-                establishSession: establishSession
+                establishSession: establishSession,
+                prepareSession: prepareSession
             )
             self.locationRecoveryTask = nil
             self.reportLocationRecoveryResult(result)
@@ -2853,6 +2948,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
         automaticReconnectID &+= 1
         let id = automaticReconnectID
         isAwaitingAutomaticReconnect = true
+        // A loss pauses a moving run, but every engine was cancelled: while waiting no
+        // movement runs (the location holds), so Movement is not left Paused (§4.4).
+        switch locationSessionCoordinator.state.movement {
+        case .moving, .paused:
+            locationSessionCoordinator.stopMovement()
+        case .idle, .completed:
+            break
+        }
         device.awaitedReconnectDeviceID = deviceID
         automaticReconnectWaiter.discardPendingSignal()
         if isAwaitedDeviceVisible(deviceID) {
@@ -2916,7 +3019,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
             guard !Task.isCancelled else { return }
             let decision = automaticReconnectDecision()
             guard case .wait(let current) = decision, current == deviceID else {
-                Logger.info("[AutoReconnect] Stopped waiting: \(decision)", category: .session)
+                Logger.info(
+                    "[AutoReconnect] Stopped waiting: "
+                        + LogRedaction.redactingDeviceIdentifiers(String(describing: decision)),
+                    category: .session
+                )
+                // The lost session is another device's now: wait for that one instead.
+                if case .wait = decision, automaticReconnectID == id {
+                    finishAutomaticReconnect()
+                    armAutomaticReconnectIfEligible(afterFailedBurst: false)
+                }
                 return
             }
 
@@ -2971,6 +3083,51 @@ class AppState: ObservableObject, LocationTerminationHandling {
         guard let task = automaticReconnectTask else { return }
         cancelAutomaticReconnect(reason: reason)
         await task.value
+    }
+
+    /// Quit's own stop: cancels the wait and its burst, but waits for the burst at most
+    /// `quitReconnectWaitLimit`. A helper command already sent finishes on its own timeout
+    /// (40 s connect, 12 s location); Quit shuts the helper down next anyway.
+    static let quitReconnectWaitLimit: TimeInterval = 2
+
+    private func stopAutomaticReconnectForQuit() async {
+        guard let task = automaticReconnectTask else { return }
+        cancelAutomaticReconnect(reason: "Quit")
+        let finished = await Self.wait(for: task, atMost: Self.quitReconnectWaitLimit)
+        if !finished {
+            Logger.info("[AutoReconnect] Quit did not wait for the cancelled burst's helper command", category: .session)
+        }
+    }
+
+    /// True when `task` ended within `seconds`, false when the time ran out first.
+    private static func wait(for task: Task<Void, Never>, atMost seconds: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let once = ResumeOnce(continuation)
+            let timer = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                once.resume(false)
+            }
+            Task { @MainActor in
+                await task.value
+                timer.cancel()
+                once.resume(true)
+            }
+        }
+    }
+}
+
+/// Resumes a continuation with the first value only.
+@MainActor
+private final class ResumeOnce {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        continuation?.resume(returning: value)
+        continuation = nil
     }
 }
 

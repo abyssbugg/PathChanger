@@ -410,7 +410,12 @@ final class ModePersistenceTests: XCTestCase {
         await playback.value
 
         XCTAssertNil(state.currentLocation)
-        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        // The first hop the phone applied during the drain was the last spoofed point: a
+        // confirmed Clear leaves it staged, never applied (PRODUCT_REQUIREMENTS 5.2; review
+        // 2026-11-02 finding 9, where nothing was staged although the phone was spoofed).
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertEqual(state.stagedStartAfterClear, first)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         XCTAssertEqual(state.locationSessionCoordinator.state.movement, .idle)
         let calls = await fake.calls()
