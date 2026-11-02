@@ -1101,11 +1101,17 @@ final class ModePersistenceTests: XCTestCase {
         // Owner decision 2026-11-01: with Auto jump on, one Move jumps through every stop,
         // holding each for the chosen pause; the index still advances only on receipts.
         let fake = FakeLocationInjector()
-        var pauses: [TimeInterval] = []
-        let state = AppState(
+        // The hold is counted down in ticks of at most 1 s (so Pause can stop it), keyed
+        // here by the stop index it was counted at.
+        var pauses: [Int: TimeInterval] = [:]
+        var state: AppState!
+        state = AppState(
             startBackgroundServices: false,
             locationInjector: fake,
-            routeDelay: { seconds in pauses.append(seconds) }
+            routeDelay: { seconds in
+                XCTAssertLessThanOrEqual(seconds, 1)
+                pauses[state.jumpIndex, default: 0] += seconds
+            }
         )
         state.selectedDevice = Device(id: "jump-device", displayName: "Jump Device", connectionType: .wifi)
         state.isTunneldRunning = true
@@ -1134,7 +1140,7 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertEqual(state.currentLocation, third)
         XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.jumpTeleport))
         XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive, "the last stop holds")
-        XCTAssertEqual(pauses, [7, 7], "a pause between stops, none after the last")
+        XCTAssertEqual(pauses, [1: 7, 2: 7], "a 7 s pause after stops 1 and 2, none after the last")
     }
 
     func testAutoJumpEndsWhenTheModeChangesOrAutoJumpIsTurnedOff() async throws {

@@ -62,7 +62,10 @@ final class RouteStateManager: ObservableObject {
     // MARK: Published Properties
 
     /// Current route coordinates
-    @Published var currentRoute: [LocationCoordinate] = []
+    @Published var currentRoute: [LocationCoordinate] = [] {
+        // Any change to the stops starts one-stop-per-Move progress over.
+        didSet { if currentRoute != oldValue { routeStopCursor = StopCursor() } }
+    }
 
     /// Playback progress (0.0 to 1.0)
     @Published var progress: Double = 0
@@ -89,18 +92,29 @@ final class RouteStateManager: ObservableObject {
     @Published var reverseOnLoop: Bool = false
 
     /// Index of the next hop in Jump mode
-    @Published var jumpIndex: Int = 0
+    @Published var jumpIndex: Int = 0 {
+        // At the first stop the direction makes no difference; resetting it here keeps
+        // every "back to the first hop" reset (mode change, Reset) a clean restart.
+        didSet { if jumpIndex == 0 { jumpReversed = false } }
+    }
 
-    /// Whether Jump mode advances automatically
-    @Published var autoJump: Bool = false
+    /// Jump's back-and-forth direction (heading back toward the first stop).
+    @Published var jumpReversed: Bool = false
 
-    /// How long Auto jump holds each stop before the next one (seconds).
-    @Published var autoJumpPauseSeconds: TimeInterval = 5
+    /// Two-Spot / Multi-Spot: the next stop and direction of a one-stop-per-Move run.
+    /// Advances only on an acknowledged arrival; any stop edit resets it.
+    @Published var routeStopCursor = StopCursor()
+
+    /// Stop-by-stop options per mode (PRODUCT_REQUIREMENTS 3.6); a missing entry means the
+    /// mode's defaults.
+    @Published private(set) var stopTravelSettingsByMode: [AppMode: StopTravelSettings] = [:]
 
     // MARK: Dependencies
 
     let routeLibrary: RouteLibraryManager
     weak var simulationStateManager: SimulationStateManager?
+    /// Where stop settings persist; nil keeps them in memory (tests, previews).
+    private let settingsDefaults: UserDefaults?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -134,8 +148,36 @@ final class RouteStateManager: ObservableObject {
 
     // MARK: Initialization
 
-    init(routeLibrary: RouteLibraryManager) {
+    init(routeLibrary: RouteLibraryManager, settingsDefaults: UserDefaults? = nil) {
         self.routeLibrary = routeLibrary
+        self.settingsDefaults = settingsDefaults
+        if let settingsDefaults {
+            for mode in Self.stopModes {
+                guard let data = settingsDefaults.data(forKey: Self.settingsKey(for: mode)),
+                      let settings = try? JSONDecoder().decode(StopTravelSettings.self, from: data) else { continue }
+                stopTravelSettingsByMode[mode] = settings
+            }
+        }
+    }
+
+    // MARK: Stop Settings
+
+    static let stopModes: [AppMode] = [.jump, .twospot, .route]
+
+    static func settingsKey(for mode: AppMode) -> String {
+        "PathChanger.stopTravelSettings.\(mode.rawValue)"
+    }
+
+    func stopTravelSettings(for mode: AppMode) -> StopTravelSettings {
+        stopTravelSettingsByMode[mode] ?? .defaults(for: mode)
+    }
+
+    func setStopTravelSettings(_ settings: StopTravelSettings, for mode: AppMode) {
+        guard stopTravelSettings(for: mode) != settings else { return }
+        stopTravelSettingsByMode[mode] = settings
+        if let settingsDefaults, let data = try? JSONEncoder().encode(settings) {
+            settingsDefaults.set(data, forKey: Self.settingsKey(for: mode))
+        }
     }
 
     /// Set the simulation state manager reference

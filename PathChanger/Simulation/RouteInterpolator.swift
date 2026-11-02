@@ -107,6 +107,53 @@ struct RouteInterpolator {
         max(stepMeters, 0.01)
     }
 
+    /// Points along a polyline (a road path) spaced `stepMeters` of path apart, from its
+    /// first point to its last. Unlike `interpolateRoute(waypoints:stepMeters:)` the step
+    /// does not restart at every vertex, so a path with many short segments still travels
+    /// at the shown speed. On a single straight segment the two produce the same points.
+    /// A path needing more than `maxRoutePoints` points returns `[]`.
+    static func interpolatePath(_ path: [LocationCoordinate], stepMeters: Double) -> [LocationCoordinate] {
+        let valid = path.filter { $0.isValid }
+        guard valid.count > 1, let first = valid.first, let last = valid.last else { return valid }
+        guard steppedPathPointCount(valid, stepMeters: stepMeters) <= maxRoutePoints else { return [] }
+        let step = steppedStep(stepMeters)
+
+        var points = [first]
+        var nextStep = 1
+        var segmentStart = 0.0
+        for index in 0..<valid.count - 1 {
+            let start = valid[index]
+            let end = valid[index + 1]
+            let distance = haversineDistance(from: start, to: end)
+            guard distance > 0 else { continue }
+            let segmentEnd = segmentStart + distance
+            while Double(nextStep) * step < segmentEnd {
+                let fraction = (Double(nextStep) * step - segmentStart) / distance
+                points.append(LocationCoordinate(
+                    latitude: start.latitude + (end.latitude - start.latitude) * fraction,
+                    longitude: start.longitude + (end.longitude - start.longitude) * fraction
+                ))
+                nextStep += 1
+            }
+            segmentStart = segmentEnd
+        }
+        if points.count == 1 && first == last { return points }
+        points.append(last)
+        return points
+    }
+
+    /// The number of points `interpolatePath(_:stepMeters:)` builds, without building them
+    /// (capped just above `maxRoutePoints` for paths far over the cap).
+    static func steppedPathPointCount(_ path: [LocationCoordinate], stepMeters: Double) -> Int {
+        let valid = path.filter { $0.isValid }
+        guard valid.count > 1 else { return valid.count }
+        let length = Geo.totalDistance(of: valid)
+        guard length > 0 else { return valid.first == valid.last ? 1 : 2 }
+        let steps = (length / steppedStep(stepMeters)).rounded(.up)
+        guard steps.isFinite, steps <= Double(maxRoutePoints) else { return maxRoutePoints + 1 }
+        return Int(steps) + 1
+    }
+
     private static func steppedLegPointCount(distance: Double, step: Double) -> Int {
         max(1, Int((distance / step).rounded(.up)))
     }

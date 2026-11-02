@@ -20,6 +20,7 @@
 		11A4B1879BABFA966B622EC2 /* CloudSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB641C434CB5B477C9D5669 /* CloudSync.swift */; };
 		181B4E7C5A7F22D78DD7FABA /* SimulationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F78233AAF9375A49216897B /* SimulationEngine.swift */; };
 		18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */; };
+		1D5E4406FDF318C852EBE636 /* StopTravelEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E85E41F59133B4FD2A1492 /* StopTravelEngineTests.swift */; };
 		21FBD8F38DF74B2079C16C02 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B045D6AFD74CFC2E34BA0A /* Constants.swift */; };
 		247D7CBBE1EE4EDC695592FF /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F125981934200A08DECF308 /* AppPreferences.swift */; };
 		272CFF4CAE1A6441D61BA8BA /* OrganicSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */; };
@@ -85,6 +86,7 @@
 		9940F213BE8E4FB755E23A84 /* FakeLocationInjector.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC9921DD4234A5BFD3C07713 /* FakeLocationInjector.swift */; };
 		9B265C9A8974771384C75A48 /* PersistentBridgeLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F96180AE641F38182F8704F0 /* PersistentBridgeLifecycleTests.swift */; };
 		9CD5221340AE577072D73FD7 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = D2F344AF3036ABE8781C9B45 /* Localizable.strings */; };
+		9D952109B395CC36BA217A29 /* StopTravelPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8EB41C0015EA74E6EADE9C6 /* StopTravelPlan.swift */; };
 		9F35C6BBA97DBC72AF5A71E9 /* DependencyErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0233732745840E4F24A61CC2 /* DependencyErrorView.swift */; };
 		A0802A0EC31793A75B698A2E /* Documentation.docc in Sources */ = {isa = PBXBuildFile; fileRef = 8C11D5D9B39AA519C503106D /* Documentation.docc */; };
 		A3407093A0E6AE23584A1615 /* FloatingControlPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F6FAB02B0D5816A07D10CC2 /* FloatingControlPanel.swift */; };
@@ -92,6 +94,7 @@
 		A618FEB09E385B066B1C13C2 /* TunneldManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C961C7385901C0ECAD9850 /* TunneldManager.swift */; };
 		A62A1DDA4359C76A5DBCA02E /* Accessibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77A1796E162E608C12CA409E /* Accessibility.swift */; };
 		AD23CE7E98E4F559226881D6 /* DeveloperDiskImagePreparerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96C69369ECD02E8B8D129BA1 /* DeveloperDiskImagePreparerTests.swift */; };
+		AD6E7F544ED9F702DB0F30C1 /* StopTravelPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 388D5FD2854647FC6EE72D56 /* StopTravelPlanTests.swift */; };
 		AE98A734BB403BAF60CF2D1A /* DevLocationBridgeSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */; };
 		B1927611EF3C0A9CCF88B61D /* RateLimiterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 986F6319346E583A5E4DEC2B /* RateLimiterTests.swift */; };
 		B30E48C29188E554B8E6FF11 /* TunnelStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87EA633BFD77CDC6413AEA2C /* TunnelStateMachine.swift */; };
@@ -179,6 +182,7 @@
 		369CF0AF5C505C1CB4B320E8 /* Device.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Device.swift; sourceTree = "<group>"; };
 		36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationEngineTests.swift; sourceTree = "<group>"; };
 		3728FC3F30EB53874CDDEBCF /* ArgumentSanitizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArgumentSanitizerTests.swift; sourceTree = "<group>"; };
+		388D5FD2854647FC6EE72D56 /* StopTravelPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopTravelPlanTests.swift; sourceTree = "<group>"; };
 		38BAE4B44E7CD54D79BA2164 /* PathChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathChangerApp.swift; sourceTree = "<group>"; };
 		38BB7E490DFFCFE40EED55CD /* SimulationTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationTypes.swift; sourceTree = "<group>"; };
 		3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReliabilityManagerTests.swift; sourceTree = "<group>"; };
@@ -243,6 +247,7 @@
 		B4085B7E872E34E187DA0407 /* RouteStateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteStateManager.swift; sourceTree = "<group>"; };
 		B46095046F517506D398A080 /* ConstantsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConstantsTests.swift; sourceTree = "<group>"; };
 		B4F0E3FAA85666E3F272E03C /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		B9E85E41F59133B4FD2A1492 /* StopTravelEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopTravelEngineTests.swift; sourceTree = "<group>"; };
 		BCFDB63B191C6302929B2468 /* GPXParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXParser.swift; sourceTree = "<group>"; };
 		BD27EDD6BC7195035F1D6694 /* LocationCoordinateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationCoordinateTests.swift; sourceTree = "<group>"; };
 		C126F84BBEAEA9A9457BA427 /* ErrorDialogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorDialogView.swift; sourceTree = "<group>"; };
@@ -279,6 +284,7 @@
 		F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSettingsSheet.swift; sourceTree = "<group>"; };
 		F4B045D6AFD74CFC2E34BA0A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimiter.swift; sourceTree = "<group>"; };
+		F8EB41C0015EA74E6EADE9C6 /* StopTravelPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopTravelPlan.swift; sourceTree = "<group>"; };
 		F96180AE641F38182F8704F0 /* PersistentBridgeLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentBridgeLifecycleTests.swift; sourceTree = "<group>"; };
 		FD97D62FEFC2920754C14091 /* MultiDeviceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDeviceCoordinator.swift; sourceTree = "<group>"; };
 		FEB641C434CB5B477C9D5669 /* CloudSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSync.swift; sourceTree = "<group>"; };
@@ -393,6 +399,7 @@
 				52060578E57F26F354DBD47D /* RouteInterpolator.swift */,
 				5F78233AAF9375A49216897B /* SimulationEngine.swift */,
 				D09E7C72090449021F614E52 /* SimulationPlanner.swift */,
+				F8EB41C0015EA74E6EADE9C6 /* StopTravelPlan.swift */,
 			);
 			path = Simulation;
 			sourceTree = "<group>";
@@ -512,6 +519,8 @@
 				36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */,
 				E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */,
 				E714C119DB1B67F7A0CB290D /* StateManagerTests.swift */,
+				B9E85E41F59133B4FD2A1492 /* StopTravelEngineTests.swift */,
+				388D5FD2854647FC6EE72D56 /* StopTravelPlanTests.swift */,
 				184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */,
 				76FDA01BFDC637767F7ACA20 /* TestEnvironment.swift */,
 				8BFBBD50A80562870376A2E7 /* TunneldManagerTests.swift */,
@@ -715,6 +724,8 @@
 				7F15CA3E0E06A432171099F8 /* SimulationEngineTests.swift in Sources */,
 				648D7CA000A33E1E81BCE958 /* SimulationPlannerTests.swift in Sources */,
 				902C9F465A9AEE515A1204D3 /* StateManagerTests.swift in Sources */,
+				1D5E4406FDF318C852EBE636 /* StopTravelEngineTests.swift in Sources */,
+				AD6E7F544ED9F702DB0F30C1 /* StopTravelPlanTests.swift in Sources */,
 				D7ED8A375FEEB98D53CAD8C9 /* TelemetryServiceTests.swift in Sources */,
 				2DE9A02F94F83E3F9C223AD1 /* TestEnvironment.swift in Sources */,
 				4825F2E4696AC50F9DF1B46C /* TunnelHealthMonitorTests.swift in Sources */,
@@ -793,6 +804,7 @@
 				8BE5FC903D34B1168C4E272C /* SimulationStateManager.swift in Sources */,
 				3FD11ED2475492BA41285369 /* SimulationTypes.swift in Sources */,
 				18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */,
+				9D952109B395CC36BA217A29 /* StopTravelPlan.swift in Sources */,
 				4EA6C1C954021A0083AEA67B /* TelemetryService.swift in Sources */,
 				DEC66ED2198A3C2FBEDD3F68 /* ToastView.swift in Sources */,
 				A3E16EA07BE2908DDB40B225 /* TunnelHealthMonitor.swift in Sources */,

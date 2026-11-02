@@ -105,9 +105,7 @@ enum SimulationPlanner {
         if let stepMeters,
            RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: stepMeters)
             > RouteInterpolator.maxRoutePoints {
-            return .failed(
-                "This route has too many points for the chosen speed and update frequency. Raise the speed, lower Update frequency in Settings, or use fewer or closer stops."
-            )
+            return .failed(StopTravelPlanner.tooManyPointsMessage)
         }
 
         let points = stepMeters.map {
