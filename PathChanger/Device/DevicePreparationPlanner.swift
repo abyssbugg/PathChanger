@@ -69,6 +69,18 @@ enum DevicePreparationPlanner {
     static func ddiMountCommand(udid: String) -> [String] {
         ["-m", "pymobiledevice3", "mounter", "auto-mount", "--udid", udid]
     }
+
+    /// `mounter list` resolved over Bonjour/mobdev2 instead of usbmux. Live 2026-11-01:
+    /// usbmux listed no Wi-Fi phone for 3.5 min while Bonjour still reached it, and this
+    /// form returned the mounted image list without usbmux.
+    static func ddiMountStatusMobdev2Command(udid: String) -> [String] {
+        ["-m", "pymobiledevice3", "mounter", "list", "--mobdev2", "--udid", udid]
+    }
+
+    /// `mounter auto-mount` resolved over Bonjour/mobdev2 instead of usbmux.
+    static func ddiMountMobdev2Command(udid: String) -> [String] {
+        ["-m", "pymobiledevice3", "mounter", "auto-mount", "--mobdev2", "--udid", udid]
+    }
 }
 
 @MainActor

@@ -552,6 +552,32 @@ final class TunneldManagerTests: XCTestCase {
         )
     }
 
+    func testDeveloperDiskImageCommandsResolveTheDeviceThroughUsbmux() {
+        let udid = "00008130-001234567890ABCD"
+        XCTAssertEqual(
+            DevicePreparationPlanner.ddiMountStatusCommand(udid: udid),
+            ["-m", "pymobiledevice3", "mounter", "list", "--udid", udid]
+        )
+        XCTAssertEqual(
+            DevicePreparationPlanner.ddiMountCommand(udid: udid),
+            ["-m", "pymobiledevice3", "mounter", "auto-mount", "--udid", udid]
+        )
+    }
+
+    func testDeveloperDiskImageMobdev2CommandsKeepTheUDIDAndUseBonjour() {
+        // Live 2026-11-01: usbmux listed no Wi-Fi phone for 3.5 min while Bonjour still
+        // reached it; `mounter list --mobdev2 --udid <UDID>` returned the mounted image.
+        let udid = "00008130-001234567890ABCD"
+        XCTAssertEqual(
+            DevicePreparationPlanner.ddiMountStatusMobdev2Command(udid: udid),
+            ["-m", "pymobiledevice3", "mounter", "list", "--mobdev2", "--udid", udid]
+        )
+        XCTAssertEqual(
+            DevicePreparationPlanner.ddiMountMobdev2Command(udid: udid),
+            ["-m", "pymobiledevice3", "mounter", "auto-mount", "--mobdev2", "--udid", udid]
+        )
+    }
+
     func testWiFiPreparationRunsCommandsInOrder() async throws {
         let udid = "00000000-0000000000000001"
         var calls: [[String]] = []
