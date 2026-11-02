@@ -352,12 +352,36 @@ extension StopTravelCardTests {
     }
 
     func testJumpTimingCaptionFollowsTheChoice() {
-        let realistic = StopTravelCardText.jumpTimingCaption(for: .realistic)
+        let realistic = StopTravelCardText.jumpTimingCaption(for: settings(.jump, timing: .realistic))
         XCTAssertTrue(realistic.contains("travel speed"), realistic)
         XCTAssertTrue(realistic.contains("road distance"), realistic)
         XCTAssertTrue(realistic.contains("straight line"), realistic)
-        let fixed = StopTravelCardText.jumpTimingCaption(for: .fixed)
+        let fixed = StopTravelCardText.jumpTimingCaption(for: settings(.jump, timing: .fixed))
         XCTAssertTrue(fixed.contains("At each stop"), fixed)
+    }
+
+    /// Review 2026-11-02-163337 issue 6: under Jump's defaults (Fixed, One stop per Move)
+    /// At each stop is dimmed with "Used between stops when Go through is Automatically";
+    /// the caption above it must not say it sets the pause.
+    func testFixedJumpCaptionDoesNotPromiseAHoldThatDoesNotApply() {
+        let onePerMove = settings(.jump, timing: .fixed, hold: 5, progression: .onePerMove)
+        XCTAssertFalse(StopTravelCardText.holdApplies(onePerMove))
+        XCTAssertEqual(StopTravelCardText.jumpTimingCaption(for: onePerMove), "Jumps at once when you press Move.")
+        XCTAssertEqual(
+            StopTravelCardText.jumpTimingCaption(for: .defaults(for: .jump)),
+            StopTravelCardText.jumpTimingCaption(for: settings(.jump, timing: .fixed, progression: .onePerMove)),
+            "Jump's defaults read the one-stop-per-Move caption"
+        )
+        let automatic = settings(.jump, timing: .fixed, hold: 5, progression: .automatic)
+        XCTAssertEqual(
+            StopTravelCardText.jumpTimingCaption(for: automatic),
+            "Jumps at once; At each stop sets the pause between stops."
+        )
+        XCTAssertEqual(
+            StopTravelCardText.jumpTimingCaption(for: settings(.jump, timing: .realistic, progression: .onePerMove)),
+            StopTravelCardText.jumpTimingCaption(for: settings(.jump, timing: .realistic, progression: .automatic)),
+            "the Realistic trip-time wait does not depend on Go through"
+        )
     }
 
     func testSpeedNoteSaysWhenTheSpeedIsUsed() {

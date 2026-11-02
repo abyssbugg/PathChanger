@@ -984,6 +984,44 @@ final class StopTravelEngineTests: XCTestCase {
         )
     }
 
+    /// Review 2026-11-02-163337 issue 8: Two-Spot with one spot leaves from the held
+    /// location, so the run's stops are [held, spot] while the route holds only the spot.
+    /// The completion line read "stop 1 of 1" for that two-stop run.
+    func testTwoSpotWithOneSpotReadsTheRunsStopsNotTheRoute() async {
+        let harness = await StopRunHarness.make(mode: .teleport, stops: [s0])
+        let state = harness.state!
+        await state.startSimulation()
+        XCTAssertEqual(state.currentLocation, s0, "the start is held")
+
+        state.activeMode = .twospot
+        state.clearRoute()
+        state.stageLocation(s1, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [s1], "the route holds the one spot")
+        await state.startSimulation()
+        assertHeld(state, at: s1)
+
+        let stops = state.displayStops(for: .twospot)
+        XCTAssertEqual(stops, [s0, s1], "the run's stops start at the held location")
+        let reached = StopTravelCardText.reachedStop(
+            stops: stops,
+            cursor: state.displayStopCursor(for: .twospot),
+            repeatMode: state.stopTravelSettings(for: .twospot).repeatMode,
+            held: state.locationPresentation.appliedCoordinate
+        )
+        XCTAssertEqual(reached, 1)
+        XCTAssertEqual(
+            StopTravelCardText.completionLine(
+                movement: state.locationSessionCoordinator.state.movement,
+                mode: .twospot,
+                isHeld: true,
+                reachedStop: reached,
+                totalStops: stops.count
+            ),
+            "Done · holding stop 2 of 2"
+        )
+        XCTAssertEqual(state.displayStops(for: .jump), state.currentRoute, "Jump indexes its hops")
+    }
+
     func testJoystickSpeedNeverChangesAStopRun() async {
         let harness = await StopRunHarness.make(mode: .twospot, stops: [s0, s1])
         let state = harness.state!

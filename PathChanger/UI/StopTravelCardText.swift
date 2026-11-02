@@ -47,11 +47,15 @@ enum StopTravelCardText {
         "Realistic waits the trip time at the travel speed (road distance when known)."
     static let defaultFallbackNote = "No road route found; travelling in a straight line"
 
-    /// What the chosen Jump timing does, said for the choice the user sees selected.
-    static func jumpTimingCaption(for timing: StopTravelSettings.JumpTiming) -> String {
-        switch timing {
+    /// What the chosen Jump timing does, said for the choice the user sees selected. Fixed
+    /// names At each stop only when it applies (Go through is Automatically): under one
+    /// stop per Move the slider is dimmed and each jump happens when Move is pressed.
+    static func jumpTimingCaption(for settings: StopTravelSettings) -> String {
+        switch settings.jumpTiming {
         case .fixed:
-            return "Jumps at once; At each stop sets the pause between stops."
+            return holdApplies(settings)
+                ? "Jumps at once; At each stop sets the pause between stops."
+                : "Jumps at once when you press Move."
         case .realistic:
             return "Waits the trip time at the travel speed: road distance when known, else a straight line."
         }

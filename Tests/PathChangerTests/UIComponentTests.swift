@@ -718,9 +718,88 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(source.contains("location.teleport.noTarget"))
         XCTAssertTrue(source.contains("location.teleport.targetHint"))
         XCTAssertTrue(source.contains("ContentHuggingLayout {"), "the card's content scrolls inside a height ceiling")
-        XCTAssertFalse(source.contains(".frame(width: 336)\n        .fixedSize(horizontal: false, vertical: true)"), "fixedSize pushed the footer out of the window")
+        XCTAssertFalse(Self.cardBodyReintroducesFixedSize(source), "fixedSize pushed the footer out of the window")
         XCTAssertTrue(try sourceFile("PathChanger/UI/ContentView.swift").contains(".padding(ModeContextCard.placementInsets)"))
         XCTAssertFalse(source.contains(".frame(maxHeight: 560)"))
+    }
+
+    /// True when the card's `body` applies `fixedSize` (vertical or bare) anywhere in its
+    /// modifier chain, however the source is formatted (review 2026-11-02-163337 issue 9).
+    /// The text views inside the card's blocks keep their own `fixedSize`.
+    static func cardBodyReintroducesFixedSize(_ source: String) -> Bool {
+        guard let start = source.range(of: "var body: some View {"),
+              let end = source.range(of: "private var header: some View", range: start.upperBound..<source.endIndex) else {
+            return true // the guard cannot find the card body: fail loudly
+        }
+        let body = String(source[start.upperBound..<end.lowerBound])
+        let fixedSize = #"\.\s*fixedSize\s*\(\s*(horizontal\s*:\s*false\s*,\s*vertical\s*:\s*true\s*)?\)"#
+        return body.range(of: fixedSize, options: .regularExpression) != nil
+    }
+
+    func testTheFixedSizeGuardSurvivesReformatting() throws {
+        let original = """
+            var body: some View {
+                VStack(spacing: 0) { header; content; footer }
+                .frame(width: 336)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            private var header: some View {
+        """
+        let sameLine = """
+            var body: some View {
+                VStack(spacing: 0) { header; content; footer }
+                .frame(width: 336).fixedSize(horizontal:false,vertical:true)
+            }
+
+            private var header: some View {
+        """
+        let laterInTheChain = """
+            var body: some View {
+                VStack(spacing: 0) { header; content; footer }
+                .frame(width: 336)
+                .background(Organic.neutral100)
+                .fixedSize(
+                    horizontal: false,
+                    vertical: true
+                )
+            }
+
+            private var header: some View {
+        """
+        let bare = """
+            var body: some View {
+                VStack(spacing: 0) { header; content; footer }
+                .frame(width: 336)
+                .fixedSize()
+            }
+
+            private var header: some View {
+        """
+        let insideABlock = """
+            var body: some View {
+                VStack(spacing: 0) { header; content; footer }
+                .frame(width: 336)
+            }
+
+            private var header: some View {
+                Text("x").fixedSize(horizontal: false, vertical: true)
+            }
+        """
+        for (name, sample) in [("original", original), ("same line", sameLine), ("later in the chain", laterInTheChain), ("bare", bare)] {
+            XCTAssertTrue(Self.cardBodyReintroducesFixedSize(sample), "\(name) is caught")
+        }
+        XCTAssertFalse(Self.cardBodyReintroducesFixedSize(insideABlock), "a block's text keeps its own fixedSize")
+    }
+
+    /// Review 2026-11-02-163337 issue 8: the "At stop" and completion readouts index the
+    /// run's stops (Two-Spot with one spot starts at the held location), not the route.
+    func testStopReadoutsIndexTheRunsStops() throws {
+        let card = try sourceFile("PathChanger/UI/ModeContextCard.swift")
+        XCTAssertTrue(card.contains("stops: appState.displayStops(for: mode),"))
+        XCTAssertTrue(card.contains("totalStops: appState.displayStops(for: mode).count"))
+        XCTAssertTrue(card.contains("total: appState.displayStops(for: mode).count"))
+        XCTAssertFalse(card.contains("totalStops: appState.currentRoute.count"))
     }
 
     func testModeSelectorIsLabeledAccessibleAndUsesContrastSafeInk() throws {

@@ -490,7 +490,7 @@ struct ModeContextCard: View {
             VStack(alignment: .leading, spacing: 5) {
                 stopChoices(control, selection: appState.stopSettingBinding(\.jumpTiming, for: mode),
                             options: StopTravelSettings.JumpTiming.allCases, title: StopTravelCardText.title, icon: Self.icon)
-                caption(StopTravelCardText.jumpTimingCaption(for: stopSettings.jumpTiming), systemImage: "info.circle")
+                caption(StopTravelCardText.jumpTimingCaption(for: stopSettings), systemImage: "info.circle")
             }
         case .hold:
             stopHoldRow
@@ -700,7 +700,7 @@ struct ModeContextCard: View {
     /// The stop the phone holds in this mode's run (nil when it holds no stop of it).
     private var reachedStopIndex: Int? {
         StopTravelCardText.reachedStop(
-            stops: appState.currentRoute,
+            stops: appState.displayStops(for: mode),
             cursor: appState.displayStopCursor(for: mode),
             repeatMode: stopSettings.repeatMode,
             held: appState.locationPresentation.appliedCoordinate
@@ -715,7 +715,7 @@ struct ModeContextCard: View {
             mode: mode,
             isHeld: appState.locationPresentation.appliedCoordinate != nil,
             reachedStop: reachedStopIndex,
-            totalStops: appState.currentRoute.count
+            totalStops: appState.displayStops(for: mode).count
         )
     }
 
@@ -743,7 +743,7 @@ struct ModeContextCard: View {
             if mode == .jump {
                 // The stop the phone holds, not the cursor: after a Loop wrap the cursor
                 // reads 0 while the phone holds the last stop.
-                metricRow(system: "mappin.and.ellipse", title: "At stop", value: StopTravelCardText.atStopValue(reached: reachedStopIndex, total: appState.currentRoute.count))
+                metricRow(system: "mappin.and.ellipse", title: "At stop", value: StopTravelCardText.atStopValue(reached: reachedStopIndex, total: appState.displayStops(for: mode).count))
             }
         }
         .padding(.top, 8)
