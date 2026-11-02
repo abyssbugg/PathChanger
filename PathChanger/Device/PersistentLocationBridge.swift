@@ -467,6 +467,114 @@ struct ManagedLocationHelperRecord: Codable, Equatable {
     }
 }
 
+/// The managed helper's stderr log (`~/Library/Logs/PathChanger`, never /tmp).
+///
+/// The helper outlives the app (it is adopted on relaunch), so it writes to a file it
+/// holds open, not to a pipe the app would have to drain. The cap is enforced at each
+/// launch (a log over `maxBytes` is renamed to `.1` once, replacing an older `.1`) and
+/// at each adoption (`capInPlace`), not continuously while one helper runs.
+enum ManagedLocationHelperStderrLog {
+    static let maxBytes: UInt64 = 1_048_576
+
+    enum LogError: LocalizedError {
+        case unsafeFile(String)
+        case openFailed(Int32)
+
+        var errorDescription: String? {
+            switch self {
+            case let .unsafeFile(path):
+                return "Location helper stderr log is not an owner-only regular file: \(path)"
+            case let .openFailed(code):
+                return "Location helper stderr log could not be opened: \(String(cString: strerror(code)))"
+            }
+        }
+    }
+
+    static var defaultURL: URL? {
+        // Not `.log`: FileLogger's age sweep deletes every `*.log` in this directory
+        // and would unlink the file the helper holds open.
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs/PathChanger", isDirectory: true)
+            .appendingPathComponent("location-helper-stderr.txt")
+    }
+
+    /// Cap the log of a helper that is still running (adopted on relaunch): it holds the
+    /// file open with O_APPEND, so a rename would leave it growing the renamed file.
+    /// Keeps the newest `maxBytes` in `.1` and truncates the live file in place; the
+    /// helper's next write starts it again. A missing file is left alone.
+    static func capInPlace(
+        at url: URL,
+        maxBytes: UInt64 = ManagedLocationHelperStderrLog.maxBytes,
+        fileManager: FileManager = .default
+    ) throws {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return }
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else {
+            throw LogError.unsafeFile(url.path)
+        }
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        guard size > maxBytes else { return }
+
+        let descriptor = Darwin.open(url.path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw LogError.openFailed(errno) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        try handle.seek(toOffset: size - maxBytes)
+        let tail = try handle.readToEnd() ?? Data()
+
+        let rotated = URL(fileURLWithPath: url.path + ".1")
+        try? fileManager.removeItem(at: rotated)
+        let rotatedDescriptor = Darwin.open(
+            rotated.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0o600
+        )
+        guard rotatedDescriptor >= 0 else { throw LogError.openFailed(errno) }
+        let rotatedHandle = FileHandle(fileDescriptor: rotatedDescriptor, closeOnDealloc: true)
+        try rotatedHandle.write(contentsOf: tail)
+        try rotatedHandle.close()
+
+        guard ftruncate(descriptor, 0) == 0 else { throw LogError.openFailed(errno) }
+        try handle.close()
+    }
+
+    /// Open the log for appending with owner-only permissions. Refuses symlinks and
+    /// files owned by another user.
+    static func open(
+        at url: URL,
+        maxBytes: UInt64 = ManagedLocationHelperStderrLog.maxBytes,
+        fileManager: FileManager = .default
+    ) throws -> FileHandle {
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        if let attributes = try? fileManager.attributesOfItem(atPath: url.path) {
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else {
+                throw LogError.unsafeFile(url.path)
+            }
+            if ((attributes[.size] as? NSNumber)?.uint64Value ?? 0) > maxBytes {
+                let rotated = URL(fileURLWithPath: url.path + ".1")
+                try? fileManager.removeItem(at: rotated)
+                try fileManager.moveItem(at: url, to: rotated)
+            }
+        }
+        let descriptor = Darwin.open(
+            url.path,
+            O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
+            0o600
+        )
+        guard descriptor >= 0 else { throw LogError.openFailed(errno) }
+        guard fchmod(descriptor, 0o600) == 0 else {
+            let code = errno
+            Darwin.close(descriptor)
+            throw LogError.openFailed(code)
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+}
+
 struct ManagedLocationHelperConnection: Sendable {
     let client: ManagedLocationHelperClient
     let record: ManagedLocationHelperRecord
@@ -511,6 +619,8 @@ final class ManagedLocationHelperController {
     private let pythonPath: String
     private let bridgePath: String
     private let fileManager: FileManager
+    /// Where the helper's stderr goes; nil discards it (tests that launch helpers).
+    private let stderrLogURL: URL?
     private var launchedProcess: Process?
     private var activeConnection: ManagedLocationHelperConnection?
 
@@ -518,12 +628,28 @@ final class ManagedLocationHelperController {
         paths: ManagedLocationHelperPaths,
         pythonPath: String,
         bridgePath: String,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        stderrLogURL: URL? = nil
     ) {
         self.paths = paths
         self.pythonPath = pythonPath
         self.bridgePath = bridgePath
         self.fileManager = fileManager
+        self.stderrLogURL = stderrLogURL
+    }
+
+    /// An adopted helper keeps writing to the stderr log it was launched with; cap it now
+    /// (the launch-time rotation never runs for it). Failure only loses log history.
+    private func capAdoptedHelperStderrLog() {
+        guard let stderrLogURL else { return }
+        do {
+            try ManagedLocationHelperStderrLog.capInPlace(at: stderrLogURL, fileManager: fileManager)
+        } catch {
+            Logger.error(
+                "[PersistentBridge] Could not cap the adopted helper's stderr log: \(error.localizedDescription)",
+                category: .device
+            )
+        }
     }
 
     func connectOrLaunch() async throws -> ManagedLocationHelperConnection {
@@ -543,6 +669,7 @@ final class ManagedLocationHelperController {
                     token: token,
                     launchedNewHelper: false
                 )
+                capAdoptedHelperStderrLog()
                 activeConnection = connection
                 return connection
             }
@@ -561,14 +688,28 @@ final class ManagedLocationHelperController {
         ]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        var stderrLog: FileHandle?
+        if let stderrLogURL {
+            do {
+                stderrLog = try ManagedLocationHelperStderrLog.open(at: stderrLogURL, fileManager: fileManager)
+            } catch {
+                Logger.error(
+                    "[PersistentBridge] Helper stderr will be discarded: \(error.localizedDescription)",
+                    category: .device
+                )
+            }
+        }
+        process.standardError = stderrLog ?? FileHandle.nullDevice
         process.environment = ProcessEnvironment.configured()
 
         do {
             try process.run()
         } catch {
+            try? stderrLog?.close()
             throw ControllerError.launchFailed(error.localizedDescription)
         }
+        // The child holds its own copy of the descriptor.
+        try? stderrLog?.close()
         launchedProcess = process
 
         do {
@@ -1160,6 +1301,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     func refreshAdoptedHelperSessions() async throws {
         guard isRunning, let helperController else {
+            Logger.error("[PersistentBridge] Cannot refresh helper sessions: the helper is not running", category: .device)
             throw PersistentBridgeError.processNotRunning
         }
         do {
@@ -1172,6 +1314,11 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             adoptedHelperID = connection.record.helperID
             adoptedHelperSessions = connection.record.activeSessions
         } catch {
+            Logger.error(
+                "[PersistentBridge] Refreshing helper sessions failed: " +
+                LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device
+            )
             invalidateManagedHelperState(after: error)
             throw error
         }
@@ -1213,7 +1360,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         let controller = ManagedLocationHelperController(
             paths: paths,
             pythonPath: python3Path,
-            bridgePath: scriptPath
+            bridgePath: scriptPath,
+            stderrLogURL: ManagedLocationHelperStderrLog.defaultURL
         )
         helperController = controller
         return controller
@@ -1342,6 +1490,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         if !response.success {
             // The helper closes the connection a location command failed on.
             currentSession = nil
+            Logger.error(
+                "[PersistentBridge] set_location failed (generation \(request.session_generation)): " +
+                LogRedaction.redactingDeviceIdentifiers(response.error ?? "Unknown error"),
+                category: .device,
+                repeatKey: "PersistentBridge.set_location"
+            )
             throw PersistentBridgeError.bridgeError(response.error ?? "Unknown error")
         }
 
@@ -1410,13 +1564,27 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         let response = try await sendCommand(request)
 
         if !response.success {
+            Logger.error(
+                "[PersistentBridge] clear_location failed (generation \(request.session_generation)): " +
+                LogRedaction.redactingDeviceIdentifiers(response.error ?? "Unknown error"),
+                category: .device
+            )
             throw PersistentBridgeError.bridgeError(response.error ?? "Unknown error")
         }
 
         let acknowledgement = try response.acknowledgement(physicalTransport: physicalTransport)
         usesTunnelTransport = acknowledgement.endpointClass == .remoteServiceDiscovery
-        try await refreshAdoptedHelperSessions()
-        try confirmDurableClear(for: device.id)
+        do {
+            try await refreshAdoptedHelperSessions()
+            try confirmDurableClear(for: device.id)
+        } catch {
+            Logger.error(
+                "[PersistentBridge] The helper reported the Clear done, but confirming it failed: " +
+                LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device
+            )
+            throw error
+        }
         currentSession = nil
         return acknowledgement
     }
@@ -1447,6 +1615,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             timeoutSeconds: Self.connectResponseTimeoutSeconds
         )
         guard response.success, response.connected == true else {
+            Logger.error(
+                "[PersistentBridge] connect_device failed: " +
+                LogRedaction.redactingDeviceIdentifiers(response.error ?? response.reason ?? "not connected"),
+                category: .device,
+                repeatKey: "PersistentBridge.connect_device"
+            )
             throw Self.connectFailure(error: response.error, reason: response.reason)
         }
         guard let helperPID = helperConnection?.record.pid else {
@@ -1476,7 +1650,17 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// later applied the location.
     private func ensureDeviceConnection(for device: Device, transport: LocationTransport) async throws {
         guard currentSession?.stableDeviceID != device.id else { return }
-        _ = try await connectDevice(device.id, transport: transport)
+        do {
+            _ = try await connectDevice(device.id, transport: transport)
+        } catch {
+            Logger.error(
+                "[PersistentBridge] Opening the device connection failed: " +
+                LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device,
+                repeatKey: "PersistentBridge.ensureDeviceConnection"
+            )
+            throw error
+        }
     }
 
     /// Bounded liveness probe of the device connection. Never starts the helper.
@@ -1636,9 +1820,16 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     private func confirmDurableClear(for deviceID: String) throws {
         guard adoptedHelperID != nil else {
+            Logger.error("[PersistentBridge] Durable-clear check failed: helper identity unavailable", category: .device)
             throw PersistentBridgeError.invalidResponse("Managed helper identity is unavailable")
         }
-        guard !adoptedHelperSessions.contains(where: { $0.matches(deviceID: deviceID) }) else {
+        let remaining = adoptedHelperSessions.filter { $0.matches(deviceID: deviceID) }.count
+        guard remaining == 0 else {
+            Logger.error(
+                "[PersistentBridge] Durable-clear check failed: the helper record still lists " +
+                "\(remaining) active session(s) for the device",
+                category: .device
+            )
             throw PersistentBridgeError.invalidResponse(
                 "Managed helper still reports an active location session after Clear"
             )
@@ -1689,9 +1880,18 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         // Handed the slot just as it was cancelled: still never send.
         try Task.checkCancellation()
         guard let helperConnection else {
+            Logger.error("[PersistentBridge] \(request.cmd) not sent: the helper is not running", category: .device)
             throw PersistentBridgeError.processNotRunning
         }
-        try requestGate.begin(requestID: request.request_id, generation: request.session_generation)
+        do {
+            try requestGate.begin(requestID: request.request_id, generation: request.session_generation)
+        } catch {
+            Logger.error(
+                "[PersistentBridge] \(request.cmd) not sent: another request is in flight",
+                category: .device
+            )
+            throw error
+        }
         defer {
             requestGate.finish(
                 requestID: request.request_id,
@@ -1716,12 +1916,15 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             }
             return response
         } catch let error as PersistentBridgeError {
+            Self.logCommandFailure(request.cmd, error.localizedDescription)
             throw error
         } catch let error as ManagedLocationHelperClient.ClientError {
             if error.isResponseTimeout,
                request.cmd == "set_location" || request.cmd == "clear_location" {
+                Logger.error("[PersistentBridge] \(request.cmd) timed out; reconciling from the helper record", category: .device)
                 return try await reconcileTimedOutCommand(request)
             }
+            Self.logCommandFailure(request.cmd, error.localizedDescription)
             if error.invalidatesManagedHelperState {
                 invalidateManagedHelperState(after: error)
             } else {
@@ -1729,11 +1932,24 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             }
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
         } catch let error as EncodingError {
+            Logger.error("[PersistentBridge] \(request.cmd) could not be encoded: \(error.localizedDescription)", category: .device)
             lastError = error
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
         } catch {
+            Self.logCommandFailure(request.cmd, error.localizedDescription)
             invalidateManagedHelperState(after: error)
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
+        }
+    }
+
+    /// A failed command's line, with UDID-shaped tokens redacted. set_location failures
+    /// are repeat-suppressed: the joystick retries at its update rate.
+    private static func logCommandFailure(_ command: String, _ text: String) {
+        let line = "[PersistentBridge] \(command) failed: " + LogRedaction.redactingDeviceIdentifiers(text)
+        if command == "set_location" {
+            Logger.error(line, category: .device, repeatKey: "PersistentBridge.set_location")
+        } else {
+            Logger.error(line, category: .device)
         }
     }
 

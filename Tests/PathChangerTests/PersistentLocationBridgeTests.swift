@@ -718,6 +718,137 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
     }
 }
 
+final class ManagedLocationHelperStderrLogTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PathChanger-stderr-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func permissions(_ url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    }
+
+    @MainActor
+    func testHelperStderrIsAppendedToAnOwnerOnlyLog() async throws {
+        // Live 2026-11-01: helper stderr went to /dev/null, so nothing explained a
+        // failed Clear. A launch that writes to stderr must leave it in the log.
+        let helperDirectory = root.appendingPathComponent("helper", isDirectory: true)
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fakePython = root.appendingPathComponent("fake-python")
+        try "#!/bin/sh\necho helper-stderr-marker >&2\nexit 3\n"
+            .write(to: fakePython, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: fakePython.path
+        )
+        let controller = ManagedLocationHelperController(
+            paths: ManagedLocationHelperPaths(baseDirectory: helperDirectory),
+            pythonPath: fakePython.path,
+            bridgePath: fakePython.path,
+            stderrLogURL: logURL
+        )
+
+        do {
+            _ = try await controller.connectOrLaunch()
+            XCTFail("A helper that exits at once must not connect")
+        } catch {}
+
+        let contents = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("helper-stderr-marker"), contents)
+        XCTAssertEqual(try permissions(logURL) & 0o777, 0o600)
+    }
+
+    func testHelperStderrLogAppendsAndRotatesOnceWhenOverTheCap() throws {
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        let rotatedURL = URL(fileURLWithPath: logURL.path + ".1")
+
+        var handle = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: 16)
+        handle.write(Data("first\n".utf8))
+        try handle.close()
+        handle = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: 16)
+        handle.write(Data("second-line-long\n".utf8))
+        try handle.close()
+        XCTAssertEqual(try String(contentsOf: logURL, encoding: .utf8), "first\nsecond-line-long\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rotatedURL.path))
+
+        // Over the cap: the old log becomes .1 (replacing an older .1) and a new one starts.
+        try Data("stale".utf8).write(to: rotatedURL)
+        handle = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: 16)
+        handle.write(Data("third\n".utf8))
+        try handle.close()
+        XCTAssertEqual(try String(contentsOf: logURL, encoding: .utf8), "third\n")
+        XCTAssertEqual(try String(contentsOf: rotatedURL, encoding: .utf8), "first\nsecond-line-long\n")
+        XCTAssertEqual(try permissions(logURL) & 0o777, 0o600)
+    }
+
+    func testHelperStderrLogIsNotSweptAsAnAppLog() throws {
+        // FileLogger's age sweep deletes every *.log in the same directory; it would
+        // unlink the live stderr file the helper holds open (review 2026-11-01).
+        let url = try XCTUnwrap(ManagedLocationHelperStderrLog.defaultURL)
+        XCTAssertEqual(url.lastPathComponent, "location-helper-stderr.txt")
+        XCTAssertNotEqual(url.pathExtension, "log")
+        XCTAssertNotEqual(URL(fileURLWithPath: url.path + ".1").pathExtension, "log")
+    }
+
+    func testAnAdoptedHelpersOversizedLogIsCappedInPlaceAndTheHelperKeepsWriting() throws {
+        // An adopted helper keeps its descriptor open across app launches; a rename
+        // would let it keep growing the renamed file. Capping in place keeps the newest
+        // bytes in .1 and the helper's next append starts the live file again.
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        let rotatedURL = URL(fileURLWithPath: logURL.path + ".1")
+        let helper = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: 16)
+        helper.write(Data("old-old-old-old-\nnewest-tail\n".utf8))
+
+        try ManagedLocationHelperStderrLog.capInPlace(at: logURL, maxBytes: 12)
+
+        XCTAssertEqual(try String(contentsOf: rotatedURL, encoding: .utf8), "newest-tail\n")
+        XCTAssertEqual(try permissions(rotatedURL) & 0o777, 0o600)
+        helper.write(Data("after\n".utf8))
+        try helper.close()
+        XCTAssertEqual(try String(contentsOf: logURL, encoding: .utf8), "after\n")
+        XCTAssertEqual(try permissions(logURL) & 0o777, 0o600)
+    }
+
+    func testCappingInPlaceLeavesASmallOrMissingLogAndRefusesASymlink() throws {
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        XCTAssertNoThrow(try ManagedLocationHelperStderrLog.capInPlace(at: logURL, maxBytes: 12))
+
+        let handle = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: 12)
+        handle.write(Data("small\n".utf8))
+        try handle.close()
+        try ManagedLocationHelperStderrLog.capInPlace(at: logURL, maxBytes: 12)
+        XCTAssertEqual(try String(contentsOf: logURL, encoding: .utf8), "small\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path + ".1"))
+
+        try FileManager.default.removeItem(at: logURL)
+        let target = root.appendingPathComponent("elsewhere")
+        try Data(repeating: 0x41, count: 64).write(to: target)
+        try FileManager.default.createSymbolicLink(at: logURL, withDestinationURL: target)
+        XCTAssertThrowsError(try ManagedLocationHelperStderrLog.capInPlace(at: logURL, maxBytes: 12))
+        XCTAssertEqual(try Data(contentsOf: target).count, 64)
+    }
+
+    func testHelperStderrLogRefusesASymlink() throws {
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        let target = root.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(
+            at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data().write(to: target)
+        try FileManager.default.createSymbolicLink(at: logURL, withDestinationURL: target)
+
+        XCTAssertThrowsError(try ManagedLocationHelperStderrLog.open(at: logURL))
+        XCTAssertEqual(try Data(contentsOf: target).count, 0)
+    }
+}
+
 final class PersistentLocationBridgeTests: XCTestCase {
 
     // MARK: - Error Description Tests
