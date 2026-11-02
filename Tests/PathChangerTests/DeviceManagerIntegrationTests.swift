@@ -152,7 +152,243 @@ final class DeviceManagerIntegrationTests: XCTestCase {
     }
 }
 
+/// Answers `runPython` from canned output keyed by the pymobiledevice3 subcommand
+/// (`usbmux`, `bonjour`), so transport refreshes run without a subprocess.
+@MainActor
+private final class ScriptedPythonDeviceManager: DeviceManager {
+    struct NoScriptedOutput: Error {}
+
+    var outputs: [String: String] = [:]
+    var subcommands: [String] = []
+    /// While true, each `bonjour` call suspends until `releaseHeldBrowses()`.
+    var holdBonjour = false
+    private var heldBrowses: [CheckedContinuation<Void, Never>] = []
+    var heldBrowseCount: Int { heldBrowses.count }
+
+    init() {
+        super.init(startBackgroundServices: false)
+    }
+
+    override func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
+        let subcommand = arguments.count > 2 ? arguments[2] : ""
+        subcommands.append(subcommand)
+        if subcommand == "bonjour" && holdBonjour {
+            await withCheckedContinuation { heldBrowses.append($0) }
+        }
+        guard let output = outputs[subcommand] else { throw NoScriptedOutput() }
+        return output
+    }
+
+    func releaseHeldBrowses() {
+        holdBonjour = false
+        let held = heldBrowses
+        heldBrowses = []
+        held.forEach { $0.resume() }
+    }
+}
+
 final class DeviceDiscoveryReconciliationTests: XCTestCase {
+    /// `bonjour mobdev2` output shape (pymobiledevice3 `lockdown.short_info` plus `ip`).
+    private static let mobdev2Output = """
+    [{"ConnectionType": "Network", "DeviceName": "iPhone", "Identifier": "00008130-0011223344556677",
+      "ProductType": "iPhone17,1", "ProductVersion": "27.2", "UniqueDeviceID": "00008130-0011223344556677",
+      "ip": "192.168.1.20"}]
+    """
+
+    @MainActor
+    func testMobdev2DiscoveryRecordsTheDevicesBonjourAdvertises() {
+        // Live 2026-11-01: usbmux did not list the phone for minutes, but the GUI kept
+        // naming it ready. What Bonjour saw was never recorded, so nothing could tell
+        // "on the Wi-Fi network" apart from "not reachable".
+        let manager = DeviceManager(startBackgroundServices: false)
+
+        let devices = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+
+        XCTAssertEqual(devices.map(\.id), ["00008130-0011223344556677"])
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, ["00008130-0011223344556677"])
+    }
+
+    @MainActor
+    func testOneOrTwoEmptyBrowsesKeepTheAdvertisedSetAndTheThirdClearsIt() {
+        // Review 2026-11-01 (issue 6): one slow mDNS answer flipped the chip to
+        // "not reachable". Bonjour gets the usbmux sets' 3-miss hysteresis.
+        let id = "00008130-0011223344556677"
+        let manager = DeviceManager(startBackgroundServices: false)
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id], "one empty browse is a miss, not absence")
+        _ = manager.applyMobdev2ObservationForTesting(nil) // the browse command failed: also a miss
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [], "the third miss in a row clears the set")
+    }
+
+    @MainActor
+    func testABrowseThatSeesThePhoneResetsTheMissCount() {
+        let id = "00008130-0011223344556677"
+        let manager = DeviceManager(startBackgroundServices: false)
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+    }
+
+    @MainActor
+    func testATransportRefreshBrowsesBonjourAlongsideUsbmux() async {
+        // Review 2026-11-01 (issue 6): the Bonjour set refreshed only every 120 s while
+        // the usbmux sets refreshed every 15 s, so the chip mixed fresh and stale evidence.
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .wifi
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+
+        await manager.refreshTransportAvailability()
+
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, ["00008130-0011223344556677"])
+        XCTAssertEqual(Set(manager.subcommands), ["usbmux", "bonjour"])
+    }
+
+    @MainActor
+    func testTransportRefreshesClearTheBonjourSetOnlyAfterThreeMisses() async {
+        let id = "00008130-0011223344556677"
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .auto
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+        await manager.refreshTransportAvailability()
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+
+        manager.outputs["bonjour"] = "[]"
+        await manager.refreshTransportAvailability()
+        await manager.refreshTransportAvailability()
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+        await manager.refreshTransportAvailability()
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
+    }
+
+    @MainActor
+    func testUSBOnlyModeSkipsTheBrowseAndHoldsNoBonjourEvidence() async {
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .wifi
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+        await manager.refreshTransportAvailability()
+        XCTAssertFalse(manager.networkAdvertisedDeviceIds.isEmpty)
+
+        manager.connectionMode = .usb
+        manager.subcommands = []
+        await manager.refreshTransportAvailability()
+
+        XCTAssertEqual(manager.subcommands, ["usbmux"], "USB-only mode never browses Bonjour")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
+    }
+
+    /// The same browse shape advertising only a coworker's phone on the shared Wi-Fi.
+    private static let otherPhoneMobdev2Output = """
+    [{"ConnectionType": "Network", "DeviceName": "Other", "Identifier": "00008120-001B000E3E82002F",
+      "ProductType": "iPhone16,1", "ProductVersion": "27.1", "UniqueDeviceID": "00008120-001B000E3E82002F",
+      "ip": "192.168.1.31"}]
+    """
+
+    @MainActor
+    func testABrowseSeeingOnlyAnotherPhoneKeepsOursForTwoRunsAndDropsItOnTheThird() {
+        // Review 2026-11-01 v2 (issue 4): Bonjour sees the whole LAN, and any non-empty
+        // run replaced the set, so one run that caught a coworker's phone but missed ours
+        // dropped ours with no miss counted. Misses are counted per UDID.
+        let ours = "00008130-0011223344556677"
+        let other = "00008120-001B000E3E82002F"
+        let manager = DeviceManager(startBackgroundServices: false)
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+
+        _ = manager.applyMobdev2ObservationForTesting(Self.otherPhoneMobdev2Output)
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours, other], "a run that misses ours is one miss for ours")
+        _ = manager.applyMobdev2ObservationForTesting(Self.otherPhoneMobdev2Output)
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours, other])
+        _ = manager.applyMobdev2ObservationForTesting(Self.otherPhoneMobdev2Output)
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [other], "the third miss in a row drops ours only")
+    }
+
+    @MainActor
+    func testEachDeviceKeepsItsOwnMissCount() {
+        let ours = "00008130-0011223344556677"
+        let other = "00008120-001B000E3E82002F"
+        let manager = DeviceManager(startBackgroundServices: false)
+        _ = manager.applyMobdev2ObservationForTesting(Self.otherPhoneMobdev2Output)
+        _ = manager.applyMobdev2ObservationForTesting("[]")          // other: 1 miss
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output) // other: 2, ours seen
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours, other])
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output) // other: 3 -> dropped
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours], "ours being seen does not reset the other's misses")
+    }
+
+    @MainActor
+    func testOverlappingBrowsesShareOneRunAndCountOneMiss() async {
+        // Review 2026-11-01 v2 (issue 4): the 120 s discovery browse and the 15 s transport
+        // browse can overlap; each counted its own miss, so misses accrued faster than one
+        // per real observation. A browse in flight is joined, and its result applied once.
+        let ours = "00008130-0011223344556677"
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .auto
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+        await manager.refreshTransportAvailability()
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours])
+
+        manager.outputs["bonjour"] = "[]"
+        manager.subcommands = []
+        manager.holdBonjour = true
+        async let first: Void = manager.refreshTransportAvailability()
+        async let second: Void = manager.refreshTransportAvailability()
+        for _ in 0..<1_000 where manager.subcommands.filter({ $0 == "usbmux" }).count < 2
+            || manager.heldBrowseCount == 0 {
+            await Task.yield()
+        }
+        for _ in 0..<100 { await Task.yield() }
+        manager.releaseHeldBrowses()
+        _ = await (first, second)
+
+        XCTAssertEqual(manager.subcommands.filter { $0 == "bonjour" }.count, 1, "the second refresh joins the browse in flight: \(manager.subcommands)")
+        await manager.refreshTransportAvailability() // miss 2
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours], "the overlapping pair counted one miss, not two")
+        await manager.refreshTransportAvailability() // miss 3
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
+    }
+
+    @MainActor
+    func testATransportRefreshWithoutTheBrowseRunsOnlyUsbmux() async {
+        // Review 2026-11-01 v2 (issue 3): the caller decides whether the browse can change
+        // what is shown; when it cannot, only usbmux runs and the Bonjour set is untouched.
+        let ours = "00008130-0011223344556677"
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .auto
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+        await manager.refreshTransportAvailability()
+        manager.outputs["bonjour"] = "[]"
+        manager.subcommands = []
+
+        for _ in 0..<3 { await manager.refreshTransportAvailability(browseBonjour: { _, _ in false }) }
+
+        XCTAssertEqual(manager.subcommands, ["usbmux", "usbmux", "usbmux"])
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours], "a skipped browse is neither a hit nor a miss")
+    }
+
+    func testTheWiFiWaitLogLinesRedactTheDeviceIdentifier() {
+        // Live 2026-11-01: the give-up line logged the helper's detail with the full UDID;
+        // review (issue 9): the sibling "waiting" line logged the same detail unredacted.
+        let detail = "device 00008130-0011223344556677 is not visible over usbmux or mobdev2"
+        let lines = [
+            TunneldManager.wifiWaitingLogLine(detail: detail),
+            TunneldManager.wifiGaveUpLogLine(detail: detail),
+        ]
+        for line in lines {
+            XCTAssertFalse(line.contains("00008130-0011223344556677"), line)
+            XCTAssertTrue(line.contains("00008130…"), line)
+        }
+        XCTAssertTrue(lines[0].hasPrefix("[Tunnel] Device not visible on Wi‑Fi yet; waiting"), lines[0])
+        XCTAssertTrue(lines[1].hasPrefix("[Tunnel] Gave up waiting for the device on Wi‑Fi"), lines[1])
+    }
+
     func testTheTunneldAPIIsQueriedOnlyWhileTheDaemonRuns() {
         // Live 2026-11-01: every discovery poll asked 127.0.0.1:49151 although no
         // `remote tunneld` was running (the helper owns the connection), logging

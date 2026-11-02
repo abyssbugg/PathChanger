@@ -81,6 +81,98 @@ final class MoveDisabledReasonTests: XCTestCase {
     }
 }
 
+// MARK: - Device Chrome Reachability Text Tests
+
+/// Live 2026-11-01: usbmux did not list the phone for 3.5 minutes while the chip read
+/// "iOS 27.2 · trusted · Wi-Fi" from the connection-mode setting.
+final class OrganicDeviceChromeTextTests: XCTestCase {
+    private let device = Device(
+        id: "00008130-0011223344556677", displayName: "iPhone",
+        connectionType: .wifi, productType: "iPhone17,1", productVersion: "27.2"
+    )
+
+    func testEachReachabilityHasAPlainWord() {
+        for mode in DeviceManager.ConnectionMode.allCases {
+            XCTAssertEqual(OrganicDeviceChromeText.reachabilityWord(.connected, mode: mode), "connected")
+            XCTAssertEqual(OrganicDeviceChromeText.reachabilityWord(.readyUSB, mode: mode), "ready on USB")
+            XCTAssertEqual(OrganicDeviceChromeText.reachabilityWord(.readyWiFi, mode: mode), "ready on Wi\u{2011}Fi")
+            XCTAssertEqual(OrganicDeviceChromeText.reachabilityWord(.onNetwork, mode: mode), "on Wi\u{2011}Fi network")
+        }
+    }
+
+    func testNotReachableAdviceFollowsTheConnectionMode() {
+        // Review 2026-11-01 (issue 7): in USB mode an unplugged phone was told to unlock
+        // and stay on Wi-Fi. USB advice names the cable; Wi-Fi advice only in Wi-Fi/Auto.
+        XCTAssertEqual(
+            OrganicDeviceChromeText.reachabilityWord(.notReachable, mode: .usb),
+            "not reachable — connect the cable and unlock"
+        )
+        for mode in [DeviceManager.ConnectionMode.wifi, .auto, .random] {
+            XCTAssertEqual(
+                OrganicDeviceChromeText.reachabilityWord(.notReachable, mode: mode),
+                "not reachable — unlock iPhone",
+                "\(mode)"
+            )
+        }
+    }
+
+    func testTheSubtitleNamesVersionAndReachabilityWithoutClaimingTrust() {
+        XCTAssertEqual(
+            OrganicDeviceChromeText.subtitle(device: device, reachability: .notReachable, mode: .wifi),
+            "iOS 27.2 · not reachable — unlock iPhone"
+        )
+        XCTAssertEqual(
+            OrganicDeviceChromeText.subtitle(device: device, reachability: .notReachable, mode: .usb),
+            "iOS 27.2 · not reachable — connect the cable and unlock"
+        )
+        XCTAssertEqual(
+            OrganicDeviceChromeText.subtitle(device: device, reachability: .readyWiFi, mode: .auto),
+            "iOS 27.2 · ready on Wi\u{2011}Fi"
+        )
+        XCTAssertEqual(OrganicDeviceChromeText.subtitle(device: nil, reachability: .notReachable, mode: .wifi), "No iOS device")
+    }
+
+    func testTheTunnelHelpAsksToUnlockOnlyWhenStoppedAndUnreachable() throws {
+        for mode in [DeviceManager.ConnectionMode.wifi, .auto, .random] {
+            let hint = try XCTUnwrap(
+                OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: false, mode: mode)
+            )
+            XCTAssertTrue(hint.contains("Unlock"), hint)
+            XCTAssertTrue(hint.contains("same Wi\u{2011}Fi"), hint)
+        }
+        for mode in DeviceManager.ConnectionMode.allCases {
+            XCTAssertNil(OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: true, mode: mode))
+            XCTAssertNil(OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .onNetwork, tunnelRunning: false, mode: mode))
+        }
+    }
+
+    func testUSBModeTunnelHelpAsksForACableUnlockAndTrust() throws {
+        let hint = try XCTUnwrap(
+            OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: false, mode: .usb)
+        )
+        XCTAssertTrue(hint.contains("data cable"), hint)
+        XCTAssertTrue(hint.contains("unlock"), hint)
+        XCTAssertTrue(hint.contains("Trust"), hint)
+        XCTAssertFalse(hint.contains("Wi\u{2011}Fi"), hint)
+        XCTAssertFalse(hint.contains("Wi-Fi"), hint)
+    }
+
+    /// Source-text check, kept on purpose: it guards only the view binding (that the
+    /// title bar and picker rows call the pure text functions above with live
+    /// reachability and the connection mode). The wording is tested by behavior above;
+    /// rendering `OrganicTitleBar` needs a full AppState and `TunneldManager.shared`, and
+    /// the package has no view-inspection dependency.
+    func testTheChromeReadsReachabilityInsteadOfTheModeSettingOrATrustClaim() throws {
+        let chrome = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("PathChanger/UI/OrganicChrome.swift"))
+        XCTAssertFalse(chrome.contains("· trusted ·"))
+        XCTAssertFalse(chrome.contains("Text(device.isWireless ? \"Wi-Fi\" : \"USB\")"))
+        XCTAssertTrue(chrome.contains("OrganicDeviceChromeText.subtitle("))
+        XCTAssertTrue(chrome.contains("OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode)"))
+    }
+}
+
 // MARK: - Organic Appearance Tests
 
 final class OrganicAppearanceTests: XCTestCase {

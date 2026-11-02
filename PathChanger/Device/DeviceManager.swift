@@ -459,9 +459,18 @@ class DeviceManager: ObservableObject {
     /// Exact UDIDs currently reported on each direct usbmux transport.
     @Published private(set) var usbDirectDeviceIds: Set<String> = []
     @Published private(set) var wifiDirectDeviceIds: Set<String> = []
+    /// UDIDs mobdev2 Bonjour advertised, each held through fewer than
+    /// `transportMissThreshold` browses in a row that did not see it.
+    @Published private(set) var networkAdvertisedDeviceIds: Set<String> = []
 
     private var usbTransportMisses: Int = 0
     private var wifiTransportMisses: Int = 0
+    /// Consecutive browses that missed each retained UDID. Per device, not per set:
+    /// Bonjour sees the whole LAN, so a run that sees only another phone is a miss for ours.
+    private var networkAdvertisedMisses: [String: Int] = [:]
+    /// The Bonjour browse in flight, joined by any overlapping caller so one browse is
+    /// one observation (the 120 s discovery and the 15 s transport refresh can overlap).
+    private var mobdev2BrowseInFlight: Task<[Device], Never>?
     private let transportMissThreshold: Int = 3
 
     // MARK: Connection Mode
@@ -1012,8 +1021,31 @@ class DeviceManager: ObservableObject {
     /// This is independent of usbmux and is the supported pymobiledevice3 bridge for devices
     /// visible to CoreDevice/FlowDeck while usbmux has not created a Network entry.
     private func discoverMobdev2Devices() async -> [Device] {
-        guard connectionMode != .usb else { return [] }
+        guard connectionMode != .usb else {
+            clearMobdev2Observation()
+            return []
+        }
+        return await observeMobdev2()
+    }
 
+    /// One Bonjour observation: browse once and apply the result once. A caller that
+    /// arrives while a browse is in flight joins it instead of spawning a second one.
+    private func observeMobdev2() async -> [Device] {
+        if let inFlight = mobdev2BrowseInFlight {
+            return await inFlight.value
+        }
+        let browse = Task { [weak self] () -> [Device] in
+            guard let self else { return [] }
+            let output = await self.browseMobdev2()
+            self.mobdev2BrowseInFlight = nil
+            return self.applyMobdev2Observation(output)
+        }
+        mobdev2BrowseInFlight = browse
+        return await browse.value
+    }
+
+    /// One `bonjour mobdev2` browse; nil when the command failed.
+    private func browseMobdev2() async -> String? {
         let recordsPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".pymobiledevice3", isDirectory: true)
             .path
@@ -1022,16 +1054,60 @@ class DeviceManager: ObservableObject {
         )
 
         do {
-            let output = try await runPython(arguments: arguments, timeout: 10)
-            return parseDeviceListJSON(output, connectionType: .wifi)
+            return try await runPython(arguments: arguments, timeout: 10)
         } catch {
             Logger.debug(
                 "mobdev2 discovery failed: \(error.localizedDescription)",
                 category: .device
             )
-            return []
+            return nil
         }
     }
+
+    /// Parses one mobdev2 browse result and records what it advertised, with per-device
+    /// hysteresis: every UDID the run saw is kept and its miss count reset; every retained
+    /// UDID it did not see (the run was empty, failed, or saw only other devices) counts a
+    /// miss, and only `transportMissThreshold` misses in a row drop it. A result that
+    /// arrives after the user switched to USB-only is discarded. Returns this run's
+    /// devices, not the retained set.
+    private func applyMobdev2Observation(_ output: String?) -> [Device] {
+        guard connectionMode != .usb else {
+            clearMobdev2Observation()
+            return []
+        }
+        let devices = output.map { parseDeviceListJSON($0, connectionType: .wifi) } ?? []
+        let seen = Set(devices.map(\.id))
+        var retained = networkAdvertisedDeviceIds
+        for id in retained.subtracting(seen) {
+            let misses = (networkAdvertisedMisses[id] ?? 0) + 1
+            if misses >= transportMissThreshold {
+                retained.remove(id)
+                networkAdvertisedMisses[id] = nil
+            } else {
+                networkAdvertisedMisses[id] = misses
+            }
+        }
+        for id in seen {
+            networkAdvertisedMisses[id] = nil
+        }
+        retained.formUnion(seen)
+        if retained != networkAdvertisedDeviceIds {
+            networkAdvertisedDeviceIds = retained
+        }
+        return devices
+    }
+
+    /// USB-only mode browses nothing, so it holds no Bonjour evidence.
+    private func clearMobdev2Observation() {
+        networkAdvertisedMisses = [:]
+        networkAdvertisedDeviceIds = []
+    }
+
+    #if DEBUG
+    func applyMobdev2ObservationForTesting(_ output: String?) -> [Device] {
+        applyMobdev2Observation(output)
+    }
+    #endif
 
     // MARK: USB Device Discovery (pymobiledevice3 usbmux list)
     private func discoverUSBDevices() async -> DiscoveryAttempt {
@@ -1723,7 +1799,25 @@ class DeviceManager: ObservableObject {
         }
     }
 
-    func refreshTransportAvailability() async {
+    /// Refresh every live transport source on the same cadence: usbmux (USB and Network
+    /// sets) first, then, outside USB-only mode, the mobdev2 Bonjour set when
+    /// `browseBonjour` says this refresh's usbmux result leaves it something to decide.
+    /// usbmux is applied before the ~5 s browse starts, so the browse never delays it, and
+    /// the browse decision reads fresh usbmux sets rather than the previous refresh's.
+    /// A skipped browse is neither a hit nor a miss.
+    func refreshTransportAvailability(
+        browseBonjour shouldBrowse: (_ usbmuxUSB: Set<String>, _ usbmuxNetwork: Set<String>) -> Bool = { _, _ in true }
+    ) async {
+        await refreshUsbmuxTransport()
+        guard connectionMode != .usb else {
+            clearMobdev2Observation()
+            return
+        }
+        guard shouldBrowse(usbDirectDeviceIds, wifiDirectDeviceIds) else { return }
+        _ = await observeMobdev2()
+    }
+
+    private func refreshUsbmuxTransport() async {
         do {
             let output = try await runPython(arguments: [
                 "-m", "pymobiledevice3", "usbmux", "list",

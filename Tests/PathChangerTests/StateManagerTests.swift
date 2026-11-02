@@ -462,7 +462,9 @@ final class DeviceStateManagerTests: XCTestCase {
             super.init(startBackgroundServices: false)
         }
 
-        override func refreshTransportAvailability() async {
+        override func refreshTransportAvailability(
+            browseBonjour shouldBrowse: (_ usbmuxUSB: Set<String>, _ usbmuxNetwork: Set<String>) -> Bool
+        ) async {
             transportRefreshCount += 1
         }
     }
@@ -721,5 +723,185 @@ final class DeviceStateManagerTests: XCTestCase {
             XCTAssertEqual(tunnel.state, .idle, "\(mode.rawValue) adopted a daemon it never chose")
             XCTAssertFalse(manager.isTunneldRunning, "\(mode.rawValue) reported a bare process as the tunnel")
         }
+    }
+}
+
+/// Live 2026-11-01: for 3.5 minutes usbmux did not list the phone, yet the chip read
+/// "trusted · Wi-Fi". Reachability comes from live evidence only (invariant 2).
+final class DeviceReachabilityTests: XCTestCase {
+    private let device = Device(
+        id: "00008130-0011223344556677", displayName: "iPhone",
+        connectionType: .wifi, productType: "iPhone17,1", productVersion: "27.2"
+    )
+
+    private func reachability(
+        usb: Set<String> = [], network: Set<String> = [],
+        advertised: Set<String> = [], tunnelRunning: Bool = false
+    ) -> DeviceReachability {
+        DeviceReachability.of(
+            device: device,
+            usbmuxUSB: usb,
+            usbmuxNetwork: network,
+            networkAdvertised: advertised,
+            tunnelRunning: tunnelRunning
+        )
+    }
+
+    func testARunningConnectionIsConnected() {
+        XCTAssertEqual(reachability(tunnelRunning: true), .connected)
+        XCTAssertEqual(reachability(usb: [device.id], network: [device.id], tunnelRunning: true), .connected)
+    }
+
+    func testUsbmuxOverUSBIsReadyOnUSB() {
+        XCTAssertEqual(reachability(usb: [device.id], network: [device.id], advertised: [device.id]), .readyUSB)
+    }
+
+    func testUsbmuxOverNetworkIsReadyOnWiFi() {
+        XCTAssertEqual(reachability(network: [device.id], advertised: [device.id]), .readyWiFi)
+    }
+
+    func testOnlyBonjourSeeingThePhoneIsOnTheNetwork() {
+        XCTAssertEqual(reachability(advertised: [device.id]), .onNetwork)
+    }
+
+    func testAPairedPhoneNoLiveSourceSeesIsNotReachable() {
+        XCTAssertEqual(reachability(), .notReachable)
+        // Another phone's evidence says nothing about this one.
+        let other: Set<String> = ["00008120-001B000E3E82002F"]
+        XCTAssertEqual(reachability(usb: other, network: other, advertised: other), .notReachable)
+    }
+}
+
+@MainActor
+final class DeviceStateManagerReachabilityTests: XCTestCase {
+    private let device = Device(
+        id: "00008130-0011223344556677", displayName: "iPhone",
+        connectionType: .wifi, productType: "iPhone17,1", productVersion: "27.2"
+    )
+
+    func testTheBonjourSetIsMirroredWithTheUsbmuxSets() {
+        let deviceManager = DeviceManager(startBackgroundServices: false)
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+        _ = deviceManager.applyMobdev2ObservationForTesting("""
+        [{"ConnectionType": "Network", "DeviceName": "iPhone", "Identifier": "\(device.id)",
+          "ProductVersion": "27.2", "UniqueDeviceID": "\(device.id)"}]
+        """)
+
+        deviceManager.devices = [device]
+
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [device.id])
+        XCTAssertEqual(manager.reachability(of: device, tunnelRunning: false), .onNetwork)
+    }
+
+    func testOnlyTheSelectedDeviceIsConnectedByTheTunnel() {
+        let manager = DeviceStateManager(startBackgroundServices: false)
+        defer { manager.deviceManager.stopAutoRefresh() }
+        let other = Device(id: "00008120-001B000E3E82002F", displayName: "Other", connectionType: .wifi)
+        manager.availableDevices = [device, other]
+        manager.selectedDevice = device
+
+        XCTAssertEqual(manager.reachability(of: device, tunnelRunning: true), .connected)
+        XCTAssertEqual(manager.reachability(of: other, tunnelRunning: true), .notReachable)
+    }
+}
+
+/// Answers `runPython` from canned output keyed by subcommand (`usbmux`, `bonjour`) and
+/// records the order the subcommands ran in.
+@MainActor
+private final class TransportScriptedDeviceManager: DeviceManager {
+    struct NoScriptedOutput: Error {}
+
+    var outputs: [String: String] = [:]
+    var subcommands: [String] = []
+
+    init() {
+        super.init(startBackgroundServices: false)
+        connectionMode = .auto
+    }
+
+    override func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
+        let subcommand = arguments.count > 2 ? arguments[2] : ""
+        subcommands.append(subcommand)
+        guard let output = outputs[subcommand] else { throw NoScriptedOutput() }
+        return output
+    }
+}
+
+/// Review 2026-11-01 v2 (issue 3): the 15 s transport refresh spawned a Bonjour browse
+/// (a Python process, a 5 s mDNS browse and LAN lockdown handshakes) even when its result
+/// could not change the chip. `DeviceReachability.of` reads the Bonjour set only when the
+/// selected device is not connected and usbmux does not list it.
+@MainActor
+final class BonjourBrowseGateTests: XCTestCase {
+    private let device = Device(
+        id: "00008130-0011223344556677", displayName: "iPhone",
+        connectionType: .wifi, productType: "iPhone17,1", productVersion: "27.2"
+    )
+
+    private func usbmuxListing(_ type: String) -> String {
+        """
+        [{"ConnectionType": "\(type)", "DeviceName": "iPhone", "Identifier": "\(device.id)",
+          "ProductVersion": "27.2", "UniqueDeviceID": "\(device.id)"}]
+        """
+    }
+
+    func testTheBrowseRunsOnlyWhenItCanChangeTheSelectedDevicesReachability() {
+        let id = device.id
+        let other = "00008120-001B000E3E82002F"
+        func decide(_ selected: String?, tunnel: Bool = false,
+                    usb: Set<String> = [], network: Set<String> = []) -> Bool {
+            DeviceStateManager.shouldBrowseBonjour(
+                selectedDeviceID: selected, tunnelRunning: tunnel,
+                usbmuxUSB: usb, usbmuxNetwork: network
+            )
+        }
+
+        XCTAssertTrue(decide(id), "selected, not connected, not listed: Bonjour decides the chip")
+        XCTAssertTrue(decide(id, usb: [other], network: [other]), "another phone's listing says nothing about ours")
+        XCTAssertFalse(decide(nil), "no device selected")
+        XCTAssertFalse(decide(nil, tunnel: true), "a running tunnel with nothing selected")
+        XCTAssertFalse(decide(id, tunnel: true), "the connection is running: the chip reads connected")
+        XCTAssertFalse(decide(id, usb: [id]), "usbmux lists it over USB")
+        XCTAssertFalse(decide(id, network: [id]), "usbmux lists it over Network")
+    }
+
+    func testAnUnneededBrowseIsSkippedAndOnlyUsbmuxRuns() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.outputs = ["usbmux": usbmuxListing("Network"), "bonjour": "[]"]
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+        manager.selectedDevice = device
+
+        await manager.refreshTransportAvailabilityIfNeeded(now: Date())
+
+        XCTAssertEqual(deviceManager.subcommands, ["usbmux"])
+    }
+
+    func testTheBrowseIsSkippedWhileTheConnectionRuns() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.outputs = ["usbmux": "[]", "bonjour": "[]"]
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+        manager.selectedDevice = device
+        manager.isTunneldRunning = true
+
+        await manager.refreshTransportAvailabilityIfNeeded(now: Date())
+
+        XCTAssertEqual(deviceManager.subcommands, ["usbmux"])
+    }
+
+    func testTheBrowseRunsAfterUsbmuxWhenUsbmuxDoesNotListTheSelectedPhone() async {
+        // The decision reads this refresh's usbmux result, so a phone that just left
+        // usbmux is browsed in the same refresh rather than read from an old Bonjour set.
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.outputs = ["usbmux": "[]", "bonjour": """
+        [{"ConnectionType": "Network", "DeviceName": "iPhone", "Identifier": "\(device.id)",
+          "ProductVersion": "27.2", "UniqueDeviceID": "\(device.id)"}]
+        """]
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+        manager.selectedDevice = device
+
+        await manager.refreshTransportAvailabilityIfNeeded(now: Date())
+
+        XCTAssertEqual(deviceManager.subcommands, ["usbmux", "bonjour"])
+        XCTAssertEqual(deviceManager.networkAdvertisedDeviceIds, [device.id])
     }
 }

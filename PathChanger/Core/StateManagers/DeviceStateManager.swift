@@ -18,6 +18,36 @@ import Foundation
 import Combine
 import SwiftUI
 
+/// What can reach a device right now, from live evidence only (invariant 2: lifecycle
+/// is not readiness). A paired phone no live source sees is `notReachable`, whatever
+/// the connection-mode setting says.
+enum DeviceReachability: Equatable {
+    /// A tunnel or location-helper connection to this device is running.
+    case connected
+    /// usbmux lists it over USB: the direct `--udid` path is available.
+    case readyUSB
+    /// usbmux lists it over Network: the direct `--udid` path is available over Wi-Fi.
+    case readyWiFi
+    /// Only mobdev2 Bonjour advertises it; usbmux does not list it.
+    case onNetwork
+    /// Known or paired, but no live source sees it now (typically locked or off-network).
+    case notReachable
+
+    static func of(
+        device: Device,
+        usbmuxUSB: Set<String>,
+        usbmuxNetwork: Set<String>,
+        networkAdvertised: Set<String>,
+        tunnelRunning: Bool
+    ) -> DeviceReachability {
+        if tunnelRunning { return .connected }
+        if usbmuxUSB.contains(device.id) { return .readyUSB }
+        if usbmuxNetwork.contains(device.id) { return .readyWiFi }
+        if networkAdvertised.contains(device.id) { return .onNetwork }
+        return .notReachable
+    }
+}
+
 @MainActor
 final class DeviceStateManager: ObservableObject {
 
@@ -31,6 +61,8 @@ final class DeviceStateManager: ObservableObject {
     @Published var isWiFiTransportAvailable: Bool = false
     @Published var usbDirectDeviceIds: Set<String> = []
     @Published var wifiDirectDeviceIds: Set<String> = []
+    /// UDIDs mobdev2 Bonjour advertises (mirrors DeviceManager, same 3-miss hysteresis).
+    @Published var networkAdvertisedDeviceIds: Set<String> = []
     @Published var preferUSBConnection: Bool = false
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
 
@@ -108,6 +140,18 @@ final class DeviceStateManager: ObservableObject {
         selectedDevice != nil && !selectedDirectTransportAvailable
     }
 
+    /// Live reachability of `device`. A running tunnel/helper connection belongs to the
+    /// selected device only, so it never marks another row connected.
+    func reachability(of device: Device, tunnelRunning: Bool) -> DeviceReachability {
+        DeviceReachability.of(
+            device: device,
+            usbmuxUSB: usbDirectDeviceIds,
+            usbmuxNetwork: wifiDirectDeviceIds,
+            networkAdvertised: networkAdvertisedDeviceIds,
+            tunnelRunning: tunnelRunning && device.id == selectedDevice?.id
+        )
+    }
+
     // MARK: Initialization
 
     // Collaborators are resolved inside the body rather than as default arguments: a default
@@ -176,6 +220,7 @@ final class DeviceStateManager: ObservableObject {
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
         usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
         wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
+        networkAdvertisedDeviceIds = deviceManager.networkAdvertisedDeviceIds
 
         connectionStatus = selectedDevice != nil ? .connected : .disconnected
         if connectionStatus == .connected {
@@ -330,6 +375,7 @@ final class DeviceStateManager: ObservableObject {
         isWiFiTransportAvailable = deviceManager.wifiTransportAvailable
         usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
         wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
+        networkAdvertisedDeviceIds = deviceManager.networkAdvertisedDeviceIds
         // Readiness follows the tunnel manager, never a bare process: a `remote tunneld`
         // the user did not choose (or just stopped) is not a connection (invariant 2).
         // The process probe above only decides whether adoption is worth trying.
@@ -350,10 +396,14 @@ final class DeviceStateManager: ObservableObject {
         }
     }
 
-    /// Refresh usbmux transport visibility when it is actionable and not too recent.
+    /// Refresh usbmux and, when it can change what is shown, mobdev2 Bonjour visibility,
+    /// when it is actionable and not too recent.
     ///
     /// The `--udid` vs `--rsd` routing decision reads `usbDirectDeviceIds` /
-    /// `wifiDirectDeviceIds`, so visibility is refreshed only while a device is selected
+    /// `wifiDirectDeviceIds`, and the device chrome's reachability words read those plus
+    /// `networkAdvertisedDeviceIds`, so they share this cadence (one clock, one miss
+    /// threshold); the browse runs only when `shouldBrowseBonjour` says its result is used.
+    /// Visibility is refreshed only while a device is selected
     /// or the tunnel is running, and never more often than `transportRefreshInterval`.
     /// `now` is injectable so tests can cross the interval without sleeping.
     func refreshTransportAvailabilityIfNeeded(now: Date = Date()) async {
@@ -364,7 +414,31 @@ final class DeviceStateManager: ObservableObject {
 
         // Stamped before the await so an interleaved poll tick cannot double-spawn.
         lastTransportRefresh = now
-        await deviceManager.refreshTransportAvailability()
+        let selectedDeviceID = selectedDevice?.id
+        let tunnelRunning = isTunneldRunning
+        await deviceManager.refreshTransportAvailability(browseBonjour: { usbmuxUSB, usbmuxNetwork in
+            Self.shouldBrowseBonjour(
+                selectedDeviceID: selectedDeviceID,
+                tunnelRunning: tunnelRunning,
+                usbmuxUSB: usbmuxUSB,
+                usbmuxNetwork: usbmuxNetwork
+            )
+        })
+    }
+
+    /// Whether this refresh's Bonjour browse can change what the GUI shows.
+    ///
+    /// `DeviceReachability.of` reads the Bonjour set only for a selected device that is
+    /// not connected and that usbmux does not list, so outside that case the browse (a
+    /// managed-runtime Python process, a ~5 s mDNS browse and a lockdown handshake with
+    /// every advertised device on the LAN) is skipped. The usbmux sets passed in are the
+    /// ones this refresh just applied. The 120 s discovery browse is not gated.
+    nonisolated static func shouldBrowseBonjour(
+        selectedDeviceID: String?, tunnelRunning: Bool,
+        usbmuxUSB: Set<String>, usbmuxNetwork: Set<String>
+    ) -> Bool {
+        guard let selectedDeviceID, !tunnelRunning else { return false }
+        return !usbmuxUSB.contains(selectedDeviceID) && !usbmuxNetwork.contains(selectedDeviceID)
     }
 
     /// Resolves the same stable device over a currently verified transport and advances generation.

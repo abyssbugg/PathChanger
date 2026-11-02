@@ -602,6 +602,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     static let wifiDeviceNotReachableMessage =
         "iPhone is not reachable over Wi‑Fi. Unlock it, keep it on the same Wi‑Fi network as this Mac, then press Start again."
 
+    /// Log lines for the Wi-Fi device wait. The helper's detail can carry the UDID, so
+    /// both redact it.
+    nonisolated static func wifiWaitingLogLine(detail: String) -> String {
+        "[Tunnel] Device not visible on Wi‑Fi yet; waiting (\(LogRedaction.redactingDeviceIdentifiers(detail)))"
+    }
+
+    nonisolated static func wifiGaveUpLogLine(detail: String) -> String {
+        "[Tunnel] Gave up waiting for the device on Wi‑Fi: \(LogRedaction.redactingDeviceIdentifiers(detail))"
+    }
+
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .auto {
         didSet {
@@ -1346,12 +1356,12 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
                 guard isCurrent() else { return true }
                 guard Date() < deadline else {
                     lastError = Self.wifiDeviceNotReachableMessage
-                    Logger.error("[Tunnel] Gave up waiting for the device on Wi‑Fi: \(detail)", category: .device)
+                    Logger.error(Self.wifiGaveUpLogLine(detail: detail), category: .device)
                     return false
                 }
                 if !isWaitingForDevice {
                     isWaitingForDevice = true
-                    Logger.info("[Tunnel] Device not visible on Wi‑Fi yet; waiting (\(detail))", category: .device)
+                    Logger.info(Self.wifiWaitingLogLine(detail: detail), category: .device)
                 }
                 try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
                 guard isCurrent() else { return true }

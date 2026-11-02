@@ -7,6 +7,47 @@
 
 import SwiftUI
 
+/// Words the title-bar chip, the device picker rows and the tunnel help use for a
+/// device's live reachability. Pure so the wording is testable without a view.
+///
+/// The connection mode never decides reachability; it only picks the advice for an
+/// unreachable phone: USB-only mode needs the cable, Wi-Fi and Auto (and Random, which
+/// can pick Wi-Fi) need the phone unlocked on this network.
+enum OrganicDeviceChromeText {
+    private static let wiFi = "Wi\u{2011}Fi"
+
+    static func reachabilityWord(_ reachability: DeviceReachability, mode: DeviceManager.ConnectionMode) -> String {
+        switch reachability {
+        case .connected: return "connected"
+        case .readyUSB: return "ready on USB"
+        case .readyWiFi: return "ready on \(wiFi)"
+        case .onNetwork: return "on \(wiFi) network"
+        case .notReachable:
+            return mode == .usb ? "not reachable — connect the cable and unlock" : "not reachable — unlock iPhone"
+        }
+    }
+
+    static func subtitle(device: Device?, reachability: DeviceReachability, mode: DeviceManager.ConnectionMode) -> String {
+        guard let device else {
+            return "No iOS device"
+        }
+        return "iOS \(device.iosVersion) · \(reachabilityWord(reachability, mode: mode))"
+    }
+
+    /// Tunnel help while nothing is running and no live source sees the selected phone.
+    static func unreachableTunnelHelp(
+        reachability: DeviceReachability,
+        tunnelRunning: Bool,
+        mode: DeviceManager.ConnectionMode
+    ) -> String? {
+        guard !tunnelRunning, reachability == .notReachable else { return nil }
+        if mode == .usb {
+            return "iPhone is not reachable over USB. Connect it with a data cable, unlock it and tap Trust, then click to start."
+        }
+        return "iPhone is not reachable. Unlock it and keep it on the same \(wiFi) as this Mac, then click to start."
+    }
+}
+
 enum RailPanel: String {
     case favorites
     case places
@@ -237,9 +278,10 @@ struct OrganicTitleBar: View {
                                     Text("iOS \(device.iosVersion)")
                                         .font(Organic.body(10.5))
                                         .foregroundStyle(Organic.neutral600)
-                                    Text(device.isWireless ? "Wi-Fi" : "USB")
+                                    Text(OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode))
                                         .font(Organic.body(10.5, weight: .semibold))
                                         .foregroundStyle(Organic.accent700)
+                                        .lineLimit(1)
                                 }
                             }
                             Spacer()
@@ -300,11 +342,24 @@ struct OrganicTitleBar: View {
     }
 
     private var deviceSubtitle: String {
-        let link = transportIsUSB ? "USB-C" : "Wi-Fi"
-        guard let device = appState.selectedDevice else {
-            return "No iOS device"
-        }
-        return "iOS \(device.iosVersion) · trusted · \(link)"
+        OrganicDeviceChromeText.subtitle(
+            device: appState.selectedDevice,
+            reachability: appState.selectedDevice.map(reachability(of:)) ?? .notReachable,
+            mode: connectionMode
+        )
+    }
+
+    /// The user's connection-mode choice; selects which advice an unreachable phone gets
+    /// (cable for USB, Wi-Fi otherwise). Never used as evidence of reachability.
+    private var connectionMode: DeviceManager.ConnectionMode {
+        _ = transportTick
+        return appState.deviceManager.connectionMode
+    }
+
+    /// Live reachability from usbmux, Bonjour and the tunnel manager, never from the
+    /// connection-mode setting (live 2026-11-01: "trusted · Wi-Fi" while usbmux had no phone).
+    private func reachability(of device: Device) -> DeviceReachability {
+        appState.device.reachability(of: device, tunnelRunning: tunneldManager.isRunning)
     }
 
     private var transportIsUSB: Bool {
@@ -368,6 +423,14 @@ struct OrganicTitleBar: View {
         if case .error = tunneldManager.state {
             if let error = tunneldManager.lastError { return "\(error)\nClick to try again." }
             return "Retry RemoteXPC tunnel start"
+        }
+        if let device = appState.selectedDevice,
+           let hint = OrganicDeviceChromeText.unreachableTunnelHelp(
+               reachability: reachability(of: device),
+               tunnelRunning: tunneldManager.isRunning,
+               mode: connectionMode
+           ) {
+            return hint
         }
         if directTransportReady {
             return appState.selectedDevice?.isWireless == true
