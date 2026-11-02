@@ -60,6 +60,10 @@ enum LocationSessionLossEvent: Equatable, Sendable {
 @MainActor
 final class LocationSessionCoordinator: ObservableObject {
   @Published private(set) var state: LocationSessionState = LocationSessionState()
+  /// Advances on every connection failure (a loss or a failed recovery), even one with
+  /// the same reason text, so a caller that awaited can tell a newer failure from the one
+  /// it started with.
+  private(set) var connectionFailureEpoch: UInt64 = 0
 
   private let injector: any LocationInjecting
 
@@ -339,17 +343,23 @@ final class LocationSessionCoordinator: ObservableObject {
 
   /// Signal connection lost, preserving desired state.
   /// Nils pendingRequest so late accept/reject returns noPending.
+  /// During a Clear only the connection dimension changes: the Clear owns the location
+  /// dimension until it returns (it commits idle when the injector confirmed it, failed
+  /// otherwise). A loss that moved the phase off `.clearing` mid-await wedged a Clear the
+  /// helper had confirmed and let `beginApplication` past its Clear guard (live 2026-11-01).
   func connectionLost(reason: String) {
     self.previousSession = self.currentReadySession ?? self.previousSession
     self.currentReadySession = nil
     self.pendingRequest = nil
     self.state.connection = .failed(reason)
+    self.connectionFailureEpoch &+= 1
 
     if case .moving(let mode) = self.state.movement {
       self.movementBeforeRecovery = self.state.movement
       self.state.movement = .paused(mode)
     }
 
+    if case .clearing = self.state.application { return }
     self.state.application = .uncertain(
       lastReceipt: self.state.lastAcknowledgedReceipt,
       reason: reason
@@ -434,6 +444,7 @@ final class LocationSessionCoordinator: ObservableObject {
     currentReadySession = nil
     pendingRequest = nil
     state.connection = .failed(reason)
+    connectionFailureEpoch &+= 1
     state.application = .uncertain(
       lastReceipt: state.lastAcknowledgedReceipt,
       reason: reason
@@ -492,10 +503,10 @@ final class LocationSessionCoordinator: ObservableObject {
   /// Prevents `beginApplication` while clearing with a typed transition error.
   /// A Clear the injector confirmed (it returned without throwing) is device truth: the
   /// device holds no simulated location, so the location dimension becomes idle even if
-  /// the ready session changed or the phase left `.clearing` during the await (a
-  /// connection loss, live 2026-11-01). The connection dimension is not touched: a loss
-  /// during Clear stays failed while the location dimension is idle. Movement stays as
-  /// Clear's caller set it.
+  /// the ready session changed during the await (a connection loss or a re-selected
+  /// device, live 2026-11-01). A connection loss leaves the phase `.clearing`
+  /// (`connectionLost`) and only fails the connection dimension, which this method does
+  /// not touch. Movement stays as Clear's caller set it.
   /// On success: sets desiredLocation=nil, lastAcknowledgedReceipt=nil, heldWhileApplying=nil,
   /// application=.idle, pending=nil, returns nil.
   /// On failure: retains desired/ack/connection/movement, sets failed, returns clearFailed.

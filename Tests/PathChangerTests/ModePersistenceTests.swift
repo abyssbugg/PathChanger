@@ -72,6 +72,7 @@ private actor ClearRetryHelperLaneInjector: LocationInjecting {
     private var afterDeviceCleared: (@MainActor @Sendable () -> Void)?
     private var failAfterDeviceClearedOnce = false
     private var clears = 0
+    private var applied: [LocationCoordinate] = []
 
     func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
         let session = tracker.resolve(
@@ -85,6 +86,7 @@ private actor ClearRetryHelperLaneInjector: LocationInjecting {
             physicalTransport: request.target.transport, channel: .userspaceRSD,
             endpointClass: .remoteServiceDiscovery
         ) else { throw LocationInjectionError.injectionFailed("bad acknowledgement") }
+        applied.append(request.coordinate)
         return try LocationApplicationAcknowledgementRouter.accept(
             request: request, provisionalSession: session,
             acknowledgement: acknowledgement, generationTracker: &tracker
@@ -108,6 +110,13 @@ private actor ClearRetryHelperLaneInjector: LocationInjecting {
     func setAfterDeviceCleared(_ hook: (@MainActor @Sendable () -> Void)?) { afterDeviceCleared = hook }
     func setFailAfterDeviceClearedOnce() { failAfterDeviceClearedOnce = true }
     func clearCount() -> Int { clears }
+    func appliedCoordinates() -> [LocationCoordinate] { applied }
+}
+
+/// Records the location phase a test observes from inside an injector hook.
+@MainActor
+private final class PhaseRecorder {
+    var phases: [LocationApplicationPhase] = []
 }
 
 @MainActor
@@ -949,6 +958,143 @@ final class ModePersistenceTests: XCTestCase {
 
         let applied = await injector.appliedCoordinates()
         XCTAssertEqual(applied.last, second)
+    }
+
+    // MARK: - Owner flow 2026-11-01: Jump + Auto jump, then Two-Spot, then Clear
+
+    private let twoSpotStart = LocationCoordinate(latitude: 35.67630, longitude: 139.65040)
+    private let twoSpotDestination = LocationCoordinate(latitude: 35.67640, longitude: 139.65050)
+
+    /// Jump with Auto jump through three stops to completion, then select Two-Spot
+    /// exactly as `ContentView.onChange(of: selectedMode)` does.
+    private func runAutoJumpThenSelectTwoSpot(
+        _ state: AppState,
+        applied: () async -> [LocationCoordinate],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        state.activeMode = .jump
+        for stop in [first, second, third] { state.stageLocation(stop, for: .jump) }
+        state.autoJump = true
+        await state.startSimulation()
+        let jumped = await applied()
+        XCTAssertEqual(jumped, [first, second, third], "Auto jump applies every stop", file: file, line: line)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.jumpTeleport), file: file, line: line)
+        XCTAssertFalse(state.isMovementEngineRunning, file: file, line: line)
+
+        state.activeMode = .twospot
+        state.jumpIndex = 0
+        if AppMode.twospot.maxStops > 0, state.currentRoute.count > AppMode.twospot.maxStops {
+            state.loadRoute(from: Array(state.currentRoute.prefix(AppMode.twospot.maxStops)))
+        }
+    }
+
+    /// `ContentView.performMove` for a Move (not Stop) press in `selectedMode`.
+    private func pressMoveAsTheGUIDoes(
+        _ state: AppState,
+        selectedMode: AppMode,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        if state.locationPresentation.isMovementActive || state.isMovementEngineRunning,
+           [.route, .twospot, .jump].contains(selectedMode) {
+            return XCTFail("Move would act as Stop here", file: file, line: line)
+        }
+        state.activeMode = selectedMode == .settings ? .teleport : selectedMode
+        await state.startSimulation()
+    }
+
+    func testTwoSpotMoveAfterAnAutoJumpSendsTheTraversal() async {
+        // Owner report 2026-11-01: "a bug in Two-Spot keeps the GUI idle". The flow
+        // without any Clear: Jump with Auto jump to completion, switch to Two-Spot, stage
+        // two spots (directly, or after the card's Reset), Move.
+        for useReset in [false, true] {
+            let injector = HelperLaneGenerationInjector()
+            let state = AppState(startBackgroundServices: false, locationInjector: injector, routeDelay: { _ in })
+            state.selectedDevice = Device(id: "owner-flow-device", displayName: "Owner Flow", connectionType: .wifi)
+            state.isTunneldRunning = true
+            state.simulationSpeed = .teleport
+            await runAutoJumpThenSelectTwoSpot(state, applied: { await injector.appliedCoordinates() })
+
+            if useReset {
+                // ModeContextCard.resetContext for Two-Spot: start from the held location.
+                state.clearRoute()
+                if let held = state.locationPresentation.appliedCoordinate {
+                    state.stageLocation(held, for: .twospot)
+                }
+                state.stageLocation(twoSpotDestination, for: .twospot)
+            } else {
+                state.stageLocation(twoSpotStart, for: .twospot)
+                state.stageLocation(twoSpotDestination, for: .twospot)
+            }
+            XCTAssertEqual(state.currentRoute.count, 2, "reset=\(useReset)")
+            XCTAssertTrue(state.canStartSimulation, "reset=\(useReset)")
+
+            let before = await injector.appliedCoordinates().count
+            await pressMoveAsTheGUIDoes(state, selectedMode: .twospot)
+            let applied = await injector.appliedCoordinates()
+
+            XCTAssertGreaterThan(applied.count, before, "Two-Spot sends its traversal (reset=\(useReset))")
+            XCTAssertEqual(applied.last, twoSpotDestination, "reset=\(useReset)")
+            XCTAssertEqual(state.currentLocation, twoSpotDestination, "reset=\(useReset)")
+            XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.twoSpot), "reset=\(useReset)")
+            XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive, "reset=\(useReset)")
+        }
+    }
+
+    func testAClearStaysInChargeWhileThePhoneDropsOutOfDiscoveryAndTwoSpotMovesAfterIt() async {
+        // Live 2026-11-01 (Wi-Fi): Jump + Auto jump (3 hops), Two-Spot, Clear. The helper
+        // cleared the phone, yet the app's location phase changed during the Clear's
+        // await, and the Connection chip read Ready afterwards. A discovery drop of the
+        // selected phone (it leaves usbmux when idle) followed by its return reproduces
+        // both: the loss ran `connectionLost` mid-Clear and the re-selection published a
+        // ready session. The Clear owns the location dimension until it returns.
+        let deviceManager = DeviceManager(startBackgroundServices: false)
+        let injector = ClearRetryHelperLaneInjector()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            deviceManager: deviceManager,
+            routeDelay: { _ in }
+        )
+        let phone = Device(id: "clear-trigger-device", displayName: "Clear Trigger", connectionType: .wifi)
+        state.selectedDevice = phone
+        state.isTunneldRunning = true
+        state.simulationSpeed = .teleport
+        await runAutoJumpThenSelectTwoSpot(state, applied: { await injector.appliedCoordinates() })
+
+        let recorder = PhaseRecorder()
+        await injector.setAfterDeviceCleared { [weak state] in
+            deviceManager.devices = []          // the phone drops out of discovery
+            if let state { recorder.phases.append(state.locationSessionCoordinator.state.application) }
+            deviceManager.devices = [phone]     // and comes back
+        }
+        await state.clearLocation()
+        await injector.setAfterDeviceCleared(nil)
+        for _ in 0..<100 { await Task.yield() }  // the re-selection callback
+
+        XCTAssertEqual(recorder.phases, [.clearing], "a loss during Clear must not move the location phase")
+        let clears = await injector.clearCount()
+        XCTAssertEqual(clears, 1)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertNil(state.moveBlockedByClear)
+        XCTAssertEqual(state.statusMessage, "Location cleared")
+        guard case .ready(let identity) = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("the returned phone is ready again, got \(state.locationSessionCoordinator.state.connection)")
+        }
+        XCTAssertEqual(identity.stableDeviceID, phone.id)
+
+        // Two-Spot after the Clear sends its traversal.
+        state.stageLocation(twoSpotStart, for: .twospot)
+        state.stageLocation(twoSpotDestination, for: .twospot)
+        let before = await injector.appliedCoordinates().count
+        await pressMoveAsTheGUIDoes(state, selectedMode: .twospot)
+        let applied = await injector.appliedCoordinates()
+        XCTAssertGreaterThan(applied.count, before)
+        XCTAssertEqual(applied.last, twoSpotDestination)
+        XCTAssertEqual(state.locationSessionCoordinator.state.movement, .completed(.twoSpot))
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
     }
 
     func testAutoJumpAppliesEveryStopInOrderWithThePauseBetween() async throws {

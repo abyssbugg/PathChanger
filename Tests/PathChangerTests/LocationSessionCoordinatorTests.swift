@@ -95,6 +95,36 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     fakeInjector = FakeLocationInjector()
     coordinator = LocationSessionCoordinator(injector: fakeInjector)
   }
+
+  // MARK: - Connection Failure Epoch
+
+  func test_everyConnectionFailureAdvancesTheFailureEpoch_evenWithTheSameReason() async {
+    // A caller that awaits (the post-Clear probe) tells a newer failure from the one it
+    // started with by this epoch: an identical reason string cannot (review 2026-11-01).
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123", transport: .wifi, endpointClass: .direct, generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(LocationCoordinate(latitude: 37.7749, longitude: -122.4194), mode: .teleport)
+    let start = coordinator.connectionFailureEpoch
+
+    coordinator.connectionLost(reason: "Health check failed")
+    XCTAssertEqual(coordinator.connectionFailureEpoch, start &+ 1)
+    coordinator.connectionLost(reason: "Health check failed")
+    XCTAssertEqual(coordinator.connectionFailureEpoch, start &+ 2)
+
+    let exhausted = await coordinator.recover(strategy: ReconnectionStrategy(
+      maxAttempts: 0, initialDelaySeconds: 0, maxDelaySeconds: 0, backoffMultiplier: 1, jitterFactor: 0
+    )) { _, previous in
+      XCTFail("no attempt with maxAttempts 0")
+      return previous!
+    }
+    XCTAssertEqual(exhausted, .recoveryExhausted)
+    XCTAssertEqual(coordinator.connectionFailureEpoch, start &+ 3, "a failed recovery is a connection failure too")
+
+    coordinator.connectionReady(identity)
+    XCTAssertEqual(coordinator.connectionFailureEpoch, start &+ 3, "Ready does not advance it")
+  }
   
   // MARK: - Connection-Loss Propagation on Reject
 
@@ -664,12 +694,14 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     // Simulate connection loss while clearing
     coordinator.connectionLost(reason: "Device disconnected during clear")
     
-    // Verify state is uncertain/failed
-    guard case .uncertain = coordinator.state.application else {
-      XCTFail("Expected .uncertain state after connection lost during clear")
-      await fakeInjector.releaseClear()
-      _ = await clearTask.value
-      return
+    // The Clear owns the location dimension until it returns; the loss reports the
+    // connection only. A loss that moved the phase off `.clearing` mid-await turned a
+    // confirmed Clear into a wedge (live 2026-11-01) and let beginApplication past the
+    // coordinator's own Clear guard.
+    XCTAssertEqual(coordinator.state.application, .clearing)
+    XCTAssertEqual(coordinator.state.connection, .failed("Device disconnected during clear"))
+    XCTAssertThrowsError(try coordinator.beginApplication()) { error in
+      XCTAssertEqual(error as? LocationSessionTransitionError, .beginApplicationDuringClearing)
     }
     
     await fakeInjector.releaseClear()

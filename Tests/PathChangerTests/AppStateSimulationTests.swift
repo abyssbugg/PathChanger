@@ -17,6 +17,8 @@ final class AppStateSimulationTests: XCTestCase {
         var hasRecordedHeldSessions = false
         var connectionStatus: HelperConnectionStatus = .connected
         private(set) var statusCallCount = 0
+        /// Runs inside the liveness probe before it answers (holds it open for a test).
+        var statusGate: (@MainActor () async -> Void)?
         /// Recorded sessions survive shutdown (helper could not be stopped).
         var shutdownLeavesRecordedSessions = false
         private(set) var startCallCount = 0
@@ -41,6 +43,7 @@ final class AppStateSimulationTests: XCTestCase {
             transport: LocationTransport
         ) async -> HelperConnectionStatus {
             statusCallCount += 1
+            if let statusGate { await statusGate() }
             return connectionStatus
         }
 
@@ -395,6 +398,297 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertFalse(restored)
         XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+    }
+
+    /// Holds the helper liveness probe open until the test releases it.
+    @MainActor
+    private final class ProbeGate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private(set) var entered = false
+        func hold() async {
+            entered = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func release() {
+            waiter?.resume()
+            waiter = nil
+        }
+    }
+
+    func testAClearDuringTheRestoreProbeIsNotUndoneByTheHelperRecord() async throws {
+        // The restore reads the helper record, then probes the connection (up to 8 s).
+        // A Clear that started and finished during the probe left the app owning no
+        // operation, so the restore adopted the pre-Clear record: the GUI showed a held
+        // location the phone no longer had (false active, PRODUCT_REQUIREMENTS 4).
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 11,
+            physicalTransport: "usb",
+            actualChannel: "explicitRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 37.33182, longitude: -122.03118),
+            acknowledgedAt: 1_725_000_000
+        )
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [session])
+        let gate = ProbeGate()
+        source.statusGate = { await gate.hold() }
+        let injector = FakeLocationInjector()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            managedLocationSessionSource: source
+        )
+        state.selectedDevice = device
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .usb, endpointClass: .unresolved, generation: 1
+        ))
+
+        let restore = Task { await state.restoreManagedLocationSessionFromSource() }
+        while !gate.entered { await Task.yield() }
+        await state.clearLocation()
+        XCTAssertEqual(state.statusMessage, "Location cleared")
+        source.statusGate = nil
+        gate.release()
+        let restored = await restore.value
+
+        XCTAssertFalse(restored, "a record read before the Clear is stale after it")
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertNil(state.currentLocation)
+    }
+
+    func testAConfirmedClearThatSawAConnectionLossReportsTheHelperConnectionTruthfully() async throws {
+        // A loss reported while the Clear was out (a replaced helper connection, a
+        // transport change) left the Connection chip on Lost after the helper confirmed
+        // the Clear over that very connection. After the Clear, the helper's own probe
+        // decides: a live (replaced or reopened) connection is Ready again, a dead one
+        // stays Lost.
+        for status in [HelperConnectionStatus.connected, .notConnected("no route to host")] {
+            let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+            source.connectionStatus = status
+            let injector = FakeLocationInjector()
+            let state = AppState(
+                startBackgroundServices: false,
+                locationInjector: injector,
+                managedLocationSessionSource: source
+            )
+            let device = Device(id: "00008130-0011223344556677", displayName: "Test Device", connectionType: .wifi)
+            state.selectedDevice = device
+            let cleared = LocationSessionIdentity(
+                stableDeviceID: device.id, transport: .wifi, endpointClass: .remoteServiceDiscovery, generation: 3
+            )
+            state.locationSessionCoordinator.connectionReady(cleared)
+
+            await injector.setShouldBlockClear(true)
+            let clear = Task { await state.clearLocation() }
+            try await injector.waitForClearEntered()
+            state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Location endpoint replaced"))
+            let probesBefore = source.statusCallCount
+            await injector.releaseClear()
+            await clear.value
+
+            XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle, "\(status)")
+            XCTAssertNil(state.moveBlockedByClear, "\(status)")
+            XCTAssertGreaterThan(source.statusCallCount, probesBefore, "the helper connection is probed (\(status))")
+            switch status {
+            case .connected:
+                guard case .ready(let identity) = state.locationSessionCoordinator.state.connection else {
+                    XCTFail("a live helper connection is Ready, got \(state.locationSessionCoordinator.state.connection)")
+                    continue
+                }
+                XCTAssertEqual(identity.stableDeviceID, device.id)
+                XCTAssertEqual(identity.transport, .wifi)
+                XCTAssertGreaterThan(identity.generation, cleared.generation)
+            case .notConnected:
+                guard case .failed = state.locationSessionCoordinator.state.connection else {
+                    XCTFail("a dead connection stays Lost, got \(state.locationSessionCoordinator.state.connection)")
+                    continue
+                }
+            }
+        }
+    }
+
+    func testANewerLossDuringThePostClearProbeKeepsTheConnectionLost() async throws {
+        // The post-Clear probe can answer "connected" just before the link dies. A loss
+        // the health monitor or the bridge reports while that probe is out is newer than
+        // the one being repaired: the connection must stay Lost, not turn Ready on a dead
+        // link (review 2026-11-01, issue 1).
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.connectionStatus = .connected
+        let injector = FakeLocationInjector()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            managedLocationSessionSource: source
+        )
+        let device = Device(id: "00008130-0011223344556677", displayName: "Test Device", connectionType: .wifi)
+        state.selectedDevice = device
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .wifi, endpointClass: .remoteServiceDiscovery, generation: 3
+        ))
+
+        await injector.setShouldBlockClear(true)
+        let clear = Task { await state.clearLocation() }
+        try await injector.waitForClearEntered()
+        state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Location endpoint replaced"))
+        let gate = ProbeGate()
+        source.statusGate = { await gate.hold() }
+        await injector.releaseClear()
+        while !gate.entered { await Task.yield() }
+        // The newer loss lands while the probe is out.
+        state.locationSessionCoordinator.connectionLost(reason: "Health check failed")
+        source.statusGate = nil
+        gate.release()
+        await clear.value
+
+        // The newer loss arrived after the Clear committed: no receipt is held, and the
+        // coordinator's own loss rule (an idle phase becomes uncertain with no receipt)
+        // applies; nothing claims a location.
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertFalse(state.locationPresentation.isSpoofing)
+        XCTAssertEqual(
+            state.locationSessionCoordinator.state.connection,
+            .failed("Health check failed"),
+            "a loss newer than the probe stays reported"
+        )
+    }
+
+    func testClearAndQuitDoesNotWaitForThePostClearConnectionProbe() async throws {
+        // Quit shuts the helper down right after its Clear: probing the connection it is
+        // about to close only delayed quit by up to 8 s (review 2026-11-01, issue 2).
+        let fake = FakeLocationInjector()
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+        let tunnel = FakeTunnelQuitController()
+        let (state, session) = makeAcknowledgementState(
+            injector: fake,
+            mode: .teleport,
+            managedSessionSource: source,
+            tunnelQuitController: tunnel
+        )
+        state.stageLocation(first, for: .teleport)
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+        XCTAssertNotNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+
+        await fake.setShouldBlockClear(true)
+        let quit = Task { await state.prepareForQuit(.clearAndQuit) }
+        try await fake.waitForClearEntered()
+        // A loss while the quit Clear is out is what made the probe run.
+        state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Location endpoint replaced"))
+        let probesBefore = source.statusCallCount
+        await fake.releaseClear()
+        let result = await quit.value
+
+        XCTAssertEqual(result, .terminate)
+        XCTAssertEqual(source.statusCallCount, probesBefore, "the quit Clear does not probe the connection")
+        XCTAssertEqual(source.shutdownCallCount, 1)
+        XCTAssertEqual(tunnel.stopCallCount, 1)
+    }
+
+    func testALossDuringAFailedClearKeepsMoveBlockedAndARetryReachesTheInjector() async throws {
+        // A loss during Clear fails only the connection; a Clear that then fails leaves
+        // the location unconfirmed. The GUI must say so on both dimensions, keep Move
+        // blocked, and let the next Clear press reach the injector (review 2026-11-01,
+        // issue 5).
+        let fake = FakeLocationInjector()
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.connectionStatus = .notConnected("no route to host")
+        let (state, session) = makeAcknowledgementState(
+            injector: fake,
+            mode: .teleport,
+            managedSessionSource: source
+        )
+        state.stageLocation(first, for: .teleport)
+        let application = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: session)
+        await application.value
+        let receipt = try XCTUnwrap(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+
+        await fake.setShouldBlockClear(true)
+        await fake.setShouldFailClear(true)
+        let clearing = Task { await state.clearLocation() }
+        try await fake.waitForClearEntered()
+        state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Location endpoint replaced"))
+        await fake.releaseClear()
+        await clearing.value
+
+        guard case .failed = state.locationSessionCoordinator.state.application else {
+            return XCTFail("a failed Clear leaves the application Failed, got \(state.locationSessionCoordinator.state.application)")
+        }
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("the loss stays reported, got \(state.locationSessionCoordinator.state.connection)")
+        }
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
+        XCTAssertFalse(state.locationPresentation.isSpoofing, "an unconfirmed Clear never claims a held location")
+        XCTAssertFalse(state.locationPresentation.canMove)
+        XCTAssertEqual(state.moveBlockedByClear, .clearUnresolved)
+        XCTAssertFalse(state.canStartSimulation)
+
+        await fake.setShouldBlockClear(false)
+        await fake.setShouldFailClear(false)
+        await state.clearLocation()
+
+        let clears = await fake.calls().filter { call in
+            if case .clear = call { return true }
+            return false
+        }
+        XCTAssertEqual(clears.count, 2, "the retry reaches the injector")
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertNil(state.moveBlockedByClear)
+    }
+
+    func testARestoreRefusedForAnOwnedOperationNeverReachesTheAdapter() async throws {
+        // The restore refused a session this app was already applying only after
+        // `adoptManagedSession` had written the stale receipt into the adapter's
+        // generation tracker: adapter and coordinator disagreed (review 2026-11-01,
+        // issue 4). An owned operation is refused before the adapter call.
+        let injector = AdoptionRecordingLocationInjector()
+        let state = makeState(locationInjector: injector)
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 9,
+            physicalTransport: "usb",
+            actualChannel: "explicitRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 37.33182, longitude: -122.03118),
+            acknowledgedAt: 1_725_000_000
+        )
+        state.selectedDevice = device
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .usb, endpointClass: .unresolved, generation: 1
+        ))
+        state.locationSessionCoordinator.select(first, mode: .teleport)
+        let request = try state.locationSessionCoordinator.beginApplication()
+
+        let restored = await state.restoreManagedHelperSession(session, helperID: UUID(), for: device)
+
+        XCTAssertFalse(restored)
+        XCTAssertTrue(injector.adoptedReceipts.isEmpty, "a refused restore must not adopt in the adapter")
+        guard case .applying(let requestID, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the owned application survives, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertEqual(requestID, request.id)
     }
 
     func testStoppingTheTunnelEndsTheHeldLocationTruthfully() async throws {
@@ -877,7 +1171,7 @@ final class AppStateSimulationTests: XCTestCase {
         })
     }
 
-    func testTransportReplacementDuringAConfirmedClearReportsClearAndKeepsConnectionFailed() async throws {
+    func testTransportReplacementDuringAConfirmedClearReportsClearAndTheLiveConnectionReady() async throws {
         let fake = FakeLocationInjector()
         let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
         let (state, session) = makeAcknowledgementState(
@@ -910,24 +1204,26 @@ final class AppStateSimulationTests: XCTestCase {
             return XCTFail("Expected transport replacement to fail connection during Clear")
         }
         XCTAssertTrue(reason.contains("transport changed"))
-        guard case .uncertain(let lastReceipt, _) = state.locationSessionCoordinator.state.application else {
-            await fake.releaseClear()
-            await clearing.value
-            return XCTFail("Expected Clear interruption to remain uncertain")
-        }
-        XCTAssertEqual(lastReceipt, receipt)
+        // The Clear owns the location dimension until it returns; the replacement fails
+        // only the connection (a phase moved off `.clearing` wedged Clear, live 2026-11-01).
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .clearing)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
 
         await fake.releaseClear()
         await clearing.value
         // The injector confirmed the Clear: the device holds nothing, so the location
-        // dimension is idle and Clear is reported as done, while the connection stays
-        // failed from the transport replacement (three-dimensional state truth).
+        // dimension is idle and Clear is reported as done. The Clear itself does not
+        // repair the connection; the helper's probe on the transport the device is now
+        // selected on does: the replaced (Wi-Fi) connection is live, so it is Ready on
+        // the next generation (three-dimensional state truth).
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
-        guard case .failed = state.locationSessionCoordinator.state.connection else {
-            return XCTFail("A confirmed Clear must not repair the connection dimension")
+        guard case .ready(let replaced) = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("A live replaced connection is Ready again, got \(state.locationSessionCoordinator.state.connection)")
         }
+        XCTAssertEqual(replaced.transport, .wifi)
+        XCTAssertGreaterThan(replaced.generation, session.generation)
         XCTAssertNil(state.moveBlockedByClear)
         XCTAssertEqual(state.statusMessage, "Location cleared")
         XCTAssertFalse(state.requiresLocationQuitDecision)

@@ -916,7 +916,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         )
     }
 
-    func clearLocation() async {
+    /// Clears the simulated location. `reconcilingConnection` runs the post-Clear helper
+    /// probe (`reconcileConnectionAfterConfirmedClear`); quit skips it, because it shuts
+    /// the probed connection down right after the Clear (review 2026-11-01).
+    func clearLocation(reconcilingConnection: Bool = true) async {
         if let locationClearTask {
             await locationClearTask.value
             return
@@ -1001,6 +1004,58 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
         locationClearTask = clearing
         await clearing.value
+        if reconcilingConnection {
+            await reconcileConnectionAfterConfirmedClear(of: sessionToClear)
+        }
+    }
+
+    /// A loss reported while a Clear was out (a replaced helper connection, a transport
+    /// change, a discovery gap) leaves the connection Lost, although the helper confirmed
+    /// the Clear over that connection. After the Clear, the helper's own bounded probe
+    /// decides: a live (replaced or reopened) connection is Ready again on the next
+    /// generation, a dead one stays Lost. Never opens a connection.
+    private func reconcileConnectionAfterConfirmedClear(of session: LocationSessionIdentity?) async {
+        guard let session, unresolvedClearSession == nil,
+              case .failed = locationSessionCoordinator.state.connection,
+              let device = selectedDevice, device.id == session.stableDeviceID else {
+            return
+        }
+        // The transport the device is selected on now (a replacement may have moved it).
+        let transport: LocationTransport = device.connectionType == .usb ? .usb : .wifi
+        let clearEpoch = locationOperationGeneration
+        // The failure this probe may repair. A newer one (the health monitor, the bridge)
+        // reported while the probe is out also leaves the connection failed; its epoch
+        // tells them apart, so a probe answered just before the link died cannot publish
+        // Ready over it.
+        let failureEpoch = locationSessionCoordinator.connectionFailureEpoch
+        let status = await managedLocationSessionSource.deviceConnectionStatus(
+            session.stableDeviceID,
+            transport: transport
+        )
+        guard status == .connected else {
+            Logger.info(
+                "[Clear] The connection stays lost after the Clear: " +
+                LogRedaction.redactingDeviceIdentifiers(String(describing: status)),
+                category: .session
+            )
+            return
+        }
+        // The probe awaited: a newer Clear, a Move, a re-selection or a newer loss may
+        // have moved on.
+        guard clearEpoch == locationOperationGeneration,
+              failureEpoch == locationSessionCoordinator.connectionFailureEpoch,
+              canBeginLocationOperation,
+              !ownsLocationOperation,
+              case .failed = locationSessionCoordinator.state.connection,
+              selectedDevice?.id == session.stableDeviceID,
+              (selectedDevice?.connectionType == .usb ? LocationTransport.usb : .wifi) == transport else { return }
+        locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: session.stableDeviceID,
+            transport: transport,
+            endpointClass: .unresolved,
+            generation: session.generation &+ 1
+        ))
+        Logger.info("[Clear] The helper's device connection is live; the connection is ready again", category: .session)
     }
 
     // MARK: Simulation Control
@@ -1275,6 +1330,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // the in-flight hop and set Movement to Idle in every moving mode (live
         // 2026-11-01).
         guard !ownsLocationOperation else { return false }
+        // A Clear during the probe or adoption below makes the record read here stale:
+        // adopting it showed a held location the phone no longer had.
+        let clearEpoch = locationOperationGeneration
         guard let helperID = managedLocationSessionSource.adoptedHelperID else {
             return false
         }
@@ -1298,9 +1356,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
             Logger.info("[AppState] Not restoring a recorded location: \(status)", category: .device)
             return false
         }
-        // The probe awaited; this session may have started its own operation meanwhile.
-        guard !ownsLocationOperation else { return false }
-        return await restoreManagedHelperSession(session, helperID: helperID, for: device)
+        // The probe awaited; this session may have started its own operation meanwhile,
+        // or run a whole Clear (which leaves it owning nothing again).
+        guard !ownsLocationOperation, clearEpoch == locationOperationGeneration else { return false }
+        return await restoreManagedHelperSession(
+            session,
+            helperID: helperID,
+            for: device,
+            expectedClearEpoch: clearEpoch
+        )
     }
 
     /// This app session is applying, holding, clearing or moving a location itself.
@@ -1323,14 +1387,23 @@ class AppState: ObservableObject, LocationTerminationHandling {
     func restoreManagedHelperSession(
         _ session: ManagedLocationHelperSession,
         helperID: UUID,
-        for device: Device
+        for device: Device,
+        expectedClearEpoch: UInt64? = nil
     ) async -> Bool {
         guard selectedDevice?.id == device.id,
               session.matches(deviceID: device.id),
               let receipt = session.locationReceipt(helperID: helperID) else {
             return false
         }
-
+        // An operation this session owns makes the record stale: refuse before the adapter
+        // call, which writes the receipt into the adapter's generation tracker (a refusal
+        // after it left adapter and coordinator disagreeing, review 2026-11-01). The caller
+        // that read the record passes the Clear counter it saw then.
+        let clearEpoch = expectedClearEpoch ?? locationOperationGeneration
+        guard clearEpoch == locationOperationGeneration, !ownsLocationOperation else {
+            Logger.info("[AppState] Not restoring a recorded location: this session owns a location operation", category: .device)
+            return false
+        }
         do {
             try await locationInjector.adoptManagedSession(
                 receipt: receipt,
@@ -1341,6 +1414,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 "[AppState] Refusing managed session rejected by location adapter: \(error.localizedDescription)",
                 category: .device
             )
+            return false
+        }
+        // The adapter awaited: a Clear or a Move begun meanwhile owns the location now.
+        guard clearEpoch == locationOperationGeneration, !ownsLocationOperation else {
+            Logger.info("[AppState] Not restoring a recorded location: a Clear or Move started meanwhile", category: .device)
             return false
         }
 
@@ -1366,6 +1444,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     private func commitAcknowledgedReceipt(_ receipt: LocationInjectionReceipt) {
+        // A success ends any run of repeated apply failures: write its count now.
+        Logger.endRepeats(key: "AppState.apply.failed", category: .session)
+        Logger.endRepeats(key: "AppState.apply.queued", category: .session)
         guard let mode = pendingApplicationModes.removeValue(forKey: receipt.requestID) else { return }
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
@@ -1459,7 +1540,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         case .clearAndQuit:
             if hasCoordinatorHeldLocation {
-                await clearLocation()
+                // No post-Clear connection probe: the helper is shut down next.
+                await clearLocation(reconcilingConnection: false)
                 guard locationSessionCoordinator.state.lastAcknowledgedReceipt == nil,
                       !locationSessionCoordinator.state.application.isActive,
                       canBeginLocationOperation else {
