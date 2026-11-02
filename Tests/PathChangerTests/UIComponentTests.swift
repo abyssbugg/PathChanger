@@ -8,6 +8,79 @@
 import XCTest
 @testable import PathChanger
 
+// MARK: - Move Disabled Reason Tests
+
+final class MoveDisabledReasonTests: XCTestCase {
+    private func reason(
+        canMove: Bool = false,
+        hasDevice: Bool = true,
+        clearBlock: LocationClearBlock? = nil,
+        canStartSimulation: Bool = true,
+        mode: AppMode = .teleport
+    ) -> MoveDisabledReason? {
+        MoveDisabledReason.select(
+            canMove: canMove,
+            hasDevice: hasDevice,
+            clearBlock: clearBlock,
+            canStartSimulation: canStartSimulation,
+            mode: mode
+        )
+    }
+
+    func testAClearInProgressOrUnresolvedIsNamedInsteadOfDeviceNotReady() {
+        // Live 2026-11-01: an unresolved Clear blocked Move while the card said
+        // "Wait for the selected device to become ready" on a ready device.
+        XCTAssertEqual(reason(clearBlock: .clearInProgress, canStartSimulation: false), .clearInProgress)
+        XCTAssertEqual(reason(clearBlock: .clearUnresolved, canStartSimulation: false), .clearUnresolved)
+        XCTAssertEqual(reason(clearBlock: nil, canStartSimulation: false), .notReady)
+    }
+
+    func testOtherReasonsAreUnchanged() {
+        XCTAssertNil(reason(canMove: true, clearBlock: .clearUnresolved))
+        XCTAssertEqual(reason(hasDevice: false, clearBlock: .clearUnresolved), .noDevice)
+        XCTAssertEqual(reason(mode: .teleport), .selectLocation)
+        XCTAssertEqual(reason(mode: .jump), .addWaypoints)
+        XCTAssertEqual(reason(mode: .twospot), .addWaypoints)
+        XCTAssertEqual(reason(mode: .route), .addWaypoints)
+        XCTAssertEqual(reason(mode: .joystick), .selectLocation)
+        XCTAssertNil(reason(mode: .settings))
+    }
+
+    func testClearReasonsHaveTheirOwnText() {
+        let notReady = MoveDisabledReason.notReady.text
+        for clearReason in [MoveDisabledReason.clearInProgress, .clearUnresolved] {
+            XCTAssertFalse(clearReason.text.isEmpty)
+            XCTAssertNotEqual(clearReason.text, notReady)
+            XCTAssertFalse(clearReason.text.hasPrefix("location.action."), "Missing string for \(clearReason)")
+        }
+        XCTAssertNotEqual(MoveDisabledReason.clearInProgress.text, MoveDisabledReason.clearUnresolved.text)
+    }
+
+    func testUnconfirmedClearTextDoesNotClaimTheClearFailedAndNamesTheRealButton() throws {
+        // The Clear may have finished on the phone; the app only could not confirm it.
+        // The Clear button is not localized, so the ja text must say "Clear" too.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let english = try String(
+            contentsOf: root.appendingPathComponent("PathChanger/Resources/en.lproj/Localizable.strings"),
+            encoding: .utf8
+        )
+        let japanese = try String(
+            contentsOf: root.appendingPathComponent("PathChanger/Resources/ja.lproj/Localizable.strings"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(english.contains(
+            "\"location.action.disabled.clearUnresolved\" = " +
+            "\"PathChanger could not confirm the last Clear. Press Clear again to enable Move.\";"
+        ))
+        let jaLine = try XCTUnwrap(japanese.components(separatedBy: "\n")
+            .first { $0.hasPrefix("\"location.action.disabled.clearUnresolved\"") })
+        XCTAssertTrue(jaLine.contains("「Clear」"), jaLine)
+        XCTAssertFalse(jaLine.contains("クリア"), jaLine)
+        XCTAssertFalse(jaLine.contains("完了しませんでした"), jaLine)
+    }
+}
+
 // MARK: - Organic Appearance Tests
 
 final class OrganicAppearanceTests: XCTestCase {

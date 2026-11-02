@@ -7,6 +7,55 @@
 
 import SwiftUI
 
+/// Why Move is disabled, chosen without the view so it can be tested.
+enum MoveDisabledReason: Equatable {
+    case noDevice
+    case clearInProgress
+    case clearUnresolved
+    case notReady
+    case selectLocation
+    case addWaypoints
+
+    static func select(
+        canMove: Bool,
+        hasDevice: Bool,
+        clearBlock: LocationClearBlock?,
+        canStartSimulation: Bool,
+        mode: AppMode
+    ) -> MoveDisabledReason? {
+        guard !canMove else { return nil }
+        guard hasDevice else { return .noDevice }
+        switch clearBlock {
+        case .clearInProgress: return .clearInProgress
+        case .clearUnresolved: return .clearUnresolved
+        case nil: break
+        }
+        guard canStartSimulation else { return .notReady }
+        switch mode {
+        case .teleport, .joystick: return .selectLocation
+        case .jump, .twospot, .route: return .addWaypoints
+        case .settings: return nil
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .noDevice:
+            return NSLocalizedString("location.action.disabled.noDevice", comment: "Move disabled without a device")
+        case .clearInProgress:
+            return NSLocalizedString("location.action.disabled.clearing", comment: "Move disabled while Clear runs")
+        case .clearUnresolved:
+            return NSLocalizedString("location.action.disabled.clearUnresolved", comment: "Move disabled after a Clear PathChanger could not confirm")
+        case .notReady:
+            return NSLocalizedString("location.action.disabled.notReady", comment: "Move disabled while device is not ready")
+        case .selectLocation:
+            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Teleport or Joystick needs a location")
+        case .addWaypoints:
+            return NSLocalizedString("location.action.disabled.addWaypoints", comment: "Route mode needs waypoints")
+        }
+    }
+}
+
 struct ModeContextCard: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
@@ -542,23 +591,13 @@ struct ModeContextCard: View {
     }
 
     private var disabledMoveReason: String? {
-        guard !canMove else { return nil }
-        guard appState.selectedDevice != nil else {
-            return NSLocalizedString("location.action.disabled.noDevice", comment: "Move disabled without a device")
-        }
-        guard appState.canStartSimulation else {
-            return NSLocalizedString("location.action.disabled.notReady", comment: "Move disabled while device is not ready")
-        }
-        switch mode {
-        case .teleport:
-            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Teleport needs a target")
-        case .jump, .twospot, .route:
-            return NSLocalizedString("location.action.disabled.addWaypoints", comment: "Route mode needs waypoints")
-        case .joystick:
-            return NSLocalizedString("location.action.disabled.selectLocation", comment: "Joystick needs a starting location")
-        case .settings:
-            return nil
-        }
+        MoveDisabledReason.select(
+            canMove: canMove,
+            hasDevice: appState.selectedDevice != nil,
+            clearBlock: appState.moveBlockedByClear,
+            canStartSimulation: appState.canStartSimulation,
+            mode: mode
+        )?.text
     }
 
     private var canMove: Bool {

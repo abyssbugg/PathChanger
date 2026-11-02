@@ -238,6 +238,8 @@
 "location.status.domain.applied" = "Applied";
 "location.action.disabled.noDevice" = "Connect a device to enable Move.";
 "location.action.disabled.notReady" = "Wait for the selected device to become ready.";
+"location.action.disabled.clearing" = "Clearing the location. Move is available when Clear finishes.";
+"location.action.disabled.clearUnresolved" = "PathChanger could not confirm the last Clear. Press Clear again to enable Move.";
 "location.action.disabled.selectLocation" = "Select a location on the map or search to enable Move.";
 "location.action.disabled.addWaypoints" = "Add the required route waypoints to enable Move.";
 "location.action.clearTarget" = "Clear Target";
