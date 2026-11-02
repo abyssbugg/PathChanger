@@ -726,7 +726,7 @@ struct ModeContextCard: View {
                 cursor: StopCursor(nextIndex: appState.jumpIndex),
                 settings: appState.stopTravelSettings(for: .jump)
             )
-        case .twospot: return (appState.locationPresentation.appliedCoordinate != nil && (appState.locationPresentation.desiredCoordinate != nil || !appState.currentRoute.isEmpty)) || appState.currentRoute.count >= 2
+        case .twospot: return (appState.moveStartCoordinate != nil && (appState.locationPresentation.desiredCoordinate != nil || !appState.currentRoute.isEmpty)) || appState.currentRoute.count >= 2
         case .route: return appState.currentRoute.count >= 2
         case .joystick: return appState.locationPresentation.desiredCoordinate != nil || appState.locationPresentation.appliedCoordinate != nil
         case .settings: return false
@@ -787,7 +787,7 @@ struct ModeContextCard: View {
     private var metricCoordinates: [LocationCoordinate] {
         var coords = displayStops.map(\.coordinate)
         if mode == .twospot, appState.currentRoute.count < 2,
-           let start = appState.locationPresentation.appliedCoordinate, coords.first != start {
+           let start = appState.moveStartCoordinate, coords.first != start {
             coords.insert(start, at: 0)
         }
         return coords
@@ -809,7 +809,7 @@ struct ModeContextCard: View {
                 ]
             }
             var rows: [DisplayStop] = []
-            if let current = appState.locationPresentation.appliedCoordinate {
+            if let current = appState.moveStartCoordinate {
                 rows.append(DisplayStop(name: address.isEmpty ? "Start" : address, coordinate: current, fromRoute: false))
             }
             if let dest = appState.currentRoute.last ?? appState.locationPresentation.desiredCoordinate {
@@ -839,7 +839,7 @@ struct ModeContextCard: View {
                 return
             }
             // One spot picked: row 0 is the current location, which is not removable.
-            if index == 0, appState.locationPresentation.appliedCoordinate != nil, displayStops.count > 1 {
+            if index == 0, appState.moveStartCoordinate != nil, displayStops.count > 1 {
                 return
             }
             appState.clearRoute()

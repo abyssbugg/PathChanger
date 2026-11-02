@@ -117,4 +117,42 @@ final class LocationStatusPresentationTests: XCTestCase {
         }
     }
 
+    // MARK: Map location marker (PRODUCT_REQUIREMENTS 5.2)
+
+    func testMarkerIsSpoofedOnlyForAnAppliedCoordinate() {
+        let other = LocationCoordinate(latitude: 1, longitude: 2)
+        XCTAssertEqual(
+            LocationMarker.resolve(applied: coordinate, stagedStart: other, desired: other),
+            LocationMarker(coordinate: coordinate, style: .spoofed)
+        )
+        XCTAssertEqual(LocationMarker(coordinate: coordinate, style: .spoofed).accessibilityLabel, "Spoofed location")
+    }
+
+    func testMarkerIsStagedWhenNothingIsApplied() {
+        let other = LocationCoordinate(latitude: 1, longitude: 2)
+        // A Clear's staged start is where the next Move leaves from; it wins over a
+        // picked Two-Spot destination.
+        XCTAssertEqual(
+            LocationMarker.resolve(applied: nil, stagedStart: coordinate, desired: other),
+            LocationMarker(coordinate: coordinate, style: .staged)
+        )
+        XCTAssertEqual(
+            LocationMarker.resolve(applied: nil, stagedStart: nil, desired: other),
+            LocationMarker(coordinate: other, style: .staged)
+        )
+        XCTAssertEqual(LocationMarker(coordinate: other, style: .staged).accessibilityLabel, "Staged location")
+    }
+
+    func testNoMarkerWithoutAnyCoordinate() {
+        XCTAssertNil(LocationMarker.resolve(applied: nil, stagedStart: nil, desired: nil))
+    }
+
+    func testClearIsDisabledWhenOnlyAStagedPointExists() {
+        var state = LocationSessionState(desiredLocation: coordinate)
+        state.connection = .ready(identity: session)
+        XCTAssertFalse(LocationStatusPresentation(state: state, deviceVisible: true).canClear,
+                       "a staged point is not on the device; there is nothing to clear")
+        XCTAssertTrue(LocationStatusPresentation(state: state, deviceVisible: true).canApply)
+    }
+
 }

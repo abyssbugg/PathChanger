@@ -193,7 +193,9 @@ final class ModePersistenceTests: XCTestCase {
 
         await state.clearLocation()
         XCTAssertNil(state.currentLocation)
-        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        // PRODUCT_REQUIREMENTS 5.2: the held destination stays staged (not applied).
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, second)
+        XCTAssertEqual(state.stagedStartAfterClear, second)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         calls = await fake.calls()
         XCTAssertTrue(calls.contains { if case .clear = $0 { return true }; return false })
@@ -658,7 +660,9 @@ final class ModePersistenceTests: XCTestCase {
             return false
         }.count, 2)
         XCTAssertNil(state.currentLocation)
-        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        // PRODUCT_REQUIREMENTS 5.2: the last acknowledged point stays staged (not applied).
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertEqual(state.stagedStartAfterClear, first)
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         XCTAssertFalse(state.locationSessionCoordinator.state.connection.isReady,
                        "Clearing a retained target must not invent connection readiness")
@@ -846,7 +850,7 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, file: file, line: line)
         XCTAssertNil(state.moveBlockedByClear, file: file, line: line)
         XCTAssertTrue(state.canStartSimulation, "A successful Clear unblocks Move", file: file, line: line)
-        XCTAssertEqual(state.statusMessage, "Location cleared", file: file, line: line)
+        XCTAssertEqual(state.statusMessage, "Location cleared. The last spot is staged for the next mode.", file: file, line: line)
 
         state.stageLocation(second, for: .teleport)
         await state.startSimulation()
@@ -1079,7 +1083,7 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
         XCTAssertNil(state.moveBlockedByClear)
-        XCTAssertEqual(state.statusMessage, "Location cleared")
+        XCTAssertEqual(state.statusMessage, "Location cleared. The last spot is staged for the next mode.")
         guard case .ready(let identity) = state.locationSessionCoordinator.state.connection else {
             return XCTFail("the returned phone is ready again, got \(state.locationSessionCoordinator.state.connection)")
         }
@@ -1325,5 +1329,256 @@ final class ModePersistenceTests: XCTestCase {
             XCTFail("transport loss must make application state uncertain")
         }
         await fake.releaseNextApplication(session: session)
+    }
+}
+
+/// PRODUCT_REQUIREMENTS 5.2 (owner decision 2026-11-02): after a successful Clear the last
+/// spoofed coordinate stays on the map as a staged start for the next mode. It is shown as
+/// staged, not applied, and nothing is sent until the user starts a mode.
+@MainActor
+final class ClearStagingTests: XCTestCase {
+    private let first = LocationCoordinate(latitude: 35.67620, longitude: 139.65030)
+    private let second = LocationCoordinate(latitude: 35.67621, longitude: 139.65031)
+    private let third = LocationCoordinate(latitude: 35.67622, longitude: 139.65032)
+    private let session = LocationSessionIdentity(
+        stableDeviceID: "stage-device", transport: .usb, endpointClass: .direct, generation: 1
+    )
+    private static let stagedStatus = "Location cleared. The last spot is staged for the next mode."
+
+    private final class Flag { var value = false }
+
+    private func makeState(injector: FakeLocationInjector) -> AppState {
+        // A real (short) delay: the joystick loop must suspend while the stick is idle.
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            routeDelay: { _ in try? await Task.sleep(nanoseconds: 1_000_000) }
+        )
+        state.selectedDevice = Device(id: "stage-device", displayName: "Stage Device", connectionType: .usb)
+        state.isTunneldRunning = true
+        state.activeMode = .teleport
+        state.simulationSpeed = .teleport
+        state.locationSessionCoordinator.connectionReady(session)
+        return state
+    }
+
+    /// Bounded: a regression that never applies fails instead of hanging the suite.
+    private func waitForPendingApplication(_ fake: FakeLocationInjector, timeout: TimeInterval = 2) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await fake.pendingApplicationCount() > 0 { return true }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return false
+    }
+
+    private func appliedCoordinates(_ fake: FakeLocationInjector) async -> [LocationCoordinate] {
+        await fake.calls().compactMap { call -> LocationCoordinate? in
+            if case .apply(let request) = call { return request.coordinate }
+            return nil
+        }
+    }
+
+    private func teleport(_ state: AppState, _ fake: FakeLocationInjector, to point: LocationCoordinate) async {
+        state.stageLocation(point, for: .teleport)
+        let move = Task { await state.startSimulation() }
+        guard await waitForPendingApplication(fake) else {
+            move.cancel()
+            await move.value
+            return XCTFail("Teleport Move sent nothing")
+        }
+        await fake.releaseNextApplication(session: session)
+        await move.value
+    }
+
+    /// Teleports to `first`, then Clears successfully.
+    private func spoofThenClear() async -> (AppState, FakeLocationInjector) {
+        let fake = FakeLocationInjector()
+        let state = makeState(injector: fake)
+        await teleport(state, fake, to: first)
+        XCTAssertEqual(state.locationPresentation.appliedCoordinate, first)
+        await state.clearLocation()
+        return (state, fake)
+    }
+
+    func testSuccessfulClearStagesTheLastSpoofedPointWithoutSendingIt() async {
+        let (state, fake) = await spoofThenClear()
+
+        XCTAssertEqual(state.stagedStartAfterClear, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        XCTAssertEqual(state.locationPresentation.desiredCoordinate, first)
+        XCTAssertNil(state.locationPresentation.appliedCoordinate)
+        XCTAssertFalse(state.locationPresentation.isSpoofing)
+        XCTAssertEqual(state.targetLocation, first)
+        XCTAssertNil(state.currentLocation)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertFalse(state.locationPresentation.canClear, "nothing is on the device to clear")
+        XCTAssertEqual(state.statusMessage, Self.stagedStatus)
+        XCTAssertEqual(state.locationMarker, LocationMarker(coordinate: first, style: .staged))
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let applied = await appliedCoordinates(fake)
+        XCTAssertEqual(applied, [first], "the staged point is not sent to the device")
+        let pending = await fake.pendingApplicationCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testTeleportMoveAfterClearAppliesTheStagedPoint() async {
+        let (state, fake) = await spoofThenClear()
+
+        let move = Task { await state.startSimulation() }
+        guard await waitForPendingApplication(fake) else {
+            move.cancel()
+            await move.value
+            return XCTFail("Teleport Move after Clear sent nothing")
+        }
+        await fake.releaseNextApplication(session: session)
+        await move.value
+
+        let applied = await appliedCoordinates(fake)
+        XCTAssertEqual(applied, [first, first])
+        XCTAssertEqual(state.locationPresentation.appliedCoordinate, first)
+        XCTAssertNil(state.stagedStartAfterClear, "an applied location ends the staged start")
+        XCTAssertEqual(state.locationMarker, LocationMarker(coordinate: first, style: .spoofed))
+    }
+
+    func testJoystickAfterClearStartsAtTheStagedPoint() async {
+        let (state, fake) = await spoofThenClear()
+        state.activeMode = .joystick
+        XCTAssertEqual(state.stagedStartAfterClear, first, "a mode change keeps the staged start")
+
+        let engage = Task { await state.startSimulation() }
+        guard await waitForPendingApplication(fake) else {
+            engage.cancel()
+            await engage.value
+            return XCTFail("Joystick after Clear sent nothing")
+        }
+        let applied = await appliedCoordinates(fake)
+        XCTAssertEqual(applied.last, first)
+        await fake.releaseNextApplication(session: session)
+        await engage.value
+        await state.stopSimulation()
+        if await fake.pendingApplicationCount() > 0 {
+            await fake.releaseNextApplication(session: session)
+        }
+        XCTAssertNil(state.stagedStartAfterClear)
+    }
+
+    func testTwoSpotWithOneSpotAfterClearTravelsFromTheStagedPoint() async {
+        let (state, fake) = await spoofThenClear()
+        // Teleport staging leaves its point as the route; Reset route empties it, so
+        // Two-Spot has exactly the one spot picked next.
+        state.clearRoute()
+        state.activeMode = .twospot
+        state.stageLocation(third, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [third])
+        XCTAssertEqual(state.stagedStartAfterClear, first, "one Two-Spot spot keeps the staged start")
+        XCTAssertEqual(state.moveStartCoordinate, first)
+        XCTAssertEqual(state.locationMarker, LocationMarker(coordinate: first, style: .staged))
+
+        let done = Flag()
+        let move = Task {
+            await state.startSimulation()
+            done.value = true
+        }
+        let deadline = Date().addingTimeInterval(3)
+        while !done.value, Date() < deadline {
+            if await fake.pendingApplicationCount() > 0 {
+                await fake.releaseNextApplication(session: session)
+            } else {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        if !done.value {
+            await state.stopSimulation()
+            move.cancel()
+        }
+        await move.value
+
+        let applied = await appliedCoordinates(fake)
+        XCTAssertGreaterThanOrEqual(applied.count, 3, "the travel must reach the device, got \(applied)")
+        XCTAssertEqual(applied.dropFirst().first, first, "Two-Spot leaves from the staged point")
+        XCTAssertEqual(applied.last, third)
+        XCTAssertEqual(state.locationPresentation.appliedCoordinate, third)
+        XCTAssertNil(state.stagedStartAfterClear)
+    }
+
+    func testTwoSpotWithTwoSpotsAfterClearIgnoresTheStagedPoint() async {
+        let (state, _) = await spoofThenClear()
+        state.clearRoute()
+        state.activeMode = .twospot
+        state.stageLocation(second, for: .twospot)
+        state.stageLocation(third, for: .twospot)
+        XCTAssertEqual(state.currentRoute, [second, third])
+        XCTAssertNil(state.stagedStartAfterClear, "two picked spots define the start")
+    }
+
+    func testStagingANewPointReplacesTheStagedStart() async {
+        let (state, fake) = await spoofThenClear()
+        state.stageLocation(second, for: .teleport)
+
+        XCTAssertNil(state.stagedStartAfterClear)
+        XCTAssertEqual(state.targetLocation, second)
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, second)
+        XCTAssertEqual(state.locationMarker, LocationMarker(coordinate: second, style: .staged))
+        let applied = await appliedCoordinates(fake)
+        XCTAssertEqual(applied, [first])
+    }
+
+    func testFailedClearStagesNothing() async {
+        let fake = FakeLocationInjector()
+        let state = makeState(injector: fake)
+        await teleport(state, fake, to: first)
+        let receipt = state.locationSessionCoordinator.state.lastAcknowledgedReceipt
+        await fake.setShouldFailClear(true)
+
+        await state.clearLocation()
+
+        XCTAssertNil(state.stagedStartAfterClear)
+        XCTAssertEqual(state.currentLocation, first)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, receipt)
+        XCTAssertNotEqual(state.statusMessage, Self.stagedStatus)
+        XCTAssertTrue(state.statusMessage?.hasPrefix("Unable to clear location") ?? false)
+    }
+
+    func testClearWithNothingSpoofedStagesNothing() async {
+        let fake = FakeLocationInjector()
+        let state = makeState(injector: fake)
+
+        await state.clearLocation()
+
+        XCTAssertNil(state.stagedStartAfterClear)
+        XCTAssertNil(state.targetLocation)
+        XCTAssertNil(state.locationMarker)
+    }
+
+    /// Phase 3 (automatic reconnect) depends on this: a staged point is never sent
+    /// automatically, even when the connection drops after the Clear and recovery runs.
+    func testRecoveryAfterClearNeverSendsTheStagedPoint() async {
+        let (state, fake) = await spoofThenClear()
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+
+        state.submitLocationBridgeEvent(.sessionLost(session, reason: "Test transport loss"))
+        let recovered = LocationSessionIdentity(
+            stableDeviceID: session.stableDeviceID, transport: session.transport,
+            endpointClass: session.endpointClass, generation: session.generation + 1
+        )
+        state.startLocationRecovery(
+            strategy: ReconnectionStrategy(
+                maxAttempts: 1, initialDelaySeconds: 0, maxDelaySeconds: 0,
+                backoffMultiplier: 1, jitterFactor: 0
+            ),
+            establishSession: { _, _ in recovered }
+        )
+
+        let sent = await waitForPendingApplication(fake, timeout: 0.3)
+        if sent { await fake.failNextApplication(code: "Test cleanup") }
+        XCTAssertFalse(sent, "recovery must not send a staged point")
+        let applied = await appliedCoordinates(fake)
+        XCTAssertEqual(applied, [first])
+        XCTAssertNil(state.locationPresentation.appliedCoordinate)
+        XCTAssertEqual(state.stagedStartAfterClear, first)
     }
 }

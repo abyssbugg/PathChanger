@@ -1399,14 +1399,16 @@ final class AppStateSimulationTests: XCTestCase {
         // the next generation (three-dimensional state truth).
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
-        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        // PRODUCT_REQUIREMENTS 5.2: the cleared point stays staged (not applied).
+        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, receipt.coordinate)
+        XCTAssertNil(state.locationPresentation.appliedCoordinate)
         guard case .ready(let replaced) = state.locationSessionCoordinator.state.connection else {
             return XCTFail("A live replaced connection is Ready again, got \(state.locationSessionCoordinator.state.connection)")
         }
         XCTAssertEqual(replaced.transport, .wifi)
         XCTAssertGreaterThan(replaced.generation, session.generation)
         XCTAssertNil(state.moveBlockedByClear)
-        XCTAssertEqual(state.statusMessage, "Location cleared")
+        XCTAssertEqual(state.statusMessage, "Location cleared. The last spot is staged for the next mode.")
         XCTAssertFalse(state.requiresLocationQuitDecision)
     }
 

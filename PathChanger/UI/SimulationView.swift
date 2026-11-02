@@ -87,18 +87,32 @@ struct SimulationView: View {
     private var mapView: some View {
         MapReader { proxy in
             Map(position: $position, interactionModes: [.all]) {
-                if let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
-                    Annotation("Location", coordinate: location.clLocationCoordinate2D) {
+                if let marker = appState.locationMarker {
+                    Annotation(marker.accessibilityLabel, coordinate: marker.coordinate.clLocationCoordinate2D) {
+                        // Staged (nothing sent, PRODUCT_REQUIREMENTS 5.2): a hollow dashed
+                        // ring in a neutral color. Spoofed: the filled accent dot.
                         ZStack {
-                            Circle()
-                                .fill(Organic.accent300.opacity(0.45))
-                                .frame(width: 34, height: 34)
-                            Circle()
-                                .fill(Organic.accent600)
-                                .frame(width: 15, height: 15)
-                                .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
-                                .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
+                            if marker.style == .spoofed {
+                                Circle()
+                                    .fill(Organic.accent300.opacity(0.45))
+                                    .frame(width: 34, height: 34)
+                                Circle()
+                                    .fill(Organic.accent600)
+                                    .frame(width: 15, height: 15)
+                                    .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
+                                    .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
+                            } else {
+                                Circle()
+                                    .fill(Organic.neutral100.opacity(0.6))
+                                    .frame(width: 22, height: 22)
+                                    .overlay(
+                                        Circle().stroke(Organic.neutral600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
+                                    )
+                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
+                            }
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(marker.accessibilityLabel)
                     }
                 }
 

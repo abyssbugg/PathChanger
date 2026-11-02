@@ -109,8 +109,13 @@ struct LocationStatusPresentation: Equatable {
         if case .clearing = state.application {
             canClear = false
         } else {
-            canClear = hasUnresolvedClear ||
-                (ready != nil && (state.desiredLocation != nil || state.lastAcknowledgedReceipt != nil))
+            // Something may be on the device: a receipt, or an application that is not
+            // idle. A selected or staged point alone was never sent (PRODUCT_REQUIREMENTS 5.2).
+            let deviceMayHoldLocation: Bool = {
+                if case .idle = state.application { return state.lastAcknowledgedReceipt != nil }
+                return true
+            }()
+            canClear = hasUnresolvedClear || (ready != nil && deviceMayHoldLocation)
         }
         let source = ready?.stableDeviceID ?? "unknown"
         let checksum = source.utf8.reduce(UInt32(5381)) { (($0 << 5) &+ $0) &+ UInt32($1) } & 0xFFFF
@@ -152,6 +157,38 @@ struct LocationStatusPresentation: Equatable {
         if case .applying = phase { return true }; if case .clearing = phase { return true }; return false
     }
     private static func transportName(_ value: LocationTransport) -> String { value == .usb ? "USB" : "Wi-Fi" }
+}
+
+/// How the map marks the location (PRODUCT_REQUIREMENTS 5.2): spoofed when the device
+/// holds it (a current applied receipt), staged when it is only planned and nothing was
+/// sent, such as the last spot a Clear left behind.
+struct LocationMarker: Equatable {
+    enum Style: Equatable {
+        case spoofed
+        case staged
+    }
+
+    let coordinate: LocationCoordinate
+    let style: Style
+
+    var accessibilityLabel: String {
+        switch style {
+        case .spoofed: return "Spoofed location"
+        case .staged: return "Staged location"
+        }
+    }
+
+    /// The applied point when there is one; else the start a Clear staged (where the next
+    /// Move leaves from, also once a Two-Spot destination is picked); else the selected
+    /// point. Nil when there is nothing to mark.
+    static func resolve(
+        applied: LocationCoordinate?,
+        stagedStart: LocationCoordinate?,
+        desired: LocationCoordinate?
+    ) -> LocationMarker? {
+        if let applied { return LocationMarker(coordinate: applied, style: .spoofed) }
+        return (stagedStart ?? desired).map { LocationMarker(coordinate: $0, style: .staged) }
+    }
 }
 
 @main
@@ -362,6 +399,22 @@ class AppState: ObservableObject, LocationTerminationHandling {
     var targetLocation: LocationCoordinate? {
         get { simulation.targetLocation }
         set { simulation.targetLocation = newValue }
+    }
+    /// The last spoofed coordinate a confirmed Clear left as the start for the next mode
+    /// (PRODUCT_REQUIREMENTS 5.2). It is staged, never applied: nothing is sent until the
+    /// user starts a mode. Ends when any location is applied or a new point is staged.
+    @Published private(set) var stagedStartAfterClear: LocationCoordinate?
+    /// Where the next Move leaves from: the applied location, or the start a Clear staged.
+    var moveStartCoordinate: LocationCoordinate? {
+        locationPresentation.appliedCoordinate ?? stagedStartAfterClear
+    }
+    var locationMarker: LocationMarker? {
+        let presentation = locationPresentation
+        return LocationMarker.resolve(
+            applied: presentation.appliedCoordinate,
+            stagedStart: stagedStartAfterClear,
+            desired: presentation.desiredCoordinate
+        )
     }
 
     // MARK: Simulation State (forwarded to `simulation`)
@@ -1081,6 +1134,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return
         }
         locationOperationGeneration &+= 1
+        // The point the device held, staged for the next mode if this Clear succeeds.
+        let lastSpoofed = locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate ?? currentLocation
         let sessionToClear: LocationSessionIdentity?
         if let unresolvedClearSession {
             sessionToClear = unresolvedClearSession
@@ -1158,12 +1213,24 @@ class AppState: ObservableObject, LocationTerminationHandling {
             routeProgress = 0
             lastJoystickHeadingDegrees = nil
             statusMessage = "Location cleared"
+            if let lastSpoofed { stageStartAfterConfirmedClear(lastSpoofed) }
         }
         locationClearTask = clearing
         await clearing.value
         if reconcilingConnection {
             await reconcileConnectionAfterConfirmedClear(of: sessionToClear)
         }
+    }
+
+    /// After a confirmed Clear the last spoofed point stays as the staged start for the
+    /// next mode (PRODUCT_REQUIREMENTS 5.2): selected and targeted, never applied. The
+    /// device holds nothing and no receipt exists, so Move is what sends it.
+    private func stageStartAfterConfirmedClear(_ coordinate: LocationCoordinate) {
+        guard coordinate.isValid else { return }
+        stagedStartAfterClear = coordinate
+        simulation.targetLocation = coordinate
+        locationSessionCoordinator.select(coordinate, mode: activeMode.locationMode ?? .teleport)
+        statusMessage = "Location cleared. The last spot is staged for the next mode."
     }
 
     /// A loss reported while a Clear was out (a replaced helper connection, a transport
@@ -1599,6 +1666,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return false
         }
 
+        stagedStartAfterClear = nil
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
         simulation.isPaused = false
@@ -1612,6 +1680,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         Logger.endRepeats(key: "AppState.apply.failed", category: .session)
         Logger.endRepeats(key: "AppState.apply.queued", category: .session)
         guard let pending = pendingApplications.removeValue(forKey: receipt.requestID) else { return }
+        stagedStartAfterClear = nil
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
         // A paused run stays paused when the point in flight lands.
@@ -1791,6 +1860,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if let locationMode = mode.locationMode {
             locationSessionCoordinator.select(coordinate, mode: locationMode)
         }
+        // A new point replaces a Clear's staged start, except in Two-Spot while one spot
+        // is picked: the staged start is then where the traversal leaves from.
+        if mode != .twospot { stagedStartAfterClear = nil }
 
         switch mode {
         case .teleport, .settings:
@@ -1815,9 +1887,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
             }
             addRouteWaypoint(coordinate)
             if currentRoute.count >= 2 {
+                stagedStartAfterClear = nil
                 statusMessage = "Destination spot set"
             } else if currentLocation != nil {
                 statusMessage = "Spot set: Move travels there from the current location, or click a second spot"
+            } else if stagedStartAfterClear != nil {
+                statusMessage = "Spot set: Move travels there from the staged spot, or click a second spot"
             } else {
                 statusMessage = "Start spot set: click the destination"
             }
@@ -1936,7 +2011,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if continuesSequence, let remembered = routeRunStops {
             stops = remembered
         } else {
-            switch StopTravelPlanner.runStops(mode: mode, route: currentRoute, held: currentLocation, target: targetLocation) {
+            // Two-Spot with one spot leaves from the held location, or from the start a
+            // Clear staged (PRODUCT_REQUIREMENTS 3.3, 5.2).
+            switch StopTravelPlanner.runStops(mode: mode, route: currentRoute, held: currentLocation ?? stagedStartAfterClear, target: targetLocation) {
             case .success(let resolved):
                 stops = resolved
             case .failure(let error):
@@ -2635,8 +2712,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
         strategy: ReconnectionStrategy? = nil,
         establishSession: @escaping @MainActor (Int, LocationSessionIdentity?) async throws -> LocationSessionIdentity
     ) {
+        // Recovery reapplies a location the device held. A point staged after a Clear (or
+        // only selected) has no receipt: it is sent by Move, never automatically
+        // (PRODUCT_REQUIREMENTS 5.2).
         guard canBeginLocationOperation,
               locationSessionCoordinator.state.desiredLocation != nil,
+              locationSessionCoordinator.state.lastAcknowledgedReceipt != nil,
               locationRecoveryTask == nil else { return }
         let strategy = strategy ?? reliabilityManager.strategy
         locationRecoveryTask = Task { @MainActor [weak self] in
