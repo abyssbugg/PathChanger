@@ -37,6 +37,19 @@ private actor AutoAckInjector: LocationInjecting {
     func appliedCoordinates() -> [LocationCoordinate] { applied }
 }
 
+/// Returns one fixed road route and records the travel mode of each request.
+private actor RecordingRoadRouter: RoadRouting {
+    private let fixed: RoadRoute
+    private(set) var travels: [SimulationSpeed] = []
+
+    init(route: RoadRoute) { fixed = route }
+
+    func route(from: LocationCoordinate, to: LocationCoordinate, travel: SimulationSpeed) async -> RoadRoute {
+        travels.append(travel)
+        return fixed
+    }
+}
+
 /// Records which legs were asked for, and how many points had been applied by then.
 private actor PathRequests {
     private(set) var requests: [(from: LocationCoordinate, to: LocationCoordinate, appliedBefore: Int)] = []
@@ -490,6 +503,34 @@ final class StopTravelEngineTests: XCTestCase {
         XCTAssertEqual(asked.map(\.to), [s1, s2])
         XCTAssertEqual(asked.map(\.appliedBefore), [1, 1 + firstLeg], "each leg is fetched when the run reaches it")
         assertHeld(harness.state, at: s2)
+    }
+
+    // MARK: - Road routing wiring
+
+    func testRoadRouterAdapterCarriesTheRoadPathNoteAndTravelMode() async {
+        let middle = LocationCoordinate(latitude: s0.latitude, longitude: s1.longitude)
+        let router = RecordingRoadRouter(route: RoadRoute(
+            points: [s0, middle, s1], distanceMeters: 1_234, followsRoads: true, note: "detour"
+        ))
+        let provider = AppState.roadLegPathProvider(router)
+
+        let leg = await provider(s0, s1, .cycling)
+
+        XCTAssertEqual(leg, LegPath(points: [s0, middle, s1], followsRoads: true, note: "detour"))
+        let asked = await router.travels
+        XCTAssertEqual(asked, [.cycling])
+    }
+
+    func testAnInjectedRoadRouterBecomesTheLegPathProvider() {
+        let plain = AppState(startBackgroundServices: false, locationInjector: FakeLocationInjector())
+        XCTAssertNil(plain.legPathProvider, "without a router, legs are straight lines")
+
+        let routed = AppState(
+            startBackgroundServices: false,
+            locationInjector: FakeLocationInjector(),
+            roadRouter: RecordingRoadRouter(route: RoadRoute(points: [s0, s1], distanceMeters: 1, followsRoads: true, note: nil))
+        )
+        XCTAssertNotNil(routed.legPathProvider)
     }
 
     // MARK: - Settings

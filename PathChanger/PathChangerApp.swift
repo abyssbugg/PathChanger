@@ -163,7 +163,8 @@ struct PathChangerApp: App {
         _appState = StateObject(wrappedValue: AppState(
             startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup,
             locationInjector: LocationInjectorFactory.make(),
-            ddiPreparerFactory: { DeveloperDiskImagePreparer.live(deviceManager: $0) }
+            ddiPreparerFactory: { DeveloperDiskImagePreparer.live(deviceManager: $0) },
+            roadRouter: MapKitRoadRouter()
         ))
     }
     @StateObject private var tunneldManager = TunneldManager.shared
@@ -440,6 +441,17 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// straight lines (tests, previews).
     var legPathProvider: (@Sendable (LocationCoordinate, LocationCoordinate, SimulationSpeed) async -> LegPath)?
 
+    /// Adapts a road router to the engine's leg seam: the road path, whether it follows
+    /// roads, and the note the card shows when it does not.
+    nonisolated static func roadLegPathProvider(
+        _ router: any RoadRouting
+    ) -> @Sendable (LocationCoordinate, LocationCoordinate, SimulationSpeed) async -> LegPath {
+        { from, to, travel in
+            let road = await router.route(from: from, to: to, travel: travel)
+            return LegPath(points: road.points, followsRoads: road.followsRoads, note: road.note)
+        }
+    }
+
     /// The running stop run's next stop, time left and hold countdown; nil when no run
     /// is active.
     @Published private(set) var stopProgress: StopProgress?
@@ -678,6 +690,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         ddiPreparerFactory: ((DeviceManager) -> DeveloperDiskImagePreparer)? = nil,
         tunnelQuitController: (any TunnelQuitControlling)? = nil,
         stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : .standard,
+        roadRouter: (any RoadRouting)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -721,6 +734,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             routeLibrary: RouteLibraryManager(),
             settingsDefaults: stopTravelSettingsDefaults
         )
+        self.legPathProvider = roadRouter.map(Self.roadLegPathProvider)
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
             errorHandler: sharedErrorHandler
