@@ -786,12 +786,14 @@ actor DevLocationBridge: LocationInjecting {
                     "Provider completed without an acknowledgement"
                 )
             }
-            return try LocationApplicationAcknowledgementRouter.accept(
+            let accepted = try LocationApplicationAcknowledgementRouter.accept(
                 request: request,
                 provisionalSession: session,
                 acknowledgement: acknowledgement,
                 generationTracker: &generationTracker
             )
+            Logger.endRepeats(key: "DevLocationBridge.apply", category: .device)
+            return accepted
         } catch LocationInjectionError.rateLimited {
             return .accepted(
                 request: request,

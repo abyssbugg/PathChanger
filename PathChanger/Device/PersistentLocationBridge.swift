@@ -471,10 +471,24 @@ struct ManagedLocationHelperRecord: Codable, Equatable {
 ///
 /// The helper outlives the app (it is adopted on relaunch), so it writes to a file it
 /// holds open, not to a pipe the app would have to drain. The cap is enforced at each
-/// launch (a log over `maxBytes` is renamed to `.1` once, replacing an older `.1`) and
-/// at each adoption (`capInPlace`), not continuously while one helper runs.
+/// launch (a log over `maxBytes` is renamed to `.1` once, replacing an older `.1`), at
+/// each adoption (`capInPlace`), and in place at most once per `periodicCapInterval`
+/// while one helper runs (on helper-record refresh and the connection health probe),
+/// so a helper that runs for days cannot grow it without bound.
 enum ManagedLocationHelperStderrLog {
     static let maxBytes: UInt64 = 1_048_576
+    static let periodicCapInterval: TimeInterval = 60
+
+    static func isPeriodicCapDue(
+        lastCap: Date?,
+        now: Date,
+        interval: TimeInterval = ManagedLocationHelperStderrLog.periodicCapInterval
+    ) -> Bool {
+        guard let lastCap else { return true }
+        let elapsed = now.timeIntervalSince(lastCap)
+        // A wall clock set back would otherwise postpone the cap until it caught up.
+        return elapsed >= interval || elapsed < 0
+    }
 
     enum LogError: LocalizedError {
         case unsafeFile(String)
@@ -621,6 +635,10 @@ final class ManagedLocationHelperController {
     private let fileManager: FileManager
     /// Where the helper's stderr goes; nil discards it (tests that launch helpers).
     private let stderrLogURL: URL?
+    private let stderrLogMaxBytes: UInt64
+    private let now: () -> Date
+    /// When the stderr log was last capped (launch rotation, adoption or periodic).
+    private var lastStderrCap: Date?
     private var launchedProcess: Process?
     private var activeConnection: ManagedLocationHelperConnection?
 
@@ -629,24 +647,46 @@ final class ManagedLocationHelperController {
         pythonPath: String,
         bridgePath: String,
         fileManager: FileManager = .default,
-        stderrLogURL: URL? = nil
+        stderrLogURL: URL? = nil,
+        stderrLogMaxBytes: UInt64 = ManagedLocationHelperStderrLog.maxBytes,
+        now: @escaping () -> Date = Date.init
     ) {
         self.paths = paths
         self.pythonPath = pythonPath
         self.bridgePath = bridgePath
         self.fileManager = fileManager
         self.stderrLogURL = stderrLogURL
+        self.stderrLogMaxBytes = stderrLogMaxBytes
+        self.now = now
     }
 
-    /// An adopted helper keeps writing to the stderr log it was launched with; cap it now
-    /// (the launch-time rotation never runs for it). Failure only loses log history.
-    private func capAdoptedHelperStderrLog() {
+    /// Cap the running helper's stderr log in place, at most once per
+    /// `periodicCapInterval`. When not due this costs one clock read, so it may sit on
+    /// the location update path.
+    func capStderrLogIfDue() {
+        guard stderrLogURL != nil,
+              ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: lastStderrCap, now: now()) else {
+            return
+        }
+        capStderrLogInPlace(of: "running")
+    }
+
+    /// The helper holds the log open, so it is capped in place (an adopted helper never
+    /// gets the launch-time rotation). Failure only loses log history.
+    private func capStderrLogInPlace(of helperDescription: String) {
         guard let stderrLogURL else { return }
+        // Recorded before the attempt: a failing cap is retried once per interval, not
+        // on every call.
+        lastStderrCap = now()
         do {
-            try ManagedLocationHelperStderrLog.capInPlace(at: stderrLogURL, fileManager: fileManager)
+            try ManagedLocationHelperStderrLog.capInPlace(
+                at: stderrLogURL,
+                maxBytes: stderrLogMaxBytes,
+                fileManager: fileManager
+            )
         } catch {
             Logger.error(
-                "[PersistentBridge] Could not cap the adopted helper's stderr log: \(error.localizedDescription)",
+                "[PersistentBridge] Could not cap the \(helperDescription) helper's stderr log: \(error.localizedDescription)",
                 category: .device
             )
         }
@@ -669,7 +709,7 @@ final class ManagedLocationHelperController {
                     token: token,
                     launchedNewHelper: false
                 )
-                capAdoptedHelperStderrLog()
+                capStderrLogInPlace(of: "adopted")
                 activeConnection = connection
                 return connection
             }
@@ -691,7 +731,13 @@ final class ManagedLocationHelperController {
         var stderrLog: FileHandle?
         if let stderrLogURL {
             do {
-                stderrLog = try ManagedLocationHelperStderrLog.open(at: stderrLogURL, fileManager: fileManager)
+                stderrLog = try ManagedLocationHelperStderrLog.open(
+                    at: stderrLogURL,
+                    maxBytes: stderrLogMaxBytes,
+                    fileManager: fileManager
+                )
+                // Opening rotated an oversized log: the new helper starts under the cap.
+                lastStderrCap = now()
             } catch {
                 Logger.error(
                     "[PersistentBridge] Helper stderr will be discarded: \(error.localizedDescription)",
@@ -765,6 +811,7 @@ final class ManagedLocationHelperController {
             throw ControllerError.helperIdentityMismatch
         }
         activeConnection = connection
+        capStderrLogIfDue()
         return connection
     }
 
@@ -1498,6 +1545,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             )
             throw PersistentBridgeError.bridgeError(response.error ?? "Unknown error")
         }
+        // The command reached the device: end the failure run under this key (shared by
+        // the transport-failure line in `logCommandFailure` and the line above).
+        Logger.endRepeats(key: "PersistentBridge.set_location", category: .device)
 
         let acknowledgement = try response.acknowledgement(physicalTransport: physicalTransport)
         usesTunnelTransport = acknowledgement.endpointClass == .remoteServiceDiscovery
@@ -1623,6 +1673,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             )
             throw Self.connectFailure(error: response.error, reason: response.reason)
         }
+        Logger.endRepeats(key: "PersistentBridge.connect_device", category: .device)
         guard let helperPID = helperConnection?.record.pid else {
             throw PersistentBridgeError.processNotRunning
         }
@@ -1652,6 +1703,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         guard currentSession?.stableDeviceID != device.id else { return }
         do {
             _ = try await connectDevice(device.id, transport: transport)
+            Logger.endRepeats(key: "PersistentBridge.ensureDeviceConnection", category: .device)
         } catch {
             Logger.error(
                 "[PersistentBridge] Opening the device connection failed: " +
@@ -1669,6 +1721,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         transport: LocationTransport
     ) async -> HelperConnectionStatus {
         guard isRunning else { return .notConnected("location helper is not running") }
+        // The probe runs every few seconds even while a held location is not moving, so
+        // a long-running helper's stderr log stays capped (rate-limited inside).
+        helperController?.capStderrLogIfDue()
         var request = BridgeRequest(cmd: "connection_status")
         request.udid = deviceId
         request.connection_type = transport.helperWireValue

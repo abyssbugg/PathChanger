@@ -351,6 +351,136 @@ final class LogRepeatSuppressorTests: XCTestCase {
         XCTAssertEqual(suppressor.lines(for: "A", key: "app", now: start + 0.1), ["A"])
         XCTAssertEqual(suppressor.lines(for: "A", key: "bridge", now: start + 0.2), [])
     }
+
+    func testEndingAKeyFlushesTheSuppressedCount() {
+        // Review 2026-11-01 issue 2: when a failure run stopped, its last count was
+        // never written.
+        var suppressor = LogRepeatSuppressor(window: 5)
+        _ = suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start)
+        for tick in 1...7 {
+            _ = suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start + Double(tick) * 0.1)
+        }
+        XCTAssertEqual(suppressor.end(key: "apply"), ["[Apply] Failed: E (repeated 7 times)"])
+        // Ended: a second end has nothing left to write.
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+    }
+
+    func testAnIdenticalFailureInsideTheWindowAfterEndIsCountedAndFlushedByTheNextEnd() {
+        // Review 2026-11-01-192235 issue 3: end(key:) forgot the entry, so a flapping
+        // link (failure, success, failure) wrote every failure line. End keeps the window
+        // anchor: the same failure inside the window is counted, not written.
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start), ["E"])
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 0.2), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 0.3), [])
+        XCTAssertEqual(suppressor.end(key: "apply"), ["E (repeated 2 times)"])
+        // The count was reset; the anchor was not.
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 0.4), [])
+        XCTAssertEqual(suppressor.end(key: "apply"), ["E (repeated 1 times)"])
+    }
+
+    func testAFailureAfterTheWindowAfterEndPassesAtOnce() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start), ["E"])
+        _ = suppressor.lines(for: "E", key: "apply", now: start + 0.1)
+        XCTAssertEqual(suppressor.end(key: "apply"), ["E (repeated 1 times)"])
+        // Nothing pending and the window passed: the failure is written with no count.
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 5.1), ["E"])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 5.2), [])
+    }
+
+    func testAFailureCountedAfterEndIsFlushedByTheFirstIdenticalLineAfterTheWindow() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start), ["E"])
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 1), [])
+        XCTAssertEqual(
+            suppressor.lines(for: "E", key: "apply", now: start + 5.5),
+            ["E (repeated 1 times)"]
+        )
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+    }
+
+    func testAFailureCountedAfterEndIsFlushedByAChangedMessage() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start), ["E"])
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start + 0.1), [])
+        XCTAssertEqual(
+            suppressor.lines(for: "F", key: "apply", now: start + 0.2),
+            ["E (repeated 1 times)", "F"]
+        )
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+    }
+
+    func testAFlappingLinkWritesOneFailureLineAndLosesNoCount() {
+        // Fail, end, fail, end, fail inside 5 s: one written failure line, and the
+        // summaries account for every suppressed failure.
+        var suppressor = LogRepeatSuppressor(window: 5)
+        var written: [String] = []
+        written += suppressor.lines(for: "E", key: "apply", now: start)
+        written += suppressor.end(key: "apply")
+        written += suppressor.lines(for: "E", key: "apply", now: start + 0.1)
+        written += suppressor.end(key: "apply")
+        written += suppressor.lines(for: "E", key: "apply", now: start + 0.2)
+        written += suppressor.end(key: "apply")
+        XCTAssertEqual(written, ["E", "E (repeated 1 times)", "E (repeated 1 times)"])
+
+        // The joystick's 10 Hz: 48 fail/success pairs, all inside one window.
+        var flapping = LogRepeatSuppressor(window: 5)
+        var lines: [String] = []
+        let failures = 48
+        for tick in 0..<failures {
+            lines += flapping.lines(for: "E", key: "apply", now: start + Double(tick) * 0.1)
+            lines += flapping.end(key: "apply")
+        }
+        XCTAssertEqual(lines.filter { $0 == "E" }.count, 1, "one written failure line")
+        let summarized = lines.filter { $0 != "E" }.map(Self.repeatCount)
+        XCTAssertFalse(summarized.contains(nil), "every other line is a summary: \(lines)")
+        XCTAssertEqual(summarized.compactMap { $0 }.reduce(0, +), failures - 1, "no count lost")
+    }
+
+    private static func repeatCount(_ line: String) -> Int? {
+        guard line.hasPrefix("E (repeated "), line.hasSuffix(" times)") else { return nil }
+        return Int(line.dropFirst("E (repeated ".count).dropLast(" times)".count))
+    }
+
+    func testEndWithoutSuppressedLinesWritesNothing() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.end(key: "never-seen"), [])
+        XCTAssertEqual(suppressor.lines(for: "E", key: "apply", now: start), ["E"])
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        // Ending one key leaves another's count alone.
+        _ = suppressor.lines(for: "F", key: "other", now: start)
+        _ = suppressor.lines(for: "F", key: "other", now: start + 0.1)
+        XCTAssertEqual(suppressor.end(key: "apply"), [])
+        XCTAssertEqual(suppressor.end(key: "other"), ["F (repeated 1 times)"])
+    }
+
+    func testTheSharedSuppressorEndsAKeyAtTheLevelItsLinesWereWrittenAt() {
+        let shared = SharedLogRepeatSuppressor()
+        XCTAssertEqual(shared.lines(for: "Q", key: "queued", level: .info), ["Q"])
+        XCTAssertEqual(shared.lines(for: "Q", key: "queued", level: .info), [])
+        let ended = shared.end(key: "queued")
+        XCTAssertEqual(ended.lines, ["Q (repeated 1 times)"])
+        XCTAssertEqual(ended.level, .info)
+
+        XCTAssertEqual(shared.lines(for: "F", key: "failed"), ["F"])
+        XCTAssertEqual(shared.lines(for: "F", key: "failed"), [])
+        XCTAssertEqual(shared.end(key: "failed").level, .error)
+        // Nothing pending: no lines and no level.
+        let none = shared.end(key: "failed")
+        XCTAssertEqual(none.lines, [])
+        XCTAssertNil(none.level)
+
+        // Counted after an end (window anchor kept): the summary keeps the level.
+        XCTAssertEqual(shared.lines(for: "Q", key: "queued", level: .info), [])
+        let again = shared.end(key: "queued")
+        XCTAssertEqual(again.lines, ["Q (repeated 1 times)"])
+        XCTAssertEqual(again.level, .info)
+    }
 }
 
 // MARK: - Redaction Tests

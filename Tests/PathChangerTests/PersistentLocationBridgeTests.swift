@@ -835,6 +835,115 @@ final class ManagedLocationHelperStderrLogTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: target).count, 64)
     }
 
+    func testThePeriodicCapIsDueOncePerIntervalAndAfterTheClockMovesBack() {
+        // Review 2026-11-01: a helper that runs for days grew its stderr log without
+        // bound (capped only at launch and adoption).
+        let t0 = Date(timeIntervalSinceReferenceDate: 10_000)
+        XCTAssertEqual(ManagedLocationHelperStderrLog.periodicCapInterval, 60)
+        XCTAssertTrue(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: nil, now: t0))
+        XCTAssertFalse(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: t0, now: t0))
+        XCTAssertFalse(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: t0, now: t0 + 59.9))
+        XCTAssertTrue(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: t0, now: t0 + 60))
+        XCTAssertTrue(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: t0, now: t0 + 3_600))
+        // A wall clock set back must not postpone the cap until it catches up.
+        XCTAssertTrue(ManagedLocationHelperStderrLog.isPeriodicCapDue(lastCap: t0, now: t0 - 1))
+    }
+
+    @MainActor
+    func testTheControllerCapsTheStderrLogAtMostOncePerInterval() throws {
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        let rotatedURL = URL(fileURLWithPath: logURL.path + ".1")
+        let clock = TestClock(Date(timeIntervalSinceReferenceDate: 20_000))
+        let controller = ManagedLocationHelperController(
+            paths: ManagedLocationHelperPaths(baseDirectory: root.appendingPathComponent("helper")),
+            pythonPath: "/nonexistent",
+            bridgePath: "/nonexistent",
+            stderrLogURL: logURL,
+            stderrLogMaxBytes: 12,
+            now: { clock.now }
+        )
+        let helper = try ManagedLocationHelperStderrLog.open(at: logURL)
+        defer { try? helper.close() }
+        // Each tail is exactly the 12-byte cap.
+        helper.write(Data("first-episode-old\nfirst-tail1\n".utf8))
+
+        controller.capStderrLogIfDue()
+        XCTAssertEqual(try String(contentsOf: rotatedURL, encoding: .utf8), "first-tail1\n")
+        XCTAssertEqual(try Data(contentsOf: logURL).count, 0)
+
+        // Within the interval: the log may exceed the cap until the next due check.
+        helper.write(Data("second-episode-old\nsecond-tail\n".utf8))
+        clock.now += 30
+        controller.capStderrLogIfDue()
+        XCTAssertEqual(try String(contentsOf: rotatedURL, encoding: .utf8), "first-tail1\n")
+        XCTAssertGreaterThan(try Data(contentsOf: logURL).count, 12)
+
+        clock.now += 31
+        controller.capStderrLogIfDue()
+        XCTAssertEqual(try String(contentsOf: rotatedURL, encoding: .utf8), "second-tail\n")
+        XCTAssertEqual(try Data(contentsOf: logURL).count, 0)
+    }
+
+    @MainActor
+    func testRunningHelpersStderrLogIsCappedOnRefreshAndHealthProbeOncePerInterval() async throws {
+        guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {
+            throw XCTSkip("Managed Python runtime is unavailable")
+        }
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let bridgeScript = repositoryRoot.appendingPathComponent("scripts/location_bridge.py")
+        // Short path: the helper's Unix socket path has a length limit.
+        let helperRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-stderr-cap-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: helperRoot) }
+        let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
+        let rotatedURL = URL(fileURLWithPath: logURL.path + ".1")
+        let clock = TestClock(Date(timeIntervalSinceReferenceDate: 30_000))
+        let controller = ManagedLocationHelperController(
+            paths: ManagedLocationHelperPaths(baseDirectory: helperRoot),
+            pythonPath: PythonPathResolver.managedPythonPath,
+            bridgePath: bridgeScript.path,
+            stderrLogURL: logURL,
+            stderrLogMaxBytes: 64,
+            now: { clock.now }
+        )
+        let bridge = PersistentLocationBridge(helperController: controller)
+
+        func appendOversizedEpisode(_ marker: String) throws {
+            let writer = try ManagedLocationHelperStderrLog.open(at: logURL, maxBytes: .max)
+            writer.write(Data((String(repeating: "x", count: 200) + "\n" + marker + "\n").utf8))
+            try writer.close()
+        }
+
+        do {
+            try await bridge.start()
+            XCTAssertTrue(bridge.isRunning)
+
+            // Launch counts as a cap: a refresh within the interval leaves the log alone.
+            try appendOversizedEpisode("refresh-tail")
+            clock.now += 30
+            try await bridge.refreshAdoptedHelperSessions()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rotatedURL.path))
+
+            clock.now += 31
+            try await bridge.refreshAdoptedHelperSessions()
+            XCTAssertTrue(try String(contentsOf: rotatedURL, encoding: .utf8).hasSuffix("refresh-tail\n"))
+
+            // The health probe (which runs while a location is held and nothing moves)
+            // caps it too, under the same interval.
+            try appendOversizedEpisode("probe-tail")
+            clock.now += 61
+            _ = await bridge.deviceConnectionStatus("00008130-000C5144019A0000", transport: .wifi)
+            XCTAssertTrue(try String(contentsOf: rotatedURL, encoding: .utf8).hasSuffix("probe-tail\n"))
+        } catch {
+            try? await controller.shutdown()
+            throw error
+        }
+        try? await controller.shutdown()
+    }
+
     func testHelperStderrLogRefusesASymlink() throws {
         let logURL = root.appendingPathComponent("Logs/location-helper-stderr.txt")
         let target = root.appendingPathComponent("elsewhere")
@@ -2156,4 +2265,10 @@ asyncio.run(verify())
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
     }
+}
+
+/// A settable clock for rate-limit tests.
+private final class TestClock {
+    var now: Date
+    init(_ now: Date) { self.now = now }
 }

@@ -218,7 +218,10 @@ actor FileLogger {
 /// `window` seconds of the last emitted line are counted, not emitted. The next emitted
 /// line carries "(repeated N times)", N being the identical lines suppressed since the
 /// last emitted one: a changed message first emits that summary for the old message,
-/// and the same message after the window emits itself with the count.
+/// and the same message after the window emits itself with the count. A success ends
+/// the run (`end(key:)`): the pending count is written and reset, but the window anchor
+/// stays, so a flapping link (failure, success, failure) still writes one line per
+/// window. Every suppressed line is reported by a later summary.
 struct LogRepeatSuppressor {
     let window: TimeInterval
     private struct Entry {
@@ -258,9 +261,28 @@ struct LogRepeatSuppressor {
         return lines
     }
 
+    /// The run for `key` ended (the operation succeeded): the summary of identical lines
+    /// suppressed since the last emitted one, if any. The count resets to 0 but the
+    /// window anchor (message and time last emitted) stays, so on a flapping link an
+    /// identical failure inside the window is still counted, and reported by the next
+    /// summary; a failure after the window passes at once.
+    mutating func end(key: String) -> [String] {
+        guard var entry = entries[key], entry.suppressed > 0 else { return [] }
+        let summary = Self.withCount(entry.message, entry.suppressed)
+        entry.suppressed = 0
+        entries[key] = entry
+        return [summary]
+    }
+
     private static func withCount(_ message: String, _ suppressed: Int) -> String {
         suppressed > 0 ? "\(message) (repeated \(suppressed) times)" : message
     }
+}
+
+/// The level a repeat-suppressed line was written at, so its summary keeps it.
+enum LogRepeatLevel: Sendable {
+    case error
+    case info
 }
 
 /// The process-wide suppressor behind `Logger.error(_:category:repeatKey:)`.
@@ -268,11 +290,22 @@ final class SharedLogRepeatSuppressor: @unchecked Sendable {
     static let shared = SharedLogRepeatSuppressor()
     private let lock = NSLock()
     private var suppressor = LogRepeatSuppressor()
+    private var levels: [String: LogRepeatLevel] = [:]
 
-    func lines(for message: String, key: String) -> [String] {
+    func lines(for message: String, key: String, level: LogRepeatLevel = .error) -> [String] {
         lock.lock()
         defer { lock.unlock() }
+        levels[key] = level
         return suppressor.lines(for: message, key: key)
+    }
+
+    /// The pending summary for `key` and the level its lines were written at.
+    /// The key's level is kept with its window anchor.
+    func end(key: String) -> (lines: [String], level: LogRepeatLevel?) {
+        lock.lock()
+        defer { lock.unlock() }
+        let lines = suppressor.end(key: key)
+        return (lines, lines.isEmpty ? nil : levels[key])
     }
 }
 
@@ -363,8 +396,22 @@ enum Logger {
     }
 
     static func info(_ message: String, category: Category = .general, repeatKey: String) {
-        for line in SharedLogRepeatSuppressor.shared.lines(for: message, key: repeatKey) {
+        for line in SharedLogRepeatSuppressor.shared.lines(for: message, key: repeatKey, level: .info) {
             info(line, category: category)
+        }
+    }
+
+    /// The operation behind `key` succeeded: write the count of lines still suppressed
+    /// (at the level they were written at) and reset it. The 5 s window stays anchored,
+    /// so an identical failure right after a success is counted, not written.
+    /// Writes nothing when nothing was suppressed. Cheap enough for every success.
+    static func endRepeats(key: String, category: Category = .general) {
+        let ended = SharedLogRepeatSuppressor.shared.end(key: key)
+        for line in ended.lines {
+            switch ended.level ?? .error {
+            case .error: error(line, category: category)
+            case .info: info(line, category: category)
+            }
         }
     }
 
