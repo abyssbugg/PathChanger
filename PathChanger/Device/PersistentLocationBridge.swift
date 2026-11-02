@@ -16,6 +16,15 @@ protocol ManagedLocationSessionSource: AnyObject {
     func start() async throws
     func refreshAdoptedHelperSessions() async throws
     func shutdownHelper() async throws
+
+    /// Clear the simulated location over the helper's open device connection, for a
+    /// device this app's injector holds no session for (a relaunch, or a provisional
+    /// session after a loss). Throws unless the helper confirmed the Clear.
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws
+    /// Close the helper's device connection, which ends any location held over it. True
+    /// when the helper confirmed it (or no helper, hence no connection, exists). Never
+    /// starts the helper.
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool
 }
 
 struct ManagedLocationHelperPaths {
@@ -1637,6 +1646,19 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
         currentSession = nil
         return acknowledgement
+    }
+
+    /// The helper's Clear over its own device connection, for a device the injector holds
+    /// no session for. The helper keeps one connection per device whatever the transport
+    /// hint, and its Clear is idempotent and device-wide. The caller probes first
+    /// (`deviceConnectionStatus`), so this does not wait out a connect to an absent phone.
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {
+        let device = Device(
+            id: deviceId,
+            displayName: deviceId,
+            connectionType: transport == .wifi ? .wifi : .usb
+        )
+        _ = try await clearLocation(for: device)
     }
 
     // MARK: - Device connection (the app's single connection to the device)

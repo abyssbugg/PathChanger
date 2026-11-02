@@ -99,6 +99,8 @@ private final class EmptyManagedSessionSource: ManagedLocationSessionSource {
     func start() async throws {}
     func refreshAdoptedHelperSessions() async throws {}
     func shutdownHelper() async throws {}
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {}
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
 }
 
 private final class RecordingTunnelQuitController: TunnelQuitControlling {
@@ -137,6 +139,8 @@ private final class ProbeCountingManagedSessionSource: ManagedLocationSessionSou
     func start() async throws {}
     func refreshAdoptedHelperSessions() async throws {}
     func shutdownHelper() async throws {}
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {}
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
 }
 
 /// Records each Developer Disk Image command and when it ran relative to the applies.

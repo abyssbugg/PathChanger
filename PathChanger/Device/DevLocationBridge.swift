@@ -204,6 +204,10 @@ enum LocationInjectionError: Error, LocalizedError {
     case developerModeRequired
     case outputSizeExceeded
     case unsupportedIOSVersion(String)
+    /// A Clear refused before reaching the helper: this Mac's session bookkeeping holds
+    /// no session matching the one being cleared (none after a relaunch, a newer or lost
+    /// one after a connection loss). Nothing was sent. Not a helper-side Clear failure.
+    case noHeldSession(String)
 
     /// True for the errors that mean the channel to the device is gone (not a
     /// one-off injection failure) — the class the coordinator maps to
@@ -241,6 +245,8 @@ enum LocationInjectionError: Error, LocalizedError {
             return "Subprocess output exceeded safety limit. This may indicate a malicious response."
         case .unsupportedIOSVersion(let version):
             return "Location injection failed on iOS \(version). Keep USB or Wi-Fi tunnel running and retry."
+        case .noHeldSession(let reason):
+            return "This Mac holds no location session for the phone (\(reason)); nothing was sent."
         }
     }
 
@@ -889,6 +895,20 @@ actor DevLocationBridge: LocationInjecting {
                 "(generation=\(session.generation) transport=\(session.transport) endpoint=\(session.endpointClass))",
                 category: .device
             )
+            // The managed helper is the only holder of a DVT session (Option A), and the
+            // tracker records nothing that matches this one: a relaunch, or a provisional
+            // session discovery published after a loss (live 2026-11-02). Typed, so the app
+            // asks the helper instead of storing a Clear no retry could ever get past
+            // here. A held subprocess for the device is a session this Mac does hold.
+            if let refusal = error as? LocationSessionGenerationTracker.AdoptionError,
+               heldSessionDeviceID != target.stableDeviceID {
+                // Clear wins over updates still queued for the device.
+                let removedRequestIDs = await requestQueue.removeRequests(forDeviceID: target.stableDeviceID)
+                for requestID in removedRequestIDs {
+                    queuedApplicationContexts.removeValue(forKey: requestID)
+                }
+                throw LocationInjectionError.noHeldSession(String(describing: refusal))
+            }
             throw LocationInjectionError.injectionFailed("Clear session validation failed: \(error.localizedDescription)")
         }
 

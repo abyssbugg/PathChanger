@@ -434,6 +434,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     @Published private(set) var stagedStartAfterClear: LocationCoordinate?
     static let clearWithoutConnectionText =
         "The phone is not connected, so it could not be cleared. It may keep the spoofed location until it reconnects or restarts. To clear it, press Reconnect when the phone is back, then Clear."
+    /// A Clear of a session this Mac never held, after the helper confirmed it holds no
+    /// connection to the phone: the held session ended with that connection.
+    static let clearAfterConnectionEndedText =
+        "The connection to the phone had ended, which ends the spoofed location. If the phone still shows it, reconnect and press Clear again."
     /// Where the next Move leaves from: the applied location, or the start a Clear staged.
     var moveStartCoordinate: LocationCoordinate? {
         locationPresentation.appliedCoordinate ?? stagedStartAfterClear
@@ -1272,7 +1276,34 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 ?? locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate
                 ?? currentLocation
 
-            if let error = await locationSessionCoordinator.clear(targetSession: sessionToClear) {
+            var clearError = await locationSessionCoordinator.clear(targetSession: sessionToClear)
+            if clearError == .noHeldSession, let sessionToClear {
+                // Nothing was sent: this Mac's injector holds no session for the one the
+                // GUI showed Ready (a provisional session after a loss or a relaunch, live
+                // 2026-11-02). Storing it as an unresolved Clear wedged Move: every retry
+                // was refused the same way. The managed helper is the only holder of a
+                // held DVT session, so it decides.
+                switch await endUnheldLocationSession(sessionToClear) {
+                case .clearedOverConnection:
+                    locationSessionCoordinator.commitConfirmedClear()
+                    clearError = nil
+                case .connectionEnded:
+                    locationSessionCoordinator.commitClearWithoutHeldSession(
+                        reason: "The connection to the phone had ended"
+                    )
+                    unresolvedClearSession = nil
+                    simulation.currentLocation = nil
+                    routeProgress = 0
+                    lastJoystickHeadingDegrees = nil
+                    statusMessage = (wasAwaitingReconnect ? "Stopped reconnecting. " : "")
+                        + Self.clearAfterConnectionEndedText
+                    return
+                case .failed(let reason):
+                    locationSessionCoordinator.failClear(reason: reason)
+                    clearError = .clearFailed
+                }
+            }
+            if let error = clearError {
                 if error == .clearUnavailable, sessionToClear == nil {
                     // No connection to the phone, so nothing could reach it. The location
                     // stays Uncertain (the phone may still hold it) and Move is not blocked:
@@ -1335,6 +1366,58 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.targetLocation = coordinate
         locationSessionCoordinator.select(coordinate, mode: activeMode.locationMode ?? .teleport)
         statusMessage = "Location cleared. The last spot is staged for the next mode."
+    }
+
+    private enum UnheldClearOutcome {
+        /// The helper cleared the phone over its open connection (device truth).
+        case clearedOverConnection
+        /// The helper holds no connection to the phone (or confirmed it closed one that
+        /// no longer answered): the held session ended with it; unconfirmed on the phone.
+        case connectionEnded
+        /// The helper did not confirm either: a real Clear failure, retried by Clear.
+        case failed(String)
+    }
+
+    /// Ends whatever the managed helper still holds for a session this Mac's injector
+    /// never held. Unprivileged and bounded; it never opens a connection to an absent
+    /// phone. A live connection is cleared over, not closed: closing it would fail the
+    /// tunnel's health probe and report a tunnel error for a Clear. A connection that does
+    /// not answer may still be kept by the helper (a timed-out probe keeps it), so it is
+    /// closed, which ends any location held over it.
+    private func endUnheldLocationSession(_ session: LocationSessionIdentity) async -> UnheldClearOutcome {
+        let deviceID = session.stableDeviceID
+        let status = await managedLocationSessionSource.deviceConnectionStatus(deviceID, transport: session.transport)
+        if status == .connected {
+            do {
+                try await managedLocationSessionSource.clearLocationOverDeviceConnection(
+                    deviceID, transport: session.transport
+                )
+                Logger.info("[Clear] No session on this Mac; the helper cleared the phone over its open connection", category: .session)
+                return .clearedOverConnection
+            } catch {
+                let reason = error.localizedDescription
+                Logger.error(
+                    "[Clear] No session on this Mac; the helper's Clear over its open connection failed: " +
+                    LogRedaction.redactingDeviceIdentifiers(reason),
+                    category: .session
+                )
+                return .failed(reason)
+            }
+        }
+        guard await managedLocationSessionSource.disconnectDevice(deviceID, transport: session.transport) else {
+            Logger.error(
+                "[Clear] No session on this Mac; the helper did not confirm its connection to the phone is closed",
+                category: .session
+            )
+            return .failed("The location helper did not confirm that its connection to the phone is closed")
+        }
+        Logger.info(
+            "[Clear] No session on this Mac and the helper holds no connection to the phone (" +
+            LogRedaction.redactingDeviceIdentifiers(String(describing: status)) +
+            "); the held session ended with the connection",
+            category: .session
+        )
+        return .connectionEnded
     }
 
     /// A loss reported while a Clear was out (a replaced helper connection, a transport

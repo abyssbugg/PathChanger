@@ -11,6 +11,9 @@ enum LocationSessionTransitionError: Error, Equatable {
   case staleGeneration
   case clearUnavailable
   case clearFailed
+  /// The injector refused the Clear before sending anything: it holds no session for
+  /// the identity. The application phase stays `.clearing` for the caller to commit.
+  case noHeldSession
   case beginApplicationDuringClearing
   case receiptNotApplied
   case applicationFailed
@@ -551,17 +554,46 @@ final class LocationSessionCoordinator: ObservableObject {
         transport: currentReadySession.transport
       )
       try await injector.clear(target: target, session: currentReadySession)
-
-      self.state.desiredLocation = nil
-      self.state.lastAcknowledgedReceipt = nil
-      self.state.heldWhileApplying = nil
-      self.state.application = .idle
-      self.pendingRequest = nil
-      self.phaseBeforeApplying = nil
+      commitConfirmedClear()
       return nil
+    } catch LocationInjectionError.noHeldSession {
+      // Nothing was sent: the injector holds no session for this identity. The phase
+      // stays `.clearing` for the caller, which asks the helper and commits with
+      // `commitConfirmedClear`, `commitClearWithoutHeldSession` or `failClear`.
+      return .noHeldSession
     } catch {
-      self.state.application = .failed(error.localizedDescription)
+      failClear(reason: error.localizedDescription)
       return .clearFailed
     }
+  }
+
+  /// The device holds no simulated location (a Clear the injector or the helper
+  /// confirmed): the location dimension is idle and nothing is desired or held.
+  func commitConfirmedClear() {
+    self.state.desiredLocation = nil
+    self.state.lastAcknowledgedReceipt = nil
+    self.state.heldWhileApplying = nil
+    self.state.application = .idle
+    self.pendingRequest = nil
+    self.phaseBeforeApplying = nil
+  }
+
+  /// A Clear of a session this Mac never held, after the helper confirmed it holds no
+  /// connection to the phone. The held session ended with that connection, but nothing
+  /// confirmed it on the phone, so the location is uncertain with no receipt: nothing is
+  /// claimed held, nothing is reapplied (no receipt, no desired location), and Clear
+  /// stays available once the phone is connected again (PRODUCT_REQUIREMENTS 4.2, 5.2).
+  func commitClearWithoutHeldSession(reason: String) {
+    self.state.desiredLocation = nil
+    self.state.lastAcknowledgedReceipt = nil
+    self.state.heldWhileApplying = nil
+    self.state.application = .uncertain(lastReceipt: nil, reason: reason)
+    self.pendingRequest = nil
+    self.phaseBeforeApplying = nil
+  }
+
+  /// A Clear that did not complete: desired, receipt, connection and movement stay.
+  func failClear(reason: String) {
+    self.state.application = .failed(reason)
   }
 }

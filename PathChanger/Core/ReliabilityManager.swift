@@ -259,7 +259,7 @@ struct ErrorClassifier {
             switch injectionError {
             case .timeout:
                 return .transient
-            case .injectionFailed, .clearFailed:
+            case .injectionFailed, .clearFailed, .noHeldSession:
                 return .retryable
             case .deviceNotFound, .tunneldNotRunning, .endpointUnreachable:
                 return .persistent

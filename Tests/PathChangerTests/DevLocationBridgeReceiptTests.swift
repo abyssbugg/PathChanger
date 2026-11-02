@@ -532,6 +532,45 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertTrue(retained)
         XCTAssertLessThan(elapsed, .seconds(1))
     }
+
+    /// Live 2026-11-02: after a loss (and after a relaunch) the app cleared a provisional
+    /// session this Mac never held. The tracker refused it before the helper and the app
+    /// saw a generic failure, stored an unresolved Clear, and every retry was refused the
+    /// same way: Move stayed blocked for three hours. The refusal is typed, so the app can
+    /// tell "nothing held here" from a Clear the helper failed, and it is thrown before
+    /// anything reaches the helper (no helper is running in this test host).
+    func testAClearOfASessionThisMacDoesNotHoldIsTypedAndNeverReachesTheHelper() async throws {
+        let bridge = DevLocationBridge(pythonExecutablePath: "/usr/bin/false")
+        let deviceID = "00008130-0011223344556677"
+        let target = LocationInjectionTarget(stableDeviceID: deviceID, transport: .usb)
+        func identity(_ generation: UInt64) -> LocationSessionIdentity {
+            LocationSessionIdentity(
+                stableDeviceID: deviceID, transport: .usb, endpointClass: .unresolved, generation: generation
+            )
+        }
+        func assertNoHeldSession(_ session: LocationSessionIdentity, _ label: String) async {
+            let clock = ContinuousClock()
+            let startedAt = clock.now
+            do {
+                try await bridge.clear(target: target, session: session)
+                XCTFail("\(label): a Clear the tracker cannot match must not succeed")
+            } catch LocationInjectionError.noHeldSession {
+                // Expected: typed, and raised before any helper command.
+            } catch {
+                XCTFail("\(label): expected noHeldSession, got \(error)")
+            }
+            XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1), "\(label): no helper round trip")
+        }
+
+        // Relaunch: the tracker has no record at all (missingSession).
+        await assertNoHeldSession(identity(1), "relaunch")
+        // Loss: recovery left the tracker on a newer generation than the provisional
+        // session discovery published (staleAcknowledgement).
+        try await bridge.adoptManagedSession(receipt: restoredHelperReceipt(generation: 4), stableDeviceID: deviceID)
+        await assertNoHeldSession(identity(2), "stale generation")
+        // A refused Clear leaves no Clear in progress: the next one is refused the same way.
+        await assertNoHeldSession(identity(2), "retry")
+    }
 }
 
 final class DevLocationBridgeRateLimitTests: XCTestCase {
