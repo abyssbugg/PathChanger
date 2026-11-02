@@ -94,18 +94,28 @@ actor MapKitRoadRouter: RoadRouting {
 
     private let timeout: TimeInterval
     private let cacheCapacity: Int
+    private let failureRetryInterval: TimeInterval
+    private let now: @Sendable () -> Date
     private let directions: DirectionsFunction
     private var cache: [CacheKey: RoadPath] = [:]
     /// Least recently used first.
     private var cacheOrder: [CacheKey] = []
+    /// Legs that failed or timed out, and when. A remembered leg falls back at once
+    /// instead of waiting for Apple Maps again (a looping run offline would otherwise
+    /// wait the full timeout on every leg) and does not add to MapKit throttling.
+    private var failures: [CacheKey: Date] = [:]
 
     init(
         timeout: TimeInterval = 10,
         cacheCapacity: Int = 64,
+        failureRetryInterval: TimeInterval = 120,
+        now: @escaping @Sendable () -> Date = { Date() },
         directions: @escaping DirectionsFunction = MapKitRoadRouter.appleMapsDirections
     ) {
         self.timeout = timeout
         self.cacheCapacity = max(0, cacheCapacity)
+        self.failureRetryInterval = max(0, failureRetryInterval)
+        self.now = now
         self.directions = directions
     }
 
@@ -123,19 +133,27 @@ actor MapKitRoadRouter: RoadRouting {
         if let cached = cachedPath(for: key) {
             return roadRoute(cached, from: from, to: to, straightDistance: straightDistance)
         }
+        if recentlyFailed(key) {
+            return RoadRoute(points: [from, to], distanceMeters: straightDistance, followsRoads: false, note: Self.straightLineNote)
+        }
 
         switch await requestWithTimeout(from: from, to: to, transport: transport) {
         case .path(let coordinates, let distance):
             guard let path = Self.validated(coordinates: coordinates, distance: distance) else {
+                rememberFailure(key)
                 return fallback(from: from, to: to, reason: "invalid road path (\(coordinates.count) points)", transport: transport)
             }
+            failures.removeValue(forKey: key)
             store(path, for: key)
             return roadRoute(path, from: from, to: to, straightDistance: straightDistance)
         case .failed(let reason):
+            rememberFailure(key)
             return fallback(from: from, to: to, reason: reason, transport: transport)
         case .timedOut:
+            rememberFailure(key)
             return fallback(from: from, to: to, reason: "timed out after \(timeout) s", transport: transport)
         case .cancelled:
+            // The run was stopped; that says nothing about the leg, so it is not remembered.
             return fallback(from: from, to: to, reason: "cancelled", transport: transport)
         }
     }
@@ -217,6 +235,26 @@ actor MapKitRoadRouter: RoadRouting {
     private func touch(_ key: CacheKey) {
         cacheOrder.removeAll { $0 == key }
         cacheOrder.append(key)
+    }
+
+    // MARK: - Remembered failures
+
+    private func recentlyFailed(_ key: CacheKey) -> Bool {
+        guard let failedAt = failures[key] else { return false }
+        if now().timeIntervalSince(failedAt) < failureRetryInterval { return true }
+        failures.removeValue(forKey: key)
+        return false
+    }
+
+    private func rememberFailure(_ key: CacheKey) {
+        guard failureRetryInterval > 0, cacheCapacity > 0 else { return }
+        let current = now()
+        failures = failures.filter { current.timeIntervalSince($0.value) < failureRetryInterval }
+        failures[key] = current
+        while failures.count > cacheCapacity,
+              let oldest = failures.min(by: { $0.value < $1.value })?.key {
+            failures.removeValue(forKey: oldest)
+        }
     }
 
     // MARK: - Bounded request

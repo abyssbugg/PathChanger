@@ -162,17 +162,51 @@ final class RoadRouterTests: XCTestCase {
         assertStraightLineFallback(route)
     }
 
-    func testFailedRouteIsNotCachedSoTheNextRequestRetries() async {
+    func testFailedRouteIsRememberedThenRetriedAfterTheRetryInterval() async {
+        let directions = FakeDirections(result: .failure)
+        let clock = FakeClock()
+        let router = MapKitRoadRouter(failureRetryInterval: 120, now: clock.now, directions: directions.function)
+
+        _ = await router.route(from: origin, to: destination, travel: .walking)
+        await directions.setResult(.success(roadPath()))
+        clock.advance(119)
+        let remembered = await router.route(from: origin, to: destination, travel: .walking)
+
+        assertStraightLineFallback(remembered)
+        var count = await directions.requests.count
+        XCTAssertEqual(count, 1, "a recently failed leg must not ask Apple Maps again")
+
+        clock.advance(2)
+        let retried = await router.route(from: origin, to: destination, travel: .walking)
+
+        XCTAssertTrue(retried.followsRoads)
+        count = await directions.requests.count
+        XCTAssertEqual(count, 2)
+    }
+
+    func testTimedOutLegIsRememberedSoALoopDoesNotWaitAgain() async {
+        let directions = FakeDirections(result: .hang)
+        let router = MapKitRoadRouter(timeout: 0.1, directions: directions.function)
+
+        _ = await router.route(from: origin, to: destination, travel: .walking)
+        let started = Date()
+        let second = await router.route(from: origin, to: destination, travel: .walking)
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.05, "a remembered timeout must not wait again")
+        assertStraightLineFallback(second)
+        let count = await directions.requests.count
+        XCTAssertEqual(count, 1)
+    }
+
+    func testRememberedFailureIsKeyedByTransport() async {
         let directions = FakeDirections(result: .failure)
         let router = MapKitRoadRouter(directions: directions.function)
 
         _ = await router.route(from: origin, to: destination, travel: .walking)
         await directions.setResult(.success(roadPath()))
-        let route = await router.route(from: origin, to: destination, travel: .walking)
+        let driving = await router.route(from: origin, to: destination, travel: .driving)
 
-        XCTAssertTrue(route.followsRoads)
-        let count = await directions.requests.count
-        XCTAssertEqual(count, 2)
+        XCTAssertTrue(driving.followsRoads)
     }
 
     // MARK: - Same endpoints
@@ -332,6 +366,21 @@ final class RoadRouterTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         return await condition()
+    }
+}
+
+// MARK: - Fake clock
+
+private final class FakeClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_000_000)
+
+    var now: @Sendable () -> Date {
+        { [self] in lock.withLock { current } }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current += seconds }
     }
 }
 
