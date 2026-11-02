@@ -380,7 +380,8 @@ final class RouteStateManager: ObservableObject {
         guard totalCount > 0, index >= 0, index < totalCount else { return }
         currentIndex = index + 1
         progress = Double(currentIndex) / Double(totalCount)
-        playbackState = .playing
+        // A point that lands while paused counts, but playback stays paused.
+        if playbackState != .paused { playbackState = .playing }
         updateEstimatedTime()
     }
 

@@ -52,6 +52,19 @@ enum RoadTransport: String, Sendable, Hashable {
     }
 }
 
+extension SimulationSpeed {
+    /// The travel mode whose directions a leg asks for. A preset keeps its own
+    /// (`RoadTransport(travel:)`); a custom speed picks from the speed itself, so a fast
+    /// custom run never follows footpaths because Walking was the last preset:
+    /// up to 2.5 m/s walking, up to 8 m/s cycling, faster automobile.
+    static func directionsTravel(autoSpeed: Bool, preset: SimulationSpeed, metersPerSecond: Double) -> SimulationSpeed {
+        guard !autoSpeed else { return preset }
+        if metersPerSecond <= 2.5 { return .walking }
+        if metersPerSecond <= 8 { return .cycling }
+        return .driving
+    }
+}
+
 /// Routes legs along roads with `MKDirections`, with a per-request timeout and an in-memory cache.
 actor MapKitRoadRouter: RoadRouting {
     /// Fetches a road path. Injected so tests never reach the network; the default asks Apple Maps.

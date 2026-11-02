@@ -448,6 +448,20 @@ final class AcknowledgedRouteStateTests: XCTestCase {
         XCTAssertEqual(manager.progress, 1)
         XCTAssertEqual(manager.playbackState, .completed)
     }
+
+    func testAcknowledgedWaypointKeepsPausedPlaybackPaused() {
+        let manager = RouteStateManager(routeLibrary: RouteLibraryManager())
+        manager.loadRoute(from: [
+            LocationCoordinate(latitude: 35.0, longitude: 139.0),
+            LocationCoordinate(latitude: 35.1, longitude: 139.1)
+        ])
+        manager.beginAcknowledgedPlayback()
+        manager.pausePlayback()
+
+        manager.acknowledgeWaypoint(at: 0, totalCount: 2)
+        XCTAssertEqual(manager.currentIndex, 1, "the landed point still counts")
+        XCTAssertEqual(manager.playbackState, .paused, "a point landing while paused does not resume playback")
+    }
 }
 
 @MainActor

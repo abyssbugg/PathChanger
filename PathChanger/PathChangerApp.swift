@@ -617,6 +617,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Two-Spot's stops (which may start at the held location) for the remaining Moves of
     /// a one-stop-per-Move run; reset with the stop index.
     private var routeRunStops: [LocationCoordinate]?
+    /// Two-Spot / Multi-Spot: an arrival of the current one-stop-per-Move sequence was
+    /// acknowledged, so the next Move continues from the held stop (also when the stop
+    /// index wrapped back to the first stop). Reset with the stop index.
+    private var routeSequenceArrived = false
     /// A paused run waits here until Resume, Stop, Clear or cancellation.
     private var pauseWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var applicationTasks: [UUID: Task<LocationInjectionReceipt, Error>] = [:]
@@ -630,9 +634,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
             if simulationTask == nil {
                 stopRun = nil
                 stopProgress = nil
+                // Ending a run cancels its task without awaiting it; its last apply may
+                // still be at the bridge. The next stop Move waits for it to unwind.
+                if let oldValue { unwindingEngineTask = oldValue }
             }
         }
     }
+    /// The engine task last ended (cancelled or finished), until a Move has awaited it.
+    private var unwindingEngineTask: Task<Void, Never>?
+    /// A stop Move is waiting for the previous run's task to unwind.
+    private var isAwaitingEngineUnwind = false
     private var routePlaybackID: UUID?
     private var joystickTask: Task<Void, Never>?
     /// The one joystick engagement in flight: a drag sends many direction samples, and
@@ -766,6 +777,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             .sink { [weak self] newRoute in
                 guard let self, newRoute != self.route.currentRoute else { return }
                 self.routeRunStops = nil
+                self.routeSequenceArrived = false
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
                     self.endStopRun("the stops changed")
                 }
@@ -1599,7 +1611,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             let stopsUnchanged = pending.mode == .jump
                 ? currentRoute.starts(with: arrival.routeSnapshot)
                 : currentRoute == arrival.routeSnapshot
-            if stopsUnchanged { setStopCursor(arrival.cursor, for: pending.mode) }
+            if stopsUnchanged {
+                setStopCursor(arrival.cursor, for: pending.mode)
+                if pending.mode != .jump { routeSequenceArrived = true }
+            }
         }
     }
 
@@ -1876,16 +1891,35 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// One Move in a stop mode: the next stop (one stop per Move) or every remaining stop
     /// (every stop automatically), travelled or jumped to per the mode's options.
     private func startStopMove() async {
-        let mode = activeMode
         // A second Move while a run starts or runs is the double click, not a restart.
-        guard !isMovementEngineRunning, stopRun == nil else {
+        guard !isMovementEngineRunning, stopRun == nil, !isAwaitingEngineUnwind else {
             Logger.info("[Move] Not started: the movement engine is already running", category: .session)
             return
         }
+        let mode = activeMode
+        // A run that an edit, Stop or a mode change ended is cancelled but may still be
+        // finishing its last apply at the bridge: wait for it, so the new run never
+        // overlaps it (the race the one-shot path hit). A cancelled run returns promptly:
+        // pauses, countdowns and road fetches end on cancellation. A Clear meanwhile wins.
+        if let unwinding = unwindingEngineTask {
+            isAwaitingEngineUnwind = true
+            await unwinding.value
+            isAwaitingEngineUnwind = false
+            if unwindingEngineTask == unwinding { unwindingEngineTask = nil }
+            guard canBeginLocationOperation, activeMode == mode,
+                  !isMovementEngineRunning, stopRun == nil else {
+                Logger.info("[Move] Not started: a Clear, a mode change or another Move came first", category: .session)
+                return
+            }
+        }
         let settings = stopTravelSettings(for: mode)
         var cursor = stopCursor(for: mode)
+        // One stop per Move continues the stop sequence an acknowledged arrival began,
+        // also after Loop or Back and forth wrapped the index to the first stop.
+        var continuesSequence = mode != .jump && settings.progression == .onePerMove
+            && routeSequenceArrived && routeRunStops != nil
         let stops: [LocationCoordinate]
-        if mode != .jump, settings.progression == .onePerMove, cursor.nextIndex > 0, let remembered = routeRunStops {
+        if continuesSequence, let remembered = routeRunStops {
             stops = remembered
         } else {
             switch StopTravelPlanner.runStops(mode: mode, route: currentRoute, held: currentLocation, target: targetLocation) {
@@ -1903,12 +1937,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 || (settings.repeatMode == .oneWay && StopTravelPlanner.isFinished(cursor, stopCount: stops.count)) {
                 cursor = StopCursor()
                 route.routeStopCursor = cursor
+                routeSequenceArrived = false
+                continuesSequence = false
             }
-            if cursor.nextIndex == 0 { routeRunStops = stops }
+            if !continuesSequence { routeRunStops = stops }
         }
-        // Jump leaves from where the device is; Two-Spot and Multi-Spot place their first
-        // stop and continue from the stop they reached.
-        let origin = mode == .jump || cursor.nextIndex > 0 ? currentLocation : nil
+        // Jump leaves from where the device is; Two-Spot and Multi-Spot place the first
+        // stop of a new sequence and continue from the stop they reached.
+        let origin = mode == .jump || continuesSequence ? currentLocation : nil
         guard let firstLeg = StopTravelPlanner.firstLeg(stops: stops, origin: origin, cursor: cursor, settings: settings) else {
             failMove(mode, "All hops done — add another or clear")
             return
@@ -1958,6 +1994,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let interval: TimeInterval
         let metersPerSecond: Double
         let updateHz: Double
+        /// The travel mode the leg's directions are asked for.
         let speed: SimulationSpeed
     }
 
@@ -1992,7 +2029,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
             interval: 1.0 / max(updateFrequencyHz, 1),
             metersPerSecond: effectiveMetersPerSecond,
             updateHz: updateFrequencyHz,
-            speed: simulationSpeed
+            speed: SimulationSpeed.directionsTravel(
+                autoSpeed: autoSpeed,
+                preset: simulationSpeed,
+                metersPerSecond: effectiveMetersPerSecond
+            )
         )
         let provider = legPathProvider
         routePlaybackID = run.id
@@ -2039,9 +2080,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 legSecondsLeft: legSecondsLeft,
                 holdSecondsLeft: holdSecondsLeft,
                 heldStopIndex: heldStop,
-                usesStraightLineFallback: path.map { !$0.followsRoads } ?? false,
+                // A straight line is a fallback only when the router said why (its
+                // same-place result has no note: nothing was missing). A road route's
+                // own note (a detour, a long route) is shown as information.
+                usesStraightLineFallback: path.map { !$0.followsRoads && $0.note != nil } ?? false,
                 fallbackNote: path.flatMap { $0.followsRoads ? nil : $0.note },
-                isPaused: isPaused
+                isPaused: isPaused,
+                routeNote: path.flatMap { $0.followsRoads ? $0.note : nil }
             )
         }
 
@@ -2066,16 +2111,28 @@ class AppState: ObservableObject, LocationTerminationHandling {
             lapAcknowledged = 0
             lapTotal = total
             lapLegsLeft = legs
-            if restart { route.beginAcknowledgedPlayback() }
+            if restart {
+                route.beginAcknowledgedPlayback()
+                // A new lap begun while paused stays paused until Resume.
+                if isPaused { route.pausePlayback() }
+            }
         }
 
-        /// Ends the run where it stands after a failed step; nothing more is sent.
+        /// Ends the run where it stands after a failed step; nothing more is sent. The
+        /// run is over, so movement is not left Paused (there is nothing to resume) and a
+        /// pause the user set ends with it. The last acknowledged point holds.
         func stopAfterFailure() {
             isSimulating = currentLocation != nil
-            locationSessionCoordinator.pauseMovement()
+            switch locationSessionCoordinator.state.movement {
+            case .moving, .paused:
+                locationSessionCoordinator.stopMovement()
+            case .idle, .completed:
+                break
+            }
             if tracksRouteProgress { route.pausePlayback() }
             stopRun = nil
             stopProgress = nil
+            isPaused = false
         }
 
         /// Waits out `seconds` in ticks of at most 1 s, so Pause stops the countdown.
@@ -2293,6 +2350,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private func resetRouteStopProgress() {
         route.routeStopCursor = StopCursor()
         routeRunStops = nil
+        routeSequenceArrived = false
     }
 
     // MARK: Joystick Mode

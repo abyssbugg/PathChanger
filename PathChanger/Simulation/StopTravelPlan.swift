@@ -117,11 +117,15 @@ struct StopProgress: Equatable, Sendable {
     var holdSecondsLeft: TimeInterval?
     /// The stop being held, while holding.
     var heldStopIndex: Int?
-    /// The current leg goes in a straight line because no road route was found.
+    /// The current leg goes in a straight line because the router found no road route
+    /// (it said why); a same-place leg that needed no route is not a fallback.
     var usesStraightLineFallback: Bool
     /// The leg path's note for the straight-line fallback.
     var fallbackNote: String?
     var isPaused: Bool
+    /// An informational note about the current leg's road route (a long route or a
+    /// detour); nil when there is nothing to say or the leg is a straight line.
+    var routeNote: String? = nil
 
     var isHolding: Bool { holdSecondsLeft != nil }
 }
