@@ -108,6 +108,20 @@ struct StopCursor: Equatable, Codable, Sendable {
 
 /// What the GUI shows about a running stop run (PRODUCT_REQUIREMENTS 3.6).
 struct StopProgress: Equatable, Sendable {
+    /// What the run is doing now, so the GUI names the phase instead of a bare countdown.
+    enum Phase: String, Equatable, Sendable {
+        /// Asking for the leg's road route; nothing is sent meanwhile.
+        case findingRoute
+        /// Applying the points of a travelled leg.
+        case travelling
+        /// Waiting a Realistic jump's trip time before teleporting.
+        case waitingToJump
+        /// The teleport to the stop is being applied.
+        case jumping
+        /// Holding a reached stop for the At each stop time.
+        case holding
+    }
+
     /// The stop the run is heading to (while holding: the one after the held stop).
     var nextStopIndex: Int
     var totalStops: Int
@@ -126,6 +140,7 @@ struct StopProgress: Equatable, Sendable {
     /// An informational note about the current leg's road route (a long route or a
     /// detour); nil when there is nothing to say or the leg is a straight line.
     var routeNote: String? = nil
+    var phase: Phase = .travelling
 
     var isHolding: Bool { holdSecondsLeft != nil }
 }

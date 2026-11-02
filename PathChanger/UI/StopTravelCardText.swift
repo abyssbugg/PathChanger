@@ -47,6 +47,118 @@ enum StopTravelCardText {
         "Realistic waits the trip time at the travel speed (road distance when known)."
     static let defaultFallbackNote = "No road route found; travelling in a straight line"
 
+    /// What the chosen Jump timing does, said for the choice the user sees selected.
+    static func jumpTimingCaption(for timing: StopTravelSettings.JumpTiming) -> String {
+        switch timing {
+        case .fixed:
+            return "Jumps at once; At each stop sets the pause between stops."
+        case .realistic:
+            return "Waits the trip time at the travel speed: road distance when known, else a straight line."
+        }
+    }
+
+    // MARK: When an option applies
+
+    /// At each stop holds a reached stop before the run continues; with one stop per Move
+    /// nothing continues (each stop is held until the next Move), so it has no effect.
+    static func holdApplies(_ settings: StopTravelSettings) -> Bool {
+        settings.progression == .automatic
+    }
+
+    /// Why At each stop is inactive, shown under the dimmed slider.
+    static func holdNote(_ settings: StopTravelSettings) -> String? {
+        holdApplies(settings) ? nil : "Used between stops when Go through is Automatically."
+    }
+
+    /// When the travel speed matters, or that a running Move keeps its speed.
+    static func speedNote(settings: StopTravelSettings, isRunActive: Bool) -> String? {
+        if isRunActive { return "Speed changes apply from the next Move." }
+        guard settings.arrival == .jump else { return nil }
+        switch settings.jumpTiming {
+        case .fixed: return "Fixed jumps do not use the speed."
+        case .realistic: return "Realistic jumps wait the trip time at this speed."
+        }
+    }
+
+    // MARK: Travel mode
+
+    /// The travel-mode header: the preset's name, or Custom while the speed is manual
+    /// (a manual speed is what the run uses, whichever preset was last chosen).
+    static func travelModeTitle(_ speed: SimulationSpeed, autoSpeed: Bool) -> String {
+        guard autoSpeed else { return "Custom" }
+        return travelName(speed)
+    }
+
+    static func travelName(_ speed: SimulationSpeed) -> String {
+        switch speed {
+        case .walking: return "Walking"
+        case .cycling: return "Cycling"
+        case .driving: return "Driving"
+        case .fast: return "Riding"
+        default: return speed.displayName
+        }
+    }
+
+    // MARK: Where the run stands
+
+    /// The stop the phone holds: the stop the cursor last stepped past, if the held
+    /// (acknowledged) coordinate is that stop. Nil before the first stop, after Clear, or
+    /// when the phone is somewhere else.
+    static func reachedStop(
+        stops: [LocationCoordinate],
+        cursor: StopCursor,
+        repeatMode: StopTravelSettings.RepeatMode,
+        held: LocationCoordinate?
+    ) -> Int? {
+        let count = stops.count
+        guard count > 0, let held else { return nil }
+        let candidate: Int?
+        switch repeatMode {
+        case .oneWay:
+            candidate = cursor.nextIndex - 1
+        case .loop:
+            // A fresh cursor and a wrapped one look alike; the held stop tells them apart.
+            candidate = (cursor.nextIndex - 1 + count) % count
+        case .backAndForth:
+            candidate = cursor.reversed ? cursor.nextIndex + 1 : cursor.nextIndex - 1
+        }
+        guard let index = candidate.map({ min($0, count - 1) }), index >= 0, stops[index] == held else { return nil }
+        return index
+    }
+
+    static func atStopValue(reached: Int?, total: Int) -> String {
+        guard let reached else { return "—" }
+        return "\(reached + 1) of \(total)"
+    }
+
+    /// The run's headline: what it is doing now, in words.
+    static func phaseTitle(_ progress: StopProgress) -> String {
+        if progress.isPaused { return "Paused" }
+        let next = min(max(progress.nextStopIndex, 0) + 1, max(progress.totalStops, 1))
+        switch progress.phase {
+        case .findingRoute: return "Finding a road route to stop \(next)"
+        case .travelling: return "Travelling to stop \(next)"
+        case .waitingToJump: return "Waiting to jump to stop \(next)"
+        case .jumping: return "Jumping to stop \(next)"
+        case .holding:
+            let held = (progress.heldStopIndex ?? max(progress.nextStopIndex - 1, 0)) + 1
+            return "Holding at stop \(held)"
+        }
+    }
+
+    /// After a run of this mode completed and its last stop is still held.
+    static func completionLine(
+        movement: LocationMovementPhase,
+        mode: AppMode,
+        isHeld: Bool,
+        reachedStop: Int?,
+        totalStops: Int
+    ) -> String? {
+        guard isHeld, case .completed(let completedMode) = movement, completedMode == mode.locationMode else { return nil }
+        guard let reachedStop else { return "Done · holding the last location" }
+        return "Done · holding stop \(reachedStop + 1) of \(totalStops)"
+    }
+
     // MARK: Which controls show
 
     /// Teleport and Joystick have no stops; only Jump, Two-Spot and Multi-Spot do.
@@ -141,7 +253,8 @@ enum StopTravelCardText {
         let next = min(max(progress.nextStopIndex, 0) + 1, max(total, 1))
         lines.append(ProgressLine(kind: .nextStop, text: "Next stop: \(next) of \(total)"))
         if let legLeft = progress.legSecondsLeft {
-            lines.append(ProgressLine(kind: .timeLeft, text: "Time left: \(clock(legLeft))"))
+            let label = progress.phase == .waitingToJump ? "Jump in" : "Time left"
+            lines.append(ProgressLine(kind: .timeLeft, text: "\(label): \(clock(legLeft))"))
         }
         if progress.usesStraightLineFallback {
             lines.append(ProgressLine(kind: .fallback, text: progress.fallbackNote ?? defaultFallbackNote))
@@ -210,6 +323,13 @@ enum StopTravelCardText {
 }
 
 extension AppState {
+    /// Choosing a travel mode means its speed: Auto turns on and the preset applies
+    /// (with a manual speed the buttons used to change only the label).
+    func selectTravelMode(_ speed: SimulationSpeed) {
+        autoSpeed = true
+        setSpeed(speed)
+    }
+
     /// A binding to one stop option of `mode`, written through `setStopTravelSettings`.
     func stopSettingBinding<Value>(
         _ keyPath: WritableKeyPath<StopTravelSettings, Value>,

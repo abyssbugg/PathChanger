@@ -553,6 +553,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Two-Spot / Multi-Spot: the next stop of a one-stop-per-Move run.
     var routeStopIndex: Int { route.routeStopCursor.nextIndex }
 
+    /// The stop cursor of `mode` (Jump's hop index and direction, or the Two-Spot /
+    /// Multi-Spot cursor), for the card's "At stop" readout. Read-only.
+    func displayStopCursor(for mode: AppMode) -> StopCursor {
+        stopCursor(for: mode)
+    }
+
     func stopTravelSettings(for mode: AppMode) -> StopTravelSettings {
         route.stopTravelSettings(for: mode)
     }
@@ -2363,6 +2369,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
 
         func publish(
+            _ phase: StopProgress.Phase,
             next: Int,
             legSecondsLeft: TimeInterval?,
             holdSecondsLeft: TimeInterval? = nil,
@@ -2382,7 +2389,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 usesStraightLineFallback: path.map { !$0.followsRoads && $0.note != nil } ?? false,
                 fallbackNote: path.flatMap { $0.followsRoads ? nil : $0.note },
                 isPaused: isPaused,
-                routeNote: path.flatMap { $0.followsRoads ? $0.note : nil }
+                routeNote: path.flatMap { $0.followsRoads ? $0.note : nil },
+                phase: phase
             )
         }
 
@@ -2493,7 +2501,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             // The leg's road path, fetched now (never every leg up front).
             var path: LegPath?
             if StopTravelPlanner.needsPath(current, settings: run.settings), let from = current.from {
-                publish(next: current.stopIndex, legSecondsLeft: nil, path: nil)
+                publish(.findingRoute, next: current.stopIndex, legSecondsLeft: nil, path: nil)
                 if let provider {
                     path = await provider(from, current.to, pace.speed)
                     guard isCurrent() else { return }
@@ -2527,6 +2535,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     }
                     for (index, point) in points.enumerated() {
                         publish(
+                            .travelling,
                             next: current.stopIndex,
                             legSecondsLeft: Double(points.count - index) * pace.interval,
                             path: path
@@ -2536,15 +2545,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 case .jump(let destination, _, let waitBefore):
                     if waitBefore > 0 {
                         let waited = await countdown(waitBefore) { left in
-                            publish(next: current.stopIndex, legSecondsLeft: left, path: path)
+                            publish(.waitingToJump, next: current.stopIndex, legSecondsLeft: left, path: path)
                         }
                         guard waited else { return }
                     }
-                    publish(next: current.stopIndex, legSecondsLeft: 0, path: path)
+                    publish(.jumping, next: current.stopIndex, legSecondsLeft: 0, path: path)
                     guard await apply(destination, arrivalAt: current) else { return }
                 case .hold(let stop, let seconds):
                     let held = await countdown(seconds) { left in
                         publish(
+                            .holding,
                             next: following?.stopIndex ?? stop,
                             legSecondsLeft: nil,
                             holdSecondsLeft: left,

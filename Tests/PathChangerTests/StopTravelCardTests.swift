@@ -305,4 +305,135 @@ extension StopTravelCardTests {
         StopTravelCardText.perform(.resume, on: state)
         XCTAssertFalse(state.isPaused)
     }
+
+    // MARK: Reached stop (D2: "Hop" showed the next index, wrong after a Loop wrap)
+
+    private var r0: LocationCoordinate { LocationCoordinate(latitude: 35.0, longitude: 139.0) }
+    private var r1: LocationCoordinate { LocationCoordinate(latitude: 35.1, longitude: 139.1) }
+    private var r2: LocationCoordinate { LocationCoordinate(latitude: 35.2, longitude: 139.2) }
+
+    func testReachedStopInvertsTheCursorForEveryRepeatMode() {
+        let stops = [r0, r1, r2]
+        // One way: the cursor is one past the reached stop.
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 1), repeatMode: .oneWay, held: r0), 0)
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 3), repeatMode: .oneWay, held: r2), 2)
+        // Loop: after the last stop the cursor wraps to 0 while the phone holds stop 3.
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 0), repeatMode: .loop, held: r2), 2)
+        // Back and forth: after stop 3 the cursor is (1, reversed); after stop 1 on the way back, (1, forward).
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 1, reversed: true), repeatMode: .backAndForth, held: r2), 2)
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 1), repeatMode: .backAndForth, held: r0), 0)
+        XCTAssertEqual(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 2), repeatMode: .backAndForth, held: r1), 1)
+    }
+
+    func testReachedStopIsNilUnlessThePhoneHoldsThatStop() {
+        let stops = [r0, r1, r2]
+        XCTAssertNil(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(), repeatMode: .oneWay, held: nil), "nothing reached yet")
+        XCTAssertNil(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(), repeatMode: .loop, held: r0), "a fresh Loop has reached nothing")
+        XCTAssertNil(StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 2), repeatMode: .oneWay, held: nil), "after Clear nothing is held")
+        XCTAssertNil(
+            StopTravelCardText.reachedStop(stops: stops, cursor: StopCursor(nextIndex: 2), repeatMode: .oneWay, held: LocationCoordinate(latitude: 1, longitude: 1)),
+            "the phone is elsewhere (a Teleport), so it is at no stop of this run"
+        )
+        XCTAssertNil(StopTravelCardText.reachedStop(stops: [], cursor: StopCursor(nextIndex: 1), repeatMode: .oneWay, held: r0))
+    }
+
+    func testAtStopValueReadsTheReachedStop() {
+        XCTAssertEqual(StopTravelCardText.atStopValue(reached: 2, total: 3), "3 of 3")
+        XCTAssertEqual(StopTravelCardText.atStopValue(reached: nil, total: 3), "—")
+    }
+
+    // MARK: When options apply (D3, D5)
+
+    func testAtEachStopAppliesOnlyWhenTheMoveContinuesAutomatically() {
+        XCTAssertTrue(StopTravelCardText.holdApplies(settings(.travel, hold: 5, progression: .automatic)))
+        XCTAssertFalse(StopTravelCardText.holdApplies(settings(.jump, hold: 5, progression: .onePerMove)))
+        XCTAssertNotNil(StopTravelCardText.holdNote(settings(.jump, hold: 5, progression: .onePerMove)))
+        XCTAssertNil(StopTravelCardText.holdNote(settings(.travel, hold: 5, progression: .automatic)))
+    }
+
+    func testJumpTimingCaptionFollowsTheChoice() {
+        let realistic = StopTravelCardText.jumpTimingCaption(for: .realistic)
+        XCTAssertTrue(realistic.contains("travel speed"), realistic)
+        XCTAssertTrue(realistic.contains("road distance"), realistic)
+        XCTAssertTrue(realistic.contains("straight line"), realistic)
+        let fixed = StopTravelCardText.jumpTimingCaption(for: .fixed)
+        XCTAssertTrue(fixed.contains("At each stop"), fixed)
+    }
+
+    func testSpeedNoteSaysWhenTheSpeedIsUsed() {
+        XCTAssertNil(StopTravelCardText.speedNote(settings: settings(.travel), isRunActive: false))
+        XCTAssertEqual(
+            StopTravelCardText.speedNote(settings: settings(.jump, timing: .fixed), isRunActive: false),
+            "Fixed jumps do not use the speed."
+        )
+        XCTAssertEqual(
+            StopTravelCardText.speedNote(settings: settings(.jump, timing: .realistic), isRunActive: false),
+            "Realistic jumps wait the trip time at this speed."
+        )
+        XCTAssertEqual(
+            StopTravelCardText.speedNote(settings: settings(.travel), isRunActive: true),
+            "Speed changes apply from the next Move.",
+            "the run froze its speed at Move"
+        )
+    }
+
+    // MARK: Travel mode (D4)
+
+    func testChoosingATravelModeSetsItsSpeedEvenWhenTheSpeedWasManual() {
+        let state = makeState()
+        state.autoSpeed = false
+        state.customSpeedMps = 3
+        state.selectTravelMode(.driving)
+        XCTAssertTrue(state.autoSpeed)
+        XCTAssertEqual(state.simulationSpeed, .driving)
+        XCTAssertEqual(state.effectiveMetersPerSecond, 15.6, accuracy: 1e-9)
+        for (mode, speed) in [(SimulationSpeed.walking, 1.6), (.cycling, 5.4), (.fast, 11.2), (.driving, 15.6)] {
+            state.selectTravelMode(mode)
+            XCTAssertEqual(state.effectiveMetersPerSecond, speed, accuracy: 1e-9, "\(mode)")
+        }
+    }
+
+    func testTravelModeTitleReadsCustomWhileTheSpeedIsManual() {
+        XCTAssertEqual(StopTravelCardText.travelModeTitle(.cycling, autoSpeed: true), "Cycling")
+        XCTAssertEqual(StopTravelCardText.travelModeTitle(.fast, autoSpeed: true), "Riding")
+        XCTAssertEqual(StopTravelCardText.travelModeTitle(.cycling, autoSpeed: false), "Custom")
+    }
+
+    // MARK: Phase (D6) and completion (D7)
+
+    func testReadoutNamesTheWaitBeforeAJump() {
+        var waiting = progress(next: 1, total: 3, legLeft: 63)
+        waiting.phase = .waitingToJump
+        XCTAssertEqual(StopTravelCardText.progressLines(waiting).map(\.text), ["Next stop: 2 of 3", "Jump in: 1:03"])
+        XCTAssertEqual(StopTravelCardText.phaseTitle(waiting), "Waiting to jump to stop 2")
+
+        var routing = progress(next: 1, total: 3)
+        routing.phase = .findingRoute
+        XCTAssertEqual(StopTravelCardText.phaseTitle(routing), "Finding a road route to stop 2")
+
+        XCTAssertEqual(StopTravelCardText.phaseTitle(progress(next: 2, total: 3, legLeft: 9)), "Travelling to stop 3")
+
+        var holding = progress(next: 2, total: 3, holdLeft: 4, held: 1)
+        holding.phase = .holding
+        XCTAssertEqual(StopTravelCardText.phaseTitle(holding), "Holding at stop 2")
+
+        var paused = waiting
+        paused.isPaused = true
+        XCTAssertEqual(StopTravelCardText.phaseTitle(paused), "Paused")
+    }
+
+    func testCompletionLineSaysTheLastLocationIsStillHeld() {
+        XCTAssertEqual(
+            StopTravelCardText.completionLine(movement: .completed(.multiSpot), mode: .route, isHeld: true, reachedStop: 2, totalStops: 3),
+            "Done · holding stop 3 of 3"
+        )
+        XCTAssertEqual(
+            StopTravelCardText.completionLine(movement: .completed(.twoSpot), mode: .twospot, isHeld: true, reachedStop: nil, totalStops: 2),
+            "Done · holding the last location"
+        )
+        XCTAssertNil(StopTravelCardText.completionLine(movement: .completed(.twoSpot), mode: .route, isHeld: true, reachedStop: 1, totalStops: 2), "another mode's run")
+        XCTAssertNil(StopTravelCardText.completionLine(movement: .completed(.multiSpot), mode: .route, isHeld: false, reachedStop: 1, totalStops: 2), "nothing held (after Clear)")
+        XCTAssertNil(StopTravelCardText.completionLine(movement: .moving(.multiSpot), mode: .route, isHeld: true, reachedStop: 1, totalStops: 2))
+        XCTAssertNil(StopTravelCardText.completionLine(movement: .idle, mode: .route, isHeld: true, reachedStop: 1, totalStops: 2))
+    }
 }

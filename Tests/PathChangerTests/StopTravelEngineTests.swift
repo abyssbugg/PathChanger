@@ -903,4 +903,96 @@ final class StopTravelEngineTests: XCTestCase {
         state.activeMode = .twospot
         XCTAssertFalse(state.loopRoute)
     }
+
+    // MARK: - Panel truth (stop-panel lane, 2026-11-02)
+
+    func testARealisticJumpWaitIsPublishedAsTheWaitBeforeTheJump() async {
+        let harness = await StopRunHarness.make(
+            mode: .jump, stops: [s0, s1],
+            settings: settings(.jump, timing: .realistic, hold: 5, progression: .onePerMove)
+        )
+        let state = harness.state!
+        await state.startSimulation()
+        XCTAssertEqual(harness.applied, [s0], "Move 1 places stop 1")
+
+        var phasesDuringWait: [StopProgress.Phase?] = []
+        var appliedDuringWait: [Int] = []
+        harness.onDelay = { _ in
+            phasesDuringWait.append(state.stopProgress?.phase)
+            appliedDuringWait.append(harness.applied.count)
+        }
+        await state.startSimulation()
+
+        XCTAssertFalse(phasesDuringWait.isEmpty)
+        XCTAssertEqual(Set(phasesDuringWait.compactMap { $0 }), [.waitingToJump], "every countdown tick is the wait before the jump")
+        XCTAssertEqual(Set(appliedDuringWait), [1], "nothing is sent while waiting")
+        XCTAssertEqual(harness.holdAfterEachApply.reduce(0, +), 0, "One stop per Move: At each stop does not apply")
+        XCTAssertEqual(harness.delayAfterEachApply.reduce(0, +), Geo.distance(from: s0, to: s1) / 20, accuracy: 0.01)
+        assertHeld(state, at: s1)
+    }
+
+    func testTravelAndHoldArePublishedAsTheirPhases() async {
+        let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: settings(.travel, hold: 2))
+        let state = harness.state!
+        var applyPhases: [StopProgress.Phase?] = []
+        var holdPhases: [StopProgress.Phase?] = []
+        harness.onApply = { _, _ in applyPhases.append(state.stopProgress?.phase) }
+        harness.onDelay = { holdTick in if holdTick > 0 { holdPhases.append(state.stopProgress?.phase) } }
+        await state.startSimulation()
+
+        XCTAssertEqual(applyPhases.first ?? nil, .jumping, "the first stop is placed")
+        XCTAssertEqual(Set(applyPhases.dropFirst().compactMap { $0 }), [.travelling])
+        XCTAssertFalse(holdPhases.isEmpty)
+        XCTAssertEqual(Set(holdPhases.compactMap { $0 }), [.holding])
+        assertHeld(state, at: s2)
+    }
+
+    func testFetchingALegPathIsPublishedAsFindingTheRoute() async {
+        let harness = await StopRunHarness.make(mode: .twospot, stops: [s0, s1])
+        let state = harness.state!
+        let gate = PathGate()
+        state.legPathProvider = { from, to, _ in
+            await gate.enter()
+            return .straight(from: from, to: to)
+        }
+        let run = Task { await state.startSimulation() }
+        await gate.waitEntered()
+        XCTAssertEqual(state.stopProgress?.phase, .findingRoute)
+        await gate.open()
+        await run.value
+        assertHeld(state, at: s1)
+    }
+
+    func testTheReachedJumpStopSurvivesALoopWrap() async {
+        let harness = await StopRunHarness.make(
+            mode: .jump, stops: [s0, s1, s2],
+            settings: settings(.jump, progression: .onePerMove, repeat: .loop)
+        )
+        let state = harness.state!
+        for _ in 0..<3 { await state.startSimulation() }
+        XCTAssertEqual(harness.applied, [s0, s1, s2])
+        XCTAssertEqual(state.jumpIndex, 0, "the cursor wrapped: the old Hop row read 0/3 here")
+        XCTAssertEqual(
+            StopTravelCardText.reachedStop(
+                stops: state.currentRoute,
+                cursor: state.displayStopCursor(for: .jump),
+                repeatMode: .loop,
+                held: state.locationPresentation.appliedCoordinate
+            ),
+            2,
+            "the phone holds stop 3"
+        )
+    }
+
+    func testJoystickSpeedNeverChangesAStopRun() async {
+        let harness = await StopRunHarness.make(mode: .twospot, stops: [s0, s1])
+        let state = harness.state!
+        state.joystickSpeed = 1
+        await state.startSimulation()
+        XCTAssertEqual(
+            harness.applied,
+            expectedPoints([s0, s1], settings: .defaults(for: .twospot)),
+            "the run travels at the travel speed (20 m/s), not the joystick's"
+        )
+    }
 }
