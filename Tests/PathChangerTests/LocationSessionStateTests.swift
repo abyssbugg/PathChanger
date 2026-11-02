@@ -330,4 +330,23 @@ final class LocationSessionStateTests: XCTestCase {
         state.movement = .completed(.multiSpot)
         XCTAssertEqual(state.desiredLocation, desired, "desired survives movement.completed")
     }
+
+    /// The helper's fourth lane (mobdev2 Bonjour lockdown -> userspace tunnel, live
+    /// 2026-11-01) acknowledges "mobdev2RSD"; an unsupported channel would make the
+    /// app reject every location the phone really applied over it.
+    func testMobdev2RSDChannelIsSupportedRemoteServiceDiscovery() {
+        let channel = LocationDVTChannel(rawValue: "mobdev2RSD")
+        XCTAssertTrue(channel.isSupported)
+        XCTAssertEqual(channel.endpointClass, .remoteServiceDiscovery)
+
+        let acknowledgement = LocationProviderAcknowledgement(
+            requestID: deterministicUUID, sessionGeneration: 1, physicalTransport: .wifi,
+            channel: channel, endpointClass: .remoteServiceDiscovery
+        )
+        XCTAssertEqual(acknowledgement?.channel, channel)
+        XCTAssertNil(LocationProviderAcknowledgement(
+            requestID: deterministicUUID, sessionGeneration: 1, physicalTransport: .wifi,
+            channel: channel, endpointClass: .direct
+        ), "a mobdev2RSD acknowledgement claiming a direct endpoint is inconsistent")
+    }
 }

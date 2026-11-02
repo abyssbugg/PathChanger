@@ -1801,7 +1801,7 @@ asyncio.run(verify())
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
         let code = """
-        import asyncio, importlib.util
+        import asyncio, importlib.util, types
         spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
         bridge = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(bridge)
@@ -1825,6 +1825,11 @@ asyncio.run(verify())
             def __init__(self, serial): pass
             async def aopen(self): raiser("preferred"); return object()
             async def aclose(self): pass
+        async def mobdev2_lockdowns(udid=None, timeout=None, only_paired=False):
+            # Bonjour does not see the phone either: the browse yields nothing.
+            assert only_paired is True, "the lane asks only for paired lockdowns"
+            return
+            yield
 
         def make_connection():
             c = bridge.DeviceConnection()
@@ -1832,6 +1837,8 @@ asyncio.run(verify())
             c._userspace_tunnel_factory = Userspace
             c._lockdown_usb = lockdown
             c._preferred_tunnel_factory = Preferred
+            c._mobdev2_lockdowns = mobdev2_lockdowns
+            c._userspace_tunnel_module = types.SimpleNamespace(create_using_usbmux=lockdown)
             c._dvt_module = lambda provider: Context()
             c._location_module = lambda dvt: Context()
             c._device_info_module = lambda dvt: Info()
@@ -1854,7 +1861,8 @@ asyncio.run(verify())
             result = await connect()
             assert result["success"] is False and result["connected"] is False, result
             assert result["reason"] == "device_not_visible", result
-            for text in ("(userspace)", "over Network", "(preferred)", "userspace tunnel: DeviceNotFoundError"):
+            for text in ("(userspace)", "over Network", "(preferred)", "userspace tunnel: DeviceNotFoundError",
+                         "mobdev2: Mobdev2DeviceNotFoundError"):
                 assert text in result["error"], result
 
             # The primary lane failed for another reason: not a visibility gap,
@@ -1865,11 +1873,517 @@ asyncio.run(verify())
             assert result.get("reason") is None, result
             assert result["error"].index("pairing rejected") < result["error"].index("over Network"), result
 
+            # Transport errors keep the wait only on the mobdev2 lane: a usbmux-backed
+            # lane that reached the phone and was reset is still a real failure.
+            lane_errors["userspace"] = ConnectionResetError("reset by peer")
+            result = await connect()
+            assert result["success"] is False and result.get("reason") is None, result
+
             # A lane that works still wins.
             lane_errors.update(userspace=None, usbmux=None, preferred=None)
             result = await connect()
             assert result["success"] is True and result["actual_channel"] == "userspaceRSD", result
         asyncio.run(verify())
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
+        process.arguments = ["-B", "-c", code]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        try? stderr.fileHandleForReading.close()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, errorOutput)
+    }
+
+    /// Live 2026-11-01: for 3.5 minutes usbmux listed no Wi-Fi phone, so all three
+    /// usbmux-backed lanes failed, while mobdev2 Bonjour still reached its lockdown.
+    /// The fourth lane opens the userspace tunnel over that lockdown by substituting
+    /// the tunnel module's `create_using_usbmux` for one open. The substitution must
+    /// never outlive the open (success, failure, cancellation), never leak into a
+    /// concurrent open of another device, and must close the lockdown it found.
+    func testPythonHelperOpensMobdev2LaneWhenUsbmuxSeesNoDevice() throws {
+        let code = mobdev2LaneFixture() + """
+
+        async def verify():
+            # (a) usbmux lists no phone, Bonjour does: connected over mobdev2RSD.
+            mobdev2_visible.add("dev")
+            c = make_connection()
+            result = await connect(c)
+            assert result["success"] is True and result["actual_channel"] == "mobdev2RSD", result
+            assert result["endpoint_class"] == "remoteServiceDiscovery", result
+            assert usermod.create_using_usbmux is ORIGINAL, "global restored after success"
+            assert ("dev", False) in seen, seen
+            lane_lockdown = lockdowns[-1]
+            assert lane_lockdown.closed == 0, "the open connection keeps its lockdown"
+            moved = await bridge.process_command(c, {"cmd": "set_location", "lat": 1.0,
+                "lng": 2.0, "udid": "dev", "connection_type": "Network"})
+            assert moved["success"] is True and moved["actual_channel"] == "mobdev2RSD", moved
+            await bridge.process_command(c, {"cmd": "disconnect_device", "udid": "dev"})
+            assert lane_lockdown.closed >= 1, "invalidating the connection closes its lockdown"
+            await c.close_all()
+
+            # (c) Bonjour finds the phone but the tunnel fails for a non-transport
+            # reason: a real failure, not a visibility gap; the lockdown is closed;
+            # (d) the global is restored.
+            state["tunnel_error"] = UserspaceTunnelUnavailableError("CoreDeviceProxy refused")
+            c = make_connection()
+            result = await connect(c)
+            await c.close_all()
+            assert result["success"] is False and result.get("reason") is None, result
+            assert "mobdev2: UserspaceTunnelUnavailableError: CoreDeviceProxy refused" in result["error"], result
+            assert lockdowns[-1].closed >= 1, "lockdown closed when the tunnel fails"
+            assert usermod.create_using_usbmux is ORIGINAL, "global restored after failure"
+            state["tunnel_error"] = None
+
+            # Cancellation mid-open also restores the global and closes the lockdown.
+            state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+            c = make_connection()
+            task = asyncio.create_task(connect(c))
+            await asyncio.wait_for(state["entered"].wait(), 2)
+            assert usermod.create_using_usbmux is not ORIGINAL, "swapped while the tunnel opens"
+            task.cancel()
+            try:
+                await task
+                raise AssertionError("connect was not cancelled")
+            except asyncio.CancelledError:
+                pass
+            assert usermod.create_using_usbmux is ORIGINAL, "global restored after cancellation"
+            assert lockdowns[-1].closed >= 1, "lockdown closed after cancellation"
+            await c.close_all()
+
+            # The swap never leaks into a concurrent open of another device: its
+            # tunnel waits until the global is the original again.
+            seen.clear()
+            usbmux_visible.add("other")
+            state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+            c = make_connection()
+            first = asyncio.create_task(connect(c, "dev"))
+            await asyncio.wait_for(state["entered"].wait(), 2)
+            second = asyncio.create_task(connect(c, "other"))
+            await asyncio.sleep(0.05)
+            assert not second.done(), "the other device's tunnel open waited for the swap"
+            state["hold"].set()
+            r1, r2 = await asyncio.gather(first, second)
+            await c.close_all()
+            assert r1["actual_channel"] == "mobdev2RSD" and r2["actual_channel"] == "userspaceRSD", (r1, r2)
+            assert ("other", True) in seen and ("other", False) not in seen, seen
+            state["hold"] = None
+            usbmux_visible.discard("other")
+
+            # A runtime without the APIs the lane needs reports a clear lane error;
+            # the lane observed nothing, so three absent lanes still mean not visible.
+            for broken in ("browse", "module"):
+                c = make_connection()
+                if broken == "browse":
+                    c._mobdev2_lockdowns = None
+                else:
+                    c._userspace_tunnel_module = types.SimpleNamespace()
+                result = await connect(c)
+                await c.close_all()
+                assert result["success"] is False, result
+                assert result.get("reason") == "device_not_visible", result
+                assert "mobdev2: LaneUnsupportedError" in result["error"], result
+                assert "get_mobdev2_lockdowns" in result["error"], result
+            assert usermod.create_using_usbmux is ORIGINAL
+            assert browse_calls and all(call["only_paired"] is True for call in browse_calls), browse_calls
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// Owner decision (2026-11-01): Start keeps trying while the phone may come back.
+    /// A mobdev2-lane failure that is transport-class (connection reset/refused, a
+    /// Bonjour browse OSError, a timeout inside the lane, or the whole open running
+    /// out of time) keeps the device_not_visible verdict so the app waits until its
+    /// 150 s deadline. A failure after Bonjour found a paired phone for any other
+    /// reason ends Start at once. The lane must also notice when pymobiledevice3 no
+    /// longer reads the global it swaps, and must refuse unpaired lockdowns.
+    func testPythonHelperMobdev2LaneVerdictKeepsWaitingOnlyOnTransportFailures() throws {
+        let code = mobdev2LaneFixture() + """
+
+        problems = []
+        def check(name, ok, detail):
+            if not ok:
+                problems.append(f"{name}: {detail}")
+
+        async def attempt():
+            c = make_connection()
+            try:
+                result = await connect(c)
+                result.setdefault("error", "")
+                # Close counts as connect returned, before close_all tidies up.
+                result["_aclosed"] = state["aclosed"]
+                result["_lockdown_closed"] = lockdowns[-1].closed if lockdowns else None
+                return result
+            finally:
+                await c.close_all()
+
+        async def verify():
+            mobdev2_visible.add("dev")
+
+            # Transport-class failures inside the lane keep waiting. pymobiledevice3
+            # wraps TLS and socket failures in its own ConnectionTerminatedError (not a
+            # builtin ConnectionError) and dial failures in ConnectionFailedError.
+            class StreamClosedError(ConnectionTerminatedError): pass
+            for error in (ConnectionResetError("reset by peer"), ConnectionRefusedError("refused"),
+                          BrokenPipeError("pipe closed"), asyncio.TimeoutError(), TimeoutError("handshake"),
+                          ConnectionTerminatedError("TLS handshake reset"),
+                          ConnectionFailedError("could not connect"), StreamClosedError("stream closed")):
+                name = type(error).__name__
+                state["tunnel_error"] = error
+                result = await attempt()
+                check(f"transport {name} keeps waiting", result.get("reason") == "device_not_visible", result)
+                check(f"transport {name} is reported", f"mobdev2: {name}" in result["error"], result)
+                check(f"transport {name} closes lockdown", lockdowns[-1].closed >= 1, lockdowns[-1].closed)
+            state["tunnel_error"] = None
+
+            # The Bonjour browse itself failing (mDNS socket) observed nothing: keep waiting.
+            for error in (OSError(49, "Can't assign requested address"), OSError("mDNS socket closed")):
+                state["browse_error"] = error
+                result = await attempt()
+                check(f"browse {error} keeps waiting", result.get("reason") == "device_not_visible", result)
+                check(f"browse {error} is reported", "mobdev2: Mobdev2BrowseError" in result["error"]
+                      and str(error.strerror or error) in result["error"], result)
+            state["browse_error"] = None
+
+            # Bonjour found the paired phone and the lane failed for another reason: fail fast.
+            for error in (InvalidServiceError("no CoreDeviceProxy"), UserspaceTunnelUnavailableError("needs iOS 17.4+"),
+                          PairingError("pairing rejected"), ValueError("bad RSD reply")):
+                name = type(error).__name__
+                state["tunnel_error"] = error
+                result = await attempt()
+                check(f"non-transport {name} fails fast", result["success"] is False
+                      and result.get("reason") is None, result)
+                check(f"non-transport {name} is reported", f"mobdev2: {name}" in result["error"], result)
+            state["tunnel_error"] = None
+
+            # The same upstream transport classes on a usbmux-backed lane are real.
+            state["preferred_error"] = ConnectionTerminatedError("reset (preferred)")
+            result = await attempt()
+            check("ConnectionTerminatedError on preferred RSD fails fast", result.get("reason") is None, result)
+            state["preferred_error"] = None
+
+            # A pre-provider failure is upstream's own error, not drift: re-raised as is.
+            state["pre_provider_error"] = PyMobileDevice3Exception(
+                "A userspace tunnel is already active in this process; only one userspace tunnel per "
+                "process is supported.")
+            result = await attempt()
+            check("pre-provider guard is reported as is", "mobdev2: PyMobileDevice3Exception: "
+                  "A userspace tunnel is already active in this process" in result["error"], result)
+            check("pre-provider guard is not drift", "LaneUnsupportedError" not in result["error"], result)
+            check("pre-provider guard fails fast", result.get("reason") is None, result)
+            check("pre-provider guard closes lockdown", (result["_lockdown_closed"] or 0) >= 1, result)
+            check("pre-provider guard restores global", usermod.create_using_usbmux is ORIGINAL, "")
+            state["pre_provider_error"] = None
+
+            # The whole open runs out of time while the lane's tunnel hangs: keep
+            # waiting, and keep every lane failure collected so far in the text.
+            saved = bridge.CONNECT_TIMEOUT_SECONDS
+            bridge.CONNECT_TIMEOUT_SECONDS = 0.3
+            try:
+                state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+                result = await attempt()
+                check("outer timeout keeps waiting", result.get("reason") == "device_not_visible", result)
+                for text in ("userspace tunnel: DeviceNotFoundError", "usbmux direct: DeviceNotFoundError",
+                             "preferred RSD: DeviceNotFoundError", "mobdev2: LanesTimedOutError"):
+                    check(f"outer timeout text has {text!r}", text in result.get("error", ""), result)
+                check("outer timeout restores global", usermod.create_using_usbmux is ORIGINAL, "")
+                check("outer timeout closes lockdown", lockdowns[-1].closed >= 1, lockdowns[-1].closed)
+
+                # An earlier lane's real failure still decides when lane 4 then times out.
+                state["preferred_error"] = PermissionError("pairing rejected (preferred)")
+                result = await attempt()
+                check("outer timeout after a real failure fails fast", result.get("reason") is None, result)
+                check("outer timeout after a real failure keeps it", "pairing rejected (preferred)"
+                      in result.get("error", ""), result)
+                state["preferred_error"] = None
+
+                # Lane 1 hangs with nothing collected: the wait cannot be won by the lane
+                # it exists for, so Start fails fast (as before the timeout rule).
+                state["hold"] = None
+                state["userspace_hold"] = asyncio.Event()
+                browses_before = len(browse_calls)
+                result = await attempt()
+                check("lane-1 hang fails fast", result["success"] is False and result.get("reason") is None, result)
+                check("lane-1 hang is named", "userspace tunnel: LanesTimedOutError" in result["error"], result)
+                check("lane-1 hang never reaches mobdev2", len(browse_calls) == browses_before, browse_calls)
+                state["userspace_hold"] = None
+
+                # A later lane hangs after every finished lane said the phone is absent:
+                # the phone is not visible yet, so keep waiting.
+                state["preferred_hold"] = asyncio.Event()
+                result = await attempt()
+                check("lane-3 hang after absent lanes keeps waiting",
+                      result.get("reason") == "device_not_visible", result)
+                check("lane-3 hang is named", "preferred RSD: LanesTimedOutError" in result["error"]
+                      and "usbmux direct: DeviceNotFoundError" in result["error"], result)
+                state["preferred_hold"] = None
+            finally:
+                bridge.CONNECT_TIMEOUT_SECONDS = saved
+                state["hold"] = None
+                state["userspace_hold"] = None
+                state["preferred_hold"] = None
+
+            # pymobiledevice3 stops reading the swapped global (fails, or returns a
+            # tunnel it made some other way): the lane says so, observed nothing.
+            for mode in ("ignores-global", "ignores-global-returns"):
+                state["upstream"], state["usbmux_now"] = mode, set()
+                closed_before = state["aclosed"]
+                result = await attempt()
+                check(f"{mode} reported unsupported", "mobdev2: LaneUnsupportedError" in result["error"]
+                      and "pymobiledevice3 no longer reads userspace_tunnel.create_using_usbmux"
+                      in result["error"], result)
+                check(f"{mode} keeps waiting", result.get("reason") == "device_not_visible", result)
+                check(f"{mode} closes lockdown", (result["_lockdown_closed"] or 0) >= 1, result)
+                if mode == "ignores-global-returns":
+                    check(f"{mode} closes the stray tunnel", result["_aclosed"] > closed_before, result)
+                check(f"{mode} restores global", usermod.create_using_usbmux is ORIGINAL, "")
+                if mode == "ignores-global":
+                    # The drift message keeps the error the open really ended with.
+                    check(f"{mode} keeps the original error", "DeviceNotFoundError: usbmux has no device "
+                          "matching udid dev" in result["error"].partition("mobdev2: ")[2], result)
+            state["upstream"] = "global"
+
+            # A failure before the provider call that is not pymobiledevice3's own is
+            # still drift, and its text is kept.
+            state["pre_provider_error"] = AttributeError("module has no attribute 'create_tunnel'")
+            result = await attempt()
+            check("foreign pre-provider failure is drift", "mobdev2: LaneUnsupportedError" in result["error"]
+                  and "AttributeError: module has no attribute 'create_tunnel'" in result["error"], result)
+            check("foreign pre-provider failure keeps waiting", result.get("reason") == "device_not_visible", result)
+            state["pre_provider_error"] = None
+
+            # Only paired lockdowns are asked for; an unpaired-only result is not found,
+            # also if a future browse ignored only_paired.
+            mobdev2_unpaired.add("dev")
+            for ignore in (False, True):
+                state["ignore_only_paired"] = ignore
+                result = await attempt()
+                check(f"unpaired (ignore_only_paired={ignore}) is not found",
+                      result.get("reason") == "device_not_visible"
+                      and "mobdev2: Mobdev2DeviceNotFoundError" in result["error"], result)
+                check(f"unpaired (ignore_only_paired={ignore}) closed", (result["_lockdown_closed"] or 0) >= 1,
+                      result)
+            state["ignore_only_paired"] = False
+            mobdev2_unpaired.discard("dev")
+            check("only_paired=True on every browse",
+                  browse_calls and all(call["only_paired"] is True for call in browse_calls), browse_calls)
+
+            if problems:
+                raise AssertionError("\\n".join(problems))
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// The mobdev2 lane reaches the phone over Wi-Fi (Bonjour). A request that names
+    /// USB must never cross to Wi-Fi: with lanes 1-3 absent, lane 4 is not attempted
+    /// and the phone is reported not visible. Network and no transport hint still run it.
+    func testPythonHelperMobdev2LaneNeverRunsForAUsbRequest() throws {
+        let code = mobdev2LaneFixture() + """
+
+        async def verify():
+            mobdev2_visible.add("dev")
+            c = make_connection()
+            result = await connect(c, connection_type="USB")
+            await c.close_all()
+            assert result["success"] is False and result["reason"] == "device_not_visible", result
+            assert not browse_calls, browse_calls
+            assert ("dev", False) not in seen, seen
+            assert "mobdev2" not in result["error"], result
+            for text in ("userspace tunnel: DeviceNotFoundError", "usbmux direct: DeviceNotFoundError",
+                         "preferred RSD: DeviceNotFoundError"):
+                assert text in result["error"], result
+
+            for hint in ("Network", None):
+                c = make_connection()
+                result = await connect(c, connection_type=hint)
+                await c.close_all()
+                assert result["success"] is True and result["actual_channel"] == "mobdev2RSD", (hint, result)
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// Fakes for the four helper lanes. The userspace tunnel fake models
+    /// pymobiledevice3 11.49.1: `aopen()` takes its lockdown from the tunnel module's
+    /// global `create_using_usbmux` (or, in a drift mode, ignores it).
+    private func mobdev2LaneFixture() -> String {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        return """
+        import asyncio, importlib.util, types
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+
+        # Same names and hierarchy as pymobiledevice3.exceptions in 11.49.1.
+        class PyMobileDevice3Exception(Exception): pass
+        class MuxException(PyMobileDevice3Exception): pass
+        class DeviceNotFoundError(PyMobileDevice3Exception): pass
+        class ConnectionTerminatedError(PyMobileDevice3Exception): pass
+        class ConnectionFailedError(MuxException): pass
+        class InvalidServiceError(PyMobileDevice3Exception): pass
+        class UserspaceTunnelUnavailableError(PyMobileDevice3Exception): pass
+        class PairingError(PyMobileDevice3Exception): pass
+        usbmux_visible, mobdev2_visible, mobdev2_unpaired = set(), set(), set()
+        state = {"tunnel_error": None, "hold": None, "entered": None, "browse_error": None,
+                 "preferred_error": None, "upstream": "global", "usbmux_now": set(),
+                 "ignore_only_paired": False, "aclosed": 0, "userspace_hold": None,
+                 "pre_provider_error": None, "preferred_hold": None}
+        seen, lockdowns, browse_calls = [], [], []
+
+        class Lockdown:
+            def __init__(self, udid, source, paired=True):
+                self.udid, self.source, self.paired, self.closed = udid, source, paired, 0
+            async def close(self): self.closed += 1
+        async def usbmux_lockdown(serial=None, autopair=True, **kwargs):
+            if serial not in usbmux_visible:
+                raise DeviceNotFoundError(f"usbmux has no device matching udid {serial}")
+            return Lockdown(serial, "usbmux")
+        ORIGINAL = usbmux_lockdown
+        usermod = types.SimpleNamespace(create_using_usbmux=usbmux_lockdown)
+
+        async def mobdev2_lockdowns(udid=None, timeout=None, only_paired=False):
+            browse_calls.append({"udid": udid, "timeout": timeout, "only_paired": only_paired})
+            assert timeout == bridge.MOBDEV2_BROWSE_TIMEOUT_SECONDS == 8, timeout
+            if state["browse_error"] is not None:
+                raise state["browse_error"]
+            if udid in mobdev2_visible:
+                lockdown = Lockdown(udid, "mobdev2", paired=udid not in mobdev2_unpaired)
+                lockdowns.append(lockdown)
+                if only_paired and not lockdown.paired and not state["ignore_only_paired"]:
+                    # pymobiledevice3 closes and skips an unpaired client.
+                    await lockdown.close()
+                    return
+                yield "fe80::1%en0", lockdown
+
+        class Context:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+        class Info(Context):
+            async def ls(self, path): return ["/usr"]
+        class Location(Context):
+            async def set(self, lat, lng): pass
+        class Userspace:
+            def __init__(self, serial=None, autopair=True, remotepairing_fallback=True):
+                self.serial = serial
+            async def aopen(self):
+                seen.append((self.serial, usermod.create_using_usbmux is ORIGINAL))
+                if state["userspace_hold"] is not None and usermod.create_using_usbmux is ORIGINAL:
+                    # Lane 1 hangs (for example a wedged lifecycle lock in the helper).
+                    await state["userspace_hold"].wait()
+                if state["pre_provider_error"] is not None and usermod.create_using_usbmux is not ORIGINAL:
+                    # Upstream fails before it asks for a lockdown (its one-tunnel guard).
+                    raise state["pre_provider_error"]
+                if state["upstream"] == "ignores-global":
+                    await ORIGINAL(serial=self.serial, autopair=True)
+                    return object()
+                if state["upstream"] == "ignores-global-returns":
+                    # Real usbmux listed the phone again by the time lane 4 ran.
+                    if self.serial not in state["usbmux_now"]:
+                        state["usbmux_now"].add(self.serial)
+                        raise DeviceNotFoundError(f"usbmux has no device matching udid {self.serial}")
+                    return object()
+                lockdown = await usermod.create_using_usbmux(serial=self.serial, autopair=True)
+                if lockdown.source == "mobdev2":
+                    if state["hold"] is not None:
+                        state["entered"].set()
+                        await state["hold"].wait()
+                    if state["tunnel_error"] is not None:
+                        raise state["tunnel_error"]
+                return object()
+            async def aclose(self): state["aclosed"] += 1
+        class Preferred:
+            def __init__(self, serial): self.serial = serial
+            async def aopen(self):
+                if state["preferred_hold"] is not None:
+                    await state["preferred_hold"].wait()
+                if state["preferred_error"] is not None:
+                    raise state["preferred_error"]
+                if self.serial not in usbmux_visible:
+                    raise DeviceNotFoundError(f"no device {self.serial} (preferred)")
+                return object()
+            async def aclose(self): pass
+
+        def make_connection():
+            c = bridge.DeviceConnection()
+            c._initialized = True
+            c._userspace_tunnel_factory = Userspace
+            c._lockdown_usb = usbmux_lockdown
+            c._preferred_tunnel_factory = Preferred
+            c._mobdev2_lockdowns = mobdev2_lockdowns
+            c._userspace_tunnel_module = usermod
+            c._dvt_module = lambda provider: Context()
+            c._location_module = lambda dvt: Location()
+            c._device_info_module = lambda dvt: Info()
+            return c
+
+        async def connect(c, udid="dev", connection_type="Network"):
+            request = {"cmd": "connect_device", "udid": udid}
+            if connection_type is not None:
+                request["connection_type"] = connection_type
+            return await bridge.process_command(c, request)
+        """
+    }
+
+    private func runManagedPython(_ code: String) throws -> (Int32, String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
+        process.arguments = ["-B", "-c", code]
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        try? stderr.fileHandleForReading.close()
+        process.waitUntilExit()
+        return (process.terminationStatus, errorOutput)
+    }
+
+    /// The mobdev2 lane depends on two pymobiledevice3 APIs that may move under the
+    /// rolling-latest policy: the Bonjour lockdown browse and the userspace tunnel's
+    /// module-global `create_using_usbmux` lookup. The managed runtime must have both,
+    /// and the helper must wire exactly those objects.
+    func testManagedRuntimeProvidesMobdev2LaneAPI() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import importlib.util, inspect
+        import pymobiledevice3.lockdown as lockdown
+        import pymobiledevice3.remote.userspace_tunnel as ut
+        assert inspect.isasyncgenfunction(lockdown.get_mobdev2_lockdowns)
+        parameters = inspect.signature(lockdown.get_mobdev2_lockdowns).parameters
+        assert "udid" in parameters and "timeout" in parameters, parameters
+        # The lane asks only for paired lockdowns (an unpaired one is not the phone).
+        assert "only_paired" in parameters, parameters
+        assert inspect.iscoroutinefunction(ut.create_using_usbmux)
+        assert "create_using_usbmux" in ut._create_no_root_tunnel_provider.__code__.co_names
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        c = bridge.DeviceConnection()
+        assert c._lazy_import()
+        assert c._mobdev2_lockdowns is lockdown.get_mobdev2_lockdowns
+        assert c._userspace_tunnel_module is ut
+        assert bridge.MOBDEV2_BROWSE_TIMEOUT_SECONDS < bridge.CONNECT_TIMEOUT_SECONDS
+        # The helper classifies upstream errors by class name; every name it relies
+        # on must still exist in pymobiledevice3.exceptions with the same meaning.
+        import pymobiledevice3.exceptions as exceptions
+        names = set(bridge._UPSTREAM_TRANSPORT_ERRORS) | set(bridge._USBMUX_LOOKUP_ERRORS) | {
+            name for name in bridge._DEVICE_ABSENT_ERRORS if name != bridge.Mobdev2DeviceNotFoundError.__name__}
+        names.add(bridge._UPSTREAM_BASE_ERROR)
+        assert {"ConnectionTerminatedError", "ConnectionFailedError"} <= set(bridge._UPSTREAM_TRANSPORT_ERRORS)
+        for name in sorted(names):
+            cls = getattr(exceptions, name, None)
+            assert isinstance(cls, type) and issubclass(cls, exceptions.PyMobileDevice3Exception), name
+        assert not issubclass(exceptions.ConnectionTerminatedError, ConnectionError)
         """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: PythonPathResolver.managedPythonPath)
