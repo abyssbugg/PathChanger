@@ -599,8 +599,53 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     /// How long Start keeps trying while the phone is not visible. Internal for tests.
     var deviceVisibilityWait: DeviceVisibilityWait = .standard
 
-    static let wifiDeviceNotReachableMessage =
+    nonisolated static let wifiDeviceNotReachableMessage =
         "iPhone is not reachable over Wi‑Fi. Unlock it, keep it on the same Wi‑Fi network as this Mac, then press Start again."
+
+    /// The phone answered over Wi‑Fi (mobdev2 Bonjour found its paired lockdown) but
+    /// usbmuxd does not list it. Live 2026-11-02: after the phone's private Wi‑Fi
+    /// address rotated, usbmuxd listed nothing for hours while the phone was unlocked
+    /// on the same network, so the reachability advice above was false.
+    nonisolated static let wifiUnlistedByUsbmuxMessage =
+        "Your iPhone answers on this Mac's network, but macOS has not picked it up for developer connections (this can happen after the phone's Wi‑Fi address changes). Connect it with a cable once, keep it unlocked, then press Start again."
+
+    /// Lane names and the classes that mean "this lane did not see the phone", as
+    /// written by `DeviceLanesUnavailable` in scripts/location_bridge.py
+    /// ("<lane>: <ErrorClass>: <message>", lanes joined by "; ").
+    private nonisolated static let usbmuxLanes: Set<String> = ["userspace tunnel", "usbmux direct", "preferred RSD"]
+    private nonisolated static let mobdev2Lane = "mobdev2"
+    private nonisolated static let usbmuxAbsentErrors: Set<String> = ["DeviceNotFoundError", "NoDeviceConnectedError"]
+    /// mobdev2 failures from before a paired lockdown was found (the browse wraps its
+    /// OSErrors in Mobdev2BrowseError), or that observed nothing.
+    private nonisolated static let mobdev2NotReachedErrors: Set<String> = [
+        "Mobdev2DeviceNotFoundError", "Mobdev2BrowseError", "LaneUnsupportedError", "LanesTimedOutError",
+    ]
+    private nonisolated static let laneFailurePattern =
+        "[(;]\\s*(userspace tunnel|usbmux direct|preferred RSD|mobdev2): ([A-Za-z_][A-Za-z0-9_]*):"
+
+    /// The Wi‑Fi give-up message for the helper's last per-lane detail. When every
+    /// usbmux-backed lane missed the phone and the mobdev2 lane reached its lockdown,
+    /// the phone is on the network but unlisted by usbmuxd; anything else (including
+    /// a detail this cannot read) keeps the reachability advice.
+    nonisolated static func wifiGaveUpMessage(detail: String) -> String {
+        guard let pattern = try? NSRegularExpression(pattern: laneFailurePattern) else {
+            return wifiDeviceNotReachableMessage
+        }
+        let text = detail as NSString
+        var errorByLane: [String: String] = [:]
+        for match in pattern.matches(in: detail, range: NSRange(location: 0, length: text.length)) {
+            let lane = text.substring(with: match.range(at: 1))
+            guard errorByLane[lane] == nil else { return wifiDeviceNotReachableMessage }
+            errorByLane[lane] = text.substring(with: match.range(at: 2))
+        }
+        let usbmuxMissedThePhone = usbmuxLanes.allSatisfy { lane in
+            errorByLane[lane].map(usbmuxAbsentErrors.contains) ?? false
+        }
+        let mobdev2ReachedThePhone = errorByLane[mobdev2Lane].map { !mobdev2NotReachedErrors.contains($0) } ?? false
+        return usbmuxMissedThePhone && mobdev2ReachedThePhone
+            ? wifiUnlistedByUsbmuxMessage
+            : wifiDeviceNotReachableMessage
+    }
 
     /// Log lines for the Wi-Fi device wait. The helper's detail can carry the UDID, so
     /// both redact it.
@@ -1330,6 +1375,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         let isCurrent = { self.connectAttempt == attempt && self.stateMachine.currentState == .starting }
         let wait = deviceVisibilityWait
         let deadline = Date().addingTimeInterval(wait.timeout)
+        // Once any attempt shows the phone answering while usbmuxd does not list it, a
+        // later attempt that only missed Bonjour must not bring back the "not reachable"
+        // advice (review 2026-11-02-173842 issue 3).
+        var phoneAnsweredUnlisted = false
         defer { if connectAttempt == attempt { isWaitingForDevice = false } }
         while true {
             do {
@@ -1354,8 +1403,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             } catch PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(let detail)
                 where mode == .wifi {
                 guard isCurrent() else { return true }
+                let message = Self.wifiGaveUpMessage(detail: detail)
+                if message == Self.wifiUnlistedByUsbmuxMessage { phoneAnsweredUnlisted = true }
                 guard Date() < deadline else {
-                    lastError = Self.wifiDeviceNotReachableMessage
+                    lastError = phoneAnsweredUnlisted ? Self.wifiUnlistedByUsbmuxMessage : message
                     Logger.error(Self.wifiGaveUpLogLine(detail: detail), category: .device)
                     return false
                 }

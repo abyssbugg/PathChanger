@@ -108,6 +108,137 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertFalse(message.contains("usbmux"), message)
     }
 
+    // Live 2026-11-02: the phone was unlocked and on the same Wi-Fi (mobdev2 Bonjour
+    // found its paired lockdown) while usbmuxd listed nothing for hours after the
+    // phone's private Wi-Fi address rotated. Telling the owner to unlock the phone
+    // and join the Wi-Fi was false; the give-up message names the real gap.
+
+    private static let usbmuxUnlistedDetail =
+        "DeviceLanesUnavailable: DVT lanes unavailable ("
+        + "userspace tunnel: DeviceNotFoundError: Device not found: usbmux has no device matching udid 00008130-000C5144019A001C; "
+        + "usbmux direct: DeviceNotFoundError: Device not found: usbmux has no device matching udid 00008130-000C5144019A001C; "
+        + "preferred RSD: DeviceNotFoundError: Device not found: usbmux has no device matching udid 00008130-000C5144019A001C; "
+        + "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly.)"
+
+    func testWiFiStartGivesUpNamingTheUsbmuxGapWhenMobdev2ReachedThePhone() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 0.15, interval: 0.02)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError
+            .deviceNotVisible(Self.usbmuxUnlistedDetail)
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        let message = manager.lastError ?? ""
+        XCTAssertTrue(message.contains("Your iPhone answers on this Mac's network"), message)
+        XCTAssertTrue(message.contains("cable"), message)
+        XCTAssertTrue(message.contains("unlocked"), "keep the unlock advice: a locked phone looks the same. \(message)")
+        XCTAssertFalse(message.contains("00008130"), message)
+    }
+
+    /// Review 2026-11-02-173842 issue 3: an earlier attempt proved the phone answers; a
+    /// last attempt whose Bonjour browse missed must not bring back the false advice.
+    func testWiFiStartRemembersThatAnEarlierAttemptReachedThePhone() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 0.15, interval: 0.02)
+        let missed = Self.lanes(
+            Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2],
+            "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s"
+        )
+        connector.connectErrors = [PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(Self.usbmuxUnlistedDetail)]
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(missed)
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        XCTAssertEqual(manager.lastError, TunneldManager.wifiUnlistedByUsbmuxMessage)
+    }
+
+    private static func lanes(_ segments: String...) -> String {
+        "DeviceLanesUnavailable: DVT lanes unavailable (\(segments.joined(separator: "; ")))"
+    }
+
+    private static let usbmuxAbsentLanes = [
+        "userspace tunnel: DeviceNotFoundError: Device not found: usbmux has no device matching udid 00008130…",
+        "usbmux direct: NoDeviceConnectedError: ",
+        "preferred RSD: DeviceNotFoundError: Device not found: usbmux has no device matching udid 00008130…",
+    ]
+
+    func testGaveUpMessageNamesTheUsbmuxGapForTheLiveDetail() {
+        XCTAssertEqual(
+            TunneldManager.wifiGaveUpMessage(detail: Self.usbmuxUnlistedDetail),
+            TunneldManager.wifiUnlistedByUsbmuxMessage
+        )
+        XCTAssertEqual(
+            TunneldManager.wifiUnlistedByUsbmuxMessage,
+            "Your iPhone answers on this Mac's network, but macOS has not picked it up for developer connections (this can happen after the phone's Wi‑Fi address changes). Connect it with a cable once, keep it unlocked, then press Start again."
+        )
+    }
+
+    func testGaveUpMessageNamesTheUsbmuxGapForAnyMobdev2ErrorAfterTheLockdown() {
+        for mobdev2 in [
+            "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly.",
+            "mobdev2: ConnectionFailedError: ",
+            "mobdev2: ConnectionResetError: [Errno 54] Connection reset by peer",
+            "mobdev2: TimeoutError: ",
+        ] {
+            let detail = Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2], mobdev2)
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiUnlistedByUsbmuxMessage, detail)
+        }
+        // The redacted, wrapped form the error description carries is still read.
+        let wrapped = "The iPhone is not visible to this Mac right now (\(Self.usbmuxUnlistedDetail))"
+            .replacingOccurrences(of: "00008130-000C5144019A001C", with: "00008130…")
+        XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: wrapped), TunneldManager.wifiUnlistedByUsbmuxMessage)
+    }
+
+    func testGaveUpMessageKeepsTheReachabilityAdviceWhenMobdev2DidNotReachThePhone() {
+        for mobdev2 in [
+            "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s",
+            "mobdev2: Mobdev2BrowseError: OSError: [Errno 65] No route to host",
+            "mobdev2: LanesTimedOutError: no lane opened within 20s",
+            "mobdev2: LaneUnsupportedError: pymobiledevice3 no longer reads userspace_tunnel.create_using_usbmux "
+                + "(the open failed with DeviceNotFoundError: usbmux has no device matching udid 00008130…)",
+        ] {
+            let detail = Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2], mobdev2)
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiDeviceNotReachableMessage, detail)
+        }
+    }
+
+    func testGaveUpMessageKeepsTheReachabilityAdviceUnlessEveryUsbmuxLaneMissedThePhone() {
+        let reached = "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly."
+        let details = [
+            // A usbmux lane that timed out did not prove the phone is unlisted.
+            Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1],
+                       "preferred RSD: LanesTimedOutError: no lane opened within 20s"),
+            Self.lanes(Self.usbmuxAbsentLanes[0], "usbmux direct: LanesTimedOutError: no lane opened within 20s"),
+            // A usbmux lane is missing from the detail.
+            Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[2], reached),
+            // No mobdev2 lane ran (a USB request).
+            Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2]),
+        ]
+        for detail in details {
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiDeviceNotReachableMessage, detail)
+        }
+    }
+
+    func testGaveUpMessageKeepsTheReachabilityAdviceForUnreadableDetail() {
+        for detail in [
+            "",
+            "lanes failed",
+            "Device not found: usbmux has no device matching udid over Network",
+            "mobdev2: ConnectionTerminatedError: x",
+            "DeviceLanesUnavailable: DVT lanes unavailable (mobdev2: : ; usbmux direct:",
+            "(((;;;: : :",
+            String(repeating: "mobdev2: ", count: 500),
+        ] {
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiDeviceNotReachableMessage, detail)
+        }
+    }
+
     func testStopWhileWaitingForThePhoneCancelsTheStart() async throws {
         let connector = try installFakeConnector(mode: .wifi)
         manager.deviceVisibilityWait = .init(timeout: 30, interval: 0.02)
