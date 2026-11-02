@@ -291,6 +291,122 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         XCTAssertFalse(ClearAcknowledgementCheck.mismatch.acceptsClear)
     }
 
+    private func restoredHelperReceipt(generation: UInt64) -> LocationInjectionReceipt {
+        LocationInjectionReceipt(
+            requestID: UUID(), session: UUID(),
+            coordinate: .init(latitude: 37.33182, longitude: -122.03118),
+            transport: .usb, actualChannel: .nativeRSD, endpointClass: .remoteServiceDiscovery,
+            sessionGeneration: generation, completedAt: Date(timeIntervalSince1970: 42), outcome: .applied
+        )
+    }
+
+    private func restoredIdentity(_ device: String, generation: UInt64 = 9) -> LocationSessionIdentity {
+        LocationSessionIdentity(
+            stableDeviceID: device, transport: .usb,
+            endpointClass: .remoteServiceDiscovery, generation: generation
+        )
+    }
+
+    func testAnAbandonedAdoptionIsNotAdoptedAndTheNextApplyStartsANewerSession() throws {
+        // The app refused a restore after the adapter had adopted it (a Clear or Move
+        // began meanwhile, review 2026-11-01 issue 4). The adapter must not keep a session
+        // the coordinator never took: an acknowledgement on it is refused, and the next
+        // apply starts a newer session.
+        var tracker = LocationSessionGenerationTracker()
+        let receipt = restoredHelperReceipt(generation: 9)
+        try tracker.restore(receipt: receipt, stableDeviceID: "device")
+
+        tracker.abandon(receipt: receipt, stableDeviceID: "device")
+
+        let acknowledgement = try XCTUnwrap(LocationProviderAcknowledgement(
+            requestID: UUID(), sessionGeneration: 9, physicalTransport: .usb,
+            channel: .userspaceRSD, endpointClass: .remoteServiceDiscovery
+        ))
+        XCTAssertThrowsError(
+            try tracker.adopt(acknowledgement, stableDeviceID: "device", sessionID: receipt.session)
+        ) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .missingSession)
+        }
+        let next = tracker.resolve(stableDeviceID: "device", transport: .usb, endpointClass: .direct)
+        XCTAssertEqual(next.generation, 10, "generations never go back below what the helper saw")
+        XCTAssertNotEqual(next.sessionID, receipt.session)
+        // The newer session replaces the abandoned one: a Clear of the old identity is stale.
+        XCTAssertThrowsError(try tracker.beginClear(restoredIdentity("device"))) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .staleAcknowledgement)
+        }
+    }
+
+    func testAClearOfAnAbandonedAdoptionStillReachesTheHelper() throws {
+        // AppState bumps its Clear counter (refusing the restore, which abandons it) before
+        // its Clear reaches the adapter. The helper record may still hold that location and
+        // the helper's clear is idempotent, so a Clear of the same identity must validate,
+        // exactly like a retry after a completed Clear. Refusing it wedged Clear on every
+        // retry (review 2026-11-01 issue 8).
+        var tracker = LocationSessionGenerationTracker()
+        let receipt = restoredHelperReceipt(generation: 9)
+        try tracker.restore(receipt: receipt, stableDeviceID: "device")
+        tracker.abandon(receipt: receipt, stableDeviceID: "device")
+
+        XCTAssertNoThrow(try tracker.beginClear(restoredIdentity("device")))
+        XCTAssertNoThrow(try tracker.completeClear(restoredIdentity("device")))
+        XCTAssertNoThrow(try tracker.beginClear(restoredIdentity("device")), "a retried Clear still validates")
+        XCTAssertThrowsError(try tracker.beginClear(restoredIdentity("device", generation: 8))) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .staleAcknowledgement)
+        }
+
+        let next = tracker.resolve(stableDeviceID: "device", transport: .usb, endpointClass: .direct)
+        XCTAssertEqual(next.generation, 10)
+    }
+
+    func testAnAbandonedAdoptionLostToAConnectionLossRefusesClear() throws {
+        // A connection loss after the abandon is a real loss: Clear refuses as for any
+        // record lost to a connection drop.
+        var tracker = LocationSessionGenerationTracker()
+        let receipt = restoredHelperReceipt(generation: 9)
+        try tracker.restore(receipt: receipt, stableDeviceID: "device")
+        tracker.abandon(receipt: receipt, stableDeviceID: "device")
+        tracker.markLost(stableDeviceID: "device")
+
+        XCTAssertThrowsError(try tracker.beginClear(restoredIdentity("device"))) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .missingSession)
+        }
+    }
+
+    func testAbandoningAnAdoptionLeavesANewerOrInUseSessionAlone() throws {
+        // A Move that resolved a newer session meanwhile, or already applies on the
+        // restored one, owns that session now: abandoning the old receipt must not end it.
+        var tracker = LocationSessionGenerationTracker()
+        let receipt = restoredHelperReceipt(generation: 9)
+        try tracker.restore(receipt: receipt, stableDeviceID: "newer")
+        let newer = tracker.resolve(
+            stableDeviceID: "newer", transport: .usb, endpointClass: .direct, minimumGeneration: 12
+        )
+        tracker.abandon(receipt: receipt, stableDeviceID: "newer")
+        XCTAssertEqual(
+            tracker.resolve(stableDeviceID: "newer", transport: .usb, endpointClass: .direct), newer
+        )
+        XCTAssertNoThrow(try tracker.beginClear(LocationSessionIdentity(
+            stableDeviceID: "newer", transport: .usb, endpointClass: .remoteServiceDiscovery,
+            generation: newer.generation
+        )))
+
+        try tracker.restore(receipt: receipt, stableDeviceID: "in-use")
+        let inUse = tracker.resolve(stableDeviceID: "in-use", transport: .usb, endpointClass: .direct)
+        XCTAssertEqual(inUse.generation, 9)
+        tracker.abandon(receipt: receipt, stableDeviceID: "in-use")
+        XCTAssertEqual(
+            tracker.resolve(stableDeviceID: "in-use", transport: .usb, endpointClass: .direct), inUse
+        )
+
+        // A different receipt of the same generation is not the one that was abandoned.
+        let other = restoredHelperReceipt(generation: 9)
+        try tracker.restore(receipt: other, stableDeviceID: "other")
+        tracker.abandon(receipt: receipt, stableDeviceID: "other")
+        XCTAssertNoThrow(try tracker.beginClear(LocationSessionIdentity(
+            stableDeviceID: "other", transport: .usb, endpointClass: .remoteServiceDiscovery, generation: 9
+        )))
+    }
+
     func testClearAfterAConnectionLossIsStillRefused() {
         // A record lost to a connection drop (not a completed Clear) keeps refusing.
         var tracker = LocationSessionGenerationTracker()

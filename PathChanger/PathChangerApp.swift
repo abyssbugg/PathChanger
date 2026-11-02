@@ -1417,8 +1417,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return false
         }
         // The adapter awaited: a Clear or a Move begun meanwhile owns the location now.
+        // Undo the adapter's adoption so it does not keep a session the coordinator refused.
         guard clearEpoch == locationOperationGeneration, !ownsLocationOperation else {
             Logger.info("[AppState] Not restoring a recorded location: a Clear or Move started meanwhile", category: .device)
+            await locationInjector.abandonAdoptedSession(receipt, stableDeviceID: device.id)
             return false
         }
 
@@ -1432,6 +1434,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             identity: identity,
             receipt: receipt
         ) == nil else {
+            await locationInjector.abandonAdoptedSession(receipt, stableDeviceID: device.id)
             return false
         }
 

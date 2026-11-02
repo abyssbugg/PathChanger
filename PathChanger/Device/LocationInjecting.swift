@@ -14,6 +14,9 @@ protocol LocationInjecting: Sendable {
         receipt: LocationInjectionReceipt,
         stableDeviceID: String
     ) async throws
+    /// Undo an `adoptManagedSession` the app then refused (a Clear or Move began while
+    /// the adoption was out). Forgets only the session that receipt installed.
+    func abandonAdoptedSession(_ receipt: LocationInjectionReceipt, stableDeviceID: String) async
     func events() async -> AsyncStream<LocationBridgeEvent>
 }
 
@@ -22,6 +25,8 @@ extension LocationInjecting {
         receipt: LocationInjectionReceipt,
         stableDeviceID: String
     ) async throws {}
+
+    func abandonAdoptedSession(_ receipt: LocationInjectionReceipt, stableDeviceID: String) async {}
 
     func events() async -> AsyncStream<LocationBridgeEvent> {
         AsyncStream { continuation in

@@ -84,6 +84,9 @@ final class AppStateSimulationTests: XCTestCase {
 
     private final class AdoptionRecordingLocationInjector: LocationInjecting, @unchecked Sendable {
         private(set) var adoptedReceipts: [(LocationInjectionReceipt, String)] = []
+        private(set) var abandonedReceipts: [(LocationInjectionReceipt, String)] = []
+        /// Runs inside `adoptManagedSession` after it adopted (holds it open for a test).
+        var adoptionGate: (@MainActor () async -> Void)?
 
         func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
             throw LocationInjectionError.injectionFailed("Apply is not used by this restoration test")
@@ -96,6 +99,11 @@ final class AppStateSimulationTests: XCTestCase {
             stableDeviceID: String
         ) async throws {
             adoptedReceipts.append((receipt, stableDeviceID))
+            if let adoptionGate { await adoptionGate() }
+        }
+
+        func abandonAdoptedSession(_ receipt: LocationInjectionReceipt, stableDeviceID: String) async {
+            abandonedReceipts.append((receipt, stableDeviceID))
         }
     }
 
@@ -323,6 +331,7 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(locationInjector.adoptedReceipts.count, 1)
         XCTAssertEqual(locationInjector.adoptedReceipts.first?.0.requestID, requestID)
         XCTAssertEqual(locationInjector.adoptedReceipts.first?.1, device.id)
+        XCTAssertTrue(locationInjector.abandonedReceipts.isEmpty, "an accepted restore is not abandoned")
     }
 
     func testDeviceFirstStartupRestoresMatchingManagedSession() async throws {
@@ -689,6 +698,178 @@ final class AppStateSimulationTests: XCTestCase {
             return XCTFail("the owned application survives, got \(state.locationSessionCoordinator.state.application)")
         }
         XCTAssertEqual(requestID, request.id)
+    }
+
+    private func makeGatedRestoreFixture() -> (
+        AppState, AdoptionRecordingLocationInjector, ProbeGate, Device, ManagedLocationHelperSession
+    ) {
+        let injector = AdoptionRecordingLocationInjector()
+        let gate = ProbeGate()
+        injector.adoptionGate = { await gate.hold() }
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            managedLocationSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        )
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 9,
+            physicalTransport: "usb",
+            actualChannel: "explicitRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 37.33182, longitude: -122.03118),
+            acknowledgedAt: 1_725_000_000
+        )
+        state.selectedDevice = device
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .usb, endpointClass: .unresolved, generation: 1
+        ))
+        return (state, injector, gate, device, session)
+    }
+
+    func testAClearDuringTheAdapterAdoptionRefusesTheRestoreAndAbandonsTheAdoption() async throws {
+        // A Clear that starts while `adoptManagedSession` is out makes the restore refuse
+        // after the adapter already wrote the record's receipt into its generation
+        // tracker. The adapter must forget that adoption, or adapter and coordinator
+        // disagree about the session a later Clear validates against (review 2026-11-01,
+        // issue 4).
+        let (state, injector, gate, device, session) = makeGatedRestoreFixture()
+        let helperID = UUID()
+
+        let restore = Task { await state.restoreManagedHelperSession(session, helperID: helperID, for: device) }
+        while !gate.entered { await Task.yield() }
+        await state.clearLocation()
+        XCTAssertEqual(state.statusMessage, "Location cleared")
+        gate.release()
+        let restored = await restore.value
+
+        XCTAssertFalse(restored)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        let adopted = try XCTUnwrap(injector.adoptedReceipts.first)
+        XCTAssertEqual(injector.abandonedReceipts.count, 1, "the refused adoption is undone in the adapter")
+        XCTAssertEqual(injector.abandonedReceipts.first?.0, adopted.0)
+        XCTAssertEqual(injector.abandonedReceipts.first?.1, device.id)
+    }
+
+    func testAnOperationBegunDuringTheAdapterAdoptionRefusesTheRestoreAndAbandonsTheAdoption() async throws {
+        let (state, injector, gate, device, session) = makeGatedRestoreFixture()
+
+        let restore = Task { await state.restoreManagedHelperSession(session, helperID: UUID(), for: device) }
+        while !gate.entered { await Task.yield() }
+        state.locationSessionCoordinator.select(first, mode: .teleport)
+        let request = try state.locationSessionCoordinator.beginApplication()
+        gate.release()
+        let restored = await restore.value
+
+        XCTAssertFalse(restored)
+        guard case .applying(let requestID, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("the owned application survives, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertEqual(requestID, request.id)
+        let adopted = try XCTUnwrap(injector.adoptedReceipts.first)
+        XCTAssertEqual(injector.abandonedReceipts.count, 1, "the refused adoption is undone in the adapter")
+        XCTAssertEqual(injector.abandonedReceipts.first?.0, adopted.0)
+        XCTAssertEqual(injector.abandonedReceipts.first?.1, device.id)
+    }
+
+    /// Adopts, abandons and clears through the real `LocationSessionGenerationTracker`
+    /// as `DevLocationBridge` does. Its Clear waits until the refused restore abandoned
+    /// its adoption, the order AppState allows: the Clear counter bump that refuses the
+    /// restore comes before the Clear reaches the adapter (review 2026-11-01 issue 8).
+    @MainActor
+    private final class TrackerBackedRestoreInjector: LocationInjecting {
+        private var tracker = LocationSessionGenerationTracker()
+        let adoptionGate = ProbeGate()
+        private(set) var abandonCount = 0
+        private(set) var clearCount = 0
+        private var abandonWaiter: CheckedContinuation<Void, Never>?
+
+        func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+            throw LocationInjectionError.injectionFailed("Apply is not used by this restoration test")
+        }
+
+        func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
+            guard let session else { throw LocationInjectionError.injectionFailed("no session") }
+            if abandonCount == 0 {
+                await withCheckedContinuation { abandonWaiter = $0 }
+            }
+            try tracker.beginClear(session)
+            clearCount += 1
+            try tracker.completeClear(session)
+        }
+
+        func adoptManagedSession(receipt: LocationInjectionReceipt, stableDeviceID: String) async throws {
+            try tracker.restore(receipt: receipt, stableDeviceID: stableDeviceID)
+            await adoptionGate.hold()
+        }
+
+        func abandonAdoptedSession(_ receipt: LocationInjectionReceipt, stableDeviceID: String) async {
+            tracker.abandon(receipt: receipt, stableDeviceID: stableDeviceID)
+            abandonCount += 1
+            abandonWaiter?.resume()
+            abandonWaiter = nil
+        }
+    }
+
+    func testAClearOfTheRestoredSessionAfterItsAdoptionWasAbandonedReachesTheHelper() async throws {
+        // The coordinator still holds the helper record's identity as Ready (an earlier
+        // adoption). A restore of that record is out in the adapter when the user presses
+        // Clear: the Clear counter bump refuses the restore, which abandons the adoption
+        // before the Clear enters the adapter. The Clear of that identity must still reach
+        // the helper; refusing it stored it as unresolved and every retry failed the same
+        // way (review 2026-11-01 issue 8, the Clear-wedge class).
+        let injector = TrackerBackedRestoreInjector()
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: injector,
+            managedLocationSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        )
+        let device = Device(
+            id: "00008130-0011223344556677",
+            displayName: "Test Device",
+            connectionType: .usb,
+            productType: "iPhone17,1",
+            productVersion: "27.0"
+        )
+        let session = ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(device.id),
+            requestID: UUID().uuidString,
+            sessionGeneration: 9,
+            physicalTransport: "usb",
+            actualChannel: "explicitRSD",
+            endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 37.33182, longitude: -122.03118),
+            acknowledgedAt: 1_725_000_000
+        )
+        let restoredIdentity = LocationSessionIdentity(
+            stableDeviceID: device.id, transport: .usb, endpointClass: .remoteServiceDiscovery, generation: 9
+        )
+        state.selectedDevice = device
+        state.locationSessionCoordinator.connectionReady(restoredIdentity)
+
+        let restore = Task { await state.restoreManagedHelperSession(session, helperID: UUID(), for: device) }
+        while !injector.adoptionGate.entered { await Task.yield() }
+        let clear = Task { await state.clearLocation(reconcilingConnection: false) }
+        while state.moveBlockedByClear == nil { await Task.yield() }
+        injector.adoptionGate.release()
+        let restored = await restore.value
+        await clear.value
+
+        XCTAssertFalse(restored)
+        XCTAssertEqual(injector.abandonCount, 1, "the refused adoption is undone in the adapter")
+        XCTAssertEqual(injector.clearCount, 1, "the Clear reached the helper")
+        XCTAssertEqual(state.statusMessage, "Location cleared")
+        XCTAssertNil(state.moveBlockedByClear, "no unresolved Clear blocks Move")
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
     }
 
     func testStoppingTheTunnelEndsTheHeldLocationTruthfully() async throws {

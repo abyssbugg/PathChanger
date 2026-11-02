@@ -316,6 +316,12 @@ struct LocationSessionGenerationTracker: Sendable {
         /// session, so a repeated Clear of the same identity is harmless (the helper's
         /// clear is idempotent) and must be allowed. A connection loss leaves it false.
         var cleared: Bool = false
+        /// The loss was `abandon(receipt:)`: the app refused a restore it had adopted. The
+        /// helper record may still hold that location, so a Clear of the same identity must
+        /// still validate (a Clear's counter bump is what refuses the restore, before the
+        /// Clear reaches the adapter; refusing it wedged Clear, review 2026-11-01 issue 8).
+        /// Acknowledgements on it are still refused. A connection loss resets it.
+        var abandoned: Bool = false
     }
     private var records: [String: Record] = [:]
 
@@ -359,6 +365,7 @@ struct LocationSessionGenerationTracker: Sendable {
                 record.requestedEndpointClass = endpointClass
                 record.lost = false
                 record.cleared = false
+                record.abandoned = false
             } else if record.requestedEndpointClass == nil {
                 // First request on a restored (relaunch-adopted) session.
                 record.requestedEndpointClass = endpointClass
@@ -417,11 +424,31 @@ struct LocationSessionGenerationTracker: Sendable {
         return session
     }
 
+    /// Forget a session `restore(receipt:)` installed that the app then refused: an
+    /// acknowledgement on it is refused and the next apply starts a newer generation. A
+    /// Clear of the same identity still validates (`abandoned`). Only the untouched
+    /// restored record is forgotten: a newer session (another id or generation)
+    /// or one an apply already resolved (it set `requestedEndpointClass`) belongs to a live
+    /// Move. Marked lost, not removed: removing restarted generations at 1, below what the
+    /// helper already acknowledged.
+    mutating func abandon(receipt: LocationInjectionReceipt, stableDeviceID: String) {
+        guard var record = records[stableDeviceID], !record.lost,
+              record.session.sessionID == receipt.session,
+              record.session.generation == receipt.sessionGeneration,
+              record.requestedEndpointClass == nil else {
+            return
+        }
+        record.lost = true
+        record.abandoned = true
+        records[stableDeviceID] = record
+    }
+
     mutating func beginClear(_ identity: LocationSessionIdentity) throws {
         // A record lost to a completed Clear still validates: retrying a Clear the app
         // did not see finish (live 2026-11-01) must reach the helper again instead of
-        // wedging every later Move.
-        guard let record = records[identity.stableDeviceID], !record.lost || record.cleared else {
+        // wedging every later Move. So does one lost to an abandoned restore.
+        guard let record = records[identity.stableDeviceID],
+              !record.lost || record.cleared || record.abandoned else {
             throw AdoptionError.missingSession
         }
         guard record.session.generation == identity.generation else {
@@ -468,6 +495,8 @@ struct LocationSessionGenerationTracker: Sendable {
 
     mutating func markLost(stableDeviceID: String) {
         records[stableDeviceID]?.lost = true
+        // A connection loss is a real loss: Clear refuses it, abandoned or not.
+        records[stableDeviceID]?.abandoned = false
     }
 }
 
@@ -735,6 +764,14 @@ actor DevLocationBridge: LocationInjecting {
         stableDeviceID: String
     ) async throws {
         try generationTracker.restore(receipt: receipt, stableDeviceID: stableDeviceID)
+    }
+
+    func abandonAdoptedSession(_ receipt: LocationInjectionReceipt, stableDeviceID: String) async {
+        // A Clear in progress passed `beginClear`, so it matches this record exactly and
+        // the coordinator agrees with it; its completion invalidates the record. Leave the
+        // record to that Clear.
+        guard !clearingDeviceIDs.contains(stableDeviceID) else { return }
+        generationTracker.abandon(receipt: receipt, stableDeviceID: stableDeviceID)
     }
 
     private func removeEventContinuation(_ id: UUID) {
