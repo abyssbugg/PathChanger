@@ -438,6 +438,24 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// connection to the phone: the held session ended with that connection.
     static let clearAfterConnectionEndedText =
         "The connection to the phone had ended, which ends the spoofed location. If the phone still shows it, reconnect and press Clear again."
+    /// A Clear of a session this Mac never held when this app session could not start or
+    /// adopt its location helper while the helper's record lists a held session: nobody
+    /// could confirm the connection ended.
+    static let clearHelperUnreachableText =
+        "PathChanger could not reach its location helper, which may still hold the location. Quit and reopen PathChanger, then Clear."
+
+    /// The line logged before Clear closes the helper's connection after a probe that did
+    /// not report it connected. A timed-out probe may only have been slow, and closing it
+    /// can trip the tunnel's health probe, so that case reads distinctly.
+    static func unheldClearClosingLogLine(for status: HelperConnectionStatus) -> String {
+        let timedOut = PersistentLocationBridge.PersistentBridgeError.timeout.localizedDescription
+        if status == .notConnected(timedOut) {
+            return "[Clear] Probe did not answer (timed out); closing the helper's connection, which ends any location held over it"
+        }
+        return "[Clear] No session on this Mac and the helper's connection is not live (" +
+            LogRedaction.redactingDeviceIdentifiers(String(describing: status)) +
+            "); closing it, which ends any location held over it"
+    }
     /// Where the next Move leaves from: the applied location, or the start a Clear staged.
     var moveStartCoordinate: LocationCoordinate? {
         locationPresentation.appliedCoordinate ?? stagedStartAfterClear
@@ -557,6 +575,18 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Multi-Spot cursor), for the card's "At stop" readout. Read-only.
     func displayStopCursor(for mode: AppMode) -> StopCursor {
         stopCursor(for: mode)
+    }
+
+    /// The stops the card's "At stop" and completion readouts index for `mode`: the
+    /// cursor indexes the run's stops, which for Two-Spot with one spot start at the held
+    /// location (review 2026-11-02-163337 issue 8). Jump indexes its hops; Two-Spot and
+    /// Multi-Spot use the running run's stops, else the stops the latest run remembered
+    /// (reset with the stop index and on any edit of the stops), else the route.
+    /// Read-only.
+    func displayStops(for mode: AppMode) -> [LocationCoordinate] {
+        guard mode != .jump else { return currentRoute }
+        if let run = stopRun, run.mode == mode { return run.stops }
+        return routeRunStops ?? currentRoute
     }
 
     func stopTravelSettings(for mode: AppMode) -> StopTravelSettings {
@@ -1241,7 +1271,19 @@ class AppState: ObservableObject, LocationTerminationHandling {
             category: .session
         )
         let clearing = Task { @MainActor in
-            defer { locationClearTask = nil }
+            defer {
+                // Backstop: no exit from Clear may leave the location phase Clearing. Clear
+                // would stay disabled, Move refused and the record restore refused until
+                // Stop Tunnel or a relaunch (review 2026-11-02-163337 issue 1).
+                if locationSessionCoordinator.state.application == .clearing {
+                    Logger.error(
+                        "[Clear] Ended with the location phase still Clearing; recording it as a failed Clear",
+                        category: .session
+                    )
+                    locationSessionCoordinator.failClear(reason: "The Clear did not complete")
+                }
+                locationClearTask = nil
+            }
             let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask, automaticReconnectTask].compactMap { $0 }
             let applications = Array(applicationTasks.values)
             producers.forEach { $0.cancel() }
@@ -1283,13 +1325,18 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 ?? currentLocation
 
             var clearError = await locationSessionCoordinator.clear(targetSession: sessionToClear)
-            if clearError == .noHeldSession, let sessionToClear {
+            // The session the coordinator actually cleared: with none captured above (the
+            // connection had failed), a provisional Ready the selection observer published
+            // while the producers drained is the one it used.
+            let attemptedSession = locationSessionCoordinator.lastClearTarget ?? sessionToClear
+            var failureStatus: String?
+            if clearError == .noHeldSession, let attemptedSession {
                 // Nothing was sent: this Mac's injector holds no session for the one the
                 // GUI showed Ready (a provisional session after a loss or a relaunch, live
                 // 2026-11-02). Storing it as an unresolved Clear wedged Move: every retry
                 // was refused the same way. The managed helper is the only holder of a
                 // held DVT session, so it decides.
-                switch await endUnheldLocationSession(sessionToClear) {
+                switch await endUnheldLocationSession(attemptedSession) {
                 case .clearedOverConnection:
                     locationSessionCoordinator.commitConfirmedClear()
                     clearError = nil
@@ -1304,9 +1351,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     statusMessage = (wasAwaitingReconnect ? "Stopped reconnecting. " : "")
                         + Self.clearAfterConnectionEndedText
                     return
-                case .failed(let reason):
+                case .failed(let reason, let status):
                     locationSessionCoordinator.failClear(reason: reason)
                     clearError = .clearFailed
+                    failureStatus = status
                 }
             }
             if let error = clearError {
@@ -1338,9 +1386,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     ". Move stays blocked until Clear succeeds.",
                     category: .session
                 )
-                unresolvedClearSession = sessionToClear
+                unresolvedClearSession = attemptedSession
                 // The user sees the reason the coordinator recorded, not its enum.
-                if case .failed(let reason) = locationSessionCoordinator.state.application {
+                if let failureStatus {
+                    statusMessage = failureStatus
+                } else if case .failed(let reason) = locationSessionCoordinator.state.application {
                     statusMessage = "Unable to clear location: \(reason). Press Clear again."
                 } else {
                     statusMessage = "Unable to clear location. Press Clear again."
@@ -1381,22 +1431,59 @@ class AppState: ObservableObject, LocationTerminationHandling {
         /// no longer answered): the held session ended with it; unconfirmed on the phone.
         case connectionEnded
         /// The helper did not confirm either: a real Clear failure, retried by Clear.
-        case failed(String)
+        /// `status` replaces the generic "Press Clear again" message when a retry is not
+        /// the advice.
+        case failed(String, status: String? = nil)
     }
 
     /// Ends whatever the managed helper still holds for a session this Mac's injector
-    /// never held. Unprivileged and bounded; it never opens a connection to an absent
-    /// phone. A live connection is cleared over, not closed: closing it would fail the
-    /// tunnel's health probe and report a tunnel error for a Clear. A connection that does
-    /// not answer may still be kept by the helper (a timed-out probe keeps it), so it is
-    /// closed, which ends any location held over it.
+    /// never held. Unprivileged and bounded. A live connection is cleared over, not
+    /// closed: closing it would fail the tunnel's health probe and report a tunnel error
+    /// for a Clear. The Clear over it runs the bridge's normal Clear path, whose
+    /// idempotent `connect_device` preflight can reopen the connection (bounded) if the
+    /// link dropped after the probe. A connection that does not answer may still be kept
+    /// by the helper (a timed-out probe keeps it), so it is closed, which ends any
+    /// location held over it.
+    /// The probe and the close answer without asking anyone when this app session never
+    /// started or adopted the helper, so Clear first tries the unprivileged start/adopt;
+    /// a helper it still cannot reach while the record lists a held session is reported
+    /// as unconfirmed, never as an ended connection (review 2026-11-02-163337 issue 2).
     private func endUnheldLocationSession(_ session: LocationSessionIdentity) async -> UnheldClearOutcome {
         let deviceID = session.stableDeviceID
+        if !managedLocationSessionSource.isHelperRunning {
+            do {
+                try await managedLocationSessionSource.start()
+            } catch {
+                Logger.error(
+                    "[Clear] No session on this Mac; starting or adopting the location helper failed: " +
+                    LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                    category: .session
+                )
+            }
+        }
+        guard managedLocationSessionSource.isHelperRunning else {
+            if managedLocationSessionSource.hasRecordedHeldSessions {
+                Logger.error(
+                    "[Clear] No session on this Mac and the location helper, whose record lists a held session, " +
+                    "could not be reached; the Clear is unconfirmed",
+                    category: .session
+                )
+                return .failed(
+                    Self.clearHelperUnreachableText,
+                    status: "Unable to clear location. " + Self.clearHelperUnreachableText
+                )
+            }
+            Logger.info(
+                "[Clear] No session on this Mac and no location helper holds one; nothing holds the location here",
+                category: .session
+            )
+            return .connectionEnded
+        }
         let status = await managedLocationSessionSource.deviceConnectionStatus(deviceID, transport: session.transport)
         if status == .connected {
             do {
                 try await managedLocationSessionSource.clearLocationOverDeviceConnection(
-                    deviceID, transport: session.transport
+                    deviceID, transport: session.transport, sessionGeneration: session.generation
                 )
                 Logger.info("[Clear] No session on this Mac; the helper cleared the phone over its open connection", category: .session)
                 return .clearedOverConnection
@@ -1410,6 +1497,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 return .failed(reason)
             }
         }
+        Logger.info(Self.unheldClearClosingLogLine(for: status), category: .session)
         guard await managedLocationSessionSource.disconnectDevice(deviceID, transport: session.transport) else {
             Logger.error(
                 "[Clear] No session on this Mac; the helper did not confirm its connection to the phone is closed",

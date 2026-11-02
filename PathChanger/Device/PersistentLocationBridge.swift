@@ -9,6 +9,10 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// True when a live helper's identity record lists held location sessions, even if
     /// this app session has not started, adopted, or restored them yet.
     var hasRecordedHeldSessions: Bool { get }
+    /// True when this app session started or adopted the helper. While false, the
+    /// connection probe and `disconnectDevice` answer without asking any helper, so their
+    /// answers are not evidence about a helper an earlier session left running.
+    var isHelperRunning: Bool { get }
 
     /// Bounded liveness probe of the helper's device connection. Never starts it.
     func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus
@@ -17,10 +21,18 @@ protocol ManagedLocationSessionSource: AnyObject {
     func refreshAdoptedHelperSessions() async throws
     func shutdownHelper() async throws
 
-    /// Clear the simulated location over the helper's open device connection, for a
-    /// device this app's injector holds no session for (a relaunch, or a provisional
-    /// session after a loss). Throws unless the helper confirmed the Clear.
-    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws
+    /// Clear the simulated location over the helper's device connection, for a device
+    /// this app's injector holds no session for (a relaunch, or a provisional session
+    /// after a loss). Throws unless the helper confirmed the Clear. The caller probes the
+    /// connection first; this still runs the bridge's normal Clear path, which starts the
+    /// helper if needed and sends the idempotent `connect_device` preflight (cheap on a
+    /// live connection, at most the 40 s connect budget if the link dropped after the
+    /// probe). `sessionGeneration` is the GUI session's generation (nil: the bridge's).
+    func clearLocationOverDeviceConnection(
+        _ deviceId: String,
+        transport: LocationTransport,
+        sessionGeneration: UInt64?
+    ) async throws
     /// Close the helper's device connection, which ends any location held over it. True
     /// when the helper confirmed it (or no helper, hence no connection, exists). Never
     /// starts the helper.
@@ -1651,15 +1663,25 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// The helper's Clear over its own device connection, for a device the injector holds
     /// no session for. The helper keeps one connection per device whatever the transport
     /// hint, and its Clear is idempotent and device-wide. The caller probes first
-    /// (`deviceConnectionStatus`), so this does not wait out a connect to an absent phone.
-    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {
+    /// (`deviceConnectionStatus`), but this is the normal Clear path: after a relaunch
+    /// `currentSession` is nil, so `ensureDeviceConnection` sends `connect_device` before
+    /// the Clear. That is cheap on the live connection the probe found; if the link or
+    /// the helper died after the probe it can start the helper and wait out the 40 s
+    /// connect budget. Unprivileged and bounded either way.
+    func clearLocationOverDeviceConnection(
+        _ deviceId: String,
+        transport: LocationTransport,
+        sessionGeneration: UInt64?
+    ) async throws {
         let device = Device(
             id: deviceId,
             displayName: deviceId,
             connectionType: transport == .wifi ? .wifi : .usb
         )
-        _ = try await clearLocation(for: device)
+        _ = try await clearLocation(for: device, sessionGeneration: sessionGeneration)
     }
+
+    var isHelperRunning: Bool { isRunning }
 
     // MARK: - Device connection (the app's single connection to the device)
 
@@ -1781,7 +1803,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     }
 
     /// Close the helper's device connection. This ends any location held over it.
-    /// Never starts the helper: with no helper there is no connection to close.
+    /// Never starts the helper: with no helper there is no connection to close. When this
+    /// app session never started or adopted the helper (`isRunning == false`) it returns
+    /// true without asking anyone; callers that need evidence check `isHelperRunning`.
     @discardableResult
     func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool {
         guard isRunning else { return true }

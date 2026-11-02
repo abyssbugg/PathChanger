@@ -93,13 +93,14 @@ private final class EmptyManagedSessionSource: ManagedLocationSessionSource {
     var adoptedHelperID: UUID? { nil }
     var adoptedHelperSessions: [ManagedLocationHelperSession] { [] }
     var hasRecordedHeldSessions: Bool { false }
+    var isHelperRunning: Bool { true }
     func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus {
         .notConnected("test")
     }
     func start() async throws {}
     func refreshAdoptedHelperSessions() async throws {}
     func shutdownHelper() async throws {}
-    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {}
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport, sessionGeneration: UInt64?) async throws {}
     func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
 }
 
@@ -117,6 +118,7 @@ private final class ProbeCountingManagedSessionSource: ManagedLocationSessionSou
     let adoptedHelperID: UUID? = UUID()
     let adoptedHelperSessions: [ManagedLocationHelperSession]
     var hasRecordedHeldSessions: Bool { true }
+    var isHelperRunning: Bool { true }
     private(set) var probeCount = 0
 
     init(deviceID: String) {
@@ -139,7 +141,7 @@ private final class ProbeCountingManagedSessionSource: ManagedLocationSessionSou
     func start() async throws {}
     func refreshAdoptedHelperSessions() async throws {}
     func shutdownHelper() async throws {}
-    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {}
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport, sessionGeneration: UInt64?) async throws {}
     func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
 }
 

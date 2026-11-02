@@ -73,6 +73,12 @@ final class LocationSessionCoordinator: ObservableObject {
   // Implementation context (private)
   private var selectedMode: LocationMode?
   private var currentReadySession: LocationSessionIdentity?
+  /// The session the latest `clear` tried to clear (its target, or the ready session it
+  /// read at the start), nil when it had none. A caller that captured no session (the
+  /// connection had failed) reads it to commit a `noHeldSession` outcome: a provisional
+  /// Ready can be published between the caller's capture and the call (review
+  /// 2026-11-02-163337 issue 1).
+  private(set) var lastClearTarget: LocationSessionIdentity?
   private var previousSession: LocationSessionIdentity?
   private var pendingRequest: LocationApplicationRequest?
   /// The application phase when the current run of `.applying` began; a cancelled
@@ -542,7 +548,8 @@ final class LocationSessionCoordinator: ObservableObject {
   /// Callers must not begin an application while a Clear is awaited (AppState gates every
   /// path on its Clear task): the confirmed Clear overwrites whatever phase it finds.
   func clear(targetSession: LocationSessionIdentity? = nil) async -> LocationSessionTransitionError? {
-    guard let currentReadySession = targetSession ?? self.currentReadySession else {
+    lastClearTarget = targetSession ?? self.currentReadySession
+    guard let currentReadySession = lastClearTarget else {
       return .clearUnavailable
     }
 

@@ -24,6 +24,10 @@ final class AppStateSimulationTests: XCTestCase {
         private(set) var startCallCount = 0
         private(set) var refreshCallCount = 0
         private(set) var shutdownCallCount = 0
+        /// Whether this app session started or adopted the helper.
+        var isHelperRunning = true
+        /// What `start()` throws (it then leaves the helper not running).
+        var startError: Error?
 
         init(helperID: UUID?, sessions: [ManagedLocationHelperSession]) {
             adoptedHelperID = helperID
@@ -32,6 +36,8 @@ final class AppStateSimulationTests: XCTestCase {
 
         func start() async throws {
             startCallCount += 1
+            if let startError { throw startError }
+            isHelperRunning = true
         }
 
         func refreshAdoptedHelperSessions() async throws {
@@ -57,8 +63,14 @@ final class AppStateSimulationTests: XCTestCase {
         /// What the helper answers to a Clear sent over its own device connection.
         var clearOverConnectionError: Error?
         private(set) var clearOverConnectionCallCount = 0
-        func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport) async throws {
+        private(set) var clearOverConnectionGenerations: [UInt64?] = []
+        func clearLocationOverDeviceConnection(
+            _ deviceId: String,
+            transport: LocationTransport,
+            sessionGeneration: UInt64?
+        ) async throws {
             clearOverConnectionCallCount += 1
+            clearOverConnectionGenerations.append(sessionGeneration)
             if let clearOverConnectionError { throw clearOverConnectionError }
         }
 
@@ -78,8 +90,24 @@ final class AppStateSimulationTests: XCTestCase {
         private(set) var appliedCoordinates: [LocationCoordinate] = []
         private(set) var helperClearCount = 0
         private(set) var refusedClearCount = 0
+        private var holdsNextApply = false
+        private var heldApply: CheckedContinuation<Void, Never>?
+
+        /// The next apply waits until `releaseHeldApply`, then fails if it was cancelled
+        /// (before the tracker saw it).
+        func holdNextApply() { holdsNextApply = true }
+        func isHoldingAnApply() -> Bool { heldApply != nil }
+        func releaseHeldApply() {
+            heldApply?.resume()
+            heldApply = nil
+        }
 
         func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+            if holdsNextApply {
+                holdsNextApply = false
+                await withCheckedContinuation { heldApply = $0 }
+                try Task.checkCancellation()
+            }
             let session = tracker.resolve(
                 stableDeviceID: request.target.stableDeviceID,
                 transport: request.target.transport,
@@ -877,6 +905,218 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(source.clearOverConnectionCallCount, 2, "the retry reaches the helper")
         XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
         await assertMoveIsNotBlockedAndReachesTheInjector(state, injector)
+    }
+
+    private func waitFor(
+        _ condition: () async -> Bool,
+        _ message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<2_000 {
+            if await condition() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("timed out waiting: \(message)", file: file, line: line)
+    }
+
+    /// Review 2026-11-02-163337 issue 1: Clear captured no session (the connection had
+    /// failed), and while it drained an in-flight apply the selection observer published
+    /// a provisional Ready. The coordinator cleared that session, the tracker refused it
+    /// (noHeldSession), and nothing committed the phase out of `.clearing`: Clear
+    /// disabled, Move refused, until Stop Tunnel or a relaunch.
+    private func runClearWithAProvisionalReadyPublishedDuringTheDrain(
+        helperConnection: HelperConnectionStatus
+    ) async throws -> (AppState, TrackerBackedClearInjector, FakeManagedLocationSessionSource) {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.connectionStatus = helperConnection
+        let injector = TrackerBackedClearInjector()
+        let state = makeTrackerBackedState(injector: injector, source: source)
+        state.selectDevice(wifiPhone)
+        _ = try await awaitReadyIdentity(in: state)
+
+        await injector.holdNextApply()
+        state.stageLocation(first, for: .teleport)
+        let move = Task { await state.startSimulation() }
+        await waitFor({ await injector.isHoldingAnApply() }, "the Move's apply is in flight")
+        state.locationSessionCoordinator.connectionLost(reason: "Health check failed")
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            XCTFail("the connection failed before Clear, got \(state.locationSessionCoordinator.state.connection)")
+            return (state, injector, source)
+        }
+
+        let clear = Task { await state.clearLocation() }
+        await waitFor({ state.moveBlockedByClear == .clearInProgress }, "Clear is draining")
+        let provisional = try await reselect(wifiPhone, in: state)
+        XCTAssertEqual(provisional.endpointClass, .unresolved)
+        await injector.releaseHeldApply()
+        await clear.value
+        await move.value
+
+        let refused = await injector.refusedClearCount
+        XCTAssertEqual(refused, 1, "the coordinator cleared the provisional session and the tracker refused it")
+        XCTAssertNotEqual(
+            state.locationSessionCoordinator.state.application, .clearing,
+            "every exit from Clear leaves the phase off Clearing"
+        )
+        XCTAssertNil(state.moveBlockedByClear, "Move is not refused")
+        return (state, injector, source)
+    }
+
+    func testAProvisionalReadyPublishedDuringTheClearDrainEndsTheConnectionInsteadOfWedgingClearing() async throws {
+        let (state, injector, source) = try await runClearWithAProvisionalReadyPublishedDuringTheDrain(
+            helperConnection: .notConnected("not connected")
+        )
+        XCTAssertEqual(source.disconnectCallCount, 1, "the helper was asked about the session the coordinator cleared")
+        XCTAssertEqual(state.statusMessage, AppState.clearAfterConnectionEndedText)
+        guard case .uncertain(nil, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("Uncertain, no receipt; got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertTrue(state.locationPresentation.canClear)
+        await assertMoveIsNotBlockedAndReachesTheInjector(state, injector)
+    }
+
+    func testAProvisionalReadyPublishedDuringTheClearDrainClearsOverTheHelpersLiveConnection() async throws {
+        let (state, injector, source) = try await runClearWithAProvisionalReadyPublishedDuringTheDrain(
+            helperConnection: .connected
+        )
+        XCTAssertEqual(source.clearOverConnectionCallCount, 1)
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        await assertMoveIsNotBlockedAndReachesTheInjector(state, injector)
+    }
+
+    /// Review issue 3: the helper did not confirm it closed the dead connection. The Clear
+    /// is unresolved and Move is blocked; the retry reaches the helper again.
+    func testAnUnconfirmedHelperDisconnectLeavesTheClearUnresolvedAndTheRetryReachesTheHelper() async throws {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.connectionStatus = .notConnected("not connected")
+        source.disconnectConfirms = false
+        let injector = TrackerBackedClearInjector()
+        let state = makeTrackerBackedState(injector: injector, source: source)
+        state.selectDevice(wifiPhone)
+        _ = try await awaitReadyIdentity(in: state)
+        state.locationSessionCoordinator.connectionLost(reason: "Selected device lost")
+        _ = try await reselect(wifiPhone, in: state)
+
+        await state.clearLocation()
+
+        XCTAssertEqual(source.disconnectCallCount, 1)
+        XCTAssertEqual(state.moveBlockedByClear, .clearUnresolved)
+        guard case .failed = state.locationSessionCoordinator.state.application else {
+            return XCTFail("an unconfirmed close is a failed Clear, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertTrue(state.statusMessage?.hasSuffix("Press Clear again.") ?? false, state.statusMessage ?? "nil")
+        let appliesBefore = await injector.appliedCount()
+        state.stageLocation(second, for: .teleport)
+        await state.startSimulation()
+        let appliesAfter = await injector.appliedCount()
+        XCTAssertEqual(appliesAfter, appliesBefore, "Move stays blocked by the unresolved Clear")
+
+        source.disconnectConfirms = true
+        await state.clearLocation()
+
+        XCTAssertEqual(source.disconnectCallCount, 2, "the retry reaches the helper again")
+        guard case .uncertain(nil, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("Uncertain, no receipt; got \(state.locationSessionCoordinator.state.application)")
+        }
+        await assertMoveIsNotBlockedAndReachesTheInjector(state, injector)
+    }
+
+    /// Review issue 2: this app session never started or adopted the helper, so its
+    /// probe and disconnect answer without asking anyone. Clear first tries the
+    /// unprivileged start/adopt; when that fails while a helper record lists a held
+    /// session, nobody confirmed anything and the GUI must not claim the connection ended.
+    func testAClearThatCannotReachARecordedHelperSessionSaysSoInsteadOfClaimingTheConnectionEnded() async throws {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.isHelperRunning = false
+        source.startError = PersistentLocationBridge.PersistentBridgeError.processStartFailed("identity mismatch")
+        source.hasRecordedHeldSessions = true
+        source.connectionStatus = .notConnected("location helper is not running")
+        let injector = TrackerBackedClearInjector()
+        let state = makeTrackerBackedState(injector: injector, source: source)
+        state.selectDevice(wifiPhone)
+        _ = try await awaitReadyIdentity(in: state)
+        state.locationSessionCoordinator.connectionLost(reason: "Selected device lost")
+        _ = try await reselect(wifiPhone, in: state)
+        let startsBefore = source.startCallCount
+        let probesBefore = source.statusCallCount
+
+        await state.clearLocation()
+
+        XCTAssertEqual(source.startCallCount, startsBefore + 1, "Clear tries the unprivileged start/adopt first")
+        XCTAssertEqual(source.statusCallCount, probesBefore, "no probe of a helper this session does not run")
+        XCTAssertEqual(source.disconnectCallCount, 0, "no disconnect that answers without I/O")
+        XCTAssertNotEqual(state.statusMessage, AppState.clearAfterConnectionEndedText)
+        guard case .failed(let reason) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("unconfirmed: a failed Clear, got \(state.locationSessionCoordinator.state.application)")
+        }
+        XCTAssertEqual(reason, AppState.clearHelperUnreachableText)
+        XCTAssertTrue(state.statusMessage?.contains("Quit and reopen PathChanger, then Clear.") ?? false, state.statusMessage ?? "nil")
+        XCTAssertFalse(state.statusMessage?.contains("Press Clear again") ?? true, "the advice is the reopen, not a retry")
+        XCTAssertEqual(state.moveBlockedByClear, .clearUnresolved)
+    }
+
+    func testAClearWithNoHelperAndNoRecordedSessionEndsWithoutHelperIO() async throws {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.isHelperRunning = false
+        source.startError = PersistentLocationBridge.PersistentBridgeError.pythonNotFound
+        source.hasRecordedHeldSessions = false
+        let injector = TrackerBackedClearInjector()
+        let state = makeTrackerBackedState(injector: injector, source: source)
+        state.selectDevice(wifiPhone)
+        _ = try await awaitReadyIdentity(in: state)
+        state.locationSessionCoordinator.connectionLost(reason: "Selected device lost")
+        _ = try await reselect(wifiPhone, in: state)
+        let startsBefore = source.startCallCount
+        let probesBefore = source.statusCallCount
+
+        await state.clearLocation()
+
+        XCTAssertEqual(source.startCallCount, startsBefore + 1)
+        XCTAssertEqual(source.statusCallCount, probesBefore)
+        XCTAssertEqual(source.disconnectCallCount, 0)
+        XCTAssertEqual(state.statusMessage, AppState.clearAfterConnectionEndedText)
+        guard case .uncertain(nil, _) = state.locationSessionCoordinator.state.application else {
+            return XCTFail("Uncertain, no receipt; got \(state.locationSessionCoordinator.state.application)")
+        }
+        await assertMoveIsNotBlockedAndReachesTheInjector(state, injector)
+    }
+
+    func testAClearAdoptsTheHelperBeforeProbingWhenThisSessionHadNotStartedIt() async throws {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.isHelperRunning = false
+        source.hasRecordedHeldSessions = true
+        source.connectionStatus = .connected
+        let injector = TrackerBackedClearInjector()
+        let state = makeTrackerBackedState(injector: injector, source: source)
+        state.selectDevice(wifiPhone)
+        _ = try await awaitReadyIdentity(in: state)
+        state.locationSessionCoordinator.connectionLost(reason: "Selected device lost")
+        let provisional = try await reselect(wifiPhone, in: state)
+
+        await state.clearLocation()
+
+        XCTAssertTrue(source.isHelperRunning, "the unprivileged start/adopt ran")
+        XCTAssertEqual(source.clearOverConnectionCallCount, 1, "the adopted helper cleared over its connection")
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        // Review issue 4: the helper's recent_results row carries the GUI session's
+        // generation, so it lines up with the "[Clear] Start: generation=" log line.
+        XCTAssertEqual(source.clearOverConnectionGenerations, [provisional.generation])
+    }
+
+    /// Review issue 5: a probe that timed out leads to closing a connection that may only
+    /// have been slow; that line must be distinct so a later tunnel error can be traced.
+    func testClosingAfterATimedOutProbeIsLoggedDistinctly() {
+        let timedOut = AppState.unheldClearClosingLogLine(
+            for: .notConnected(PersistentLocationBridge.PersistentBridgeError.timeout.localizedDescription)
+        )
+        XCTAssertEqual(
+            timedOut,
+            "[Clear] Probe did not answer (timed out); closing the helper's connection, which ends any location held over it"
+        )
+        let dead = AppState.unheldClearClosingLogLine(for: .notConnected("not connected"))
+        XCTAssertFalse(dead.contains("timed out"), dead)
+        XCTAssertTrue(dead.contains("closing"), dead)
     }
 
     func testARestoreRefusedForAnOwnedOperationNeverReachesTheAdapter() async throws {
