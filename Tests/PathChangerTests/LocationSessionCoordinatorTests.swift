@@ -627,7 +627,7 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt, receipt)
   }
   
-  func test_clear_withConnectionLossDuringClear_remainsFailedUncertain() async throws {
+  func test_clear_withConnectionLossDuringAConfirmedClear_succeedsAndKeepsConnectionFailed() async throws {
     let coordinate = LocationCoordinate(latitude: 37.7749, longitude: -122.4194)
     coordinator.select(coordinate, mode: .teleport)
     
@@ -676,21 +676,18 @@ final class LocationSessionCoordinatorTests: XCTestCase {
     
     let clearError = await clearTask.value
     
-    // Clear should return staleGeneration because state changed
-    guard let clearError = clearError as? LocationSessionTransitionError else {
-      XCTFail("Expected LocationSessionTransitionError from clear")
-      return
-    }
-    guard case .staleGeneration = clearError else {
-      XCTFail("Expected .staleGeneration error when state changed during clear")
-      return
-    }
-    
-    // Verify state remains uncertain/failed, not overwritten to idle
-    guard case .uncertain = coordinator.state.application else {
-      XCTFail("Expected .uncertain state to remain after clear returns staleGeneration")
-      return
-    }
+    // The injector confirmed the Clear: the device holds no simulated location, so
+    // Clear succeeded even though the connection was lost during the await
+    // (live 2026-11-01: reporting it failed wedged Move and offered to preserve a
+    // location that no longer existed).
+    XCTAssertNil(clearError)
+    XCTAssertEqual(coordinator.state.application, .idle)
+    XCTAssertNil(coordinator.state.desiredLocation)
+    XCTAssertNil(coordinator.state.lastAcknowledgedReceipt)
+    XCTAssertNil(coordinator.state.heldWhileApplying)
+    // The connection dimension stays as the loss left it.
+    XCTAssertEqual(coordinator.state.connection, .failed("Device disconnected during clear"))
+    XCTAssertThrowsError(try coordinator.beginApplication())
   }
   
   func testAcceptAdoptsAReceiptFromANewerBridgeSession() throws {

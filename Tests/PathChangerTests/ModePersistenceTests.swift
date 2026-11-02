@@ -65,6 +65,51 @@ private actor HelperLaneGenerationInjector: LocationInjecting {
     func appliedCoordinates() -> [LocationCoordinate] { applied }
 }
 
+/// The helper lane with hooks that run after the device was cleared but before Clear
+/// returns to the coordinator (where the live 2026-11-01 wedge began).
+private actor ClearRetryHelperLaneInjector: LocationInjecting {
+    private var tracker = LocationSessionGenerationTracker()
+    private var afterDeviceCleared: (@MainActor @Sendable () -> Void)?
+    private var failAfterDeviceClearedOnce = false
+    private var clears = 0
+
+    func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+        let session = tracker.resolve(
+            stableDeviceID: request.target.stableDeviceID,
+            transport: request.target.transport,
+            endpointClass: .direct,
+            minimumGeneration: request.sessionGeneration
+        )
+        guard let acknowledgement = LocationProviderAcknowledgement(
+            requestID: request.id, sessionGeneration: session.generation,
+            physicalTransport: request.target.transport, channel: .userspaceRSD,
+            endpointClass: .remoteServiceDiscovery
+        ) else { throw LocationInjectionError.injectionFailed("bad acknowledgement") }
+        return try LocationApplicationAcknowledgementRouter.accept(
+            request: request, provisionalSession: session,
+            acknowledgement: acknowledgement, generationTracker: &tracker
+        )
+    }
+
+    func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
+        guard let session else { throw LocationInjectionError.injectionFailed("no session") }
+        try tracker.beginClear(session)
+        clears += 1
+        try tracker.completeClear(session)
+        if let afterDeviceCleared { await afterDeviceCleared() }
+        if failAfterDeviceClearedOnce {
+            // The helper cleared the phone, but a later check in the bridge (the
+            // acknowledgement match or the durable-clear confirmation) threw.
+            failAfterDeviceClearedOnce = false
+            throw LocationInjectionError.injectionFailed("Clear acknowledgement does not match the active session")
+        }
+    }
+
+    func setAfterDeviceCleared(_ hook: (@MainActor @Sendable () -> Void)?) { afterDeviceCleared = hook }
+    func setFailAfterDeviceClearedOnce() { failAfterDeviceClearedOnce = true }
+    func clearCount() -> Int { clears }
+}
+
 @MainActor
 final class ModePersistenceTests: XCTestCase {
     private let first = LocationCoordinate(latitude: 35.67620, longitude: 139.65030)
@@ -770,6 +815,81 @@ final class ModePersistenceTests: XCTestCase {
 
         state.disengageJoystick()
         await fake.releaseNextApplication(session: session)
+    }
+
+    private func makeClearRetryState(
+        _ injector: ClearRetryHelperLaneInjector
+    ) async -> AppState {
+        let state = AppState(startBackgroundServices: false, locationInjector: injector, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "clear-retry-device", displayName: "Clear Retry", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.simulationSpeed = .teleport
+        state.activeMode = .teleport
+        state.stageLocation(first, for: .teleport)
+        await state.startSimulation()
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertTrue(state.canStartSimulation)
+        return state
+    }
+
+    private func assertMoveWorksAfterClear(_ state: AppState, file: StaticString = #filePath, line: UInt = #line) async {
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle, file: file, line: line)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt, file: file, line: line)
+        XCTAssertNil(state.moveBlockedByClear, file: file, line: line)
+        XCTAssertTrue(state.canStartSimulation, "A successful Clear unblocks Move", file: file, line: line)
+        XCTAssertEqual(state.statusMessage, "Location cleared", file: file, line: line)
+
+        state.stageLocation(second, for: .teleport)
+        await state.startSimulation()
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive, file: file, line: line)
+        XCTAssertEqual(
+            state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, second,
+            file: file, line: line
+        )
+    }
+
+    func testAClearTheHelperConfirmedDuringAConnectionLossSucceedsAndMoveStillWorks() async {
+        // Live 2026-11-01: the helper cleared the phone, but the phone dropped out of
+        // discovery during the await and the app reported the Clear as failed, so Move
+        // stayed blocked. A Clear the helper confirmed is device truth: one press works.
+        let injector = ClearRetryHelperLaneInjector()
+        let state = await makeClearRetryState(injector)
+
+        await injector.setAfterDeviceCleared { [weak state] in
+            state?.locationSessionCoordinator.connectionLost(reason: "Selected device lost")
+        }
+        await state.clearLocation()
+        await injector.setAfterDeviceCleared(nil)
+
+        let clears = await injector.clearCount()
+        XCTAssertEqual(clears, 1)
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("The connection loss stays reported; only the location dimension is idle")
+        }
+        await assertMoveWorksAfterClear(state)
+    }
+
+    func testAClearThatFailedAfterTheHelperClearedCanBeRetriedAndThenUnblocksMove() async {
+        // The helper cleared the phone, but a later bridge check threw: the app keeps
+        // Move blocked, and the retry must reach the helper again instead of failing in
+        // the tracker before it (the wedge that lasted until relaunch).
+        let injector = ClearRetryHelperLaneInjector()
+        let state = await makeClearRetryState(injector)
+
+        await injector.setFailAfterDeviceClearedOnce()
+        await state.clearLocation()
+        XCTAssertFalse(state.canStartSimulation, "An unconfirmed Clear keeps Move blocked")
+        XCTAssertEqual(state.moveBlockedByClear, .clearUnresolved)
+        // The status line names the real reason, not the coordinator's enum.
+        let status = state.statusMessage ?? ""
+        XCTAssertFalse(status.contains("clearFailed"), status)
+        XCTAssertTrue(status.contains("Clear acknowledgement does not match the active session"), status)
+
+        await state.clearLocation()
+
+        let clears = await injector.clearCount()
+        XCTAssertEqual(clears, 2, "The retry must reach the helper again")
+        await assertMoveWorksAfterClear(state)
     }
 
     func testHelperLaneKeepsEveryModeAcknowledgedThroughClearAndConnectionLoss() async throws {

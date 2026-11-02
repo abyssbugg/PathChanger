@@ -312,6 +312,10 @@ struct LocationSessionGenerationTracker: Sendable {
         /// remoteServiceDiscovery; that is the same session, not a replacement.
         var requestedEndpointClass: LocationEndpointClass?
         var lost: Bool
+        /// The loss was a completed Clear: the device holds no location for this
+        /// session, so a repeated Clear of the same identity is harmless (the helper's
+        /// clear is idempotent) and must be allowed. A connection loss leaves it false.
+        var cleared: Bool = false
     }
     private var records: [String: Record] = [:]
 
@@ -354,6 +358,7 @@ struct LocationSessionGenerationTracker: Sendable {
                 record.endpointClass = endpointClass
                 record.requestedEndpointClass = endpointClass
                 record.lost = false
+                record.cleared = false
             } else if record.requestedEndpointClass == nil {
                 // First request on a restored (relaunch-adopted) session.
                 record.requestedEndpointClass = endpointClass
@@ -413,7 +418,10 @@ struct LocationSessionGenerationTracker: Sendable {
     }
 
     mutating func beginClear(_ identity: LocationSessionIdentity) throws {
-        guard let record = records[identity.stableDeviceID], !record.lost else {
+        // A record lost to a completed Clear still validates: retrying a Clear the app
+        // did not see finish (live 2026-11-01) must reach the helper again instead of
+        // wedging every later Move.
+        guard let record = records[identity.stableDeviceID], !record.lost || record.cleared else {
             throw AdoptionError.missingSession
         }
         guard record.session.generation == identity.generation else {
@@ -433,6 +441,7 @@ struct LocationSessionGenerationTracker: Sendable {
             throw AdoptionError.missingSession
         }
         record.lost = true
+        record.cleared = true
         records[identity.stableDeviceID] = record
     }
 
@@ -511,6 +520,16 @@ extension LocationInjectionReceipt {
             outcome: outcome
         )
     }
+}
+
+/// How a Clear acknowledgement relates to the session being cleared.
+enum ClearAcknowledgementCheck: Equatable, Sendable {
+    case matches
+    /// Same transport and generation over the helper's other lane.
+    case endpointDiffers
+    case mismatch
+
+    var acceptsClear: Bool { self != .mismatch }
 }
 
 // MARK: - Dev Location Bridge
@@ -738,6 +757,7 @@ actor DevLocationBridge: LocationInjecting {
 
     func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
         guard !clearingDeviceIDs.contains(request.target.stableDeviceID) else {
+            Logger.error("[Apply] Refused: a Clear is in progress for this device", category: .device)
             throw LocationInjectionError.injectionFailed("Location Clear is in progress for this device")
         }
 
@@ -779,19 +799,45 @@ actor DevLocationBridge: LocationInjecting {
                 session: session,
                 outcome: .queued
             )
+        } catch let cancellation as CancellationError {
+            throw cancellation
         } catch {
+            Logger.error(
+                "[Apply] Failed (\(request.mode), generation=\(session.generation)): " +
+                LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device,
+                repeatKey: "DevLocationBridge.apply"
+            )
             throw error
         }
     }
 
+    /// Whether a Clear acknowledgement belongs to the session being cleared.
+    /// Transport and generation must match. The endpoint class may differ: the helper
+    /// rebuilds its device connection after an error and may come back over its other
+    /// lane, and a Clear ends simulation on the whole device whichever lane carried it.
+    static func checkClearAcknowledgement(
+        _ acknowledgement: LocationProviderAcknowledgement,
+        session: LocationSessionIdentity
+    ) -> ClearAcknowledgementCheck {
+        guard acknowledgement.physicalTransport == session.transport,
+              acknowledgement.sessionGeneration == session.generation else {
+            return .mismatch
+        }
+        return acknowledgement.endpointClass == session.endpointClass ? .matches : .endpointDiffers
+    }
+
     func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {
         guard let session else {
+            Logger.error("[Clear] Refused: no acknowledged location session", category: .device)
             throw LocationInjectionError.injectionFailed("Cannot Clear without an acknowledged location session")
         }
         guard session.stableDeviceID == target.stableDeviceID else {
+            Logger.error("[Clear] Refused: target does not match the acknowledged session", category: .device)
             throw LocationInjectionError.injectionFailed("Clear target does not match the acknowledged session")
         }
         guard clearingDeviceIDs.insert(target.stableDeviceID).inserted else {
+            Logger.error("[Clear] Refused: a Clear is already in progress for this device", category: .device)
             throw LocationInjectionError.injectionFailed("Location Clear is already in progress for this device")
         }
         defer { clearingDeviceIDs.remove(target.stableDeviceID) }
@@ -799,6 +845,11 @@ actor DevLocationBridge: LocationInjecting {
         do {
             try generationTracker.beginClear(session)
         } catch {
+            Logger.error(
+                "[Clear] Session validation failed before reaching the helper: \(error) " +
+                "(generation=\(session.generation) transport=\(session.transport) endpoint=\(session.endpointClass))",
+                category: .device
+            )
             throw LocationInjectionError.injectionFailed("Clear session validation failed: \(error.localizedDescription)")
         }
 
@@ -821,19 +872,42 @@ actor DevLocationBridge: LocationInjecting {
             displayName: target.stableDeviceID,
             connectionType: target.transport == .wifi ? .wifi : .usb
         )
-        let acknowledgement = try await PersistentLocationBridge.shared.clearLocation(
-            for: device,
-            requestID: UUID(),
-            sessionGeneration: session.generation
-        )
-        guard acknowledgement.physicalTransport == session.transport,
-              acknowledgement.sessionGeneration == session.generation,
-              acknowledgement.endpointClass == session.endpointClass else {
+        let acknowledgement: LocationProviderAcknowledgement
+        do {
+            acknowledgement = try await PersistentLocationBridge.shared.clearLocation(
+                for: device,
+                requestID: UUID(),
+                sessionGeneration: session.generation
+            )
+        } catch {
+            Logger.error(
+                "[Clear] Helper Clear failed: " + LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device
+            )
+            throw error
+        }
+        let acknowledgementCheck = Self.checkClearAcknowledgement(acknowledgement, session: session)
+        guard acknowledgementCheck.acceptsClear else {
+            Logger.error(
+                "[Clear] The helper cleared the device but its acknowledgement does not match the session: " +
+                "transport \(acknowledgement.physicalTransport) vs \(session.transport), " +
+                "generation \(acknowledgement.sessionGeneration) vs \(session.generation), " +
+                "endpoint \(acknowledgement.endpointClass) vs \(session.endpointClass)",
+                category: .device
+            )
             throw LocationInjectionError.injectionFailed("Clear acknowledgement does not match the active session")
+        }
+        if acknowledgementCheck == .endpointDiffers {
+            Logger.info(
+                "[Clear] Acknowledged over endpoint \(acknowledgement.endpointClass) " +
+                "(session endpoint \(session.endpointClass)); a Clear ends simulation on the whole device",
+                category: .device
+            )
         }
         do {
             try generationTracker.completeClear(session)
         } catch {
+            Logger.error("[Clear] Completion could not invalidate the session: \(error)", category: .device)
             throw LocationInjectionError.injectionFailed(
                 "Clear completion could not invalidate the acknowledged session: \(error.localizedDescription)"
             )

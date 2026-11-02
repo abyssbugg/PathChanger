@@ -877,7 +877,7 @@ final class AppStateSimulationTests: XCTestCase {
         })
     }
 
-    func testTransportReplacementDuringClearPreservesAcknowledgedTruthAsUncertain() async throws {
+    func testTransportReplacementDuringAConfirmedClearReportsClearAndKeepsConnectionFailed() async throws {
         let fake = FakeLocationInjector()
         let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
         let (state, session) = makeAcknowledgementState(
@@ -919,10 +919,18 @@ final class AppStateSimulationTests: XCTestCase {
 
         await fake.releaseClear()
         await clearing.value
-        guard case .uncertain(let finalReceipt, _) = state.locationSessionCoordinator.state.application else {
-            return XCTFail("Completed stale Clear must not overwrite newer uncertainty")
+        // The injector confirmed the Clear: the device holds nothing, so the location
+        // dimension is idle and Clear is reported as done, while the connection stays
+        // failed from the transport replacement (three-dimensional state truth).
+        XCTAssertEqual(state.locationSessionCoordinator.state.application, .idle)
+        XCTAssertNil(state.locationSessionCoordinator.state.lastAcknowledgedReceipt)
+        XCTAssertNil(state.locationSessionCoordinator.state.desiredLocation)
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("A confirmed Clear must not repair the connection dimension")
         }
-        XCTAssertEqual(finalReceipt, receipt)
+        XCTAssertNil(state.moveBlockedByClear)
+        XCTAssertEqual(state.statusMessage, "Location cleared")
+        XCTAssertFalse(state.requiresLocationQuitDecision)
     }
 
     func testClearAndQuitRequiresClearThenShutsDownManagedHelper() async throws {

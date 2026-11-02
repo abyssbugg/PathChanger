@@ -180,6 +180,133 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
         )
     }
 
+    func testClearRetriedAfterTheDeviceWasClearedIsAcceptedForTheSameIdentityOnly() throws {
+        // Live 2026-11-01: the first Clear cleared the phone (completeClear ran), but
+        // the app still saw an error; every retry then failed in beginClear with
+        // missingSession before reaching the helper, wedging Move until relaunch.
+        var tracker = LocationSessionGenerationTracker()
+        let session = tracker.resolve(
+            stableDeviceID: "device-clear-again",
+            transport: .wifi,
+            endpointClass: .remoteServiceDiscovery
+        )
+        let identity = LocationSessionIdentity(
+            stableDeviceID: "device-clear-again",
+            transport: .wifi,
+            endpointClass: .remoteServiceDiscovery,
+            generation: session.generation
+        )
+        try tracker.beginClear(identity)
+        try tracker.completeClear(identity)
+
+        XCTAssertNoThrow(try tracker.beginClear(identity))
+        XCTAssertNoThrow(try tracker.completeClear(identity))
+
+        let otherGeneration = LocationSessionIdentity(
+            stableDeviceID: identity.stableDeviceID, transport: .wifi,
+            endpointClass: .remoteServiceDiscovery, generation: session.generation + 1
+        )
+        XCTAssertThrowsError(try tracker.beginClear(otherGeneration)) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .staleAcknowledgement)
+        }
+        let otherEndpoint = LocationSessionIdentity(
+            stableDeviceID: identity.stableDeviceID, transport: .wifi,
+            endpointClass: .direct, generation: session.generation
+        )
+        XCTAssertThrowsError(try tracker.beginClear(otherEndpoint)) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .endpointMismatch)
+        }
+        let otherTransport = LocationSessionIdentity(
+            stableDeviceID: identity.stableDeviceID, transport: .usb,
+            endpointClass: .remoteServiceDiscovery, generation: session.generation
+        )
+        XCTAssertThrowsError(try tracker.beginClear(otherTransport)) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .transportMismatch)
+        }
+
+        // The cleared session still cannot take an acknowledgement, and the next
+        // apply starts a new generation.
+        let stale = try XCTUnwrap(LocationProviderAcknowledgement(
+            requestID: UUID(), sessionGeneration: session.generation,
+            physicalTransport: .wifi, channel: .userspaceRSD,
+            endpointClass: .remoteServiceDiscovery
+        ))
+        XCTAssertThrowsError(try tracker.adopt(
+            stale, stableDeviceID: identity.stableDeviceID, sessionID: session.sessionID
+        ))
+        let next = tracker.resolve(
+            stableDeviceID: identity.stableDeviceID, transport: .wifi,
+            endpointClass: .remoteServiceDiscovery
+        )
+        XCTAssertEqual(next.generation, session.generation + 1)
+    }
+
+    func testClearAcknowledgementOverTheOtherLaneIsAcceptedButTransportAndGenerationMustMatch() throws {
+        // The helper rebuilds its device connection after an error and may come back on
+        // its other lane (direct usbmux vs userspace RSD). A Clear ends simulation on the
+        // whole device whichever lane carried it, so a Clear acknowledgement on another
+        // endpoint class is still the Clear of this session (review 2026-11-01).
+        let session = LocationSessionIdentity(
+            stableDeviceID: "device-clear-lane", transport: .wifi,
+            endpointClass: .direct, generation: 4
+        )
+        func acknowledgement(
+            generation: UInt64 = 4,
+            transport: LocationTransport = .wifi,
+            channel: LocationDVTChannel,
+            endpointClass: LocationEndpointClass
+        ) throws -> LocationProviderAcknowledgement {
+            try XCTUnwrap(LocationProviderAcknowledgement(
+                requestID: UUID(), sessionGeneration: generation,
+                physicalTransport: transport, channel: channel, endpointClass: endpointClass
+            ))
+        }
+
+        XCTAssertEqual(
+            DevLocationBridge.checkClearAcknowledgement(
+                try acknowledgement(channel: .usbmuxDirect, endpointClass: .direct), session: session
+            ),
+            .matches
+        )
+        XCTAssertEqual(
+            DevLocationBridge.checkClearAcknowledgement(
+                try acknowledgement(channel: .userspaceRSD, endpointClass: .remoteServiceDiscovery), session: session
+            ),
+            .endpointDiffers
+        )
+        XCTAssertEqual(
+            DevLocationBridge.checkClearAcknowledgement(
+                try acknowledgement(generation: 5, channel: .usbmuxDirect, endpointClass: .direct), session: session
+            ),
+            .mismatch
+        )
+        XCTAssertEqual(
+            DevLocationBridge.checkClearAcknowledgement(
+                try acknowledgement(transport: .usb, channel: .usbmuxDirect, endpointClass: .direct), session: session
+            ),
+            .mismatch
+        )
+        XCTAssertTrue(ClearAcknowledgementCheck.endpointDiffers.acceptsClear)
+        XCTAssertTrue(ClearAcknowledgementCheck.matches.acceptsClear)
+        XCTAssertFalse(ClearAcknowledgementCheck.mismatch.acceptsClear)
+    }
+
+    func testClearAfterAConnectionLossIsStillRefused() {
+        // A record lost to a connection drop (not a completed Clear) keeps refusing.
+        var tracker = LocationSessionGenerationTracker()
+        let session = tracker.resolve(
+            stableDeviceID: "device-lost", transport: .usb, endpointClass: .direct
+        )
+        tracker.markLost(stableDeviceID: "device-lost")
+        let identity = LocationSessionIdentity(
+            stableDeviceID: "device-lost", transport: .usb,
+            endpointClass: .direct, generation: session.generation
+        )
+        XCTAssertThrowsError(try tracker.beginClear(identity)) {
+            XCTAssertEqual($0 as? LocationSessionGenerationTracker.AdoptionError, .missingSession)
+        }
+    }
+
     func testAcknowledgementRouterBuildsReceiptFromActualProviderTruth() throws {
         let request = LocationApplicationRequest(
             id: UUID(),

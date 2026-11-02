@@ -66,7 +66,6 @@ final class LocationSessionCoordinator: ObservableObject {
   // Implementation context (private)
   private var selectedMode: LocationMode?
   private var currentReadySession: LocationSessionIdentity?
-  private var currentReadySessionSnapshot: LocationSessionIdentity?
   private var previousSession: LocationSessionIdentity?
   private var pendingRequest: LocationApplicationRequest?
   private var movementBeforeRecovery: LocationMovementPhase?
@@ -491,19 +490,22 @@ final class LocationSessionCoordinator: ObservableObject {
   /// Sets clearing phase before awaiting injector.
   /// Snapshots ready session and marks `.clearing`.
   /// Prevents `beginApplication` while clearing with a typed transition error.
-  /// After await, before success/failure mutation, verifies the operation is still current:
-  /// same ready identity and state remains clearing. If connection/mode/application state changed,
-  /// does not overwrite newer state; returns a typed superseded/stale error.
-  /// Connection loss during clear must remain failed/uncertain when clear returns.
-  /// On success: sets desiredLocation=nil, lastAcknowledgedReceipt=nil, application=.idle, pending=nil.
+  /// A Clear the injector confirmed (it returned without throwing) is device truth: the
+  /// device holds no simulated location, so the location dimension becomes idle even if
+  /// the ready session changed or the phase left `.clearing` during the await (a
+  /// connection loss, live 2026-11-01). The connection dimension is not touched: a loss
+  /// during Clear stays failed while the location dimension is idle. Movement stays as
+  /// Clear's caller set it.
+  /// On success: sets desiredLocation=nil, lastAcknowledgedReceipt=nil, heldWhileApplying=nil,
+  /// application=.idle, pending=nil, returns nil.
   /// On failure: retains desired/ack/connection/movement, sets failed, returns clearFailed.
+  /// Callers must not begin an application while a Clear is awaited (AppState gates every
+  /// path on its Clear task): the confirmed Clear overwrites whatever phase it finds.
   func clear(targetSession: LocationSessionIdentity? = nil) async -> LocationSessionTransitionError? {
     guard let currentReadySession = targetSession ?? self.currentReadySession else {
       return .clearUnavailable
     }
 
-    // Snapshot ready session and mark clearing
-    self.currentReadySessionSnapshot = currentReadySession
     self.state.application = .clearing
 
     do {
@@ -513,26 +515,16 @@ final class LocationSessionCoordinator: ObservableObject {
       )
       try await injector.clear(target: target, session: currentReadySession)
 
-      // After await, verify operation is still current
-      guard self.currentReadySessionSnapshot == currentReadySession else {
-        // Ready session changed, do not overwrite newer state
-        return .staleGeneration
-      }
-
-      guard case .clearing = self.state.application else {
-        // State changed (e.g., connection lost), do not overwrite
-        return .staleGeneration
-      }
-
       self.state.desiredLocation = nil
       self.state.lastAcknowledgedReceipt = nil
+      self.state.heldWhileApplying = nil
       self.state.application = .idle
       self.pendingRequest = nil
-      self.currentReadySessionSnapshot = nil
+      self.phaseBeforeApplying = nil
+      self.movementBeforeRecovery = nil
       return nil
     } catch {
       self.state.application = .failed(error.localizedDescription)
-      self.currentReadySessionSnapshot = nil
       return .clearFailed
     }
   }

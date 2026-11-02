@@ -455,8 +455,22 @@ class AppState: ObservableObject, LocationTerminationHandling {
     @Published var showLocationInput: Bool = false
     @Published var showRouteImport: Bool = false
     @Published var showOnboarding: Bool = false
-    @Published var lastError: String?
-    @Published var statusMessage: String?
+    @Published var lastError: String? {
+        // Every assignment, wherever it is made, reaches the log (live 2026-11-01:
+        // a failed Clear left no trace).
+        didSet {
+            if let lastError, lastError != oldValue {
+                Logger.error("[Error] " + LogRedaction.redactingDeviceIdentifiers(lastError), category: .session)
+            }
+        }
+    }
+    @Published var statusMessage: String? {
+        didSet {
+            if let statusMessage, statusMessage != oldValue {
+                Logger.info("[Status] " + LogRedaction.redactingDeviceIdentifiers(statusMessage), category: .session)
+            }
+        }
+    }
 
     // MARK: Statistics (forwarded to `simulation`)
     var injectionStats: InjectionStats {
@@ -550,6 +564,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     private var canBeginLocationOperation: Bool {
         locationClearTask == nil && unresolvedClearSession == nil
+    }
+
+    /// Why a Clear blocks Move, if it does: the GUI must say so instead of claiming the
+    /// device is not ready (live 2026-11-01).
+    var moveBlockedByClear: LocationClearBlock? {
+        if locationClearTask != nil { return .clearInProgress }
+        if unresolvedClearSession != nil { return .clearUnresolved }
+        return nil
     }
 
     var simulationStatusText: String {
@@ -908,6 +930,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
         } else {
             sessionToClear = nil
         }
+        Logger.info(
+            "[Clear] Start: " + (sessionToClear.map {
+                "generation=\($0.generation) transport=\($0.transport) endpoint=\($0.endpointClass)"
+            } ?? "no session")
+                + (unresolvedClearSession != nil ? " (retrying an unresolved Clear)" : ""),
+            category: .session
+        )
         let clearing = Task { @MainActor in
             defer { locationClearTask = nil }
             let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask].compactMap { $0 }
@@ -939,10 +968,31 @@ class AppState: ObservableObject, LocationTerminationHandling {
             locationSessionCoordinator.stopMovement()
 
             if let error = await locationSessionCoordinator.clear(targetSession: sessionToClear) {
+                let detail: String
+                switch locationSessionCoordinator.state.application {
+                case .failed(let reason): detail = "application failed: \(reason)"
+                case .uncertain(_, let reason): detail = "application uncertain: \(reason)"
+                case .lost(let reason): detail = "application lost: \(reason)"
+                case .idle: detail = "application idle"
+                case .applying: detail = "application applying"
+                case .active: detail = "application active"
+                case .clearing: detail = "application clearing"
+                }
+                Logger.error(
+                    "[Clear] Failed with \(error); " + LogRedaction.redactingDeviceIdentifiers(detail) +
+                    ". Move stays blocked until Clear succeeds.",
+                    category: .session
+                )
                 unresolvedClearSession = sessionToClear
-                statusMessage = "Unable to clear location: \(error)"
+                // The user sees the reason the coordinator recorded, not its enum.
+                if case .failed(let reason) = locationSessionCoordinator.state.application {
+                    statusMessage = "Unable to clear location: \(reason). Press Clear again."
+                } else {
+                    statusMessage = "Unable to clear location. Press Clear again."
+                }
                 return
             }
+            Logger.info("[Clear] Succeeded; the device is back on its real location", category: .session)
             unresolvedClearSession = nil
             simulation.currentLocation = nil
             simulation.targetLocation = nil
@@ -956,16 +1006,28 @@ class AppState: ObservableObject, LocationTerminationHandling {
     // MARK: Simulation Control
 
     func startSimulation() async {
-        guard canStartSimulation else { return }
+        guard canStartSimulation else {
+            let reason: String
+            switch moveBlockedByClear {
+            case .clearInProgress: reason = "a Clear is in progress"
+            case .clearUnresolved: reason = "the last Clear is unconfirmed"
+            case nil: reason = "the selected device is not ready"
+            }
+            Logger.info("[Move] Not started (\(activeMode)): \(reason)", category: .session)
+            return
+        }
         // A one-shot Move (Teleport, one Jump hop) still applying: a second click raced
         // it, replaced its pending request and hit the bridge's request gate.
-        guard !isOneShotMoveInFlight else { return }
+        guard !isOneShotMoveInFlight else {
+            Logger.info("[Move] Not started (\(activeMode)): a one-shot Move is still applying", category: .session)
+            return
+        }
         // Move is an explicit user action: it lifts a previous Stop Tunnel's block.
         if let selectedDevice {
             tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
         }
 
-        switch SimulationPlanner.plan(
+        let plan = SimulationPlanner.plan(
             mode: activeMode,
             targetLocation: targetLocation,
             currentLocation: currentLocation,
@@ -973,10 +1035,24 @@ class AppState: ObservableObject, LocationTerminationHandling {
             speed: simulationSpeed,
             jumpIndex: jumpIndex,
             stepMeters: routeStepMeters
-        ) {
+        )
+        let planKind: String
+        switch plan {
+        case .teleport where activeMode == .jump && autoJump && !currentRoute.isEmpty: planKind = "autoJump"
+        case .teleport: planKind = "teleport"
+        case .route(let points): planKind = "route(\(points.count) points)"
+        case .joystick: planKind = "joystick"
+        case .failed(let message): planKind = "failed(\(message))"
+        }
+        Logger.info("[Move] \(activeMode): plan \(planKind)", category: .session)
+
+        switch plan {
         case .teleport where activeMode == .jump && autoJump && !currentRoute.isEmpty:
             // A second Move while the engine starts is the double click, not a restart.
-            guard !isMovementEngineRunning else { return }
+            guard !isMovementEngineRunning else {
+                Logger.info("[Move] Not started: the movement engine is already running", category: .session)
+                return
+            }
             await playAutoJump()
         case .teleport(let coordinate):
             // A one-shot Move replaces any engine still running (latest intent wins)
@@ -987,7 +1063,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             defer { isOneShotMoveInFlight = false }
             await applyPlannedLocation(coordinate, mode: activeMode)
         case .route(let points):
-            guard !isMovementEngineRunning else { return }
+            guard !isMovementEngineRunning else {
+                Logger.info("[Move] Not started: the movement engine is already running", category: .session)
+                return
+            }
             await playRoute(points)
         case .joystick(let start):
             await startJoystick(at: start)
@@ -1002,12 +1081,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         _ coordinate: LocationCoordinate,
         mode: AppMode
     ) async -> LocationInjectionReceipt? {
-        guard canBeginLocationOperation else { return nil }
+        guard canBeginLocationOperation else {
+            Logger.info("[Apply] Skipped (\(mode)): a Clear is in progress or unresolved", category: .session)
+            return nil
+        }
         let operationGeneration = locationOperationGeneration
         let locationMode = mode.locationMode ?? .teleport
         locationSessionCoordinator.select(coordinate, mode: locationMode)
 
         guard prepareLocationSessionIfNeeded() else {
+            Logger.info("[Apply] Skipped (\(mode)): no ready location session", category: .session)
             isSimulating = false
             statusMessage = "No ready location session"
             return nil
@@ -1042,6 +1125,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             // nothing may be sent now (the phone used to move once more after Stop).
             if Task.isCancelled || locationClearTask != nil
                 || operationGeneration != locationOperationGeneration {
+                Logger.info("[Apply] Not sent (\(mode)): Stop, Clear or a mode change during preparation", category: .session)
                 _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                 pendingApplicationModes.removeValue(forKey: request.id)
                 return nil
@@ -1057,6 +1141,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             }
             guard locationClearTask == nil,
                   operationGeneration == locationOperationGeneration else {
+                Logger.info("[Apply] Receipt dropped (\(mode)): Clear or a newer operation started", category: .session)
                 _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                 pendingApplicationModes.removeValue(forKey: request.id)
                 return nil
@@ -1068,8 +1153,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 // nil ends the producer without resuming movement.
                 if case .applied = receipt.outcome,
                    locationSessionCoordinator.accept(receipt) == nil {
+                    Logger.info("[Apply] Cancelled after the device applied it (\(mode)); holding that point", category: .session)
                     commitAcknowledgedReceipt(receipt)
                 } else {
+                    Logger.info("[Apply] Cancelled (\(mode)); receipt outcome \(receipt.outcome)", category: .session)
                     _ = locationSessionCoordinator.cancelPendingApplication(requestID: request.id)
                     pendingApplicationModes.removeValue(forKey: request.id)
                 }
@@ -1087,27 +1174,51 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 return receipt
             }
             if result == .receiptNotApplied {
+                Logger.info(
+                    "[Apply] Queued (\(mode)); awaiting acknowledgement",
+                    category: .session,
+                    repeatKey: "AppState.apply.queued"
+                )
                 isSimulating = currentLocation != nil
                 statusMessage = "Location update queued; awaiting acknowledgement"
                 return nil
             }
 
+            Logger.error(
+                "[Apply] Receipt rejected (\(mode)): \(String(describing: result)); " +
+                "receipt generation=\(receipt.sessionGeneration) transport=\(receipt.transport) " +
+                "endpoint=\(receipt.endpointClass) outcome=\(receipt.outcome)",
+                category: .session
+            )
             pendingApplicationModes.removeValue(forKey: request.id)
             isSimulating = currentLocation != nil
             statusMessage = "Location update rejected: \(String(describing: result))"
             return nil
         } catch {
             guard locationClearTask == nil,
-                  operationGeneration == locationOperationGeneration else { return nil }
+                  operationGeneration == locationOperationGeneration else {
+                Logger.info(
+                    "[Apply] Error ignored (\(mode)): Clear or a newer operation started: " +
+                    LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                    category: .session
+                )
+                return nil
+            }
             if error is CancellationError {
                 // Cancelled before the command reached the device (Stop, mode change,
                 // loss): nothing was applied, so the previous truth stands.
+                Logger.info("[Apply] Cancelled before reaching the device (\(mode))", category: .session)
                 if let ownRequestID {
                     _ = locationSessionCoordinator.cancelPendingApplication(requestID: ownRequestID)
                     pendingApplicationModes.removeValue(forKey: ownRequestID)
                 }
                 return nil
             }
+            Logger.error(
+                "[Apply] Failed (\(mode)): " + LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .session,
+                repeatKey: "AppState.apply.failed"
+            )
             // Only this caller's own request; a newer one may already be pending.
             if let requestID = ownRequestID ?? {
                 if case .applying(let current, _) = locationSessionCoordinator.state.application { return current }
@@ -1975,6 +2086,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
 }
 
 // MARK: - Connection Status
+
+/// A Clear that keeps Move blocked: one still running, or one PathChanger could not confirm.
+enum LocationClearBlock: Equatable {
+    case clearInProgress
+    case clearUnresolved
+}
 
 enum ConnectionStatus {
     case disconnected
