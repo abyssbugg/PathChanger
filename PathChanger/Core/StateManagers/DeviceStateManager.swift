@@ -417,22 +417,36 @@ final class DeviceStateManager: ObservableObject {
         let selectedDeviceID = selectedDevice?.id
         let tunnelRunning = isTunneldRunning
         await deviceManager.refreshTransportAvailability(browseBonjour: { usbmuxUSB, usbmuxNetwork in
-            Self.shouldBrowseBonjour(
+            let browse = Self.shouldBrowseBonjour(
                 selectedDeviceID: selectedDeviceID,
                 tunnelRunning: tunnelRunning,
                 usbmuxUSB: usbmuxUSB,
                 usbmuxNetwork: usbmuxNetwork
             )
+            let served = browse ? selectedDeviceID : nil
+            // The gate reopens for this device: its Bonjour entry aged only on the 120 s
+            // discovery browse while the gate was closed, so this browse decides it rather
+            // than counting one miss (review 2026-11-01 v3).
+            if let served, served != bonjourBrowseServedDeviceID {
+                deviceManager.letTheNextBrowseDecide(served)
+            }
+            bonjourBrowseServedDeviceID = served
+            return browse
         })
     }
 
-    /// Whether this refresh's Bonjour browse can change what the GUI shows.
+    /// The selected device the previous transport refresh browsed Bonjour for; nil when
+    /// that refresh skipped the browse.
+    private var bonjourBrowseServedDeviceID: String?
+
+    /// Whether this refresh's Bonjour browse can change the selected device's chip.
     ///
-    /// `DeviceReachability.of` reads the Bonjour set only for a selected device that is
-    /// not connected and that usbmux does not list, so outside that case the browse (a
+    /// The gate serves the selected device: its chip reads the Bonjour set only when it is
+    /// not connected and usbmux does not list it, so outside that case the browse (a
     /// managed-runtime Python process, a ~5 s mDNS browse and a lockdown handshake with
-    /// every advertised device on the LAN) is skipped. The usbmux sets passed in are the
-    /// ones this refresh just applied. The 120 s discovery browse is not gated.
+    /// every advertised device on the LAN) is skipped. The other rows in the device menu
+    /// read the same set, but refresh on the 120 s discovery browse, which is not gated.
+    /// The usbmux sets passed in are the ones this refresh just applied.
     nonisolated static func shouldBrowseBonjour(
         selectedDeviceID: String?, tunnelRunning: Bool,
         usbmuxUSB: Set<String>, usbmuxNetwork: Set<String>

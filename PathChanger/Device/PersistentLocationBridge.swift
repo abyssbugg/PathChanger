@@ -1483,7 +1483,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
         let pythonConnectionType = physicalTransport.helperWireValue
-        try await ensureDeviceConnection(for: device, transport: physicalTransport)
+        try await ensureDeviceConnection(for: device)
 
         let liveTunnelPID = rsdInfo?.processId
         if Self.isStaleTunnelSession(
@@ -1584,7 +1584,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             TunneldManager.shared.getRsdInfo(for: device.id)
         }
         let physicalTransport: LocationTransport = device.connectionType == .wifi ? .wifi : .usb
-        try await ensureDeviceConnection(for: device, transport: physicalTransport)
+        try await ensureDeviceConnection(for: device)
 
         let liveTunnelPID = rsdInfo?.processId
         if Self.isStaleTunnelSession(
@@ -1699,10 +1699,13 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// command on it: opening on demand inside a location request could outlast that
     /// request's reply timeout, leaving the GUI reporting failure while the helper
     /// later applied the location.
-    private func ensureDeviceConnection(for device: Device, transport: LocationTransport) async throws {
+    /// The connection is opened with the mode-derived hint (`connectTransport(for:)`), not
+    /// the row's type: a row last merged over USB kept a reopen after the cable was pulled
+    /// in Auto mode off the helper's mobdev2 lane (review 2026-11-01 v3).
+    private func ensureDeviceConnection(for device: Device) async throws {
         guard currentSession?.stableDeviceID != device.id else { return }
         do {
-            _ = try await connectDevice(device.id, transport: transport)
+            _ = try await connectDevice(device.id, transport: connectTransport(for: device))
             Logger.endRepeats(key: "PersistentBridge.ensureDeviceConnection", category: .device)
         } catch {
             Logger.error(
@@ -1786,6 +1789,18 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     /// Devices whose location updates are refused until an explicit user action.
     private var suspendedDeviceIDs: Set<String> = []
+
+    /// The transport hint for opening the helper's device connection, which decides
+    /// whether the helper may try its mobdev2 lane. AppState wires it to the connection
+    /// mode (`DeviceManager.helperConnectTransport(for:)`); nil keeps the row's type.
+    var connectTransportProvider: (@MainActor (Device) -> LocationTransport?)?
+
+    /// The hint `connect_device` sends. Location commands keep sending the session's
+    /// transport, so each receipt's `physical_transport` is what that request asked;
+    /// the helper keeps one connection per device whatever the hint.
+    func connectTransport(for device: Device) -> LocationTransport {
+        connectTransportProvider?(device) ?? (device.connectionType == .wifi ? .wifi : .usb)
+    }
 
     var activeLocationDeviceId: String? { currentSession?.stableDeviceID }
 

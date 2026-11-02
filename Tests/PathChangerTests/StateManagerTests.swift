@@ -904,4 +904,186 @@ final class BonjourBrowseGateTests: XCTestCase {
         XCTAssertEqual(deviceManager.subcommands, ["usbmux", "bonjour"])
         XCTAssertEqual(deviceManager.networkAdvertisedDeviceIds, [device.id])
     }
+
+    // MARK: Review 2026-11-01 v3 (issue 2): Bonjour evidence carried across a closed gate
+
+    private var bonjourListing: String { usbmuxListing("Network") }
+
+    /// The chip from DeviceManager's evidence (DeviceStateManager mirrors it on the
+    /// status poll, which these tests do not run).
+    private func chip(_ deviceManager: DeviceManager) -> DeviceReachability {
+        DeviceReachability.of(
+            device: device,
+            usbmuxUSB: deviceManager.usbDirectDeviceIds,
+            usbmuxNetwork: deviceManager.wifiDirectDeviceIds,
+            networkAdvertised: deviceManager.networkAdvertisedDeviceIds,
+            tunnelRunning: false
+        )
+    }
+
+    /// Selects the phone while usbmux lists it over Network, so the gate stays closed,
+    /// with a Bonjour entry the 120 s discovery browse left behind.
+    private func closedGateWithCarriedOverBonjour() async
+        -> (TransportScriptedDeviceManager, DeviceStateManager, Date) {
+        let deviceManager = TransportScriptedDeviceManager()
+        _ = deviceManager.applyMobdev2ObservationForTesting(bonjourListing)
+        deviceManager.outputs = ["usbmux": usbmuxListing("Network"), "bonjour": "[]"]
+        let manager = DeviceStateManager(deviceManager: deviceManager, startBackgroundServices: false)
+        manager.selectedDevice = device
+        let start = Date(timeIntervalSinceReferenceDate: 5_000_000)
+        await manager.refreshTransportAvailabilityIfNeeded(now: start)
+        XCTAssertEqual(deviceManager.subcommands, ["usbmux"], "precondition: the gate is closed")
+        return (deviceManager, manager, start)
+    }
+
+    /// Drops the phone from usbmux and refreshes until the gate opens (the usbmux
+    /// Network set holds it through two misses), returning the next refresh time.
+    private func refreshUntilTheGateReopens(
+        _ deviceManager: TransportScriptedDeviceManager,
+        _ manager: DeviceStateManager,
+        from start: Date
+    ) async -> Date {
+        deviceManager.outputs["usbmux"] = "[]"
+        var now = start
+        for _ in 0..<3 {
+            now = now.addingTimeInterval(15)
+            await manager.refreshTransportAvailabilityIfNeeded(now: now)
+        }
+        XCTAssertEqual(deviceManager.subcommands.filter { $0 == "bonjour" }.count, 1,
+                       "precondition: only the third usbmux miss reopens the gate: \(deviceManager.subcommands)")
+        return now.addingTimeInterval(15)
+    }
+
+    func testTheFirstBrowseAfterTheGateReopensDecidesAPhoneBonjourNoLongerSees() async {
+        // While usbmux listed the phone the 15 s browse was skipped, so its Bonjour entry
+        // aged only on the 120 s discovery browse. When usbmux dropped it the chip kept
+        // "on Wi-Fi network" for two or three more browses that did not see it.
+        let (deviceManager, manager, start) = await closedGateWithCarriedOverBonjour()
+
+        _ = await refreshUntilTheGateReopens(deviceManager, manager, from: start)
+
+        XCTAssertEqual(deviceManager.networkAdvertisedDeviceIds, [], "the reopening browse did not see the phone")
+        XCTAssertEqual(chip(deviceManager), .notReachable)
+    }
+
+    func testTheFirstBrowseAfterTheGateReopensKeepsAPhoneBonjourStillSees() async {
+        let (deviceManager, manager, start) = await closedGateWithCarriedOverBonjour()
+        deviceManager.outputs["bonjour"] = bonjourListing
+
+        _ = await refreshUntilTheGateReopens(deviceManager, manager, from: start)
+
+        XCTAssertEqual(chip(deviceManager), .onNetwork)
+    }
+
+    func testAfterTheReopeningBrowseOneMissIsOnlyAMissAgain() async {
+        // The reopening browse decides once; later browses keep the 3-miss hysteresis
+        // (one slow mDNS answer must not flip the chip).
+        let (deviceManager, manager, start) = await closedGateWithCarriedOverBonjour()
+        deviceManager.outputs["bonjour"] = bonjourListing
+        let next = await refreshUntilTheGateReopens(deviceManager, manager, from: start)
+
+        deviceManager.outputs["bonjour"] = "[]"
+        await manager.refreshTransportAvailabilityIfNeeded(now: next)
+
+        XCTAssertEqual(deviceManager.subcommands.filter { $0 == "bonjour" }.count, 2)
+        XCTAssertEqual(chip(deviceManager), .onNetwork)
+    }
+
+    func testTheReopeningDecisionAppliesOnlyToTheSelectedPhone() async {
+        // The gate serves the selected device; other rows keep their discovery-cadence
+        // hysteresis.
+        let other = "00008120-001B000E3E82002F"
+        let (deviceManager, manager, start) = await closedGateWithCarriedOverBonjour()
+        _ = deviceManager.applyMobdev2ObservationForTesting("""
+        [{"ConnectionType": "Network", "DeviceName": "Other", "Identifier": "\(other)",
+          "ProductVersion": "27.1", "UniqueDeviceID": "\(other)"}]
+        """) // also one miss for ours
+        deviceManager.subcommands = []
+
+        _ = await refreshUntilTheGateReopens(deviceManager, manager, from: start)
+
+        XCTAssertEqual(deviceManager.networkAdvertisedDeviceIds, [other])
+    }
+}
+
+/// Review 2026-11-01 v3 (issue 1): a Move that reopened the helper connection sent the
+/// row's connection type, and a row last merged over USB stays `.usb` until discovery
+/// relabels it (up to 120 s), so after the cable was pulled in Auto mode the helper never
+/// tried its mobdev2 lane. The connect hint follows the connection mode, like Start.
+@MainActor
+final class HelperConnectTransportTests: XCTestCase {
+    private let id = "00008130-0011223344556677"
+
+    private func usbmuxListing(_ type: String) -> String {
+        """
+        [{"ConnectionType": "\(type)", "DeviceName": "iPhone", "Identifier": "\(id)",
+          "ProductVersion": "27.2", "UniqueDeviceID": "\(id)"}]
+        """
+    }
+
+    private func refresh(_ deviceManager: TransportScriptedDeviceManager, usbmux: String) async {
+        deviceManager.outputs = ["usbmux": usbmux, "bonjour": "[]"]
+        await deviceManager.refreshTransportAvailability(browseBonjour: { _, _ in false })
+    }
+
+    func testAutoModeAsksForNetworkOnceUsbmuxStopsListingThePhoneOverUSB() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        await refresh(deviceManager, usbmux: usbmuxListing("USB"))
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .usb, "cabled: usbmux direct over USB")
+
+        await refresh(deviceManager, usbmux: "[]") // cable pulled
+        XCTAssertEqual(deviceManager.usbDirectDeviceIds, [id], "precondition: the chip's set still holds it (hysteresis)")
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi,
+                       "the latest listing no longer has it over USB: the helper may try mobdev2")
+    }
+
+    func testAutoModeAsksForNetworkWhenUsbmuxListsThePhoneOnlyOverNetwork() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        await refresh(deviceManager, usbmux: usbmuxListing("Network"))
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
+    }
+
+    func testAnotherPhoneOnUSBDoesNotMakeOursUSB() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        await refresh(deviceManager, usbmux: """
+        [{"ConnectionType": "USB", "Identifier": "00008120-001B000E3E82002F",
+          "UniqueDeviceID": "00008120-001B000E3E82002F"}]
+        """)
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
+    }
+
+    func testUSBOnlyModeNeverAsksForNetwork() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.connectionMode = .usb
+        await refresh(deviceManager, usbmux: "[]")
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .usb, "USB-only never crosses to Wi-Fi")
+    }
+
+    func testWiFiOnlyModeAsksForNetworkLikeStart() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.connectionMode = .wifi
+        await refresh(deviceManager, usbmux: usbmuxListing("USB"))
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
+    }
+
+    func testRandomModeFollowsUsbmuxLikeAuto() async {
+        let deviceManager = TransportScriptedDeviceManager()
+        deviceManager.connectionMode = .random
+        await refresh(deviceManager, usbmux: usbmuxListing("USB"))
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .usb)
+        await refresh(deviceManager, usbmux: "[]")
+        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
+    }
+
+    func testAppStateHandsTheBridgeTheModeDerivedConnectHint() {
+        // The bridge has no DeviceManager; the composition root wires the hint in.
+        let deviceManager = TransportScriptedDeviceManager()
+        let usbRow = Device(id: id, displayName: "iPhone", connectionType: .usb)
+        withExtendedLifetime(AppState(startBackgroundServices: false, deviceManager: deviceManager)) {
+            XCTAssertEqual(PersistentLocationBridge.shared.connectTransport(for: usbRow), .wifi,
+                           "Auto mode, usbmux has not listed it over USB: not the row's .usb")
+            deviceManager.connectionMode = .usb
+            XCTAssertEqual(PersistentLocationBridge.shared.connectTransport(for: usbRow), .usb)
+        }
+    }
 }

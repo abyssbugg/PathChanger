@@ -621,6 +621,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.ddiPreparer = ddiPreparerFactory.map { factory in
             factory(resolvedDDIDeviceManager)
         }
+        // The helper connect hint follows the connection mode; the bridge has no
+        // DeviceManager of its own (review 2026-11-01 v3).
+        PersistentLocationBridge.shared.connectTransportProvider = { [weak resolvedDDIDeviceManager] device in
+            resolvedDDIDeviceManager?.helperConnectTransport(for: device.id)
+        }
         self.route = RouteStateManager(routeLibrary: RouteLibraryManager())
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,

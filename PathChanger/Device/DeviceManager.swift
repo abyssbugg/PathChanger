@@ -468,6 +468,11 @@ class DeviceManager: ObservableObject {
     /// Consecutive browses that missed each retained UDID. Per device, not per set:
     /// Bonjour sees the whole LAN, so a run that sees only another phone is a miss for ours.
     private var networkAdvertisedMisses: [String: Int] = [:]
+    /// Retained UDIDs the next Bonjour observation decides outright (`letTheNextBrowseDecide`).
+    private var networkAdvertisedAwaitingFreshObservation: Set<String> = []
+    /// UDIDs the latest usbmux listing reported over USB, without the miss hysteresis
+    /// `usbDirectDeviceIds` applies. Read for the helper connect hint.
+    private var usbmuxListedUSBDeviceIds: Set<String> = []
     /// The Bonjour browse in flight, joined by any overlapping caller so one browse is
     /// one observation (the 120 s discovery and the 15 s transport refresh can overlap).
     private var mobdev2BrowseInFlight: Task<[Device], Never>?
@@ -1067,9 +1072,10 @@ class DeviceManager: ObservableObject {
     /// Parses one mobdev2 browse result and records what it advertised, with per-device
     /// hysteresis: every UDID the run saw is kept and its miss count reset; every retained
     /// UDID it did not see (the run was empty, failed, or saw only other devices) counts a
-    /// miss, and only `transportMissThreshold` misses in a row drop it. A result that
-    /// arrives after the user switched to USB-only is discarded. Returns this run's
-    /// devices, not the retained set.
+    /// miss, and only `transportMissThreshold` misses in a row drop it. A UDID marked by
+    /// `letTheNextBrowseDecide` is dropped by its first miss instead, and this run consumes
+    /// every mark. A result that arrives after the user switched to USB-only is discarded.
+    /// Returns this run's devices, not the retained set.
     private func applyMobdev2Observation(_ output: String?) -> [Device] {
         guard connectionMode != .usb else {
             clearMobdev2Observation()
@@ -1080,13 +1086,14 @@ class DeviceManager: ObservableObject {
         var retained = networkAdvertisedDeviceIds
         for id in retained.subtracting(seen) {
             let misses = (networkAdvertisedMisses[id] ?? 0) + 1
-            if misses >= transportMissThreshold {
+            if misses >= transportMissThreshold || networkAdvertisedAwaitingFreshObservation.contains(id) {
                 retained.remove(id)
                 networkAdvertisedMisses[id] = nil
             } else {
                 networkAdvertisedMisses[id] = misses
             }
         }
+        networkAdvertisedAwaitingFreshObservation = []
         for id in seen {
             networkAdvertisedMisses[id] = nil
         }
@@ -1100,6 +1107,7 @@ class DeviceManager: ObservableObject {
     /// USB-only mode browses nothing, so it holds no Bonjour evidence.
     private func clearMobdev2Observation() {
         networkAdvertisedMisses = [:]
+        networkAdvertisedAwaitingFreshObservation = []
         networkAdvertisedDeviceIds = []
     }
 
@@ -1108,6 +1116,33 @@ class DeviceManager: ObservableObject {
         applyMobdev2Observation(output)
     }
     #endif
+
+    /// Let the next Bonjour observation alone decide whether `deviceID` stays advertised:
+    /// unseen, it is dropped at once instead of counting one hysteresis miss. Used when the
+    /// transport browse resumes for the selected device after skipped refreshes, during
+    /// which its entry aged only on the 120 s discovery browse (review 2026-11-01 v3).
+    func letTheNextBrowseDecide(_ deviceID: String) {
+        guard connectionMode != .usb else { return }
+        networkAdvertisedAwaitingFreshObservation.insert(deviceID)
+    }
+
+    // MARK: Helper connect hint
+
+    /// The transport hint for opening the location helper's connection to `deviceID`. It
+    /// decides whether the helper may try its mobdev2 (Bonjour, Wi-Fi) lane, so it follows
+    /// the connection mode, as Start does: USB Only asks for USB and never crosses to
+    /// Wi-Fi; Wi-Fi Only asks for Network; Auto and Random ask for USB only while the
+    /// latest usbmux listing has this phone over USB. The row's type is not used: it stays
+    /// `.usb` until discovery relabels it (up to 120 s after the cable is pulled), and the
+    /// chip's 3-miss USB set would hold it for 30-45 s more (review 2026-11-01 v3).
+    func helperConnectTransport(for deviceID: String) -> LocationTransport {
+        switch connectionMode {
+        case .usb: return .usb
+        case .wifi: return .wifi
+        case .auto, .random:
+            return usbmuxListedUSBDeviceIds.contains(deviceID) ? .usb : .wifi
+        }
+    }
 
     // MARK: USB Device Discovery (pymobiledevice3 usbmux list)
     private func discoverUSBDevices() async -> DiscoveryAttempt {
@@ -1853,6 +1888,7 @@ class DeviceManager: ObservableObject {
             }
         }
 
+        usbmuxListedUSBDeviceIds = observedUSBDeviceIds
         if sawUSB {
             usbTransportMisses = 0
             usbTransportAvailable = true

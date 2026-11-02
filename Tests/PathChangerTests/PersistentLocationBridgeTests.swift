@@ -1163,6 +1163,37 @@ final class PersistentLocationBridgeTests: XCTestCase {
         XCTAssertFalse(PersistentLocationBridge.isStaleTunnelSession(
             cachedPID: nil, livePID: nil, usesTunnel: false))
     }
+
+    @MainActor
+    func testTheConnectHintComesFromTheProviderAndOtherwiseFromTheRow() {
+        // Review 2026-11-01 v3 (issue 1): the connect hint decides whether the helper may
+        // try its mobdev2 lane, so it follows the connection mode (wired by AppState);
+        // without a provider it keeps the row's type.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PathChanger-connect-hint-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bridge = PersistentLocationBridge(
+            helperController: ManagedLocationHelperController(
+                paths: ManagedLocationHelperPaths(baseDirectory: root),
+                pythonPath: root.appendingPathComponent("missing-python").path,
+                bridgePath: root.appendingPathComponent("missing-bridge.py").path
+            )
+        )
+        let usbRow = Device(id: "00008130-0011223344556677", displayName: "iPhone", connectionType: .usb)
+        let wifiRow = Device(id: "00008130-0011223344556677", displayName: "iPhone", connectionType: .wifi)
+
+        XCTAssertEqual(bridge.connectTransport(for: usbRow), .usb)
+        XCTAssertEqual(bridge.connectTransport(for: wifiRow), .wifi)
+
+        var asked: [String] = []
+        bridge.connectTransportProvider = { device in
+            asked.append(device.id)
+            return .wifi
+        }
+        XCTAssertEqual(bridge.connectTransport(for: usbRow), .wifi)
+        XCTAssertEqual(asked, [usbRow.id])
+        XCTAssertFalse(bridge.isRunning, "deciding the hint never starts the helper")
+    }
 }
 
 // MARK: - Edge Case Tests (Task 45)
