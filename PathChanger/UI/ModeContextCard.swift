@@ -347,22 +347,18 @@ struct ModeContextCard: View {
         VStack(spacing: 12) {
             HStack(spacing: 7) {
                 readout("HEADING", headingText)
-                readout("SPEED", String(format: "%.1f", appState.locationPresentation.isMovementActive ? appState.effectiveMetersPerSecond : 0))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(headingAccessibilityLabel)
+                readout("SPEED", String(format: "%.1f", appState.locationPresentation.isMovementActive ? appState.joystickSpeed : 0))
                 readout("POSITION", (appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate)?.formattedShort ?? "—")
             }
+            // Joystick's own speed: travel modes do not apply, so there is no Auto (3.5).
             OrganicSliderRow(
                 title: "Speed",
-                valueLabel: String(format: "%.1f m/s", appState.customSpeedMps),
-                value: $appState.customSpeedMps,
-                range: 1...30,
-                step: 0.1,
-                isAuto: appState.autoSpeed,
-                onToggleAuto: {
-                    appState.autoSpeed.toggle()
-                    if appState.autoSpeed {
-                        appState.customSpeedMps = appState.mockMetersPerSecond(for: appState.simulationSpeed)
-                    }
-                }
+                valueLabel: String(format: "%.1f m/s", appState.joystickSpeed),
+                value: $appState.joystickSpeed,
+                range: SimulationStateManager.joystickSpeedRange,
+                step: 0.1
             )
         }
         .padding(10)
@@ -759,10 +755,11 @@ struct ModeContextCard: View {
     }
 
     private var headingText: String {
-        let dir = appState.joystickDirection
-        guard hypot(dir.x, dir.y) > 0.05 else { return "—" }
-        let degrees = (atan2(dir.x, dir.y) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
-        return String(format: "%.0f°", degrees)
+        JoystickReadout.headingText(live: appState.joystickDirection, last: appState.lastJoystickHeadingDegrees)
+    }
+
+    private var headingAccessibilityLabel: String {
+        JoystickReadout.headingAccessibilityLabel(live: appState.joystickDirection, last: appState.lastJoystickHeadingDegrees)
     }
 
     private var routeDistance: String {

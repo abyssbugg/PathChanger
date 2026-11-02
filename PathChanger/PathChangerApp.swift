@@ -518,8 +518,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
     var joystickSpeed: Double {
         get { simulation.joystickSpeed }
-        set { simulation.joystickSpeed = newValue }
+        set { simulation.setJoystickSpeed(newValue) }
     }
+    /// Heading of the last acknowledged joystick step. Releasing or disengaging the stick
+    /// keeps it shown; the next movement replaces it and a successful Clear forgets it
+    /// (PRODUCT_REQUIREMENTS 3.5, owner decision 2026-11-02).
+    @Published private(set) var lastJoystickHeadingDegrees: Double?
 
     // MARK: UI State
     @Published var showLocationInput: Bool = false
@@ -748,7 +752,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.legPathProvider = roadRouter.map(Self.roadLegPathProvider)
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
-            errorHandler: sharedErrorHandler
+            errorHandler: sharedErrorHandler,
+            settingsDefaults: stopTravelSettingsDefaults
         )
         self.simulationEngine = SimulationEngine(locationBridge: sharedBridge)
         if usesScriptedInjector {
@@ -1145,6 +1150,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             simulation.currentLocation = nil
             simulation.targetLocation = nil
             routeProgress = 0
+            lastJoystickHeadingDegrees = nil
             statusMessage = "Location cleared"
         }
         locationClearTask = clearing
@@ -1226,6 +1232,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if let selectedDevice {
             tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
         }
+        // The next movement replaces the joystick's last heading (3.5).
+        if activeMode != .joystick { lastJoystickHeadingDegrees = nil }
 
         // Jump (with stops), Two-Spot and Multi-Spot run stop by stop (3.2-3.4, 3.6).
         switch activeMode {
@@ -2432,11 +2440,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 let next = JoystickMovement.nextCoordinate(
                     from: acknowledged,
                     direction: direction,
-                    speedMetersPerSecond: self.effectiveMetersPerSecond,
+                    speedMetersPerSecond: self.joystickSpeed,
                     deltaTime: interval
                 )
                 if next != acknowledged {
                     let receipt = await self.applyPlannedLocation(next, mode: .joystick)
+                    if receipt != nil {
+                        self.lastJoystickHeadingDegrees = JoystickReadout.degrees(direction)
+                    }
                     if receipt == nil,
                        case .ready = self.locationSessionCoordinator.state.connection {
                         await self.routeDelay(interval)
@@ -2473,6 +2484,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     var effectiveMetersPerSecond: Double {
         simulation.effectiveMetersPerSecond
+    }
+
+    /// The speed of the movement under way, for the telemetry readouts: Joystick's own
+    /// speed while the joystick moves, the travel speed for other movement, else 0.
+    var shownMovementSpeedMetersPerSecond: Double {
+        let presentation = locationPresentation
+        guard presentation.isMovementActive, !presentation.isMovementPaused else { return 0 }
+        if case .moving(.joystick) = locationSessionCoordinator.state.movement { return joystickSpeed }
+        return effectiveMetersPerSecond
     }
 
     // These forward to `SimulationSpeed`, which now owns the preset tables. They remain as

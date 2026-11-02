@@ -687,10 +687,11 @@ struct OrganicTelemetryBar: View {
     }
 
     private var speedText: String {
-        // Reads the same accessor as InspectorPanel and ModeContextCard. Previously this used
-        // the raw `simulationSpeed.metersPerSecond`, so the telemetry bar showed 1.4 m/s while
-        // the other panels showed 1.6 m/s for the same Walking preset.
-        String(format: "%.1f m/s", appState.locationPresentation.isMovementActive && !appState.locationPresentation.isMovementPaused ? appState.effectiveMetersPerSecond : 0)
+        // The speed of the movement under way: the travel speed the cards show, or
+        // Joystick's own speed while the joystick moves (PRODUCT_REQUIREMENTS 3.5).
+        // Previously this used the raw `simulationSpeed.metersPerSecond`, so the telemetry
+        // bar showed 1.4 m/s while the other panels showed 1.6 m/s for the same Walking preset.
+        String(format: "%.1f m/s", appState.shownMovementSpeedMetersPerSecond)
     }
 
     private func metric(_ title: String, _ value: String) -> some View {

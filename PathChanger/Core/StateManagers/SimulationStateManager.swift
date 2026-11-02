@@ -44,7 +44,13 @@ final class SimulationStateManager: ObservableObject {
     // MARK: Joystick
 
     @Published var joystickDirection: CGPoint = .zero
-    @Published var joystickSpeed: Double = 5.0
+    /// Joystick's own full-stick speed (PRODUCT_REQUIREMENTS 3.5): travel modes and the
+    /// custom travel speed do not apply to it. Set through `setJoystickSpeed(_:)`.
+    @Published private(set) var joystickSpeed: Double = SimulationStateManager.defaultJoystickSpeed
+
+    static let joystickSpeedRange: ClosedRange<Double> = 1...30
+    static let defaultJoystickSpeed: Double = 5.0
+    static let joystickSpeedKey = "joystickSpeedMps"
 
     // MARK: Statistics
 
@@ -54,6 +60,8 @@ final class SimulationStateManager: ObservableObject {
 
     let locationBridge: DevLocationBridge
     private let errorHandler: ErrorHandler
+    /// Where the joystick speed persists; nil keeps it in memory (tests, previews).
+    private let settingsDefaults: UserDefaults?
     weak var deviceStateManager: DeviceStateManager?
 
     /// Reports user-facing status text. Owned by the composition root so that route,
@@ -102,10 +110,15 @@ final class SimulationStateManager: ObservableObject {
     // caller's context, which is nonisolated, and these types are main-actor isolated.
     init(
         locationBridge: DevLocationBridge? = nil,
-        errorHandler: ErrorHandler? = nil
+        errorHandler: ErrorHandler? = nil,
+        settingsDefaults: UserDefaults? = nil
     ) {
         self.locationBridge = locationBridge ?? DevLocationBridge()
         self.errorHandler = errorHandler ?? ErrorHandler()
+        self.settingsDefaults = settingsDefaults
+        if let stored = settingsDefaults?.object(forKey: Self.joystickSpeedKey) as? Double, stored.isFinite {
+            joystickSpeed = Self.clampedJoystickSpeed(stored)
+        }
     }
 
     func setDeviceStateManager(_ manager: DeviceStateManager) {
@@ -240,6 +253,17 @@ final class SimulationStateManager: ObservableObject {
     func resetJoystick() {
         joystickDirection = .zero
         smoothedJoystickHeading = nil
+    }
+
+    /// Set the joystick speed, clamped to 1-30 m/s; a non-finite value is ignored.
+    func setJoystickSpeed(_ metersPerSecond: Double) {
+        guard metersPerSecond.isFinite else { return }
+        joystickSpeed = Self.clampedJoystickSpeed(metersPerSecond)
+        settingsDefaults?.set(joystickSpeed, forKey: Self.joystickSpeedKey)
+    }
+
+    static func clampedJoystickSpeed(_ metersPerSecond: Double) -> Double {
+        min(max(metersPerSecond, joystickSpeedRange.lowerBound), joystickSpeedRange.upperBound)
     }
 
     /// Blend a raw stick vector toward the previous heading to soften turns.

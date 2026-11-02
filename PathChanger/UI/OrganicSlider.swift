@@ -13,8 +13,9 @@ struct OrganicSliderRow: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var step: Double
-    var isAuto: Bool
-    var onToggleAuto: () -> Void
+    var isAuto: Bool = false
+    /// Nil hides the Auto toggle; the slider is then always manual.
+    var onToggleAuto: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -23,23 +24,25 @@ struct OrganicSliderRow: View {
                 .foregroundStyle(Organic.neutral700)
                 .frame(width: 72, alignment: .leading)
 
-            Button(action: onToggleAuto) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(isAuto ? Organic.sage800 : Organic.neutral600)
-                    .frame(width: 26, height: 22)
-                    .background(isAuto ? Organic.sage100 : Color.clear)
-                    .overlay(
-                        Capsule().stroke(isAuto ? Organic.sage600 : Organic.neutral400, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
+            if let onToggleAuto {
+                Button(action: onToggleAuto) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(isAuto ? Organic.sage800 : Organic.neutral600)
+                        .frame(width: 26, height: 22)
+                        .background(isAuto ? Organic.sage100 : Color.clear)
+                        .overlay(
+                            Capsule().stroke(isAuto ? Organic.sage600 : Organic.neutral400, lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(isAuto ? "Auto — follow travel mode" : "Manual")
             }
-            .buttonStyle(.plain)
-            .help(isAuto ? "Auto — follow travel mode" : "Manual")
 
             Slider(value: $value, in: range, step: step)
-                .disabled(isAuto)
-                .opacity(isAuto ? 0.55 : 1)
+                .disabled(sliderIsAuto)
+                .opacity(sliderIsAuto ? 0.55 : 1)
                 .tint(Organic.accent600)
                 .controlSize(.small)
 
@@ -49,4 +52,6 @@ struct OrganicSliderRow: View {
                 .frame(width: 62, alignment: .trailing)
         }
     }
+
+    private var sliderIsAuto: Bool { isAuto && onToggleAuto != nil }
 }
