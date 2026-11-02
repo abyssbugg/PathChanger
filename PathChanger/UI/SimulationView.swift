@@ -60,17 +60,20 @@ struct SimulationView: View {
         }
         .onAppear {
             appState.activeMode = mode
+            appState.placeNameResolver?.update(for: appState.locationPresentation.appliedCoordinate)
         }
         .onChange(of: mode) { _, newMode in
             appState.activeMode = newMode
         }
         .onChange(of: appState.locationPresentation.appliedCoordinate) { _, newLocation in
+            appState.placeNameResolver?.update(for: newLocation)
             guard keepCentered, let location = newLocation else { return }
-            withAnimation { focus(location) }
+            // Steps arrive at up to 10 Hz while moving: move the camera without animating.
+            follow(location, animated: !isMoving)
         }
         .onChange(of: appState.locationPresentation.desiredCoordinate) { _, newLocation in
             guard let location = newLocation, !appState.locationPresentation.isMovementActive else { return }
-            withAnimation { focus(location) }
+            follow(location, animated: true)
         }
         .fileImporter(
             isPresented: $appState.showRouteImport,
@@ -138,13 +141,18 @@ struct SimulationView: View {
         HStack {
             Spacer()
             if showCoordinatesOnMap, let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
-                Text(String(format: "%.6f, %.6f", location.latitude, location.longitude))
-                    .font(Organic.mono(10.5))
-                    .foregroundStyle(Organic.neutral700)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Organic.neutral100.opacity(0.75))
-                    .clipShape(Capsule())
+                VStack(alignment: .trailing, spacing: 3) {
+                    if appState.locationPresentation.appliedCoordinate != nil, let resolver = appState.placeNameResolver {
+                        PlaceNameLabel(resolver: resolver)
+                    }
+                    Text(String(format: "%.6f, %.6f", location.latitude, location.longitude))
+                        .font(Organic.mono(10.5))
+                        .foregroundStyle(Organic.neutral700)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Organic.neutral100.opacity(0.75))
+                        .clipShape(Capsule())
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -152,11 +160,23 @@ struct SimulationView: View {
         .padding(.trailing, 60)
     }
 
-    private func focus(_ location: LocationCoordinate) {
-        position = .region(MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
-            span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
-        ))
+    private var isMoving: Bool {
+        appState.locationPresentation.isMovementActive || appState.isMovementEngineRunning
+    }
+
+    /// Keeps the point on screen at the user's zoom; the camera moves only when the point
+    /// leaves the middle of the visible map. `currentRegion` follows so zoom buttons zoom
+    /// around the new centre.
+    private func follow(_ location: LocationCoordinate, animated: Bool) {
+        let point = location.clLocationCoordinate2D
+        guard MapFollow.needsRecentering(point, in: currentRegion) else { return }
+        let region = MapFollow.region(centeredOn: point, keeping: currentRegion)
+        currentRegion = region
+        if animated {
+            withAnimation { position = .region(region) }
+        } else {
+            position = .region(region)
+        }
     }
 
     private var zoomStack: some View {
@@ -298,6 +318,58 @@ enum MapZoom {
             latitudeDelta: min(maxDelta, max(minDelta, span.latitudeDelta * factor)),
             longitudeDelta: min(maxDelta, max(minDelta, span.longitudeDelta * factor))
         )
+    }
+}
+
+/// Keeps the spoofed position on screen without touching the user's zoom
+/// (PRODUCT_REQUIREMENTS 3.5, owner decision 2026-11-02).
+enum MapFollow {
+    /// Used only when the visible span is unusable (zero or not a number).
+    static let defaultSpan = MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+
+    /// The visible region moved onto `coordinate`, with the span the user chose.
+    static func region(centeredOn coordinate: CLLocationCoordinate2D, keeping region: MKCoordinateRegion) -> MKCoordinateRegion {
+        MKCoordinateRegion(center: coordinate, span: isUsable(region.span) ? region.span : defaultSpan)
+    }
+
+    /// Whether `coordinate` has left the middle `innerFraction` of the visible region.
+    /// Points inside it leave the camera alone, so movement at up to 10 Hz moves the map
+    /// only when the dot nears the edge instead of on every step.
+    static func needsRecentering(_ coordinate: CLLocationCoordinate2D, in region: MKCoordinateRegion, innerFraction: Double = 0.5) -> Bool {
+        guard isUsable(region.span) else { return true }
+        let latitudeOffset = abs(coordinate.latitude - region.center.latitude)
+        let longitudeOffset = abs(Geo.normalizedDegrees(coordinate.longitude - region.center.longitude + 180) - 180)
+        return latitudeOffset > region.span.latitudeDelta * innerFraction / 2
+            || longitudeOffset > region.span.longitudeDelta * innerFraction / 2
+    }
+
+    private static func isUsable(_ span: MKCoordinateSpan) -> Bool {
+        span.latitudeDelta.isFinite && span.longitudeDelta.isFinite
+            && span.latitudeDelta > 0 && span.longitudeDelta > 0
+    }
+}
+
+/// The place or street name of the spoofed location, above its coordinates. Shows
+/// nothing while no name is known.
+private struct PlaceNameLabel: View {
+    @ObservedObject var resolver: PlaceNameResolver
+
+    var body: some View {
+        if let name = resolver.placeName {
+            Text(name)
+                .font(Organic.body(11, weight: .semibold))
+                .foregroundStyle(Organic.neutral700)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Organic.neutral100.opacity(0.75))
+                .clipShape(Capsule())
+                .frame(maxWidth: 320, alignment: .trailing)
+                .help(name)
+                .accessibilityLabel("Place: \(name)")
+                .accessibilityIdentifier("map.placeName")
+        }
     }
 }
 

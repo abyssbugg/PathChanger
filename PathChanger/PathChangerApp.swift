@@ -164,7 +164,8 @@ struct PathChangerApp: App {
             startBackgroundServices: AppRuntimeEnvironment.allowsAutomaticStartup,
             locationInjector: LocationInjectorFactory.make(),
             ddiPreparerFactory: { DeveloperDiskImagePreparer.live(deviceManager: $0) },
-            roadRouter: MapKitRoadRouter()
+            roadRouter: MapKitRoadRouter(),
+            placeNameResolver: PlaceNameResolver(geocoder: CLGeocoderReverseGeocoder())
         ))
     }
     @StateObject private var tunneldManager = TunneldManager.shared
@@ -441,6 +442,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// straight lines (tests, previews).
     var legPathProvider: (@Sendable (LocationCoordinate, LocationCoordinate, SimulationSpeed) async -> LegPath)?
 
+    /// Names the spoofed location on the map (PRODUCT_REQUIREMENTS 3.5). Nil in tests
+    /// and previews, so nothing reaches Apple's geocoder there.
+    let placeNameResolver: PlaceNameResolver?
     /// Adapts a road router to the engine's leg seam: the road path, whether it follows
     /// roads, and the note the card shows when it does not.
     nonisolated static func roadLegPathProvider(
@@ -706,6 +710,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         tunnelQuitController: (any TunnelQuitControlling)? = nil,
         stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : .standard,
         roadRouter: (any RoadRouting)? = nil,
+        placeNameResolver: PlaceNameResolver? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -750,6 +755,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             settingsDefaults: stopTravelSettingsDefaults
         )
         self.legPathProvider = roadRouter.map(Self.roadLegPathProvider)
+        self.placeNameResolver = placeNameResolver
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
             errorHandler: sharedErrorHandler,
