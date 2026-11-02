@@ -283,8 +283,7 @@ struct ContentView: View {
                     onMove: performMove,
                     onCommitCoords: commitTeleport
                 )
-                .padding(.leading, 16)
-                .padding(.top, 70)
+                .padding(ModeContextCard.placementInsets)
                 .zIndex(25)
             }
 

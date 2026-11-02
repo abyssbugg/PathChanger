@@ -56,7 +56,27 @@ enum MoveDisabledReason: Equatable {
     }
 }
 
+/// Takes its child's ideal height when that fits, else the height offered: a scroll view
+/// inside it hugs short content and scrolls tall content, with no measuring pass (so no
+/// first-frame jump).
+struct ContentHuggingLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let ideal = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        let height = min(ideal.height, proposal.height ?? ideal.height)
+        return CGSize(width: proposal.width ?? ideal.width, height: max(height, 0))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
 struct ModeContextCard: View {
+    /// Where ContentView places the card in the map area: below the search row, with a
+    /// bottom margin so the footer never touches the window edge.
+    static let placementInsets = EdgeInsets(top: 70, leading: 16, bottom: 16, trailing: 16)
+
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @ObservedObject private var favorites = LocationFavoritesManager.shared
@@ -74,34 +94,40 @@ struct ModeContextCard: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    if mode.showsRouteList {
-                        routeBlock
+            // The content scrolls between the pinned header and footer. The card hugs
+            // short content and never grows past the height its parent offers (the old
+            // `fixedSize` took the full content height and pushed the footer out of the
+            // window; the older `maxHeight: 560` stretched short cards).
+            ContentHuggingLayout {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if mode.showsRouteList {
+                            routeBlock
+                        }
+                        if mode == .teleport {
+                            coordBlock
+                        }
+                        if showsTravelMotion {
+                            motionBlock
+                        }
+                        if StopTravelCardText.showsStopOptions(for: mode) {
+                            stopOptionsBlock
+                        }
+                        if mode == .joystick {
+                            joystickBlock
+                        }
+                        toggleBlock
+                        metricsBlock
+                        notesBlock
                     }
-                    if mode == .teleport {
-                        coordBlock
-                    }
-                    if showsTravelMotion {
-                        motionBlock
-                    }
-                    if StopTravelCardText.showsStopOptions(for: mode) {
-                        stopOptionsBlock
-                    }
-                    if mode == .joystick {
-                        joystickBlock
-                    }
-                    toggleBlock
-                    metricsBlock
-                    notesBlock
+                    .padding(.horizontal, 13)
+                    .padding(.bottom, 2)
                 }
-                .padding(.horizontal, 13)
-                .padding(.bottom, 2)
+                .scrollBounceBehavior(.basedOnSize)
             }
             footer
         }
         .frame(width: 336)
-        .fixedSize(horizontal: false, vertical: true)
         .background(Organic.neutral100)
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
         .overlay(
@@ -293,30 +319,42 @@ struct ModeContextCard: View {
                     .tracking(0.6)
                     .foregroundStyle(Organic.neutral600)
                 Spacer()
-                Text(travelName(appState.simulationSpeed))
+                Text(StopTravelCardText.travelModeTitle(appState.simulationSpeed, autoSpeed: appState.autoSpeed))
                     .font(Organic.body(10, weight: .bold))
                     .foregroundStyle(Organic.accent800)
             }
             .accessibilityElement(children: .combine)
             HStack(spacing: 6) {
                 ForEach(travelModes, id: \.self) { speed in
+                    // Selected only while the preset is the speed in use (Auto on).
+                    let selected = appState.autoSpeed && appState.simulationSpeed == speed
                     Button {
-                        appState.setSpeed(speed)
+                        appState.selectTravelMode(speed)
                     } label: {
-                        Image(systemName: travelIcon(speed))
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(appState.simulationSpeed == speed ? Organic.accent800 : Organic.neutral700)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 32)
-                            .background(appState.simulationSpeed == speed ? Organic.accent200 : Organic.neutral100)
-                            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                                    .stroke(appState.simulationSpeed == speed ? Organic.accent400 : Organic.neutral300, lineWidth: 1)
-                            )
+                        VStack(spacing: 3) {
+                            Image(systemName: travelIcon(speed))
+                                .font(.system(size: 13, weight: .semibold))
+                                .frame(height: 16)
+                            Text(StopTravelCardText.travelName(speed))
+                                .font(Organic.body(9.5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(selected ? Organic.accent800 : Organic.neutral700)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(selected ? Organic.accent200 : Organic.neutral100)
+                        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                                .stroke(selected ? Organic.accent400 : Organic.neutral300, lineWidth: 1)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .help(travelName(speed))
+                    .help("\(StopTravelCardText.travelName(speed)), \(String(format: "%.1f", speed.presetMetersPerSecond)) m/s")
+                    .accessibilityLabel(StopTravelCardText.travelName(speed))
+                    .accessibilityValue(String(format: "%.1f metres per second", speed.presetMetersPerSecond))
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
             OrganicSliderRow(
@@ -333,6 +371,9 @@ struct ModeContextCard: View {
                     }
                 }
             )
+            if let note = StopTravelCardText.speedNote(settings: stopSettings, isRunActive: isStopRunActive) {
+                caption(note, systemImage: isStopRunActive ? "clock.arrow.circlepath" : "info.circle")
+            }
         }
         .padding(10)
         .background(Organic.bg)
@@ -341,6 +382,21 @@ struct ModeContextCard: View {
                 .stroke(Organic.neutral300, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+    }
+
+    /// A short explanation under a control: muted, wrapping, read as one line.
+    private func caption(_ text: String, systemImage: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 9, weight: .semibold))
+                .accessibilityHidden(true)
+            Text(text)
+                .font(Organic.body(10))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(Organic.neutral600)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var joystickBlock: some View {
@@ -392,7 +448,7 @@ struct ModeContextCard: View {
     }
 
     private var stopOptionsBlock: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("STOPS")
                 .font(Organic.body(10, weight: .bold))
                 .tracking(0.6)
@@ -401,14 +457,20 @@ struct ModeContextCard: View {
             // Controls stay enabled mid-run: see `StopTravelCardText.runEditNote`.
             ForEach(StopTravelCardText.visibleControls(for: mode, settings: stopSettings)) { control in
                 stopControlRow(control)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                if control == .arrival || control == .jumpTiming,
+                   StopTravelCardText.visibleControls(for: mode, settings: stopSettings).last(where: { $0 == .arrival || $0 == .jumpTiming }) == control {
+                    // How to get there, then what happens at each stop.
+                    Rectangle().fill(Organic.neutral300.opacity(0.7)).frame(height: 1)
+                        .accessibilityHidden(true)
+                }
             }
             if let note = StopTravelCardText.runEditNote(isRunActive: isStopRunActive) {
-                Text(note)
-                    .font(Organic.body(10))
-                    .foregroundStyle(Organic.neutral600)
-                    .fixedSize(horizontal: false, vertical: true)
+                caption(note, systemImage: "exclamationmark.circle")
             }
         }
+        // Jump timing slides in instead of pushing the rows below in one jump.
+        .animation(.easeInOut(duration: 0.18), value: stopSettings.arrival)
         .padding(10)
         .background(Organic.bg)
         .overlay(
@@ -422,96 +484,239 @@ struct ModeContextCard: View {
     private func stopControlRow(_ control: StopTravelCardText.Control) -> some View {
         switch control {
         case .arrival:
-            stopSegmented(control, selection: appState.stopSettingBinding(\.arrival, for: mode),
-                          options: StopTravelSettings.Arrival.allCases, title: StopTravelCardText.title)
+            stopChoices(control, selection: appState.stopSettingBinding(\.arrival, for: mode),
+                        options: StopTravelSettings.Arrival.allCases, title: StopTravelCardText.title, icon: Self.icon)
         case .jumpTiming:
-            VStack(alignment: .leading, spacing: 4) {
-                stopSegmented(control, selection: appState.stopSettingBinding(\.jumpTiming, for: mode),
-                              options: StopTravelSettings.JumpTiming.allCases, title: StopTravelCardText.title)
-                Text(StopTravelCardText.jumpTimingCaption)
-                    .font(Organic.body(10))
-                    .foregroundStyle(Organic.neutral600)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 5) {
+                stopChoices(control, selection: appState.stopSettingBinding(\.jumpTiming, for: mode),
+                            options: StopTravelSettings.JumpTiming.allCases, title: StopTravelCardText.title, icon: Self.icon)
+                caption(StopTravelCardText.jumpTimingCaption(for: stopSettings.jumpTiming), systemImage: "info.circle")
             }
         case .hold:
             stopHoldRow
         case .progression:
-            stopSegmented(control, selection: appState.stopSettingBinding(\.progression, for: mode),
-                          options: StopTravelSettings.Progression.allCases, title: StopTravelCardText.title)
+            stopChoices(control, selection: appState.stopSettingBinding(\.progression, for: mode),
+                        options: StopTravelSettings.Progression.allCases, title: StopTravelCardText.title, icon: Self.icon)
         case .repeatMode:
-            stopSegmented(control, selection: appState.stopSettingBinding(\.repeatMode, for: mode),
-                          options: StopTravelSettings.RepeatMode.allCases, title: StopTravelCardText.title)
+            stopChoices(control, selection: appState.stopSettingBinding(\.repeatMode, for: mode),
+                        options: StopTravelSettings.RepeatMode.allCases, title: StopTravelCardText.title, icon: Self.icon)
         }
     }
 
-    /// A labelled segmented picker. The visible title is hidden from VoiceOver because
-    /// the picker carries the same label, so it is read once.
-    private func stopSegmented<Option: Hashable>(
+    /// A labelled row of Organic choice buttons (the segmented pickers used the system
+    /// blue and crowded "One stop per Move" / "Back and forth"). The visible title is
+    /// hidden from VoiceOver because the group carries the same label, so it is read once;
+    /// each choice reads its title and Selected.
+    private func stopChoices<Option: Hashable>(
         _ control: StopTravelCardText.Control,
         selection: Binding<Option>,
         options: [Option],
-        title: @escaping (Option) -> String
+        title: @escaping (Option) -> String,
+        icon: @escaping (Option) -> String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(control.label)
                 .font(Organic.body(12, weight: .semibold))
                 .foregroundStyle(Organic.neutral700)
                 .accessibilityHidden(true)
-            Picker(control.label, selection: selection) {
+            HStack(spacing: 6) {
                 ForEach(options, id: \.self) { option in
-                    Text(title(option)).tag(option)
+                    let selected = selection.wrappedValue == option
+                    Button {
+                        selection.wrappedValue = option
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: icon(option))
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(height: 14)
+                                .accessibilityHidden(true)
+                            Text(title(option))
+                                .font(Organic.body(10.5, weight: .semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                        }
+                        .foregroundStyle(selected ? Organic.accent800 : Organic.neutral700)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(selected ? Organic.accent200 : Organic.neutral100)
+                        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                                .stroke(selected ? Organic.accent400 : Organic.neutral300, lineWidth: 1)
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(title(option))
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel(control.label)
             .accessibilityIdentifier(control.accessibilityIdentifier)
+        }
+    }
+
+    private static func icon(_ arrival: StopTravelSettings.Arrival) -> String {
+        switch arrival {
+        case .travel: return "point.topleft.down.to.point.bottomright.curvepath"
+        case .jump: return "scope"
+        }
+    }
+
+    private static func icon(_ timing: StopTravelSettings.JumpTiming) -> String {
+        switch timing {
+        case .fixed: return "timer"
+        case .realistic: return "hourglass"
+        }
+    }
+
+    private static func icon(_ progression: StopTravelSettings.Progression) -> String {
+        switch progression {
+        case .automatic: return "forward.fill"
+        case .onePerMove: return "hand.tap"
+        }
+    }
+
+    private static func icon(_ repeatMode: StopTravelSettings.RepeatMode) -> String {
+        switch repeatMode {
+        case .oneWay: return "arrow.right"
+        case .loop: return "repeat"
+        case .backAndForth: return "arrow.left.arrow.right"
         }
     }
 
     private var stopHoldRow: some View {
         let control = StopTravelCardText.Control.hold
         let seconds = stopSettings.holdSeconds
-        return HStack(spacing: 10) {
-            Text(control.label)
-                .font(Organic.body(12, weight: .semibold))
-                .foregroundStyle(Organic.neutral700)
-                .accessibilityHidden(true)
-            Slider(
-                value: appState.stopHoldBinding(for: mode),
-                in: StopTravelCardText.holdRange,
-                step: StopTravelCardText.holdStep
-            )
-            .tint(Organic.accent600)
-            .controlSize(.small)
-            .accessibilityLabel(control.label)
-            .accessibilityValue(StopTravelCardText.holdAccessibilityValue(seconds))
-            .accessibilityIdentifier(control.accessibilityIdentifier)
-            Text(StopTravelCardText.holdLabel(seconds))
-                .font(Organic.mono(11, weight: .bold))
-                .frame(width: 52, alignment: .trailing)
-                .accessibilityHidden(true)
+        let applies = StopTravelCardText.holdApplies(stopSettings)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Text(control.label)
+                    .font(Organic.body(12, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .accessibilityHidden(true)
+                Slider(
+                    value: appState.stopHoldBinding(for: mode),
+                    in: StopTravelCardText.holdRange,
+                    step: StopTravelCardText.holdStep
+                )
+                .tint(Organic.accent600)
+                .controlSize(.small)
+                .accessibilityLabel(control.label)
+                .accessibilityValue(StopTravelCardText.holdAccessibilityValue(seconds))
+                .accessibilityHint(StopTravelCardText.holdNote(stopSettings) ?? "")
+                .accessibilityIdentifier(control.accessibilityIdentifier)
+                Text(StopTravelCardText.holdLabel(seconds))
+                    .font(Organic.mono(11, weight: .bold))
+                    .frame(width: 52, alignment: .trailing)
+                    .accessibilityHidden(true)
+            }
+            // With one stop per Move nothing continues after a stop, so the hold has no
+            // effect: shown dimmed and disabled (its value is kept) instead of looking live.
+            .disabled(!applies)
+            .opacity(applies ? 1 : 0.5)
+            if let note = StopTravelCardText.holdNote(stopSettings) {
+                caption(note, systemImage: "info.circle")
+            }
         }
     }
 
-    /// The running stop run: one line per fact, each read on its own.
+    /// The running stop run: a headline naming the phase with its countdown, then one
+    /// line per remaining fact, each read on its own.
     @ViewBuilder
     private var stopProgressReadout: some View {
         if StopTravelCardText.showsStopOptions(for: mode), let progress = appState.stopProgress {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(StopTravelCardText.progressLines(progress)) { line in
+            let countdown = progress.holdSecondsLeft ?? progress.legSecondsLeft
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: Self.phaseIcon(progress))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(progress.isPaused ? Organic.neutral700 : Organic.accent700)
+                        .frame(width: 16)
+                        .accessibilityHidden(true)
+                    Text(StopTravelCardText.phaseTitle(progress))
+                        .font(Organic.body(12, weight: .bold))
+                        .foregroundStyle(Organic.neutral800)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Spacer(minLength: 4)
+                    if let countdown {
+                        Text(StopTravelCardText.clock(countdown))
+                            .font(Organic.mono(15, weight: .bold))
+                            .foregroundStyle(progress.isPaused ? Organic.neutral600 : Organic.accent800)
+                            .monospacedDigit()
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(StopTravelCardText.phaseTitle(progress))
+                .accessibilityValue(countdown.map { StopTravelCardText.clock($0) } ?? "")
+                ForEach(StopTravelCardText.progressLines(progress).filter { [.nextStop, .fallback, .routeNote].contains($0.kind) }) { line in
                     Text(line.text)
-                        .font(line.kind == .fallback || line.kind == .routeNote ? Organic.body(11) : Organic.body(11, weight: .semibold))
+                        .font(line.kind == .nextStop ? Organic.body(11, weight: .semibold) : Organic.body(10.5))
                         .foregroundStyle(line.kind == .fallback ? Organic.accent800 : Organic.neutral700)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 24)
                 }
             }
+            .padding(9)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(progress.isPaused ? Organic.neutral200 : Organic.accent100)
+            .overlay(
+                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                    .stroke(progress.isPaused ? Organic.neutral400 : Organic.accent300, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Stop progress")
             .accessibilityIdentifier(StopTravelCardText.progressIdentifier)
+        } else if let done = completionLine {
+            Label(done, systemImage: "checkmark.circle.fill")
+                .font(Organic.body(11, weight: .semibold))
+                .foregroundStyle(Organic.sage800)
+                .padding(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Organic.sage100)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                        .stroke(Organic.sage300, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                .accessibilityLabel(done)
         }
+    }
+
+    private static func phaseIcon(_ progress: StopProgress) -> String {
+        if progress.isPaused { return "pause.circle.fill" }
+        switch progress.phase {
+        case .findingRoute: return "map"
+        case .travelling: return "location.north.line.fill"
+        case .waitingToJump: return "hourglass"
+        case .jumping: return "scope"
+        case .holding: return "mappin.and.ellipse"
+        }
+    }
+
+    /// The stop the phone holds in this mode's run (nil when it holds no stop of it).
+    private var reachedStopIndex: Int? {
+        StopTravelCardText.reachedStop(
+            stops: appState.currentRoute,
+            cursor: appState.displayStopCursor(for: mode),
+            repeatMode: stopSettings.repeatMode,
+            held: appState.locationPresentation.appliedCoordinate
+        )
+    }
+
+    /// A finished run of this mode whose last stop is still held.
+    private var completionLine: String? {
+        guard StopTravelCardText.showsStopOptions(for: mode) else { return nil }
+        return StopTravelCardText.completionLine(
+            movement: appState.locationSessionCoordinator.state.movement,
+            mode: mode,
+            isHeld: appState.locationPresentation.appliedCoordinate != nil,
+            reachedStop: reachedStopIndex,
+            totalStops: appState.currentRoute.count
+        )
     }
 
     private func toggleLine(_ title: String, _ value: Binding<Bool>) -> some View {
@@ -529,13 +734,16 @@ struct ModeContextCard: View {
     private var metricsBlock: some View {
         VStack(spacing: 1) {
             if mode.showsDistance {
-                metricRow(system: "mappin.circle", title: "Distance", value: routeDistance)
+                // Straight-line sums of the stops: road legs and holds are not included.
+                metricRow(system: "mappin.circle", title: mode == .teleport ? "Distance" : "Distance (straight line)", value: routeDistance)
             }
             if mode == .route || mode == .twospot {
-                metricRow(system: "clock", title: "Duration", value: routeETA)
+                metricRow(system: "clock", title: "Est. time (straight line)", value: routeETA)
             }
             if mode == .jump {
-                metricRow(system: "arrow.up.right", title: "Hop", value: "\(min(appState.jumpIndex, appState.currentRoute.count))/\(appState.currentRoute.count)")
+                // The stop the phone holds, not the cursor: after a Loop wrap the cursor
+                // reads 0 while the phone holds the last stop.
+                metricRow(system: "mappin.and.ellipse", title: "At stop", value: StopTravelCardText.atStopValue(reached: reachedStopIndex, total: appState.currentRoute.count))
             }
         }
         .padding(.top, 8)
@@ -632,15 +840,15 @@ struct ModeContextCard: View {
                                     .accessibilityHidden(true)
                                 Text(pause.title)
                             }
+                            .font(Organic.body(12, weight: .bold))
+                            .foregroundStyle(Organic.sage800)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 36)
+                            .background(Capsule().fill(Organic.sage100))
+                            .overlay(Capsule().strokeBorder(Organic.sage300, lineWidth: 1))
+                            .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
-                        .font(Organic.body(12, weight: .bold))
-                        .foregroundStyle(Organic.sage800)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .background(Organic.sage100)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().stroke(Organic.sage300, lineWidth: 1))
                         .accessibilityLabel(pause.title)
                         .accessibilityIdentifier(StopTravelCardText.pauseIdentifier)
                     }
@@ -867,16 +1075,6 @@ struct ModeContextCard: View {
                 .stroke(Organic.neutral300, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-    }
-
-    private func travelName(_ speed: SimulationSpeed) -> String {
-        switch speed {
-        case .walking: return "Walking"
-        case .cycling: return "Cycling"
-        case .driving: return "Driving"
-        case .fast: return "Riding"
-        default: return speed.displayName
-        }
     }
 
     private func travelIcon(_ speed: SimulationSpeed) -> String {

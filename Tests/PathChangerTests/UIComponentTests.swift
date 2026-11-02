@@ -717,7 +717,9 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(source.contains("location.action.clearTarget"))
         XCTAssertTrue(source.contains("location.teleport.noTarget"))
         XCTAssertTrue(source.contains("location.teleport.targetHint"))
-        XCTAssertTrue(source.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertTrue(source.contains("ContentHuggingLayout {"), "the card's content scrolls inside a height ceiling")
+        XCTAssertFalse(source.contains(".frame(width: 336)\n        .fixedSize(horizontal: false, vertical: true)"), "fixedSize pushed the footer out of the window")
+        XCTAssertTrue(try sourceFile("PathChanger/UI/ContentView.swift").contains(".padding(ModeContextCard.placementInsets)"))
         XCTAssertFalse(source.contains(".frame(maxHeight: 560)"))
     }
 
