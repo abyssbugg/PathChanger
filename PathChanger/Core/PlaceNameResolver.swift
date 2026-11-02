@@ -60,7 +60,9 @@ enum PlaceNameFormatter {
 /// - At most one request starts per `minimumInterval`; a point that arrives sooner waits
 ///   for the rest of the interval, and only the newest such point is looked up.
 /// - A point within `minimumDistance` of the last looked-up point needs no new request.
-/// - A newer point supersedes an in-flight lookup; its result is dropped.
+/// - A newer point within `fallbackRadius` of a request in flight lets that request finish
+///   and show; the newest point is looked up after it. A farther point supersedes it, and
+///   its result is dropped.
 /// - Names are cached by coordinate rounded to 1e-4° (about 11 m), least recently used out.
 /// - A shown name stays only while the current point is within `fallbackRadius` of the
 ///   point it was found for; otherwise nothing is shown until a lookup succeeds.
@@ -81,6 +83,8 @@ final class PlaceNameResolver: ObservableObject {
 
     /// The point the latest lookup is for (requested, waiting, or answered).
     private var target: LocationCoordinate?
+    /// The point of the request sent to the geocoder and not answered yet, if any.
+    private var requestInFlight: LocationCoordinate?
     /// The point the shown name was found for.
     private var namedPoint: LocationCoordinate?
     private var lastRequestStart: Date?
@@ -136,8 +140,21 @@ final class PlaceNameResolver: ObservableObject {
         hideNameIfFar(from: coordinate)
         if let target, Geo.distance(from: target, to: coordinate) < minimumDistance { return }
 
+        // A request already sent for a point still near the dot finishes and shows (its
+        // name is valid within `fallbackRadius`); the newest point is looked up after it.
+        // Cancelling it on every 30 m move meant no name ever showed at speed.
+        if let requested = requestInFlight,
+           Geo.distance(from: requested, to: coordinate) <= fallbackRadius {
+            target = coordinate
+            return
+        }
+
         cancelPendingLookup()
         target = coordinate
+        scheduleLookup(for: coordinate)
+    }
+
+    private func scheduleLookup(for coordinate: LocationCoordinate) {
         let wait = lastRequestStart.map { max(0, minimumInterval - now().timeIntervalSince($0)) } ?? 0
         pendingLookup = Task { [weak self] in
             await self?.lookUp(coordinate, after: wait)
@@ -151,6 +168,8 @@ final class PlaceNameResolver: ObservableObject {
         }
         guard !Task.isCancelled, target == coordinate else { return }
         lastRequestStart = now()
+        requestInFlight = coordinate
+        defer { if requestInFlight == coordinate { requestInFlight = nil } }
 
         let result: Result<String, ReverseGeocodingError>
         do {
@@ -169,25 +188,48 @@ final class PlaceNameResolver: ObservableObject {
         }
 
         if case .success(let name) = result { remember(name, for: coordinate) }
-        // Newest wins: a cleared or superseded lookup changes nothing on screen.
-        guard !Task.isCancelled, target == coordinate else { return }
+        // A cleared or superseded lookup changes nothing on screen.
+        guard !Task.isCancelled, let latest = target else { return }
+        requestInFlight = nil
 
-        switch result {
-        case .success(let name):
+        if latest == coordinate {
+            switch result {
+            case .success(let name):
+                show(name, for: coordinate)
+            case .failure(let kind):
+                // Let the next update try this point again (still throttled).
+                target = nil
+                hideNameIfFar(from: coordinate)
+                if kind != .cancelled {
+                    Logger.debug("Place name lookup failed: \(kind)", category: .map)
+                }
+            }
+            return
+        }
+
+        // The dot moved on while this request ran. Its name still applies when the dot
+        // is within `fallbackRadius`; then the newest point is looked up (throttled).
+        if case .success(let name) = result,
+           Geo.distance(from: coordinate, to: latest) <= fallbackRadius {
             show(name, for: coordinate)
-        case .failure(let kind):
-            // Let the next update try this point again (still throttled).
-            target = nil
-            hideNameIfFar(from: coordinate)
-            if kind != .cancelled {
+        } else {
+            if case .failure(let kind) = result, kind != .cancelled {
                 Logger.debug("Place name lookup failed: \(kind)", category: .map)
             }
+            hideNameIfFar(from: latest)
+        }
+        if let cached = cachedName(for: latest) {
+            show(cached, for: latest)
+        } else if Geo.distance(from: coordinate, to: latest) >= minimumDistance {
+            scheduleLookup(for: latest)
         }
     }
 
     private func cancelPendingLookup() {
         pendingLookup?.cancel()
         pendingLookup = nil
+        // A cancelled request's answer is dropped, so nothing is in flight for `update`.
+        requestInFlight = nil
     }
 
     private func show(_ name: String?, for point: LocationCoordinate?) {

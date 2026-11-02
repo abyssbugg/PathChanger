@@ -322,6 +322,40 @@ final class PlaceNameResolverTests: XCTestCase {
         XCTAssertEqual(resolver.placeName, homeName, "falls back like any other miss")
     }
 
+    /// Review 2026-11-02 finding 13: at joystick or driving speed every 30 m move used to
+    /// cancel the lookup in flight, so no name ever showed. A lookup whose point is still
+    /// near the dot finishes and shows; only the newest point is looked up next.
+    func testMovingWhileALookupRunsLetsItFinishAndLooksUpTheNewestPointNext() async {
+        let geocoder = FakeReverseGeocoder(holdsCalls: true)
+        await geocoder.setResult(.success(homePlace), near: home)
+        let clock = PlaceNameTestClock()
+        let resolver = makeResolver(geocoder: geocoder, clock: clock)
+        resolver.update(for: home)
+        let firstLookup = resolver.pendingLookup
+        let reached1 = await geocoder.waitForRequests(1)
+        XCTAssertTrue(reached1, "the geocoder never got request 1")
+
+        var point = home
+        for _ in 0..<3 {
+            clock.advance(1)
+            point = north(50, of: point)
+            resolver.update(for: point)
+        }
+        await geocoder.setResult(.success(PlaceDescription(thoroughfare: "Church St", locality: "Hendersonville")), near: point)
+        await geocoder.releaseAll()
+        await firstLookup?.value
+
+        XCTAssertEqual(resolver.placeName, homeName, "the dot is 150 m from home: its name still applies")
+
+        let reached2 = await geocoder.waitForRequests(2)
+        XCTAssertTrue(reached2, "the newest point is looked up next")
+        await geocoder.releaseAll()
+        await settle(resolver)
+        let requests = await geocoder.requests
+        XCTAssertEqual(requests, [home, point], "one request per point that matters, the newest last")
+        XCTAssertEqual(resolver.placeName, "Church St, Hendersonville")
+    }
+
     func testFailedPointIsRetriedOnTheNextUpdate() async {
         let geocoder = FakeReverseGeocoder()
         await geocoder.setResult(.failure(ReverseGeocodingError.network), near: home)
