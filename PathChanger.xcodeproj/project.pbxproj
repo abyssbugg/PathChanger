@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		02BD873DD4F6EAA3828B4E1A /* JoystickMovementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D716FB6D2AE2EB876A799F20 /* JoystickMovementTests.swift */; };
+		036BF32A51969D7C0575EA73 /* RoadRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD708C0DE7F87CACFCB525C5 /* RoadRouterTests.swift */; };
 		06DEAAB1E91AFDC4B11F2319 /* PythonPathResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8BBD54386908598B430C2B /* PythonPathResolver.swift */; };
 		06EA9356314A667700CF2B3B /* RouteInterpolator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52060578E57F26F354DBD47D /* RouteInterpolator.swift */; };
 		090E8CB9A7FAD859F8D31712 /* location_bridge.py in Resources */ = {isa = PBXBuildFile; fileRef = 3FE5A019B448507EE34B6C4A /* location_bridge.py */; };
@@ -109,6 +110,7 @@
 		BD59E62F7D189DB681EBDAD1 /* LocationSessionStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC7C3867D380A824D359D3F /* LocationSessionStateTests.swift */; };
 		BD6DA3A60796095A04C5B670 /* LocationCoordinateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD27EDD6BC7195035F1D6694 /* LocationCoordinateTests.swift */; };
 		BE3C06A4B507D54ED7F480DE /* DeviceVersionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C5B2AC269C4FF219A045B59 /* DeviceVersionTests.swift */; };
+		BF9E5D30F9EE49409B1779E7 /* RoadRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAB63544E103BADE90953D17 /* RoadRouter.swift */; };
 		C2458ABB268ACBA9DF12A2E5 /* LocationInjectorFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666AEF119F784438F16A4D1F /* LocationInjectorFactoryTests.swift */; };
 		C26444B74F29C0AF2DFDC8B7 /* DependencyValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A220D3E5291B39F8E25F46B0 /* DependencyValidator.swift */; };
 		C496309DCF909FFC3AAD8EC5 /* MultiDeviceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD97D62FEFC2920754C14091 /* MultiDeviceCoordinator.swift */; };
@@ -271,6 +273,7 @@
 		D7D35BB2509926F6556448D6 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		D8CD95DB6B85F3B7C7F24A37 /* LocationInjectorFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectorFactory.swift; sourceTree = "<group>"; };
 		DC9921DD4234A5BFD3C07713 /* FakeLocationInjector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeLocationInjector.swift; sourceTree = "<group>"; };
+		DD708C0DE7F87CACFCB525C5 /* RoadRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadRouterTests.swift; sourceTree = "<group>"; };
 		E04B0FBE67A20CB7DD00D310 /* ModeTransportMatrixTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeTransportMatrixTests.swift; sourceTree = "<group>"; };
 		E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridgeSecurityTests.swift; sourceTree = "<group>"; };
 		E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulationPlannerTests.swift; sourceTree = "<group>"; };
@@ -280,6 +283,7 @@
 		E7C961C7385901C0ECAD9850 /* TunneldManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunneldManager.swift; sourceTree = "<group>"; };
 		E82755A54AB427267400E6EA /* DeviceCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceCacheTests.swift; sourceTree = "<group>"; };
 		EA63564CFDB2CB64CE89158F /* Caprasimo-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Caprasimo-Regular.ttf"; sourceTree = "<group>"; };
+		EAB63544E103BADE90953D17 /* RoadRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadRouter.swift; sourceTree = "<group>"; };
 		F095AAEC88DA76942F63B52A /* LocationInjectionIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectionIntegrationTests.swift; sourceTree = "<group>"; };
 		F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSettingsSheet.swift; sourceTree = "<group>"; };
 		F4B045D6AFD74CFC2E34BA0A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
@@ -396,6 +400,7 @@
 			children = (
 				5A9E1B274BF25B31C3050ED6 /* JoystickMovement.swift */,
 				664679DD5A4BD37F33172C75 /* MovementPhysics.swift */,
+				EAB63544E103BADE90953D17 /* RoadRouter.swift */,
 				52060578E57F26F354DBD47D /* RouteInterpolator.swift */,
 				5F78233AAF9375A49216897B /* SimulationEngine.swift */,
 				D09E7C72090449021F614E52 /* SimulationPlanner.swift */,
@@ -515,6 +520,7 @@
 				5747F7072B9EE61A792EA756 /* PythonPathResolverTests.swift */,
 				986F6319346E583A5E4DEC2B /* RateLimiterTests.swift */,
 				3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */,
+				DD708C0DE7F87CACFCB525C5 /* RoadRouterTests.swift */,
 				94011219CD024F1686B7D39F /* RouteInterpolatorTests.swift */,
 				36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */,
 				E2ED4762EB57BD0AA4292A08 /* SimulationPlannerTests.swift */,
@@ -720,6 +726,7 @@
 				B9696539DA6A46F883FF016F /* PythonPathResolverTests.swift in Sources */,
 				B1927611EF3C0A9CCF88B61D /* RateLimiterTests.swift in Sources */,
 				F808E8BD8D34A96730D274C1 /* ReliabilityManagerTests.swift in Sources */,
+				036BF32A51969D7C0575EA73 /* RoadRouterTests.swift in Sources */,
 				3E20FE9BA65A334EF17B8324 /* RouteInterpolatorTests.swift in Sources */,
 				7F15CA3E0E06A432171099F8 /* SimulationEngineTests.swift in Sources */,
 				648D7CA000A33E1E81BCE958 /* SimulationPlannerTests.swift in Sources */,
@@ -793,6 +800,7 @@
 				06DEAAB1E91AFDC4B11F2319 /* PythonPathResolver.swift in Sources */,
 				0C4CA0CE5028573FB2720B85 /* RateLimiter.swift in Sources */,
 				5815CA4F07AEB0A9A5C65011 /* ReliabilityManager.swift in Sources */,
+				BF9E5D30F9EE49409B1779E7 /* RoadRouter.swift in Sources */,
 				06EA9356314A667700CF2B3B /* RouteInterpolator.swift in Sources */,
 				28DD5E4A6EAFAE80C8D9B178 /* RouteLibrary.swift in Sources */,
 				7D9D281F6BD5C073D8B111BB /* RouteStateManager.swift in Sources */,
