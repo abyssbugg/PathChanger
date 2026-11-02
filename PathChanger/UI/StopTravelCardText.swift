@@ -115,7 +115,7 @@ enum StopTravelCardText {
 
     struct ProgressLine: Equatable, Identifiable {
         enum Kind: String, Equatable {
-            case paused, holding, nextStop, timeLeft, fallback
+            case paused, holding, nextStop, timeLeft, fallback, routeNote
         }
 
         let kind: Kind
@@ -125,8 +125,9 @@ enum StopTravelCardText {
     }
 
     /// One line per fact, each its own accessibility element: Paused, the hold
-    /// countdown, the next stop (1-based), the time left in the leg, and the
-    /// straight-line note when the leg has no road route.
+    /// countdown, the next stop (1-based), the time left in the leg, the straight-line
+    /// note when the leg has no road route, and the road route's own note (a detour or
+    /// a long route) when it has one.
     static func progressLines(_ progress: StopProgress) -> [ProgressLine] {
         var lines: [ProgressLine] = []
         if progress.isPaused {
@@ -145,6 +146,9 @@ enum StopTravelCardText {
         if progress.usesStraightLineFallback {
             lines.append(ProgressLine(kind: .fallback, text: progress.fallbackNote ?? defaultFallbackNote))
         }
+        if let routeNote = progress.routeNote, !routeNote.isEmpty {
+            lines.append(ProgressLine(kind: .routeNote, text: routeNote))
+        }
         return lines
     }
 
@@ -157,6 +161,14 @@ enum StopTravelCardText {
     private static func roundedUpSeconds(_ seconds: TimeInterval) -> Int {
         guard seconds.isFinite, seconds > 0 else { return 0 }
         return Int((seconds - 1e-9).rounded(.up))
+    }
+
+    // MARK: Move gating
+
+    /// Jump's Move is possible while the planner has a next hop for these stops: a
+    /// finished One way run cannot continue, but Loop and Back and forth can.
+    static func jumpCanMove(stops: [LocationCoordinate], cursor: StopCursor, settings: StopTravelSettings) -> Bool {
+        StopTravelPlanner.firstLeg(stops: stops.filter(\.isValid), origin: nil, cursor: cursor, settings: settings) != nil
     }
 
     // MARK: Pause / Resume

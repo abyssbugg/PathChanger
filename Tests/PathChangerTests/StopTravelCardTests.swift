@@ -181,6 +181,39 @@ final class StopTravelCardTests: XCTestCase {
         XCTAssertEqual(lines.first?.text, "Next stop: 3 of 3")
     }
 
+    func testReadoutShowsTheRoadRouteNoteAsItsOwnLine() {
+        var onRoads = progress(next: 1, total: 2, legLeft: 30)
+        onRoads.routeNote = "Road route is more than 4 times the straight-line distance"
+        let lines = StopTravelCardText.progressLines(onRoads)
+        XCTAssertEqual(lines.map(\.kind), [.nextStop, .timeLeft, .routeNote])
+        XCTAssertEqual(lines.last?.text, "Road route is more than 4 times the straight-line distance")
+        XCTAssertFalse(lines.contains { $0.kind == .fallback }, "a road route is not a straight-line fallback")
+        XCTAssertEqual(Set(lines.map(\.id)).count, lines.count, "each line is its own element")
+    }
+
+    // MARK: Jump Move gating (review 2026-11-02, finding 6)
+
+    func testJumpCanMoveWhenThePlannerHasANextLeg() {
+        let stops = [
+            LocationCoordinate(latitude: 35.0, longitude: 139.0),
+            LocationCoordinate(latitude: 35.1, longitude: 139.1),
+            LocationCoordinate(latitude: 35.2, longitude: 139.2),
+        ]
+        let finished = StopCursor(nextIndex: 3)
+        XCTAssertFalse(StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .oneWay)))
+        XCTAssertTrue(
+            StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .loop)),
+            "a finished one-way Jump switched to Loop continues"
+        )
+        XCTAssertTrue(StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .backAndForth)))
+        XCTAssertTrue(StopTravelCardText.jumpCanMove(stops: stops, cursor: StopCursor(nextIndex: 1), settings: settings(.jump)))
+        XCTAssertFalse(StopTravelCardText.jumpCanMove(stops: [], cursor: StopCursor(), settings: settings(.jump, repeat: .loop)))
+        XCTAssertFalse(
+            StopTravelCardText.jumpCanMove(stops: [stops[0]], cursor: StopCursor(nextIndex: 1), settings: settings(.jump, repeat: .loop)),
+            "one stop has nothing to loop to"
+        )
+    }
+
     // MARK: Pause / Resume
 
     func testPauseButtonHiddenWithoutARun() {

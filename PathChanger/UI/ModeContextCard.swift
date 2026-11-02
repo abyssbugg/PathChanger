@@ -506,7 +506,7 @@ struct ModeContextCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(StopTravelCardText.progressLines(progress)) { line in
                     Text(line.text)
-                        .font(line.kind == .fallback ? Organic.body(11) : Organic.body(11, weight: .semibold))
+                        .font(line.kind == .fallback || line.kind == .routeNote ? Organic.body(11) : Organic.body(11, weight: .semibold))
                         .foregroundStyle(line.kind == .fallback ? Organic.accent800 : Organic.neutral700)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -724,7 +724,12 @@ struct ModeContextCard: View {
         if !appState.canStartSimulation { return false }
         switch mode {
         case .teleport: return appState.locationPresentation.desiredCoordinate != nil
-        case .jump: return !appState.currentRoute.isEmpty && appState.jumpIndex < appState.currentRoute.count
+        case .jump:
+            return StopTravelCardText.jumpCanMove(
+                stops: appState.currentRoute,
+                cursor: StopCursor(nextIndex: appState.jumpIndex),
+                settings: appState.stopTravelSettings(for: .jump)
+            )
         case .twospot: return (appState.locationPresentation.appliedCoordinate != nil && (appState.locationPresentation.desiredCoordinate != nil || !appState.currentRoute.isEmpty)) || appState.currentRoute.count >= 2
         case .route: return appState.currentRoute.count >= 2
         case .joystick: return appState.locationPresentation.desiredCoordinate != nil || appState.locationPresentation.appliedCoordinate != nil
