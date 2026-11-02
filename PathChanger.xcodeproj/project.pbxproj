@@ -72,6 +72,7 @@
 		7D9D281F6BD5C073D8B111BB /* RouteStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4085B7E872E34E187DA0407 /* RouteStateManager.swift */; };
 		7EB5A53850CEFA1AEF4D3EA4 /* AccessibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C99C9883F9225D235C956CE8 /* AccessibilityTests.swift */; };
 		7F15CA3E0E06A432171099F8 /* SimulationEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CC5BD1CF57E55192F717B6 /* SimulationEngineTests.swift */; };
+		801F9779516FF8A490726A4D /* AutoReconnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27129B1F422BB63B735200F2 /* AutoReconnect.swift */; };
 		805A7EF384495F316E0B22BB /* PlaceNameResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1819F88BBD0CEB39624691 /* PlaceNameResolverTests.swift */; };
 		8094E8CF5FB3FB604B8E8AB8 /* PerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6DEAD6405B53114ED236668 /* PerformanceTests.swift */; };
 		83E86796072B77DDBAECCAE9 /* DependencyLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FCE4C348114E8D2DC14641F /* DependencyLockTests.swift */; };
@@ -131,6 +132,7 @@
 		D2CC7A8085742CF35B78B2EC /* LocationSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 311353ECA4039C698A73AD5C /* LocationSessionCoordinator.swift */; };
 		D32F52A2F2073D1D64496813 /* MapFollowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB59CF5EAFFA596E5C0F9FE /* MapFollowTests.swift */; };
 		D3E705DBD1622A2126B41E91 /* Caprasimo-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = EA63564CFDB2CB64CE89158F /* Caprasimo-Regular.ttf */; };
+		D4E7764C1BF474CEC99B52E9 /* AutomaticReconnectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16A16BEA558889C01E43E70 /* AutomaticReconnectTests.swift */; };
 		D69DC8B501FA1F56B42B1FBA /* LocalizationHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AF801AB11E75DB1A06BBCC /* LocalizationHelper.swift */; };
 		D7ED8A375FEEB98D53CAD8C9 /* TelemetryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */; };
 		DB30ADD65E47E1FFA18DE0FA /* ArgumentSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69988D2399411C815014B10D /* ArgumentSanitizer.swift */; };
@@ -180,6 +182,7 @@
 		1CF6F112EA75CACD56F3214B /* DevLocationBridgeReceiptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridgeReceiptTests.swift; sourceTree = "<group>"; };
 		245D047994AAE1E18686F840 /* InspectorPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorPanel.swift; sourceTree = "<group>"; };
 		25D3DC43F9AE02C06CBDD830 /* ToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastView.swift; sourceTree = "<group>"; };
+		27129B1F422BB63B735200F2 /* AutoReconnect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoReconnect.swift; sourceTree = "<group>"; };
 		2760CDEDE009F38398551BF0 /* LocationInjectionReceiptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectionReceiptTests.swift; sourceTree = "<group>"; };
 		27ECC9466B049C71277C942D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		28CDB84CF90B6C8667049950 /* PathChangerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PathChangerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -299,6 +302,7 @@
 		EA63564CFDB2CB64CE89158F /* Caprasimo-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Caprasimo-Regular.ttf"; sourceTree = "<group>"; };
 		EAB63544E103BADE90953D17 /* RoadRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadRouter.swift; sourceTree = "<group>"; };
 		F095AAEC88DA76942F63B52A /* LocationInjectionIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationInjectionIntegrationTests.swift; sourceTree = "<group>"; };
+		F16A16BEA558889C01E43E70 /* AutomaticReconnectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticReconnectTests.swift; sourceTree = "<group>"; };
 		F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrganicSettingsSheet.swift; sourceTree = "<group>"; };
 		F4B045D6AFD74CFC2E34BA0A /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimiter.swift; sourceTree = "<group>"; };
@@ -360,6 +364,7 @@
 				6F125981934200A08DECF308 /* AppPreferences.swift */,
 				5B03F2C920F3031835FB6AD0 /* AppSettings.swift */,
 				69988D2399411C815014B10D /* ArgumentSanitizer.swift */,
+				27129B1F422BB63B735200F2 /* AutoReconnect.swift */,
 				FEB641C434CB5B477C9D5669 /* CloudSync.swift */,
 				F4B045D6AFD74CFC2E34BA0A /* Constants.swift */,
 				A220D3E5291B39F8E25F46B0 /* DependencyValidator.swift */,
@@ -497,6 +502,7 @@
 				C99C9883F9225D235C956CE8 /* AccessibilityTests.swift */,
 				C2FB65AB327C9C8444D9A291 /* AppStateSimulationTests.swift */,
 				3728FC3F30EB53874CDDEBCF /* ArgumentSanitizerTests.swift */,
+				F16A16BEA558889C01E43E70 /* AutomaticReconnectTests.swift */,
 				971FF340761CB00E51A1E88B /* CloudSyncTests.swift */,
 				299D6107F91E689898AD1A64 /* ConnectionInterruptionTests.swift */,
 				B46095046F517506D398A080 /* ConstantsTests.swift */,
@@ -708,6 +714,7 @@
 				7EB5A53850CEFA1AEF4D3EA4 /* AccessibilityTests.swift in Sources */,
 				109677A2831711A61EF5B0EC /* AppStateSimulationTests.swift in Sources */,
 				487FDDB005A7849E4D93CAFF /* ArgumentSanitizerTests.swift in Sources */,
+				D4E7764C1BF474CEC99B52E9 /* AutomaticReconnectTests.swift in Sources */,
 				8AC316D2DD33372899E1B303 /* CloudSyncTests.swift in Sources */,
 				679D04BC86F658BD73CF4FAF /* ConnectionInterruptionTests.swift in Sources */,
 				DC727E6337321449695EF418 /* ConstantsTests.swift in Sources */,
@@ -775,6 +782,7 @@
 				247D7CBBE1EE4EDC695592FF /* AppPreferences.swift in Sources */,
 				F6D1F4AAC3B2EB7026FE2999 /* AppSettings.swift in Sources */,
 				DB30ADD65E47E1FFA18DE0FA /* ArgumentSanitizer.swift in Sources */,
+				801F9779516FF8A490726A4D /* AutoReconnect.swift in Sources */,
 				11A4B1879BABFA966B622EC2 /* CloudSync.swift in Sources */,
 				44D1297513E0868A10323AA6 /* CompanionHostService.swift in Sources */,
 				21FBD8F38DF74B2079C16C02 /* Constants.swift in Sources */,

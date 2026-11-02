@@ -53,7 +53,14 @@ final class DeviceStateManager: ObservableObject {
 
     // MARK: Published State
 
-    @Published var selectedDevice: Device?
+    @Published var selectedDevice: Device? {
+        didSet {
+            if let selectedDevice { lastSelectedDevice = selectedDevice }
+        }
+    }
+    /// The last device record selected, kept after discovery deselects a phone that left
+    /// every source, so automatic reconnect can re-select the same record (name included).
+    private(set) var lastSelectedDevice: Device?
     @Published var availableDevices: [Device] = []
     @Published var isTunneldRunning: Bool = false
     @Published var connectionStatus: ConnectionStatus = .disconnected
@@ -65,6 +72,10 @@ final class DeviceStateManager: ObservableObject {
     @Published var networkAdvertisedDeviceIds: Set<String> = []
     @Published var preferUSBConnection: Bool = false
     @Published var recoveryState: ConnectionRecoveryState = .disconnected
+    /// The phone automatic reconnect waits for (AppState sets it). Transport visibility
+    /// keeps refreshing for it, Bonjour included, after discovery deselected it: only the
+    /// 120 s discovery browse saw it again before (PRODUCT_REQUIREMENTS §7.3).
+    var awaitedReconnectDeviceID: String?
 
     // MARK: Owned Collaborators
 
@@ -403,18 +414,19 @@ final class DeviceStateManager: ObservableObject {
     /// `wifiDirectDeviceIds`, and the device chrome's reachability words read those plus
     /// `networkAdvertisedDeviceIds`, so they share this cadence (one clock, one miss
     /// threshold); the browse runs only when `shouldBrowseBonjour` says its result is used.
-    /// Visibility is refreshed only while a device is selected
-    /// or the tunnel is running, and never more often than `transportRefreshInterval`.
+    /// Visibility is refreshed only while a device is selected, the tunnel is running or
+    /// automatic reconnect awaits a phone, and never more often than `transportRefreshInterval`.
     /// `now` is injectable so tests can cross the interval without sleeping.
     func refreshTransportAvailabilityIfNeeded(now: Date = Date()) async {
-        let shouldRefresh = (selectedDevice != nil || isTunneldRunning)
+        let shouldRefresh = (selectedDevice != nil || isTunneldRunning || awaitedReconnectDeviceID != nil)
             && now.timeIntervalSince(lastTransportRefresh) >= transportRefreshInterval
 
         guard shouldRefresh else { return }
 
         // Stamped before the await so an interleaved poll tick cannot double-spawn.
         lastTransportRefresh = now
-        let selectedDeviceID = selectedDevice?.id
+        // With nothing selected, the browse serves the phone automatic reconnect awaits.
+        let selectedDeviceID = selectedDevice?.id ?? awaitedReconnectDeviceID
         let tunnelRunning = isTunneldRunning
         await deviceManager.refreshTransportAvailability(browseBonjour: { usbmuxUSB, usbmuxNetwork in
             let browse = Self.shouldBrowseBonjour(
@@ -463,7 +475,10 @@ final class DeviceStateManager: ObservableObject {
         defer { isResolvingRecoverySession = false }
         await refreshDevices()
 
-        guard let device = availableDevices.first(where: { $0.id == previous.stableDeviceID }) else {
+        // Discovery may have dropped the row of a phone that left every source; the
+        // record it was selected with still names it (automatic reconnect, §7.3).
+        let remembered = lastSelectedDevice.flatMap { $0.id == previous.stableDeviceID ? $0 : nil }
+        guard let device = availableDevices.first(where: { $0.id == previous.stableDeviceID }) ?? remembered else {
             throw DeviceError.deviceNotFound
         }
 
@@ -474,6 +489,12 @@ final class DeviceStateManager: ObservableObject {
             transport = .wifi
         } else if usbDirectDeviceIds.contains(device.id) {
             transport = .usb
+        } else if networkAdvertisedDeviceIds.contains(device.id),
+                  deviceManager.helperConnectTransport(for: device.id) == .wifi {
+            // Only mobdev2 Bonjour sees it (usbmux can stop listing a Wi-Fi phone for
+            // minutes, live 2026-11-01): the helper's mobdev2 lane opens it. Never in
+            // USB Only mode, whose connect hint never crosses to Wi-Fi.
+            transport = .wifi
         } else if isTunneldRunning,
                   TunneldManager.shared.tunnelInfo?.isUsable == true {
             transport = .wifi
@@ -486,7 +507,8 @@ final class DeviceStateManager: ObservableObject {
             displayName: device.displayName,
             connectionType: transport == .usb ? .usb : .wifi,
             productType: device.productType,
-            productVersion: device.productVersion
+            productVersion: device.productVersion,
+            deviceName: device.deviceName
         )
         onDeviceSelected?(self.selectedDevice!)
 

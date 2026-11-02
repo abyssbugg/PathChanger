@@ -97,7 +97,10 @@ final class LocationSessionRecoveryTests: XCTestCase {
         XCTAssertNil(usbResult)
         XCTAssertEqual(coordinator.state.lastAcknowledgedReceipt?.sessionGeneration, 2)
         XCTAssertTrue(coordinator.state.application.isActive)
-        XCTAssertEqual(coordinator.state.movement, .moving(.multiSpot))
+        // AppState cancels every movement engine on a loss, so nothing is moving after
+        // recovery: the location holds and the user starts movement again (§4.4). This
+        // asserted `.moving` before, which the GUI showed with no worker running.
+        XCTAssertEqual(coordinator.state.movement, .idle)
     }
 
     func testWiFiRSDReconnectRequiresReapplyNotDeviceRefreshAlone() async throws {

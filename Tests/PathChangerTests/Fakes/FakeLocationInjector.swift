@@ -113,6 +113,14 @@ actor FakeLocationInjector: LocationInjecting {
         pending.continuation.resume(throwing: FakeError.applicationFailed(code))
     }
 
+    /// Fails the next application with a specific error (e.g. a connection-class
+    /// `LocationInjectionError`, which the coordinator classifies as a loss).
+    func failNextApplication(with error: Error) {
+        guard !pendingApplications.isEmpty else { return }
+        let pending = pendingApplications.removeFirst()
+        pending.continuation.resume(throwing: error)
+    }
+
     func cancelNextApplication() {
         guard !pendingApplications.isEmpty else { return }
         let pending = pendingApplications.removeFirst()

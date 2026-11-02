@@ -72,13 +72,17 @@ final class LocationSessionCoordinator: ObservableObject {
   private var currentReadySession: LocationSessionIdentity?
   private var previousSession: LocationSessionIdentity?
   private var pendingRequest: LocationApplicationRequest?
-  private var movementBeforeRecovery: LocationMovementPhase?
   /// The application phase when the current run of `.applying` began; a cancelled
   /// application restores it.
   private var phaseBeforeApplying: LocationApplicationPhase?
 
   init(injector: any LocationInjecting) {
     self.injector = injector
+  }
+
+  /// The stable device of the session the last loss ended (the one `recover` reconnects).
+  var recoverableDeviceID: String? {
+    (previousSession ?? currentReadySession)?.stableDeviceID
   }
 
   /// Lifecycle and receipt events emitted by the configured injection adapter.
@@ -335,7 +339,6 @@ final class LocationSessionCoordinator: ObservableObject {
   /// location is kept so Move can apply it again.
   func locationEndedByStop() {
     self.pendingRequest = nil
-    self.movementBeforeRecovery = nil
     self.state.lastAcknowledgedReceipt = nil
     self.state.application = .idle
     self.state.movement = .idle
@@ -355,7 +358,6 @@ final class LocationSessionCoordinator: ObservableObject {
     self.connectionFailureEpoch &+= 1
 
     if case .moving(let mode) = self.state.movement {
-      self.movementBeforeRecovery = self.state.movement
       self.state.movement = .paused(mode)
     }
 
@@ -367,7 +369,9 @@ final class LocationSessionCoordinator: ObservableObject {
   }
 
   /// Reconnects the same stable device and reapplies the desired coordinate.
-  /// Movement paused by connection loss resumes only after a current-generation applied receipt.
+  /// A movement the loss paused ends (idle) once a current-generation receipt is applied:
+  /// AppState cancels every movement engine on a loss, so restoring `.moving` showed a run
+  /// with no worker (§4.4). The location holds; the user starts movement again.
   func recover(
     strategy: ReconnectionStrategy,
     sleeper: any RecoverySleeping = TaskRecoverySleeper(),
@@ -394,6 +398,9 @@ final class LocationSessionCoordinator: ObservableObject {
       do {
         let previous = previousSession ?? originalSession
         let candidate = try await establishSession(attempt, previous)
+        // A burst cancelled while it was rebuilding the session (Clear, Stop, Reconnect,
+        // Move) must not send the location afterwards.
+        try Task.checkCancellation()
         guard candidate.stableDeviceID == originalSession.stableDeviceID else {
           throw LocationSessionTransitionError.stableDeviceMismatch
         }
@@ -408,10 +415,12 @@ final class LocationSessionCoordinator: ObservableObject {
           throw transitionError
         }
 
-        if case .moving(let mode) = movementBeforeRecovery {
-          state.movement = .moving(mode)
+        switch state.movement {
+        case .moving, .paused:
+          state.movement = .idle
+        case .idle, .completed:
+          break
         }
-        movementBeforeRecovery = nil
         return nil
       } catch is CancellationError {
         finishRecoveryFailure(reason: "Recovery cancelled")
@@ -532,7 +541,6 @@ final class LocationSessionCoordinator: ObservableObject {
       self.state.application = .idle
       self.pendingRequest = nil
       self.phaseBeforeApplying = nil
-      self.movementBeforeRecovery = nil
       return nil
     } catch {
       self.state.application = .failed(error.localizedDescription)

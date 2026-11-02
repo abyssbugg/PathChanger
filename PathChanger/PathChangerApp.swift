@@ -728,6 +728,19 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// error-dialog action). One-tap reconnect may then restart it; launch-time and
     /// adopted tunnels never gain that permission.
     private var userStartedTunnelInSession = false
+    /// Automatic reconnect (PRODUCT_REQUIREMENTS §7.3): waits for a lost phone and runs
+    /// one bounded recovery burst when it is visible again (or on a slow fallback timer).
+    private let automaticReconnect: AutomaticReconnectEnvironment
+    private var automaticReconnectTask: Task<Void, Never>?
+    /// Bumped whenever a wait starts or is cancelled, so an ended loop never clears a newer one.
+    private var automaticReconnectID: UInt64 = 0
+    private let automaticReconnectWaiter = AutoReconnectWaiter()
+    /// True from the moment PathChanger waits for the lost phone until its held location
+    /// is reapplied (or the wait is cancelled), bursts included.
+    @Published private(set) var isAwaitingAutomaticReconnect = false
+    /// Stop Tunnel or Clear since the last explicit Start, Move or Reconnect: the user
+    /// ended the connection or the location, so nothing reconnects behind their back.
+    private(set) var isAutomaticReconnectLatchedByUser = false
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -764,6 +777,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : .standard,
         roadRouter: (any RoadRouting)? = nil,
         placeNameResolver: PlaceNameResolver? = nil,
+        automaticReconnect: AutomaticReconnectEnvironment? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -788,6 +802,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.tunnelQuitController = tunnelQuitController ?? TunneldManager.shared
         self.routeDelay = routeDelay
         self.automaticRecoveryEnabled = effectiveBackgroundServices
+        // Off wherever background services are off (test hosts, previews): only an
+        // explicit environment turns it on there.
+        self.automaticReconnect = automaticReconnect ?? .live(isEnabled: effectiveBackgroundServices)
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(
@@ -935,6 +952,17 @@ class AppState: ObservableObject, LocationTerminationHandling {
             self?.handleLocationSessionLoss(event)
         }
 
+        // The awaited phone is visible again over any live source. A paired placeholder
+        // in the device list is not evidence (§7.3); the fallback timer covers sources
+        // that never update.
+        Publishers.CombineLatest3(device.$usbDirectDeviceIds, device.$wifiDirectDeviceIds, device.$networkAdvertisedDeviceIds)
+            .sink { [weak self] usb, wifi, bonjour in
+                guard let self, let awaited = self.device.awaitedReconnectDeviceID,
+                      usb.contains(awaited) || wifi.contains(awaited) || bonjour.contains(awaited) else { return }
+                self.automaticReconnectWaiter.signalReachable()
+            }
+            .store(in: &cancellables)
+
         // Check if onboarding is needed
         let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
@@ -1022,6 +1050,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Start the selected tunnel mode against the selected device, when available.
     func startSelectedTunnel() async {
         userStartedTunnelInSession = true
+        // An explicit Start lifts a Stop's hold on automatic reconnect; a wait that is
+        // already running keeps waiting (the phone may come back through this Start).
+        isAutomaticReconnectLatchedByUser = false
         await TunneldManager.shared.startTunnel(deviceId: tunnelTargetDeviceId())
     }
 
@@ -1088,6 +1119,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     private func runReconnectNow() async {
         guard canBeginLocationOperation else { return }
+        // Reconnect is explicit: it lifts a Stop's latch and replaces any automatic wait.
+        // A Reconnect that does not get the location back waits again (as after a burst).
+        isAutomaticReconnectLatchedByUser = false
+        await stopAutomaticReconnect(reason: "Reconnect pressed")
+        defer { armAutomaticReconnectIfEligible(afterFailedBurst: true) }
         // Manual reconnect supersedes an in-flight automatic recovery; cancelling
         // first keeps the two paths from driving the coordinator concurrently.
         locationRecoveryTask?.cancel()
@@ -1136,6 +1172,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         locationOperationGeneration &+= 1
         // The point the device held, staged for the next mode if this Clear succeeds.
         let lastSpoofed = locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate ?? currentLocation
+        // Clear is the user's "back to real GPS": even a Clear the phone cannot confirm
+        // (no connection) must not be undone by an automatic reapply later.
+        isAutomaticReconnectLatchedByUser = true
         let sessionToClear: LocationSessionIdentity?
         if let unresolvedClearSession {
             sessionToClear = unresolvedClearSession
@@ -1153,7 +1192,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         )
         let clearing = Task { @MainActor in
             defer { locationClearTask = nil }
-            let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask].compactMap { $0 }
+            let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask, automaticReconnectTask].compactMap { $0 }
             let applications = Array(applicationTasks.values)
             producers.forEach { $0.cancel() }
             applications.forEach { $0.cancel() }
@@ -1307,6 +1346,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
         // The next movement replaces the joystick's last heading (3.5).
         if activeMode != .joystick { lastJoystickHeadingDegrees = nil }
+        // It also lifts Stop's or Clear's hold on automatic reconnect and replaces a wait
+        // still running (its burst is awaited, so the two never drive the coordinator).
+        isAutomaticReconnectLatchedByUser = false
+        await stopAutomaticReconnect(reason: "Move pressed")
 
         // Jump (with stops), Two-Spot and Multi-Spot run stop by stop (3.2-3.4, 3.6).
         switch activeMode {
@@ -1714,6 +1757,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult {
+        await stopAutomaticReconnect(reason: "Quit")
         await stopSimulation()
         await locationBridge.stopHeldSimulation()
         do {
@@ -1736,6 +1780,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult {
+        if choice != .cancel {
+            await stopAutomaticReconnect(reason: "Quit")
+        }
         switch choice {
         case .cancel:
             return .cancel
@@ -2661,6 +2708,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
         joystickDirection = .zero
 
         if case .tunnelStoppedByUser = event {
+            // Stop Tunnel (or a transport switch) is the user's: nothing reconnects until
+            // an explicit Start, Move or Reconnect. Reconnect's own tunnel restart is not
+            // a Stop: it is the user asking to reconnect.
+            if reconnectTask == nil {
+                isAutomaticReconnectLatchedByUser = true
+            }
+            cancelAutomaticReconnect(reason: "Tunnel stopped")
             locationSessionCoordinator.stopMovement()
             locationRecoveryTask?.cancel()
             locationRecoveryTask = nil
@@ -2697,10 +2751,22 @@ class AppState: ObservableObject, LocationTerminationHandling {
         guard event.startsAutomaticRecovery else {
             locationRecoveryTask?.cancel()
             locationRecoveryTask = nil
+            cancelAutomaticReconnect(reason: event.reason)
             return
         }
-        guard automaticRecoveryEnabled else { return }
-        startLocationRecovery { [weak self] _, previous in
+        if automaticRecoveryEnabled {
+            startLocationRecovery(establishSession: establishRecoverySession)
+        }
+        // No burst could start now (or a burst is not allowed here): wait for the phone.
+        // A burst that did start arms the wait itself if it is exhausted.
+        if locationRecoveryTask == nil {
+            armAutomaticReconnectIfEligible(afterFailedBurst: false)
+        }
+    }
+
+    /// Rebuilds the lost session over a verified transport (the burst then reapplies).
+    private var establishRecoverySession: @MainActor (Int, LocationSessionIdentity?) async throws -> LocationSessionIdentity {
+        { [weak self] _, previous in
             guard let self, let previous else {
                 throw LocationSessionTransitionError.noReadySession
             }
@@ -2726,11 +2792,185 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 strategy: strategy,
                 establishSession: establishSession
             )
-            if let result, result != .recoveryCancelled {
-                self.lastError = String(describing: result)
-            }
             self.locationRecoveryTask = nil
+            self.reportLocationRecoveryResult(result)
         }
+    }
+
+    /// Words for the user instead of the enum ("recoveryExhausted" was shown before).
+    /// An exhausted burst after a loss the user did not cause keeps waiting for the phone.
+    private func reportLocationRecoveryResult(_ result: LocationSessionTransitionError?) {
+        guard let result, result != .recoveryCancelled else { return }
+        Logger.info("[Recovery] Burst ended: \(result)", category: .session)
+        if result == .recoveryExhausted {
+            armAutomaticReconnectIfEligible(afterFailedBurst: true)
+        }
+        if isAwaitingAutomaticReconnect {
+            statusMessage = Self.automaticReconnectWaitingText
+        } else {
+            lastError = "Couldn't reconnect to the phone. Make sure it is unlocked and on this Wi‑Fi or connected by USB, then press Reconnect."
+        }
+    }
+
+    // MARK: Automatic reconnect (PRODUCT_REQUIREMENTS §7.3)
+
+    static let automaticReconnectWaitingText =
+        "Connection lost — PathChanger reconnects and reapplies the location when the phone is back on Wi‑Fi or USB. Keep it unlocked, or press Reconnect."
+    static let automaticReconnectingText =
+        "Reconnecting to the phone and reapplying the location…"
+
+    /// Plain words for the GUI while PathChanger waits for (or is reconnecting to) the phone.
+    var automaticReconnectNotice: String? {
+        guard isAwaitingAutomaticReconnect else { return nil }
+        let state = locationSessionCoordinator.state
+        if case .reconnecting = state.connection { return Self.automaticReconnectingText }
+        if case .applying = state.application { return Self.automaticReconnectingText }
+        return Self.automaticReconnectWaitingText
+    }
+
+    private func automaticReconnectDecision() -> AutoReconnectPolicy.Decision {
+        let state = locationSessionCoordinator.state
+        return AutoReconnectPolicy.evaluate(AutoReconnectPolicy.Inputs(
+            isEnabled: automaticReconnect.isEnabled,
+            usesHelperConnection: automaticReconnect.usesHelperConnection(),
+            isLatchedByUser: isAutomaticReconnectLatchedByUser,
+            hasClearPending: !canBeginLocationOperation,
+            application: state.application,
+            hasAcknowledgedReceipt: state.lastAcknowledgedReceipt != nil,
+            awaitedDeviceID: locationSessionCoordinator.recoverableDeviceID,
+            selectedDeviceID: selectedDevice?.id
+        ))
+    }
+
+    /// Start waiting for the lost phone, when the policy allows it. Idempotent.
+    private func armAutomaticReconnectIfEligible(afterFailedBurst: Bool) {
+        guard automaticReconnectTask == nil else { return }
+        let decision = automaticReconnectDecision()
+        guard case .wait(let deviceID) = decision else {
+            Logger.debug("[AutoReconnect] Not waiting: \(decision)", category: .session)
+            return
+        }
+        automaticReconnectID &+= 1
+        let id = automaticReconnectID
+        isAwaitingAutomaticReconnect = true
+        device.awaitedReconnectDeviceID = deviceID
+        automaticReconnectWaiter.discardPendingSignal()
+        if isAwaitedDeviceVisible(deviceID) {
+            automaticReconnectWaiter.signalReachable()
+        }
+        statusMessage = Self.automaticReconnectWaitingText
+        Logger.info(
+            "[AutoReconnect] Waiting for " + LogRedaction.redactingDeviceIdentifiers(deviceID)
+                + " to come back" + (afterFailedBurst ? " after an exhausted burst" : ""),
+            category: .session
+        )
+        let lastBurstEnded = afterFailedBurst ? automaticReconnect.now() : nil
+        automaticReconnectTask = Task { @MainActor [weak self] in
+            await self?.runAutomaticReconnect(
+                id: id,
+                deviceID: deviceID,
+                failedBursts: afterFailedBurst ? 1 : 0,
+                lastBurstEnded: lastBurstEnded
+            )
+        }
+    }
+
+    private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {
+        device.usbDirectDeviceIds.contains(deviceID)
+            || device.wifiDirectDeviceIds.contains(deviceID)
+            || device.networkAdvertisedDeviceIds.contains(deviceID)
+    }
+
+    /// Wait for the phone (or the fallback timer), respect the spacing, run one burst;
+    /// repeat with backoff until the reapply is acknowledged or the wait is cancelled.
+    private func runAutomaticReconnect(
+        id: UInt64,
+        deviceID: String,
+        failedBursts initialFailures: Int,
+        lastBurstEnded initialBurstEnd: Date?
+    ) async {
+        defer {
+            if automaticReconnectID == id { finishAutomaticReconnect() }
+        }
+        var failedBursts = initialFailures
+        var lastBurstEnded = initialBurstEnd
+        while !Task.isCancelled {
+            let wake = await automaticReconnectWaiter.wait(
+                timeout: AutoReconnectSchedule.fallbackDelay(afterFailedBursts: failedBursts),
+                sleeper: automaticReconnect.sleeper
+            )
+            guard wake != .cancelled, !Task.isCancelled else { return }
+            if let lastBurstEnded {
+                let earliest = lastBurstEnded.addingTimeInterval(
+                    AutoReconnectSchedule.spacing(afterFailedBursts: failedBursts)
+                )
+                let remaining = earliest.timeIntervalSince(automaticReconnect.now())
+                if remaining > 0 {
+                    do {
+                        try await automaticReconnect.sleeper.sleep(seconds: remaining)
+                    } catch {
+                        return
+                    }
+                }
+            }
+            guard !Task.isCancelled else { return }
+            let decision = automaticReconnectDecision()
+            guard case .wait(let current) = decision, current == deviceID else {
+                Logger.info("[AutoReconnect] Stopped waiting: \(decision)", category: .session)
+                return
+            }
+
+            Logger.info(
+                "[AutoReconnect] " + (wake == .reachable ? "The phone is visible again" : "Fallback timer")
+                    + "; reconnecting (burst \(failedBursts + 1))",
+                category: .session
+            )
+            automaticReconnectWaiter.discardPendingSignal()
+            if locationRecoveryTask == nil {
+                startLocationRecovery(strategy: automaticReconnect.burstStrategy, establishSession: establishRecoverySession)
+            }
+            guard let burst = locationRecoveryTask else {
+                Logger.info("[AutoReconnect] Stopped waiting: no burst could start", category: .session)
+                return
+            }
+            await withTaskCancellationHandler {
+                await burst.value
+            } onCancel: {
+                burst.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            if locationSessionCoordinator.state.application.isActive {
+                Logger.info("[AutoReconnect] Reconnected; the held location is applied again", category: .session)
+                statusMessage = "Reconnected — the location is applied again"
+                return
+            }
+            lastBurstEnded = automaticReconnect.now()
+            failedBursts += 1
+        }
+    }
+
+    private func finishAutomaticReconnect() {
+        automaticReconnectTask = nil
+        isAwaitingAutomaticReconnect = false
+        device.awaitedReconnectDeviceID = nil
+        automaticReconnectWaiter.discardPendingSignal()
+    }
+
+    /// Stop waiting at once (its in-flight burst is cancelled and unwinds on its own).
+    private func cancelAutomaticReconnect(reason: String) {
+        guard let task = automaticReconnectTask else { return }
+        task.cancel()
+        automaticReconnectID &+= 1
+        finishAutomaticReconnect()
+        Logger.info("[AutoReconnect] Stopped waiting: \(reason)", category: .session)
+    }
+
+    /// Stop waiting and wait until its burst (if any) has unwound, so the caller is the
+    /// only one driving the location session afterwards.
+    func stopAutomaticReconnect(reason: String) async {
+        guard let task = automaticReconnectTask else { return }
+        cancelAutomaticReconnect(reason: reason)
+        await task.value
     }
 }
 

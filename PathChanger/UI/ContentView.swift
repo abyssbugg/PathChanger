@@ -361,6 +361,10 @@ struct ContentView: View {
         if tunneldManager.isWaitingForDevice {
             return ("Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel.", false)
         }
+        // After a loss the user did not cause, PathChanger waits for the phone itself.
+        if let notice = appState.automaticReconnectNotice {
+            return (notice, false)
+        }
         if case .error = tunneldManager.state, let error = tunneldManager.lastError {
             return (error, true)
         }
