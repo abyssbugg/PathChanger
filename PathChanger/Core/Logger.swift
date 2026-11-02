@@ -209,6 +209,98 @@ actor FileLogger {
     }
 }
 
+// MARK: - Repeat Suppression
+
+/// Keeps a failure that repeats at the update rate (the joystick retrying every tick)
+/// from writing one line per tick. Pure and clock-injected so it can be tested.
+///
+/// The first occurrence for a key passes. Identical messages for the same key within
+/// `window` seconds of the last emitted line are counted, not emitted. The next emitted
+/// line carries "(repeated N times)", N being the identical lines suppressed since the
+/// last emitted one: a changed message first emits that summary for the old message,
+/// and the same message after the window emits itself with the count.
+struct LogRepeatSuppressor {
+    let window: TimeInterval
+    private struct Entry {
+        var message: String
+        var lastEmitted: Date
+        var suppressed: Int
+    }
+    private var entries: [String: Entry] = [:]
+
+    init(window: TimeInterval = 5) {
+        self.window = window
+    }
+
+    /// The lines to emit now for `message` under `key` (none, one or two).
+    mutating func lines(for message: String, key: String, now: Date = Date()) -> [String] {
+        guard var entry = entries[key] else {
+            entries[key] = Entry(message: message, lastEmitted: now, suppressed: 0)
+            return [message]
+        }
+        if entry.message == message {
+            if now.timeIntervalSince(entry.lastEmitted) < window {
+                entry.suppressed += 1
+                entries[key] = entry
+                return []
+            }
+            let line = Self.withCount(message, entry.suppressed)
+            entries[key] = Entry(message: message, lastEmitted: now, suppressed: 0)
+            return [line]
+        }
+        var lines: [String] = []
+        if entry.suppressed > 0 {
+            lines.append(Self.withCount(entry.message, entry.suppressed))
+        }
+        lines.append(message)
+        entry = Entry(message: message, lastEmitted: now, suppressed: 0)
+        entries[key] = entry
+        return lines
+    }
+
+    private static func withCount(_ message: String, _ suppressed: Int) -> String {
+        suppressed > 0 ? "\(message) (repeated \(suppressed) times)" : message
+    }
+}
+
+/// The process-wide suppressor behind `Logger.error(_:category:repeatKey:)`.
+final class SharedLogRepeatSuppressor: @unchecked Sendable {
+    static let shared = SharedLogRepeatSuppressor()
+    private let lock = NSLock()
+    private var suppressor = LogRepeatSuppressor()
+
+    func lines(for message: String, key: String) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return suppressor.lines(for: message, key: key)
+    }
+}
+
+// MARK: - Redaction
+
+enum LogRedaction {
+    // 8 hex + '-' + 16 hex (iOS 17+ UDID) or 40 hex (legacy UDID), as whole tokens.
+    // A standard UUID (8-4-4-4-12) does not match: its first group is followed by 4 hex.
+    private static let deviceIdentifierPattern = try! NSRegularExpression(
+        pattern: "(?<![0-9A-Fa-f-])(?:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}|[0-9A-Fa-f]{40})(?![0-9A-Fa-f-])"
+    )
+
+    /// Shortens UDID-shaped tokens in helper/provider text to their first 8 characters
+    /// plus "…": modern UDIDs (8 hex, '-', 16 hex) and 40-hex legacy UDIDs.
+    static func redactingDeviceIdentifiers(_ text: String) -> String {
+        let source = text as NSString
+        var result = ""
+        var cursor = 0
+        for match in deviceIdentifierPattern.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+            result += source.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            result += source.substring(with: NSRange(location: match.range.location, length: 8)) + "…"
+            cursor = match.range.location + match.range.length
+        }
+        result += source.substring(from: cursor)
+        return result
+    }
+}
+
 // MARK: - Logger
 
 /// Centralized logging for PathChanger with structured metadata support
@@ -258,6 +350,22 @@ enum Logger {
         let formattedMessage = formatMessage(message, metadata: enrichedMetadata)
         os_log(.fault, log: category.log, "%{public}@", formattedMessage)
         writeToFile(level: "fault", category: category.name, message: message, metadata: enrichedMetadata)
+    }
+
+    // MARK: - Repeat-Suppressed Logging
+
+    /// For a line a loop can repeat at its update rate (the location apply path): an
+    /// identical line for the same key within 5 s is counted instead of written.
+    static func error(_ message: String, category: Category = .general, repeatKey: String) {
+        for line in SharedLogRepeatSuppressor.shared.lines(for: message, key: repeatKey) {
+            error(line, category: category)
+        }
+    }
+
+    static func info(_ message: String, category: Category = .general, repeatKey: String) {
+        for line in SharedLogRepeatSuppressor.shared.lines(for: message, key: repeatKey) {
+            info(line, category: category)
+        }
     }
 
     // MARK: - Performance Logging

@@ -301,3 +301,78 @@ final class LoggerIntegrationTests: XCTestCase {
         Logger.performance("anotherOp", duration: 1.5, category: .device)
     }
 }
+
+// MARK: - Repeat Suppression Tests
+
+final class LogRepeatSuppressorTests: XCTestCase {
+    private let start = Date(timeIntervalSinceReferenceDate: 1_000)
+
+    func testARepeatedFailureAtTheUpdateRateWritesOneLinePerWindow() {
+        // Review 2026-11-01: a joystick failure loop wrote error lines at 10 Hz.
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start), ["[Apply] Failed: E"])
+        for tick in 1...30 {
+            XCTAssertEqual(
+                suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start + Double(tick) * 0.1),
+                [],
+                "tick \(tick)"
+            )
+        }
+        // The window passed: one line with the count of the suppressed repeats.
+        XCTAssertEqual(
+            suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start + 5.1),
+            ["[Apply] Failed: E (repeated 30 times)"]
+        )
+        XCTAssertEqual(suppressor.lines(for: "[Apply] Failed: E", key: "apply", now: start + 5.2), [])
+    }
+
+    func testAChangedMessageFlushesTheCountAndPassesAtOnce() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        _ = suppressor.lines(for: "A", key: "k", now: start)
+        _ = suppressor.lines(for: "A", key: "k", now: start + 0.1)
+        _ = suppressor.lines(for: "A", key: "k", now: start + 0.2)
+        XCTAssertEqual(
+            suppressor.lines(for: "B", key: "k", now: start + 0.3),
+            ["A (repeated 2 times)", "B"]
+        )
+        // Nothing was suppressed for B yet: a change back passes without a summary.
+        XCTAssertEqual(suppressor.lines(for: "A", key: "k", now: start + 0.4), ["A"])
+    }
+
+    func testTheSameMessageAfterTheWindowWithoutRepeatsHasNoCount() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "A", key: "k", now: start), ["A"])
+        XCTAssertEqual(suppressor.lines(for: "A", key: "k", now: start + 6), ["A"])
+    }
+
+    func testKeysAreIndependent() {
+        var suppressor = LogRepeatSuppressor(window: 5)
+        XCTAssertEqual(suppressor.lines(for: "A", key: "bridge", now: start), ["A"])
+        XCTAssertEqual(suppressor.lines(for: "A", key: "app", now: start + 0.1), ["A"])
+        XCTAssertEqual(suppressor.lines(for: "A", key: "bridge", now: start + 0.2), [])
+    }
+}
+
+// MARK: - Redaction Tests
+
+final class LogRedactionTests: XCTestCase {
+    func testUDIDShapedTokensKeepOnlyTheirFirstEightCharacters() {
+        // Review 2026-11-01: provider errors can carry the full device UDID.
+        XCTAssertEqual(
+            LogRedaction.redactingDeviceIdentifiers("Device 00008130-000C5144019A001C not found"),
+            "Device 00008130… not found"
+        )
+        XCTAssertEqual(
+            LogRedaction.redactingDeviceIdentifiers(
+                "udid=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678, again 00008130-000C5144019A001C."
+            ),
+            "udid=a1b2c3d4…, again 00008130…."
+        )
+    }
+
+    func testOtherIdentifiersAndTextAreUnchanged() {
+        let text = "request 251B5D4D-9580-4091-B8E5-026E9344EB3F generation=4 port 49151 deadbeef"
+        XCTAssertEqual(LogRedaction.redactingDeviceIdentifiers(text), text)
+        XCTAssertEqual(LogRedaction.redactingDeviceIdentifiers(""), "")
+    }
+}
