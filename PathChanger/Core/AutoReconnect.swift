@@ -14,6 +14,7 @@
 //
 
 import Foundation
+import Combine
 
 /// Whether PathChanger may wait for a lost phone and reapply its held location on its own.
 enum AutoReconnectPolicy {
@@ -184,5 +185,271 @@ final class AutoReconnectWaiter {
         guard id == waitID, let continuation else { return }
         self.continuation = nil
         continuation.resume(returning: wake)
+    }
+}
+
+// MARK: - Tunnel auto-reconnect (live 2026-11-03)
+
+/// The tunnel lifecycle as automatic and manual reconnect see it. `TunneldManager` is the
+/// only production conformer; it stays the one lifecycle owner.
+@MainActor
+protocol TunnelReconnectControlling: AnyObject {
+    var preferredMode: TunnelMode { get }
+    /// The state machine's state now (the published copy lags one run-loop hop).
+    var lifecycleState: TunnelState { get }
+    /// Every lifecycle transition, synchronously.
+    var lifecycleStatePublisher: AnyPublisher<TunnelState, Never> { get }
+    /// Stop Tunnel since the last explicit Start.
+    var isStoppedByUser: Bool { get }
+    /// The device the lost tunnel belonged to, kept when discovery deselects it.
+    var reconnectDeviceId: String? { get }
+    func startTunnelAutomatically(deviceId: String) async
+    func reconnectTunnel(deviceId: String?) async
+}
+
+/// Whether and when PathChanger reopens the tunnel itself. Pure: the driver supplies the
+/// facts and the time. Only helper modes (the helper's unprivileged connection) qualify;
+/// a Stop Tunnel ends it, Clear does not (Clear only blocks a location reapply).
+enum TunnelAutoReconnectPolicy {
+    /// The first periodic attempt, doubling per failed attempt up to `maximumRetryDelay`.
+    static let firstRetryDelay: TimeInterval = 5
+    static let maximumRetryDelay: TimeInterval = 30
+    /// The phone coming back tries at once, but never sooner than this after the last try,
+    /// so a source that flickers cannot drive attempts back to back.
+    static let visibilitySpacing: TimeInterval = 2
+    /// How long to look away while someone else's Start or Stop runs (a state change
+    /// wakes the driver sooner).
+    static let busyRecheck: TimeInterval = 5
+
+    struct Inputs: Equatable {
+        var isEnabled: Bool
+        var mode: TunnelMode
+        var isStoppedByUser: Bool
+        var tunnel: TunnelState
+        /// The remembered device, kept when discovery deselects it.
+        var deviceID: String?
+        /// The device appeared in usbmux (USB or Network) or mobdev2 Bonjour since the last try.
+        var phoneBecameVisible: Bool
+        /// Since the loss, then since the last attempt ended.
+        var secondsSinceLastTry: TimeInterval
+        var failedAttempts: Int
+    }
+
+    enum Refusal: Equatable {
+        case disabled
+        case daemonMode
+        case stoppedByUser
+        case connected
+        case noDevice
+    }
+
+    enum Decision: Equatable {
+        case stop(Refusal)
+        /// A Start or Stop is in flight: never overlap it.
+        case busy
+        case wait(seconds: TimeInterval)
+        case attempt(deviceID: String)
+    }
+
+    static func retryDelay(afterFailedAttempts failedAttempts: Int) -> TimeInterval {
+        // 2^3 already exceeds the cap; bounding the exponent avoids overflow.
+        min(firstRetryDelay * pow(2, Double(min(max(failedAttempts, 0), 8))), maximumRetryDelay)
+    }
+
+    static func evaluate(_ inputs: Inputs) -> Decision {
+        guard inputs.isEnabled else { return .stop(.disabled) }
+        guard inputs.mode.usesHelperConnection else { return .stop(.daemonMode) }
+        guard !inputs.isStoppedByUser else { return .stop(.stoppedByUser) }
+        switch inputs.tunnel {
+        case .running:
+            return .stop(.connected)
+        case .starting, .stopping:
+            return .busy
+        case .idle, .error:
+            break
+        }
+        guard let deviceID = inputs.deviceID, ArgumentSanitizer.isValidDeviceUDID(deviceID) else {
+            return .stop(.noDevice)
+        }
+        let since = max(inputs.secondsSinceLastTry, 0)
+        if inputs.phoneBecameVisible {
+            return since >= visibilitySpacing ? .attempt(deviceID: deviceID) : .wait(seconds: visibilitySpacing - since)
+        }
+        let delay = retryDelay(afterFailedAttempts: inputs.failedAttempts)
+        return since >= delay ? .attempt(deviceID: deviceID) : .wait(seconds: delay - since)
+    }
+}
+
+struct TunnelAutoReconnectEnvironment {
+    var isEnabled: Bool
+    var tunnel: any TunnelReconnectControlling
+    var sleeper: any RecoverySleeping
+    var now: @MainActor () -> Date
+
+    @MainActor
+    static func live(isEnabled: Bool) -> TunnelAutoReconnectEnvironment {
+        TunnelAutoReconnectEnvironment(
+            isEnabled: isEnabled,
+            tunnel: TunneldManager.shared,
+            sleeper: TaskRecoverySleeper(),
+            now: { Date() }
+        )
+    }
+}
+
+/// Reopens the tunnel after it left running for a reason the user did not cause (a health
+/// failure or a lost phone), until it is live again, the user stops it, or the mode changes
+/// to Background Daemon. Attempts go through `startTunnelAutomatically`, which opens only
+/// the helper's unprivileged connection and never elevates.
+@MainActor
+final class TunnelAutoReconnector: ObservableObject {
+    /// True from the loss until the tunnel is live again or the reconnect stops.
+    @Published private(set) var isReconnecting = false
+
+    private let environment: TunnelAutoReconnectEnvironment
+    private var tunnel: any TunnelReconnectControlling { environment.tunnel }
+    private var stateSubscription: AnyCancellable?
+    private var previousState: TunnelState?
+    private var visibleDeviceIDs: Set<String> = []
+    private var wasRememberedDeviceVisible = false
+    private var phoneBecameVisible = false
+    private var lastTry = Date.distantPast
+    private var failedAttempts = 0
+    private var task: Task<Void, Never>?
+    /// Bumped by every start and cancel, so an ended loop never clears a newer one.
+    private var runID: UInt64 = 0
+    private let waiter = AutoReconnectWaiter()
+
+    init(environment: TunnelAutoReconnectEnvironment) {
+        self.environment = environment
+        guard environment.isEnabled else { return }
+        stateSubscription = environment.tunnel.lifecycleStatePublisher
+            .sink { [weak self] state in self?.lifecycleStateChanged(to: state) }
+    }
+
+    /// Every device usbmux (USB or Network) or mobdev2 Bonjour lists right now.
+    func noteVisibleDevices(_ deviceIDs: Set<String>) {
+        visibleDeviceIDs = deviceIDs
+        let visible = tunnel.reconnectDeviceId.map(deviceIDs.contains) ?? false
+        defer { wasRememberedDeviceVisible = visible }
+        guard task != nil, visible, !wasRememberedDeviceVisible else { return }
+        phoneBecameVisible = true
+        waiter.signalReachable()
+    }
+
+    /// Stop reconnecting (Quit). Stop Tunnel ends it through the lifecycle latch instead.
+    func cancel() {
+        guard let task else { return }
+        task.cancel()
+        runID &+= 1
+        finish()
+        Logger.info("[TunnelReconnect] Stopped: cancelled", category: .device)
+    }
+
+    // The publisher reports a transition before the lifecycle state reads it (willSet):
+    // only the delivered value is used here, and the loop evaluates after it settles.
+    private func lifecycleStateChanged(to state: TunnelState) {
+        let previous = previousState
+        previousState = state
+        let wasArmed = task != nil
+        switch state {
+        case .running:
+            isReconnecting = false
+        case .error:
+            guard case .running = previous else { break }
+            if wasArmed {
+                // Live again only briefly (the loop had not ended yet): start over.
+                isReconnecting = true
+                failedAttempts = 0
+                lastTry = environment.now()
+            } else {
+                arm()
+            }
+        case .idle, .starting, .stopping:
+            break
+        }
+        // Let a waiting loop look again (a Stop, a Start finishing, an adoption).
+        if wasArmed { waiter.signalReachable() }
+    }
+
+    private func arm() {
+        guard task == nil else { return }
+        // The facts that do not depend on the state that is still being written.
+        let decision = TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .error("")))
+        guard case .stop(let refusal) = decision else {
+            start()
+            return
+        }
+        Logger.debug("[TunnelReconnect] Not reconnecting: \(refusal)", category: .device)
+    }
+
+    private func start() {
+        runID &+= 1
+        let id = runID
+        failedAttempts = 0
+        lastTry = environment.now()
+        phoneBecameVisible = false
+        wasRememberedDeviceVisible = tunnel.reconnectDeviceId.map(visibleDeviceIDs.contains) ?? false
+        waiter.discardPendingSignal()
+        isReconnecting = true
+        Logger.info("[TunnelReconnect] Tunnel lost without Stop; reconnecting automatically", category: .device)
+        task = Task { @MainActor [weak self] in
+            await self?.run(id: id)
+        }
+    }
+
+    private func inputs(tunnel state: TunnelState? = nil) -> TunnelAutoReconnectPolicy.Inputs {
+        TunnelAutoReconnectPolicy.Inputs(
+            isEnabled: environment.isEnabled,
+            mode: tunnel.preferredMode,
+            isStoppedByUser: tunnel.isStoppedByUser,
+            tunnel: state ?? tunnel.lifecycleState,
+            deviceID: tunnel.reconnectDeviceId,
+            phoneBecameVisible: phoneBecameVisible,
+            secondsSinceLastTry: environment.now().timeIntervalSince(lastTry),
+            failedAttempts: failedAttempts
+        )
+    }
+
+    private func run(id: UInt64) async {
+        defer { if runID == id { finish() } }
+        while !Task.isCancelled {
+            switch TunnelAutoReconnectPolicy.evaluate(inputs()) {
+            case .stop(let refusal):
+                Logger.info("[TunnelReconnect] Stopped: \(refusal)", category: .device)
+                return
+            case .busy:
+                guard await waiter.wait(timeout: TunnelAutoReconnectPolicy.busyRecheck,
+                                        sleeper: environment.sleeper) != .cancelled else { return }
+            case .wait(let seconds):
+                guard await waiter.wait(timeout: seconds, sleeper: environment.sleeper) != .cancelled else { return }
+            case .attempt(let deviceID):
+                let trigger = phoneBecameVisible ? "the phone is visible again" : "retry timer"
+                phoneBecameVisible = false
+                waiter.discardPendingSignal()
+                Logger.info(
+                    "[TunnelReconnect] Attempt \(failedAttempts + 1) (\(trigger)) for "
+                        + LogRedaction.redactingDeviceIdentifiers(deviceID),
+                    category: .device
+                )
+                await tunnel.startTunnelAutomatically(deviceId: deviceID)
+                guard !Task.isCancelled else { return }
+                // State changes during the attempt are not news.
+                waiter.discardPendingSignal()
+                lastTry = environment.now()
+                if case .running = tunnel.lifecycleState {
+                    Logger.info("[TunnelReconnect] Reconnected; the tunnel is live", category: .device)
+                    return
+                }
+                failedAttempts += 1
+            }
+        }
+    }
+
+    private func finish() {
+        task = nil
+        isReconnecting = false
+        phoneBecameVisible = false
+        waiter.discardPendingSignal()
     }
 }

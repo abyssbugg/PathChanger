@@ -371,43 +371,58 @@ struct OrganicTitleBar: View {
         }
     }
 
+    private var tunnelPhase: TunnelPillPhase {
+        let isError: Bool
+        if case .error = tunneldManager.state { isError = true } else { isError = false }
+        return TunnelPillPhase.resolve(
+            isWaitingForDevice: tunneldManager.isWaitingForDevice,
+            isStarting: tunneldManager.isStarting,
+            isRunning: tunneldManager.isRunning,
+            isError: isError,
+            isAutoReconnecting: appState.isTunnelAutoReconnecting
+        )
+    }
+
     private var tunnelLabel: String {
-        if tunneldManager.isWaitingForDevice { return "Waiting for iPhone…" }
-        if tunneldManager.isStarting { return "Connecting…" }
-        if tunneldManager.isRunning { return "Tunnel live" }
-        if case .error = tunneldManager.state { return "Tunnel error" }
-        return "Start tunnel"
+        tunnelPhase.label
     }
 
     private var tunnelDot: Color {
         if !hasSelectedDevice { return Organic.neutral500 }
-        if tunneldManager.isStarting { return Organic.accent600 }
-        if tunneldManager.isRunning { return Organic.sage600 }
-        if case .error = tunneldManager.state { return Organic.accent600 }
-        return Organic.neutral100.opacity(0.75)
+        switch tunnelPhase {
+        case .waitingForDevice, .connecting, .reconnecting, .error: return Organic.accent600
+        case .live: return Organic.sage600
+        case .stopped: return Organic.neutral100.opacity(0.75)
+        }
     }
 
     private var tunnelInk: Color {
         if !hasSelectedDevice { return Organic.neutral700 }
-        if tunneldManager.isRunning { return Organic.sage800 }
-        if tunneldManager.isStarting { return Organic.neutral700 }
-        if case .error = tunneldManager.state { return Organic.accent800 }
-        return Organic.neutral100
+        switch tunnelPhase {
+        case .live: return Organic.sage800
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral700
+        case .error: return Organic.accent800
+        case .stopped: return Organic.neutral100
+        }
     }
 
     private var tunnelFill: Color {
         if !hasSelectedDevice { return Organic.neutral200 }
-        if tunneldManager.isRunning { return Organic.sage100 }
-        if tunneldManager.isStarting { return Organic.neutral200 }
-        if case .error = tunneldManager.state { return Organic.accent100 }
-        return Organic.accent
+        switch tunnelPhase {
+        case .live: return Organic.sage100
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral200
+        case .error: return Organic.accent100
+        case .stopped: return Organic.accent
+        }
     }
 
     private var tunnelStroke: Color {
-        if tunneldManager.isRunning { return Organic.sage300 }
-        if tunneldManager.isStarting { return Organic.neutral400 }
-        if case .error = tunneldManager.state { return Organic.accent300 }
-        return Color.clear
+        switch tunnelPhase {
+        case .live: return Organic.sage300
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral400
+        case .error: return Organic.accent300
+        case .stopped: return Color.clear
+        }
     }
 
     private var directTransportReady: Bool {

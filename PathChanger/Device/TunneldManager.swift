@@ -560,7 +560,7 @@ enum TunnelStartupWaiter {
 /// - ``stopTunnel()``
 /// - ``checkIfRunning()``
 @MainActor
-class TunneldManager: ObservableObject, TunnelQuitControlling {
+class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectControlling {
     // MARK: Published State
 
     /// Formal state machine for validated transitions
@@ -594,10 +594,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         var interval: TimeInterval
         /// Observed gaps reached about 2 minutes with the phone unlocked.
         static let standard = DeviceVisibilityWait(timeout: 150, interval: 2)
+        /// An automatic reconnect attempt must not sit in "starting" for minutes; its own
+        /// retry schedule covers a phone that takes longer.
+        static let automatic = DeviceVisibilityWait(timeout: 10, interval: 2)
     }
 
     /// How long Start keeps trying while the phone is not visible. Internal for tests.
     var deviceVisibilityWait: DeviceVisibilityWait = .standard
+
+    /// The same wait for an automatic reconnect attempt. Internal for tests.
+    var automaticDeviceVisibilityWait: DeviceVisibilityWait = .automatic
 
     nonisolated static let wifiDeviceNotReachableMessage =
         "iPhone is not reachable over Wi‑Fi. Unlock it, keep it on the same Wi‑Fi network as this Mac, then press Start again."
@@ -942,6 +948,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Start tunnel with preferred mode (with auto-fallback)
     func startTunnel(deviceId: String? = nil) async {
+        await startTunnel(deviceId: deviceId, visibilityWait: deviceVisibilityWait)
+    }
+
+    private func startTunnel(deviceId: String?, visibilityWait: DeviceVisibilityWait) async {
         // An explicit Start is the only thing that lifts Stop's hold on daemon adoption.
         isDaemonAdoptionSuppressedByStop = false
         // An explicit Start after a failure begins again: the state machine has no
@@ -1018,7 +1028,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
 
             if mode.usesHelperConnection {
-                if await connectHelper(mode: mode, deviceId: deviceId) {
+                if await connectHelper(mode: mode, deviceId: deviceId, wait: visibilityWait) {
                     return
                 }
                 guard stateMachine.currentState == .starting else { return }
@@ -1341,6 +1351,50 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         await startTunnel(deviceId: deviceId)
     }
 
+    // MARK: - Reconnect (live 2026-11-03)
+
+    var lifecycleState: TunnelState { stateMachine.currentState }
+
+    var lifecycleStatePublisher: AnyPublisher<TunnelState, Never> {
+        stateMachine.$state.eraseToAnyPublisher()
+    }
+
+    var isStoppedByUser: Bool { isDaemonAdoptionSuppressedByStop }
+
+    var reconnectDeviceId: String? { lastStartDeviceId ?? currentHelperConnection?.deviceId }
+
+    /// An automatic attempt (TunnelAutoReconnector): only in helper modes, never after Stop,
+    /// only from idle or error, with the short visibility wait. It opens the helper's
+    /// unprivileged connection like Start, so it never elevates.
+    func startTunnelAutomatically(deviceId: String) async {
+        guard preferredMode.usesHelperConnection,
+              !isDaemonAdoptionSuppressedByStop,
+              ArgumentSanitizer.isValidDeviceUDID(deviceId) else { return }
+        switch stateMachine.currentState {
+        case .idle, .error:
+            break
+        case .starting, .running, .stopping:
+            return
+        }
+        await startTunnel(deviceId: deviceId, visibilityWait: automaticDeviceVisibilityWait)
+    }
+
+    /// Reconnect never stops a live tunnel (live 2026-11-03: a click on a running tunnel
+    /// went running -> stopping -> idle and ended the held location). From idle or error it
+    /// starts the remembered device (no stop first); a Start or Stop in flight is left alone.
+    func reconnectTunnel(deviceId: String?) async {
+        switch stateMachine.currentState {
+        case .running:
+            Logger.info("[Tunnel] Reconnect: the tunnel is already live; not restarting it", category: .device)
+            return
+        case .starting, .stopping:
+            return
+        case .idle, .error:
+            break
+        }
+        await startTunnel(deviceId: deviceId ?? reconnectDeviceId)
+    }
+
     // MARK: - Helper-owned device connection
 
     private static func mayAdoptHelperConnection(from state: TunnelState) -> Bool {
@@ -1375,7 +1429,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
 
     /// Open the helper's connection for an explicit start. Returns true when the
     /// state machine reached running (or a stop overtook the start).
-    private func connectHelper(mode: TunnelMode, deviceId: String?) async -> Bool {
+    private func connectHelper(mode: TunnelMode, deviceId: String?, wait: DeviceVisibilityWait) async -> Bool {
         guard let deviceId, ArgumentSanitizer.isValidDeviceUDID(deviceId) else {
             lastError = "Select a device before connecting."
             return false
@@ -1394,7 +1448,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
         let attempt = connectAttempt
         // Still this Start's to finish: no Stop and no newer Start since it began.
         let isCurrent = { self.connectAttempt == attempt && self.stateMachine.currentState == .starting }
-        let wait = deviceVisibilityWait
         let deadline = Date().addingTimeInterval(wait.timeout)
         // Once any attempt shows the phone answering while usbmuxd does not list it, a
         // later attempt that only missed Bonjour must not bring back the "not reachable"

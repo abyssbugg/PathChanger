@@ -205,4 +205,40 @@ final class LocationStatusPresentationTests: XCTestCase {
         XCTAssertNil(TunnelNotice.resolve(isWaitingForDevice: false, automaticReconnectNotice: nil, tunnelError: nil))
     }
 
+    /// Live 2026-11-03: after a health failure the pill read "Tunnel error" with nothing
+    /// reconnecting. While PathChanger reopens the tunnel itself it says so, not Error.
+    func testAnAutomaticTunnelReconnectReadsReconnectingNotError() {
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: true, isTunnelReconnecting: true,
+                                 automaticReconnectNotice: nil, tunnelError: "Health check failed"),
+            TunnelNotice(text: TunnelNotice.tunnelReconnectingText, isError: false)
+        )
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, isTunnelReconnecting: true,
+                                 automaticReconnectNotice: "Reapplying…", tunnelError: "Health check failed"),
+            TunnelNotice(text: "\(TunnelNotice.tunnelReconnectingText)\nReapplying…", isError: false)
+        )
+
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: false, isRunning: false,
+                                               isError: true, isAutoReconnecting: true), .reconnecting)
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: true, isStarting: true, isRunning: false,
+                                               isError: false, isAutoReconnecting: true), .reconnecting)
+        XCTAssertEqual(TunnelPillPhase.reconnecting.label, "Reconnecting…")
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: false, isRunning: true,
+                                               isError: false, isAutoReconnecting: true), .live)
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: false, isRunning: false,
+                                               isError: true, isAutoReconnecting: false), .error)
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: true, isStarting: true, isRunning: false,
+                                               isError: false, isAutoReconnecting: false), .waitingForDevice)
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: true, isRunning: false,
+                                               isError: false, isAutoReconnecting: false), .connecting)
+        XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: false, isRunning: false,
+                                               isError: false, isAutoReconnecting: false), .stopped)
+        XCTAssertEqual(TunnelPillPhase.error.label, "Tunnel error")
+        XCTAssertEqual(TunnelPillPhase.live.label, "Tunnel live")
+        XCTAssertEqual(TunnelPillPhase.stopped.label, "Start tunnel")
+        XCTAssertEqual(TunnelPillPhase.connecting.label, "Connecting…")
+        XCTAssertEqual(TunnelPillPhase.waitingForDevice.label, "Waiting for iPhone…")
+    }
+
 }

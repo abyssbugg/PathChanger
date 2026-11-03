@@ -629,6 +629,101 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(daemon.exposesRSDEndpoint)
     }
 
+    // MARK: - Reconnect never stops a live tunnel; automatic reconnect (live 2026-11-03)
+
+    // 01:04:36 the owner pressed Reconnect on a RUNNING tunnel: running -> stopping -> idle
+    // ("the device is back on its real location"), then a fresh start.
+
+    func testReconnectNeverStopsARunningTunnel() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+
+        await manager.reconnectTunnel(deviceId: udid)
+
+        XCTAssertEqual(manager.lifecycleState, .running)
+        XCTAssertTrue(connector.disconnectCalls.isEmpty, "Reconnect closed the live connection")
+        XCTAssertTrue(connector.suspendedDevices.isEmpty, "Reconnect blocked location commands")
+        XCTAssertEqual(connector.connectCalls.count, 1)
+    }
+
+    func testReconnectFromErrorStartsTheRememberedDeviceWithoutStoppingFirst() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.bridgeError("offline")
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        connector.connectError = nil
+
+        await manager.reconnectTunnel(deviceId: nil)
+
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls.map(\.deviceId), [udid, udid])
+        XCTAssertTrue(connector.disconnectCalls.isEmpty)
+    }
+
+    func testAutomaticStartWaitsOnlyBrieflyForAnAbsentPhone() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.allowDaemonAdoptionForTesting() // no Stop since the loss
+        manager.deviceVisibilityWait = .init(timeout: 30, interval: 0.02)
+        manager.automaticDeviceVisibilityWait = .init(timeout: 0.1, interval: 0.02)
+        connector.connectError = Self.notVisible
+        let started = Date()
+
+        await manager.startTunnelAutomatically(deviceId: "00008130-000C5144019A001C")
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "an automatic attempt sat in starting")
+        guard case .error = manager.lifecycleState else {
+            return XCTFail("expected error, got \(manager.lifecycleState)")
+        }
+        XCTAssertGreaterThanOrEqual(connector.connectCalls.count, 1)
+        XCTAssertFalse(manager.isWaitingForDevice)
+    }
+
+    func testAutomaticStartNeverRunsAfterStopOrInDaemonMode() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        XCTAssertTrue(manager.isStoppedByUser, "setup pressed Stop")
+
+        await manager.startTunnelAutomatically(deviceId: udid)
+        XCTAssertEqual(manager.lifecycleState, .idle)
+
+        manager.allowDaemonAdoptionForTesting()
+        manager.preferredMode = .daemon
+        await manager.startTunnelAutomatically(deviceId: udid)
+        XCTAssertEqual(manager.lifecycleState, .idle)
+        XCTAssertTrue(connector.connectCalls.isEmpty)
+    }
+
+    func testAHealthFailureReopensTheHelperConnectionWhenThePhoneReturns() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        await manager.startTunnel(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+        let sleeper = ControlledReconnectSleeper()
+        let clock = ReconnectTestClock()
+        let reconnector = TunnelAutoReconnector(environment: TunnelAutoReconnectEnvironment(
+            isEnabled: true, tunnel: manager, sleeper: sleeper, now: { clock.now }
+        ))
+        defer { reconnector.cancel() }
+        reconnector.noteVisibleDevices([])
+        let stateMachine = try XCTUnwrap(
+            Mirror(reflecting: manager as TunneldManager).children
+                .first(where: { $0.label == "stateMachine" })?.value as? TunnelStateMachine
+        )
+
+        stateMachine.send(.healthCheckFailed)
+        XCTAssertTrue(reconnector.isReconnecting)
+        clock.now += 3
+        reconnector.noteVisibleDevices([udid]) // usbmux Network or mobdev2 Bonjour again
+
+        try await waitUntil { self.manager.lifecycleState == .running }
+        XCTAssertEqual(connector.connectCalls.map(\.deviceId), [udid, udid])
+        XCTAssertTrue(connector.disconnectCalls.isEmpty)
+        try await waitUntil { !reconnector.isReconnecting }
+    }
+
     private func installFakeConnector(mode: TunnelMode) throws -> FakeDeviceConnector {
         let connector = FakeDeviceConnector()
         let previousMode = manager.preferredMode
@@ -649,6 +744,7 @@ final class TunneldManagerTests: XCTestCase {
             self.manager.deviceConnector = nil
             self.manager.preferredMode = previousMode
             self.manager.deviceVisibilityWait = .standard
+            self.manager.automaticDeviceVisibilityWait = .automatic
             #if DEBUG
             stateMachine.testModeEnabled = false
             #endif

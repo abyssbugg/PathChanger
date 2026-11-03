@@ -12,6 +12,7 @@
 //
 
 import XCTest
+import Combine
 @testable import PathChanger
 
 // MARK: - Test doubles
@@ -1081,5 +1082,320 @@ final class AutomaticReconnectDeviceStateTests: XCTestCase {
         XCTAssertEqual(manager.selectedDevice?.id, deviceID)
         XCTAssertEqual(manager.selectedDevice?.displayName, "Owner iPhone")
         XCTAssertEqual(manager.selectedDevice?.deviceName, "Owner iPhone")
+    }
+}
+
+// MARK: - Tunnel auto-reconnect (live 2026-11-03)
+
+// Monitor 2026-11-03, Wi-Fi, cable unplugged: a health failure left the tunnel in Error
+// and nothing reopened it until the owner pressed Start, minutes after the phone was back
+// (Bonjour 01:11:35, usbmux 01:11:43, Start 01:13:04). Reconnect on a live tunnel stopped
+// it ("running -> stopping -> idle") and the owner needed 2-3 clicks.
+
+/// A tunnel lifecycle the tests drive by hand.
+@MainActor
+final class FakeReconnectTunnel: TunnelReconnectControlling {
+    @Published var state: TunnelState = .idle
+    var preferredMode: TunnelMode = .wifi
+    var isStoppedByUser = false
+    var reconnectDeviceId: String? = "00008130-0011223344556677"
+    /// What an automatic start ends in.
+    var automaticStartResult: TunnelState = .error("not visible")
+    var reconnectGate: ReconnectTestGate?
+    private(set) var automaticStarts: [String] = []
+    private(set) var reconnectCalls: [String?] = []
+
+    var lifecycleState: TunnelState { state }
+    var lifecycleStatePublisher: AnyPublisher<TunnelState, Never> { $state.eraseToAnyPublisher() }
+
+    func startTunnelAutomatically(deviceId: String) async {
+        automaticStarts.append(deviceId)
+        state = .starting
+        await Task.yield()
+        state = automaticStartResult
+    }
+
+    func reconnectTunnel(deviceId: String?) async {
+        reconnectCalls.append(deviceId)
+        await reconnectGate?.wait()
+    }
+}
+
+@MainActor
+final class TunnelAutoReconnectPolicyTests: XCTestCase {
+    private let id = "00008130-0011223344556677"
+
+    private func inputs(
+        enabled: Bool = true, mode: TunnelMode = .wifi, stopped: Bool = false,
+        tunnel: TunnelState = .error("Health check failed"), device: String?? = .none,
+        becameVisible: Bool = false, since: TimeInterval = 0, failures: Int = 0
+    ) -> TunnelAutoReconnectPolicy.Inputs {
+        TunnelAutoReconnectPolicy.Inputs(
+            isEnabled: enabled,
+            mode: mode,
+            isStoppedByUser: stopped,
+            tunnel: tunnel,
+            deviceID: device ?? id,
+            phoneBecameVisible: becameVisible,
+            secondsSinceLastTry: since,
+            failedAttempts: failures
+        )
+    }
+
+    func testEveryRefusalHasItsReason() {
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(enabled: false)), .stop(.disabled))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: .daemon)), .stop(.daemonMode))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(stopped: true)), .stop(.stoppedByUser))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .running)), .stop(.connected))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(device: .some(nil))), .stop(.noDevice))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(device: "192.168.0.177")), .stop(.noDevice),
+                       "an endpoint alias is not a UDID the helper can open")
+    }
+
+    func testAStartOrStopInFlightIsNeverOverlapped() {
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .starting, becameVisible: true, since: 60)), .busy)
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .stopping, since: 60)), .busy)
+    }
+
+    func testEveryHelperModeReconnectsFromErrorOrIdle() {
+        for mode in [TunnelMode.auto, .usb, .wifi] {
+            XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: mode, since: 5)), .attempt(deviceID: id))
+            XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: mode, tunnel: .idle, since: 5)),
+                           .attempt(deviceID: id))
+        }
+    }
+
+    func testPeriodicAttemptsBackOffFromFiveToThirtySeconds() {
+        XCTAssertEqual((0...6).map(TunnelAutoReconnectPolicy.retryDelay(afterFailedAttempts:)), [5, 10, 20, 30, 30, 30, 30])
+        XCTAssertEqual(TunnelAutoReconnectPolicy.retryDelay(afterFailedAttempts: 10_000), 30)
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(since: 0)), .wait(seconds: 5))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(since: 5)), .attempt(deviceID: id))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(since: 19, failures: 2)), .wait(seconds: 1))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(since: 29, failures: 9)), .wait(seconds: 1))
+    }
+
+    func testThePhoneComingBackTriesAtOnceButNotInATightLoop() {
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(becameVisible: true, since: 2, failures: 5)),
+                       .attempt(deviceID: id))
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(becameVisible: true, since: 0.5)), .wait(seconds: 1.5))
+    }
+}
+
+@MainActor
+final class TunnelAutoReconnectorTests: XCTestCase {
+    private let udid = "00008130-0011223344556677"
+
+    private func makeReconnector(
+        _ tunnel: FakeReconnectTunnel,
+        enabled: Bool = true
+    ) -> (TunnelAutoReconnector, ControlledReconnectSleeper, ReconnectTestClock) {
+        let sleeper = ControlledReconnectSleeper()
+        let clock = ReconnectTestClock()
+        let reconnector = TunnelAutoReconnector(environment: TunnelAutoReconnectEnvironment(
+            isEnabled: enabled, tunnel: tunnel, sleeper: sleeper, now: { clock.now }
+        ))
+        addTeardownBlock { @MainActor in reconnector.cancel() }
+        return (reconnector, sleeper, clock)
+    }
+
+    private func waitUntil(
+        _ what: String, timeout: TimeInterval = 5, _ condition: @MainActor () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) {
+            if Date() > deadline {
+                XCTFail("Timed out waiting for: \(what)")
+                throw BoundedWaitTimeout()
+            }
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+    }
+
+    private func settle() async {
+        for _ in 0..<20 { try? await Task.sleep(nanoseconds: 2_000_000) }
+    }
+
+    func testAHealthFailureReconnectsAsSoonAsThePhoneIsVisibleAgain() async throws {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.automaticStartResult = .running
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        reconnector.noteVisibleDevices([])
+
+        tunnel.state = .error("Health check failed")
+        XCTAssertTrue(reconnector.isReconnecting, "the pill reads Reconnecting, not Error")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+
+        clock.now += 3
+        reconnector.noteVisibleDevices([udid])
+
+        try await waitUntil("the reconnect") { tunnel.automaticStarts == [self.udid] }
+        try await waitUntil("reconnected") { !reconnector.isReconnecting }
+        XCTAssertEqual(tunnel.state, .running)
+        await settle()
+        XCTAssertEqual(tunnel.automaticStarts.count, 1)
+    }
+
+    func testAnAbsentPhoneIsRetriedWithBackoffNotInALoop() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+
+        let expected: [TimeInterval] = [5, 10, 20, 30, 30]
+        for (index, delay) in expected.enumerated() {
+            try await waitUntil("wait \(index + 1)") { await sleeper.recordedRequests().count == index + 1 }
+            XCTAssertEqual(tunnel.automaticStarts.count, index, "no attempt before the delay")
+            clock.now += delay
+            await sleeper.releaseOldest()
+            if index < expected.count - 1 {
+                try await waitUntil("attempt \(index + 1)") { tunnel.automaticStarts.count == index + 1 }
+            }
+        }
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(Array(requests.prefix(expected.count)), expected)
+        XCTAssertTrue(reconnector.isReconnecting)
+        XCTAssertEqual(Set(tunnel.automaticStarts), [udid], "the remembered UDID, whatever is selected")
+    }
+
+    func testStopTunnelEndsTheReconnect() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        tunnel.isStoppedByUser = true
+        tunnel.state = .stopping
+        tunnel.state = .idle
+
+        try await waitUntil("stopped") { !reconnector.isReconnecting }
+        clock.now += 60
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    func testAUserStopOfALiveTunnelNeverReconnects() async {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, _) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.isStoppedByUser = true
+        tunnel.state = .stopping
+        tunnel.state = .idle
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertFalse(reconnector.isReconnecting)
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [])
+    }
+
+    func testDaemonModeNeverReconnectsTheTunnel() async {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.preferredMode = .daemon
+        let (reconnector, sleeper, _) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Tunnel process exited")
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertFalse(reconnector.isReconnecting)
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [])
+    }
+
+    func testDisabledUnderTestHostsAndPreviews() async {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, _, _) = makeReconnector(tunnel, enabled: false)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertFalse(reconnector.isReconnecting)
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    func testAStartAlreadyInFlightIsNotOverlapped() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        tunnel.state = .starting // the user pressed Start
+        clock.now += 60
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty, "never a second Start beside the user's")
+        XCTAssertTrue(reconnector.isReconnecting)
+
+        tunnel.state = .error("not visible") // the user's Start failed: keep trying
+        try await waitUntil("the next attempt") { tunnel.automaticStarts == [self.udid] }
+    }
+
+    func testAdoptingTheHelperConnectionEndsTheWait() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, _) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        tunnel.state = .idle
+        tunnel.state = .starting
+        tunnel.state = .running // the 5 s poll adopted the helper's connection
+
+        XCTAssertFalse(reconnector.isReconnecting)
+        try await waitUntil("the wait cancelled") { await sleeper.pendingCount() == 0 }
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+}
+
+/// Reconnect never stops a live tunnel and a second click while one runs does nothing.
+@MainActor
+final class ReconnectNowTunnelTests: XCTestCase {
+    private let deviceID = "00008130-0011223344556677"
+
+    func testReconnectHandsTheTunnelToReconnectOnceAndSaysReconnecting() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let gate = ReconnectTestGate()
+        tunnel.reconnectGate = gate
+        let deviceManager = QuietReconnectDeviceManager(startBackgroundServices: false)
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: FakeLocationInjector(),
+            managedLocationSessionSource: EmptyManagedSessionSource(),
+            deviceManager: deviceManager,
+            tunnelQuitController: RecordingTunnelQuitController(),
+            tunnelAutoReconnect: TunnelAutoReconnectEnvironment(
+                isEnabled: true, tunnel: tunnel, sleeper: ControlledReconnectSleeper(),
+                now: { Date(timeIntervalSinceReferenceDate: 0) }
+            )
+        )
+        let phone = Device(id: deviceID, displayName: "Owner iPhone", connectionType: .wifi,
+                           productType: "iPhone17,1", productVersion: "27.2", deviceName: "Owner iPhone")
+        state.device.availableDevices = [phone]
+        state.device.selectedDevice = phone
+        XCTAssertFalse(state.isReconnecting)
+
+        let first = Task { await state.reconnectNow() }
+        var deadline = Date().addingTimeInterval(5)
+        while tunnel.reconnectCalls.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertEqual(tunnel.reconnectCalls, [deviceID], "Reconnect goes through the no-stop path")
+        XCTAssertTrue(state.isReconnecting, "the button reads Reconnecting… and is disabled")
+
+        let second = Task { await state.reconnectNow() }
+        deadline = Date().addingTimeInterval(0.05)
+        while Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(tunnel.reconnectCalls.count, 1, "an extra click does nothing")
+
+        await gate.open()
+        await first.value
+        await second.value
+        XCTAssertFalse(state.isReconnecting)
+        XCTAssertEqual(tunnel.reconnectCalls.count, 1)
     }
 }

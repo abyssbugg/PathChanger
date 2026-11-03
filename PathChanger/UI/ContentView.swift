@@ -19,6 +19,25 @@ struct TunnelNotice: Equatable {
     static let waitingForDeviceText =
         "Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel."
 
+    static let tunnelReconnectingText =
+        "Connection to the iPhone lost. PathChanger reconnects on its own when the phone is back. Keep it unlocked and on this Wi‑Fi, or connect the cable."
+
+    static func resolve(
+        isWaitingForDevice: Bool,
+        isTunnelReconnecting: Bool,
+        automaticReconnectNotice: String?,
+        tunnelError: String?
+    ) -> TunnelNotice? {
+        // PathChanger reopens the tunnel itself (live 2026-11-03): not an error, and its
+        // own words win over the device wait inside an automatic attempt.
+        if isTunnelReconnecting {
+            let text = automaticReconnectNotice.map { "\(tunnelReconnectingText)\n\($0)" } ?? tunnelReconnectingText
+            return TunnelNotice(text: text, isError: false)
+        }
+        return resolve(isWaitingForDevice: isWaitingForDevice, automaticReconnectNotice: automaticReconnectNotice,
+                       tunnelError: tunnelError)
+    }
+
     static func resolve(
         isWaitingForDevice: Bool,
         automaticReconnectNotice: String?,
@@ -33,6 +52,43 @@ struct TunnelNotice: Equatable {
         }
         // After a loss the user did not cause, PathChanger waits for the phone itself.
         return automaticReconnectNotice.map { TunnelNotice(text: $0, isError: false) }
+    }
+}
+
+/// What the tunnel pill says. An automatic reconnect reads Reconnecting, never Error
+/// (live 2026-11-03).
+enum TunnelPillPhase: Equatable {
+    case waitingForDevice
+    case connecting
+    case reconnecting
+    case live
+    case error
+    case stopped
+
+    static func resolve(
+        isWaitingForDevice: Bool,
+        isStarting: Bool,
+        isRunning: Bool,
+        isError: Bool,
+        isAutoReconnecting: Bool
+    ) -> TunnelPillPhase {
+        if isRunning { return .live }
+        if isAutoReconnecting { return .reconnecting }
+        if isWaitingForDevice { return .waitingForDevice }
+        if isStarting { return .connecting }
+        if isError { return .error }
+        return .stopped
+    }
+
+    var label: String {
+        switch self {
+        case .waitingForDevice: return "Waiting for iPhone…"
+        case .connecting: return "Connecting…"
+        case .reconnecting: return "Reconnecting…"
+        case .live: return "Tunnel live"
+        case .error: return "Tunnel error"
+        case .stopped: return "Start tunnel"
+        }
     }
 }
 enum AppMode: String, CaseIterable, Identifiable {
@@ -388,6 +444,7 @@ struct ContentView: View {
         }()
         return TunnelNotice.resolve(
             isWaitingForDevice: tunneldManager.isWaitingForDevice,
+            isTunnelReconnecting: appState.isTunnelAutoReconnecting && !tunneldManager.isRunning,
             automaticReconnectNotice: appState.automaticReconnectNotice,
             tunnelError: errorText
         ).map { ($0.text, $0.isError) }
@@ -460,8 +517,8 @@ struct ContentView: View {
     }
 
     /// Offered only while the connection chip reads Lost; hands recovery to AppState,
-    /// which refreshes discovery, restarts the user-started tunnel and reapplies the
-    /// desired location.
+    /// which refreshes discovery, starts the tunnel if it is not live (never restarts a
+    /// live one) and reapplies the held location. Disabled while one runs.
     private var reconnectButton: some View {
         Button {
             Task { await appState.reconnectNow() }
@@ -469,17 +526,18 @@ struct ContentView: View {
             HStack(spacing: 5) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 9, weight: .bold))
-                Text("Reconnect")
+                Text(appState.isReconnecting ? "Reconnecting…" : "Reconnect")
                     .font(Organic.body(10.5, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(Organic.accent700)
+            .foregroundStyle(appState.isReconnecting ? Organic.neutral600 : Organic.accent700)
             .padding(.horizontal, 8)
             .frame(maxHeight: .infinity)
-            .background(Organic.accent100)
+            .background(appState.isReconnecting ? Organic.neutral200 : Organic.accent100)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .disabled(appState.isReconnecting)
         .help("Refresh devices, restore the connection and reapply the location")
         .accessibilityIdentifier("location.action.reconnect")
     }

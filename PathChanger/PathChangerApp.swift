@@ -814,6 +814,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Stop Tunnel or Clear since the last explicit Start, Move or Reconnect: the user
     /// ended the connection or the location, so nothing reconnects behind their back.
     private(set) var isAutomaticReconnectLatchedByUser = false
+    /// Reopens the tunnel itself after a loss the user did not cause (live 2026-11-03),
+    /// whether or not a location is held. Clear does not stop it; Stop Tunnel does.
+    private let tunnelAutoReconnect: TunnelAutoReconnectEnvironment
+    let tunnelAutoReconnector: TunnelAutoReconnector
+    /// Reconnect is in flight: the button reads "Reconnecting…" and further clicks do nothing.
+    @Published private(set) var isReconnecting = false
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -851,6 +857,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         roadRouter: (any RoadRouting)? = nil,
         placeNameResolver: PlaceNameResolver? = nil,
         automaticReconnect: AutomaticReconnectEnvironment? = nil,
+        tunnelAutoReconnect: TunnelAutoReconnectEnvironment? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -878,6 +885,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // Off wherever background services are off (test hosts, previews): only an
         // explicit environment turns it on there.
         self.automaticReconnect = automaticReconnect ?? .live(isEnabled: effectiveBackgroundServices)
+        let resolvedTunnelReconnect = tunnelAutoReconnect ?? .live(isEnabled: effectiveBackgroundServices)
+        self.tunnelAutoReconnect = resolvedTunnelReconnect
+        self.tunnelAutoReconnector = TunnelAutoReconnector(environment: resolvedTunnelReconnect)
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(
@@ -916,7 +926,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.setSimulationStateManager(simulation)
 
         // Re-publish the managers' changes so views observing AppState still update.
-        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange, sessionCoordinator.objectWillChange] {
+        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange, sessionCoordinator.objectWillChange, tunnelAutoReconnector.objectWillChange] {
             publisher
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
@@ -1030,7 +1040,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // that never update.
         Publishers.CombineLatest3(device.$usbDirectDeviceIds, device.$wifiDirectDeviceIds, device.$networkAdvertisedDeviceIds)
             .sink { [weak self] usb, wifi, bonjour in
-                guard let self, let awaited = self.device.awaitedReconnectDeviceID,
+                guard let self else { return }
+                // The tunnel reconnect watches the same live sources for the remembered phone.
+                self.tunnelAutoReconnector.noteVisibleDevices(usb.union(wifi).union(bonjour))
+                guard let awaited = self.device.awaitedReconnectDeviceID,
                       usb.contains(awaited) || wifi.contains(awaited) || bonjour.contains(awaited) else { return }
                 self.automaticReconnectWaiter.signalReachable()
             }
@@ -1183,10 +1196,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return
         }
         let reconnect = Task { @MainActor in
-            defer { reconnectTask = nil }
+            defer {
+                reconnectTask = nil
+                isReconnecting = false
+            }
             await runReconnectNow()
         }
         reconnectTask = reconnect
+        isReconnecting = true
         await reconnect.value
     }
 
@@ -1213,8 +1230,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
             tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
         }
 
-        if userStartedTunnelInSession {
-            await TunneldManager.shared.restartTunnel()
+        // Reconnect never stops a live tunnel (live 2026-11-03: a click on a running tunnel
+        // ended it and the owner needed 2-3 clicks); from idle or error it starts one. In
+        // helper modes that start never elevates, so it no longer needs a Start this session.
+        let tunnel = tunnelAutoReconnect.tunnel
+        if userStartedTunnelInSession
+            || (tunnelAutoReconnect.isEnabled && tunnel.preferredMode.usesHelperConnection) {
+            await tunnel.reconnectTunnel(deviceId: tunnelTargetDeviceId())
         }
 
         guard prepareLocationSessionIfNeeded() else {
@@ -3095,6 +3117,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
     static let automaticReconnectingText =
         "Reconnecting to the phone and reapplying the location…"
 
+    /// PathChanger is reopening the tunnel itself after a loss the user did not cause.
+    var isTunnelAutoReconnecting: Bool {
+        tunnelAutoReconnector.isReconnecting
+    }
+
     /// Plain words for the GUI while PathChanger waits for (or is reconnecting to) the phone.
     var automaticReconnectNotice: String? {
         guard isAwaitingAutomaticReconnect else { return nil }
@@ -3272,6 +3299,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     static let quitReconnectWaitLimit: TimeInterval = 2
 
     private func stopAutomaticReconnectForQuit() async {
+        // Quit stops the tunnel next; nothing may reopen it meanwhile.
+        tunnelAutoReconnector.cancel()
         guard let task = automaticReconnectTask else { return }
         cancelAutomaticReconnect(reason: "Quit")
         let finished = await Self.wait(for: task, atMost: Self.quitReconnectWaitLimit)
