@@ -1189,6 +1189,33 @@ extension StopTravelEngineTests {
         }
     }
 
+    /// A reset while a hop is in flight wins over that hop's arrival, even when the stops
+    /// are then rebuilt to extend the ones the hop began with (review 2026-11-03 (fixes)
+    /// issue 4: the equal-or-extends check alone let the stale arrival undo the reset).
+    func testAResetRebuiltIntoAnExtensionWhileAHopIsInFlightKeepsTheReset() async {
+        let s3 = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        for mode: AppMode in [.jump, .route] {
+            for edit in ["remove then re-add", "extending load"] {
+                let label = "\(mode) \(edit)"
+                let (state, fake) = makeFakeState(mode: mode, stops: [s0, s1, s2], settings: options(mode, arrival: .jump, progression: .onePerMove))
+                let first = Task { await state.startSimulation() }
+                await fake.waitUntilApplicationPending()
+                if edit == "remove then re-add" {
+                    state.removeRouteWaypoint(at: 2)
+                    state.stageLocation(s2, for: mode)
+                    state.stageLocation(s3, for: mode)
+                } else {
+                    state.loadRoute(from: [s0, s1, s2, s3])
+                }
+                XCTAssertEqual(state.currentRoute, [s0, s1, s2, s3], label)
+                await fake.releaseNextApplication(session: StopRunHarness.session)
+                await first.value
+                XCTAssertEqual(state.currentLocation, s0, "the phone holds the hop (\(label))")
+                XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "progress stays reset (\(label))")
+            }
+        }
+    }
+
     /// A fresh sequence leaves from the held location (owner rule 2026-11-03); when stop 1
     /// is too far to travel to, the Move says which stop, how far and what to do.
     func testAFreshSequenceTooFarFromTheHeldLocationSaysWhy() async {
@@ -1417,6 +1444,31 @@ extension StopTravelEngineTests {
                 XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, label)
             }
         }
+    }
+
+    func testOnlyAResetMovesTheStopProgressEpoch() {
+        let route = RouteStateManager(routeLibrary: RouteLibraryManager())
+        route.switchStops(to: .route)
+        let seeded = route.stopProgressEpoch(for: .route)
+        route.addWaypoint(s0)
+        route.addWaypoint(s1)
+        let afterFirst = route.stopProgressEpoch(for: .route)
+        route.addWaypoint(s2)
+        XCTAssertEqual(route.stopProgressEpoch(for: .route), afterFirst, "an append keeps progress and the epoch")
+        route.removeLastWaypoint()
+        XCTAssertGreaterThan(route.stopProgressEpoch(for: .route), afterFirst, "a remove resets progress")
+        XCTAssertGreaterThanOrEqual(afterFirst, seeded)
+
+        let jump = route.stopProgressEpoch(for: .jump)
+        let multi = route.stopProgressEpoch(for: .route)
+        route.resetStopProgress(for: .jump)
+        XCTAssertEqual(route.stopProgressEpoch(for: .route), multi, "another mode's reset is not this mode's")
+        XCTAssertGreaterThan(route.stopProgressEpoch(for: .jump), jump)
+
+        let before = RouteStateManager.stopModes.map(route.stopProgressEpoch(for:))
+        route.resetStopProgress()
+        let after = RouteStateManager.stopModes.map(route.stopProgressEpoch(for:))
+        XCTAssertTrue(zip(before, after).allSatisfy { $0 < $1 }, "a confirmed Clear resets every stop mode")
     }
 
     func testOnlyAPureAppendKeepsStopProgress() {

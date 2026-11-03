@@ -230,6 +230,7 @@ final class RouteStateManager: ObservableObject {
         jumpIndex = 0
         jumpReversed = false
         if !routeStopCursors.isEmpty { routeStopCursors = [:] }
+        for mode in Self.stopModes { bumpStopProgressEpoch(for: mode) }
     }
 
     /// `mode` starts over at stop 1: its stops changed, were reset or were seeded.
@@ -240,6 +241,21 @@ final class RouteStateManager: ObservableObject {
         } else if routeStopCursors[mode] != nil {
             routeStopCursors[mode] = nil
         }
+        bumpStopProgressEpoch(for: mode)
+    }
+
+    /// How many times `mode`'s stop progress was reset. An arrival carries the epoch from
+    /// when its hop was sent and advances progress only if no reset happened since (review
+    /// 2026-11-03 (fixes) issue 4: stops reset and rebuilt to extend the hop's stops let a
+    /// stale arrival undo the reset). Appending stops keeps progress and the epoch.
+    func stopProgressEpoch(for mode: AppMode) -> Int {
+        stopProgressEpochs[mode] ?? 0
+    }
+
+    private var stopProgressEpochs: [AppMode: Int] = [:]
+
+    private func bumpStopProgressEpoch(for mode: AppMode) {
+        stopProgressEpochs[mode, default: 0] &+= 1
     }
 
     /// Whether `mode`'s stop progress survives the stops changing from `old` to `new`.

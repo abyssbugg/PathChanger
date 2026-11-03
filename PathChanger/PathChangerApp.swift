@@ -793,6 +793,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let cursor: StopCursor
         /// The stops when the run began: an arrival on edited stops does not move the index.
         let routeSnapshot: [LocationCoordinate]
+        /// The mode's progress epoch with `routeSnapshot`: a reset since (even one whose
+        /// stops were rebuilt to extend the snapshot) means the arrival is stale.
+        let progressEpoch: Int
         /// The stop reached and the run's stop count, for the log.
         let stopIndex: Int
         let totalStops: Int
@@ -803,6 +806,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let mode: AppMode
         let stops: [LocationCoordinate]
         let routeSnapshot: [LocationCoordinate]
+        /// The mode's progress epoch when the run began, with `routeSnapshot`.
+        let progressEpoch: Int
         let settings: StopTravelSettings
     }
     private var stopRun: StopRun?
@@ -2160,13 +2165,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // The stop index advances only on the acknowledged arrival at that stop, and only
         // while the mode's stops are the ones the run began with, or those with stops
         // appended (an append keeps progress, so a stop clicked while the hop was in
-        // flight keeps the arrival; any other edit started progress over). It advances
-        // also after a mode change: the phone reached the stop, and each mode keeps its
-        // own stops and progress (owner rule 2026-11-03).
+        // flight keeps the arrival; any other edit started progress over). A reset since
+        // the hop was sent (an edit, a load, Reset Route, a confirmed Clear) wins even when
+        // the stops were rebuilt to extend the snapshot: the epoch must be unchanged. It
+        // advances also after a mode change: the phone reached the stop, and each mode
+        // keeps its own stops and progress (owner rule 2026-11-03).
         if let arrival = pending.stopArrival {
             let stops = route.stops(for: pending.mode)
-            guard stops == arrival.routeSnapshot
-                || RouteStateManager.keepsStopProgress(pending.mode, from: arrival.routeSnapshot, to: stops) else { return }
+            guard route.stopProgressEpoch(for: pending.mode) == arrival.progressEpoch,
+                  stops == arrival.routeSnapshot
+                    || RouteStateManager.keepsStopProgress(pending.mode, from: arrival.routeSnapshot, to: stops) else { return }
             setStopCursor(arrival.cursor, for: pending.mode)
             stopSequences[pending.mode]?.arrived = true
             Logger.info(StopRunLog.reached(stop: arrival.stopIndex, of: arrival.totalStops), category: .session)
@@ -2547,6 +2555,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 mode: mode,
                 stopArrival: StopArrival(
                     cursor: firstLeg.cursorAfter, routeSnapshot: currentRoute,
+                    progressEpoch: route.stopProgressEpoch(for: mode),
                     stopIndex: firstLeg.stopIndex, totalStops: stops.count
                 )
             )
@@ -2586,7 +2595,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         settings: StopTravelSettings
     ) async {
         let operationGeneration = locationOperationGeneration
-        let run = StopRun(id: UUID(), mode: mode, stops: stops, routeSnapshot: currentRoute, settings: settings)
+        let run = StopRun(
+            id: UUID(), mode: mode, stops: stops, routeSnapshot: currentRoute,
+            progressEpoch: route.stopProgressEpoch(for: mode), settings: settings
+        )
         simulationTask?.cancel()
         joystickTask?.cancel()
         joystickTask = nil
@@ -2752,6 +2764,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             let arrival = arrivalLeg.map {
                 StopArrival(
                     cursor: $0.cursorAfter, routeSnapshot: run.routeSnapshot,
+                    progressEpoch: run.progressEpoch,
                     stopIndex: $0.stopIndex, totalStops: run.stops.count
                 )
             }
