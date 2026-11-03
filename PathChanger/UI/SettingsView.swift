@@ -68,7 +68,7 @@ struct SettingsView: View {
                     Label {
                         VStack(alignment: .leading) {
                             Text("Run Diagnostics")
-                            Text("Check Python, tunnel, device, and injection status")
+                            Text("Read-only check of the runtime, location helper, connection and device")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

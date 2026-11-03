@@ -246,7 +246,9 @@ enum PythonPathResolver {
         }
     }
 
-    private struct Pymobiledevice3CapabilityReport: Decodable {
+    /// The installed pymobiledevice3's version and the capabilities it provides, as the
+    /// capability probe prints them.
+    struct Pymobiledevice3CapabilityReport: Decodable, Equatable {
         let version: String
         let capabilities: [String]
     }
@@ -270,10 +272,9 @@ enum PythonPathResolver {
         )
     }
 
-    private static func checkPymobiledevice3Installation() async throws
-        -> Pymobiledevice3CapabilityReport
-    {
-        let script = #"""
+    /// The six-capability probe: imports each module and attribute PathChanger uses and
+    /// prints `{"version": ..., "capabilities": [...]}`. Read-only: it touches no device.
+    static let pymobiledevice3CapabilityProbeScript = #"""
         import importlib
         import json
         from importlib.metadata import version
@@ -299,6 +300,11 @@ enum PythonPathResolver {
             "capabilities": sorted(available),
         }, separators=(",", ":")))
         """#
+
+    private static func checkPymobiledevice3Installation() async throws
+        -> Pymobiledevice3CapabilityReport
+    {
+        let script = pymobiledevice3CapabilityProbeScript
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
