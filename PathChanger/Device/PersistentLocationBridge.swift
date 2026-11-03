@@ -1516,6 +1516,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             Logger.error("[PersistentBridge] Cannot refresh helper sessions: the helper is not running", category: .device)
             throw PersistentBridgeError.processNotRunning
         }
+        let refreshedConnection = helperConnection
         do {
             let connection = try await helperController.refreshConnection()
             if let adoptedHelperID,
@@ -1531,7 +1532,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
                 category: .device
             )
-            invalidateManagedHelperState(after: error)
+            invalidateManagedHelperState(after: error, failedOn: refreshedConnection)
             throw error
         }
     }
@@ -2259,7 +2260,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 let error = PersistentBridgeError.bridgeError(
                     response.error ?? "Managed helper authentication failed"
                 )
-                invalidateManagedHelperState(after: error)
+                invalidateManagedHelperState(after: error, failedOn: helperConnection)
                 throw error
             }
             return response
@@ -2267,7 +2268,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             throw error
         } catch let error as ManagedLocationHelperClient.ClientError {
             if error.invalidatesManagedHelperState {
-                invalidateManagedHelperState(after: error)
+                invalidateManagedHelperState(after: error, failedOn: helperConnection)
             }
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
         }
@@ -2359,7 +2360,21 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
     }
 
-    private func invalidateManagedHelperState(after error: Error) {
+    /// A request failed in a way that means the helper it was sent to is gone or not ours.
+    /// `failedOn` is the connection that request used (nil: no connection was held).
+    func invalidateManagedHelperState(after error: Error, failedOn connection: ManagedLocationHelperConnection?) {
+        // A late failure from a helper this bridge has since replaced (a request still in
+        // flight when the orphan quit) is about that helper, not the current one (review
+        // 2026-11-03 issue 2).
+        if let connection, let current = helperConnection,
+           current.record.helperID != connection.record.helperID {
+            Logger.info(
+                "[PersistentBridge] Ignoring a failure from the replaced helper (PID \(connection.record.pid)): "
+                    + LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device
+            )
+            return
+        }
         helperConnection = nil
         isRunning = false
         usesTunnelTransport = false
@@ -2410,7 +2425,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 let error = PersistentBridgeError.bridgeError(
                     response.error ?? "Managed helper authentication failed"
                 )
-                invalidateManagedHelperState(after: error)
+                invalidateManagedHelperState(after: error, failedOn: helperConnection)
                 throw error
             }
             return response
@@ -2421,11 +2436,11 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             if error.isResponseTimeout,
                request.cmd == "set_location" || request.cmd == "clear_location" {
                 Logger.error("[PersistentBridge] \(request.cmd) timed out; reconciling from the helper record", category: .device)
-                return try await reconcileTimedOutCommand(request)
+                return try await reconcileTimedOutCommand(request, sentOn: helperConnection)
             }
             Self.logCommandFailure(request.cmd, error.localizedDescription)
             if error.invalidatesManagedHelperState {
-                invalidateManagedHelperState(after: error)
+                invalidateManagedHelperState(after: error, failedOn: helperConnection)
             } else {
                 lastError = error
             }
@@ -2436,7 +2451,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
         } catch {
             Self.logCommandFailure(request.cmd, error.localizedDescription)
-            invalidateManagedHelperState(after: error)
+            invalidateManagedHelperState(after: error, failedOn: helperConnection)
             throw PersistentBridgeError.invalidResponse(error.localizedDescription)
         }
     }
@@ -2452,7 +2467,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
     }
 
-    private func reconcileTimedOutCommand(_ request: BridgeRequest) async throws -> BridgeResponse {
+    private func reconcileTimedOutCommand(
+        _ request: BridgeRequest,
+        sentOn: ManagedLocationHelperConnection
+    ) async throws -> BridgeResponse {
         guard let deviceID = request.udid,
               let controller = helperController else {
             throw PersistentBridgeError.timeout
@@ -2488,7 +2506,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
 
         let error = lastReconciliationError ?? PersistentBridgeError.timeout
-        invalidateManagedHelperState(after: error)
+        invalidateManagedHelperState(after: error, failedOn: sentOn)
         throw PersistentBridgeError.timeout
     }
 

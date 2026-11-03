@@ -650,6 +650,51 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    /// Review 2026-11-03 issue 2: a request still in flight to the orphan fails after the
+    /// replacement installed the new helper's connection. That late failure is about the
+    /// replaced helper and must not wipe the new helper's state.
+    @MainActor
+    func testALateFailureFromAReplacedHelperLeavesTheNewHelpersStateAlone() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("late-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let bridge = PersistentLocationBridge(helperController: controller)
+        do {
+            try await bridge.start()
+            XCTAssertEqual(controller.activeRecord?.helperID, orphan.record.helperID, "adopted the orphan first")
+            let stale = orphan
+            try await bridge.replaceForeignHelperIfDisconnected("00008130-0011223344556677", transport: .wifi)
+            let fresh = try XCTUnwrap(bridge.adoptedHelperID)
+            XCTAssertNotEqual(fresh, orphan.record.helperID)
+
+            bridge.invalidateManagedHelperState(
+                after: ManagedLocationHelperClient.ClientError.emptyResponse, failedOn: stale)
+
+            XCTAssertTrue(bridge.isRunning, "the new helper is still this bridge's")
+            XCTAssertEqual(bridge.adoptedHelperID, fresh)
+            XCTAssertNotNil(bridge.helperProcessIdentifierIfRunning())
+
+            // A failure on the current helper's own connection still resets the state.
+            let current = try XCTUnwrap(controller.activeRecord)
+            bridge.invalidateManagedHelperState(
+                after: ManagedLocationHelperClient.ClientError.emptyResponse,
+                failedOn: ManagedLocationHelperConnection(client: stale.client, record: current, launchedNewHelper: true))
+            XCTAssertFalse(bridge.isRunning)
+            XCTAssertNil(bridge.adoptedHelperID)
+            try await controller.shutdown()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await controller.shutdown()
+            if TunnelProcessTerminator.isAlive(pid: orphan.record.pid) { kill(orphan.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
     /// The orphan cannot be asked to quit (its socket is gone): SIGTERM goes only to the
     /// PID its validated record names, and a new helper starts.
     @MainActor
