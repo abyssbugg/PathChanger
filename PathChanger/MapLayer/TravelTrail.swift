@@ -31,6 +31,11 @@ final class TravelTrail: ObservableObject {
         points = Self.appending(coordinate, to: points, capacity: Self.capacity)
     }
 
+    /// The trail as `mode` draws it: only the mode that travelled it shows it.
+    func points(for mode: AppMode) -> [LocationCoordinate] {
+        self.mode == mode ? points : []
+    }
+
     func reset() {
         mode = nil
         if !points.isEmpty { points = [] }

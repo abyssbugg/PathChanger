@@ -1027,9 +1027,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
                         self.stopSequences[mode]?.stops = newRoute.filter(\.isValid)
                     }
                 }
-                // The trail shows how the kept progress got there; it goes with a reset.
-                if RouteStateManager.stopModes.contains(mode),
-                   !RouteStateManager.keepsStopProgress(.jump, from: old, to: newRoute) {
+                // The trail shows how its mode's kept progress got there; it goes when
+                // that mode's progress resets. Only the shown mode's stops changed.
+                if let trailMode = self.travelTrail.mode, trailMode == mode,
+                   !RouteStateManager.keepsStopProgress(trailMode, from: old, to: newRoute) {
                     self.travelTrail.reset()
                 }
                 if let run = self.stopRun, newRoute != run.routeSnapshot {

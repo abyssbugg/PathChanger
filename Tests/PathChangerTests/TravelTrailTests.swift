@@ -85,6 +85,15 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertNil(trail.mode)
     }
 
+    func testTheTrailIsDrawnOnlyForItsMode() {
+        let trail = TravelTrail()
+        trail.record(s0, mode: .route)
+        trail.record(s1, mode: .route)
+        XCTAssertEqual(trail.points(for: .route), [s0, s1])
+        XCTAssertTrue(trail.points(for: .jump).isEmpty, "another stop mode does not draw it")
+        XCTAssertTrue(trail.points(for: .twospot).isEmpty)
+    }
+
     // MARK: - AppState
 
     private func makeState(
@@ -138,6 +147,23 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.travelTrail.points.last, s2)
         let applied = await injector.applied
         XCTAssertEqual(state.travelTrail.points, Array(applied.suffix(state.travelTrail.points.count)))
+    }
+
+    func testAStopEditResetsTheTrailByItsOwnModesRule() {
+        // Review 2026-11-03 issue 7: the reset used Jump's append rule. Adding Two-Spot's
+        // second spot resets Two-Spot's progress, so it must reset Two-Spot's trail.
+        let state = AppState(startBackgroundServices: false, locationInjector: TrailAckInjector(), routeDelay: { _ in })
+        state.loadRoute(from: [s0])
+        state.travelTrail.record(s1, mode: .twospot)
+        state.travelTrail.record(s2, mode: .twospot)
+        state.loadRoute(from: [s0, s1])
+        XCTAssertTrue(state.travelTrail.points.isEmpty, "Two-Spot's run changed, so its trail goes")
+
+        state.loadRoute(from: [s0, s1])
+        state.travelTrail.record(s1, mode: .route)
+        state.travelTrail.record(s2, mode: .route)
+        state.loadRoute(from: [s0, s1, s2])
+        XCTAssertEqual(state.travelTrail.points, [s1, s2], "appending keeps Multi-Spot's progress and its trail")
     }
 
     func testAJumpRunDrawsNoTrail() async {

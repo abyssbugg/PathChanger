@@ -137,8 +137,10 @@ struct SimulationView: View {
                         MapPolyline(coordinates: leg.points.map(\.clLocationCoordinate2D))
                             .stroke(RoutePreviewStroke.color(leg.style), style: RoutePreviewStroke.style(leg.style))
                     }
-                    if appState.travelTrail.points.count >= 2 {
-                        MapPolyline(coordinates: appState.travelTrail.points.map(\.clLocationCoordinate2D))
+                    // Only the mode that travelled the trail draws it.
+                    let trail = appState.travelTrail.points(for: mode)
+                    if trail.count >= 2 {
+                        MapPolyline(coordinates: trail.map(\.clLocationCoordinate2D))
                             .stroke(Organic.sage600, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                     }
                 }
