@@ -488,12 +488,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     var activeMode: AppMode {
         get { simulation.activeMode }
         set {
-            let changed = simulation.activeMode != newValue
             simulation.activeMode = newValue
             // A stop run belongs to its mode: leaving the mode ends it and holds the
             // stop (Auto jump used to keep running and jump back to stop 1 with no Move).
+            // Progress is kept: coming back, Move continues where the run stood (owner
+            // rule 2026-11-03; it used to start over at stop 1).
             if let run = stopRun, run.mode != newValue { endStopRun("left \(run.mode.rawValue)") }
-            if changed { resetRouteStopProgress() }
         }
     }
     var autoSpeed: Bool {
@@ -568,8 +568,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// is active.
     @Published private(set) var stopProgress: StopProgress?
 
-    /// Two-Spot / Multi-Spot: the next stop of a one-stop-per-Move run.
-    var routeStopIndex: Int { route.routeStopCursor.nextIndex }
+    /// Two-Spot / Multi-Spot: the next stop of the active mode's run.
+    var routeStopIndex: Int { route.stopCursor(for: activeMode).nextIndex }
 
     /// The stop cursor of `mode` (Jump's hop index and direction, or the Two-Spot /
     /// Multi-Spot cursor), for the card's "At stop" readout. Read-only.
@@ -581,12 +581,32 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// cursor indexes the run's stops, which for Two-Spot with one spot start at the held
     /// location (review 2026-11-02-163337 issue 8). Jump indexes its hops; Two-Spot and
     /// Multi-Spot use the running run's stops, else the stops the latest run remembered
-    /// (reset with the stop index and on any edit of the stops), else the route.
+    /// (reset with the stop index), else the route.
     /// Read-only.
     func displayStops(for mode: AppMode) -> [LocationCoordinate] {
         guard mode != .jump else { return currentRoute }
         if let run = stopRun, run.mode == mode { return run.stops }
-        return routeRunStops ?? currentRoute
+        return stopSequences[mode]?.stops ?? currentRoute
+    }
+
+    /// A stop run of `mode` is in progress (its live panel shows where it stands).
+    func isStopRunActive(for mode: AppMode) -> Bool {
+        stopRun?.mode == mode
+    }
+
+    /// The stops the next Move of `mode` runs through. A sequence that has reached a stop
+    /// keeps the stops it began with (Two-Spot with one spot starts at the location held
+    /// when it began); otherwise they are resolved now: Two-Spot with one spot leaves
+    /// from the held location, or from the start a Clear staged (PRODUCT_REQUIREMENTS
+    /// 3.3, 5.2). Reset with the stop index.
+    func nextMoveStops(for mode: AppMode) -> Result<[LocationCoordinate], StopTravelPlanError> {
+        if let sequence = stopSequences[mode], sequence.arrived { return .success(sequence.stops) }
+        return StopTravelPlanner.runStops(
+            mode: mode,
+            route: currentRoute,
+            held: currentLocation ?? stagedStartAfterClear,
+            target: targetLocation
+        )
     }
 
     func stopTravelSettings(for mode: AppMode) -> StopTravelSettings {
@@ -738,6 +758,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let cursor: StopCursor
         /// The stops when the run began: an arrival on edited stops does not move the index.
         let routeSnapshot: [LocationCoordinate]
+        /// The stop reached and the run's stop count, for the log.
+        let stopIndex: Int
+        let totalStops: Int
     }
     /// The one stop-by-stop run (Jump, Two-Spot, Multi-Spot) in progress.
     private struct StopRun {
@@ -748,13 +771,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let settings: StopTravelSettings
     }
     private var stopRun: StopRun?
-    /// Two-Spot's stops (which may start at the held location) for the remaining Moves of
-    /// a one-stop-per-Move run; reset with the stop index.
-    private var routeRunStops: [LocationCoordinate]?
-    /// Two-Spot / Multi-Spot: an arrival of the current one-stop-per-Move sequence was
-    /// acknowledged, so the next Move continues from the held stop (also when the stop
-    /// index wrapped back to the first stop). Reset with the stop index.
-    private var routeSequenceArrived = false
+    /// A stop mode's run stops between Moves.
+    private struct StopSequence {
+        var stops: [LocationCoordinate]
+        /// An arrival of this sequence was acknowledged, so later Moves keep `stops`
+        /// (Two-Spot with one spot began at the location held then).
+        var arrived: Bool
+    }
+    /// Per stop mode; reset with the stop index (a stop edit, Reset Route, a confirmed
+    /// Clear), never by Stop, Pause, an option change, a mode change or a loss.
+    private var stopSequences: [AppMode: StopSequence] = [:]
     /// A paused run waits here until Resume, Stop, Clear or cancellation.
     private var pauseWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var applicationTasks: [UUID: Task<LocationInjectionReceipt, Error>] = [:]
@@ -766,6 +792,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
             isMovementEngineRunning = simulationTask != nil
             // Whatever ended the engine (Stop, Clear, a loss, the joystick) ended its run.
             if simulationTask == nil {
+                if stopRun != nil {
+                    Logger.info(StopRunLog.ended("the movement stopped (Stop, Clear or a connection loss)"), category: .session)
+                }
                 stopRun = nil
                 stopProgress = nil
                 // Ending a run cancels its task without awaiting it; its last apply may
@@ -942,8 +971,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.$currentRoute
             .sink { [weak self] newRoute in
                 guard let self, newRoute != self.route.currentRoute else { return }
-                self.routeRunStops = nil
-                self.routeSequenceArrived = false
+                // The route's `currentRoute` didSet resets every mode's stop index.
+                self.stopSequences = [:]
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
                     self.endStopRun("the stops changed")
                 }
@@ -1426,6 +1455,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
             simulation.targetLocation = nil
             routeProgress = 0
             lastJoystickHeadingDegrees = nil
+            // A confirmed Clear starts every stop mode over at stop 1 (owner rule
+            // 2026-11-03); with nothing held, the next Move places it.
+            resetStopProgress()
             statusMessage = "Location cleared"
             if let lastSpoofed { stageStartAfterConfirmedClear(lastSpoofed) }
         }
@@ -2034,16 +2066,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.isSimulating = true
 
         // The stop index advances only on the acknowledged arrival at that stop, and only
-        // while the mode and its stops are the ones the run began with (appending Jump
-        // stops keeps the index).
-        if let arrival = pending.stopArrival, activeMode == pending.mode {
-            let stopsUnchanged = pending.mode == .jump
-                ? currentRoute.starts(with: arrival.routeSnapshot)
-                : currentRoute == arrival.routeSnapshot
-            if stopsUnchanged {
-                setStopCursor(arrival.cursor, for: pending.mode)
-                if pending.mode != .jump { routeSequenceArrived = true }
-            }
+        // while the stops are the ones the run began with (any edit started progress
+        // over). It advances also after a mode change: the phone reached the stop, and
+        // each mode keeps its own progress (owner rule 2026-11-03).
+        if let arrival = pending.stopArrival, currentRoute == arrival.routeSnapshot {
+            setStopCursor(arrival.cursor, for: pending.mode)
+            stopSequences[pending.mode]?.arrived = true
+            Logger.info(StopRunLog.reached(stop: arrival.stopIndex, of: arrival.totalStops), category: .session)
         }
     }
 
@@ -2352,42 +2381,26 @@ class AppState: ObservableObject, LocationTerminationHandling {
             }
         }
         let settings = stopTravelSettings(for: mode)
-        var cursor = stopCursor(for: mode)
-        // One stop per Move continues the stop sequence an acknowledged arrival began,
-        // also after Loop or Back and forth wrapped the index to the first stop.
-        var continuesSequence = mode != .jump && settings.progression == .onePerMove
-            && routeSequenceArrived && routeRunStops != nil
+        // One path for Jump, Two-Spot and Multi-Spot (owner rule 2026-11-03): the Move
+        // goes to the next stop not yet reached, from the held location. Stop, Pause, an
+        // option change, a mode change and a loss keep the cursor; a finished One way run
+        // starts over at stop 1 (the planner), reached per Getting there; with nothing
+        // held the stop is placed.
         let stops: [LocationCoordinate]
-        if continuesSequence, let remembered = routeRunStops {
-            stops = remembered
-        } else {
-            // Two-Spot with one spot leaves from the held location, or from the start a
-            // Clear staged (PRODUCT_REQUIREMENTS 3.3, 5.2).
-            switch StopTravelPlanner.runStops(mode: mode, route: currentRoute, held: currentLocation ?? stagedStartAfterClear, target: targetLocation) {
-            case .success(let resolved):
-                stops = resolved
-            case .failure(let error):
-                failMove(mode, error.message)
-                return
-            }
+        switch nextMoveStops(for: mode) {
+        case .success(let resolved):
+            stops = resolved
+        case .failure(let error):
+            failMove(mode, error.message)
+            return
         }
-        if mode != .jump {
-            // A run through every stop replays from the first stop, as routes always did;
-            // so does a finished one-way run of one stop per Move.
-            if settings.progression == .automatic
-                || (settings.repeatMode == .oneWay && StopTravelPlanner.isFinished(cursor, stopCount: stops.count)) {
-                cursor = StopCursor()
-                route.routeStopCursor = cursor
-                routeSequenceArrived = false
-                continuesSequence = false
-            }
-            if !continuesSequence { routeRunStops = stops }
+        if stopSequences[mode]?.arrived != true {
+            stopSequences[mode] = StopSequence(stops: stops, arrived: false)
         }
-        // Jump leaves from where the device is; Two-Spot and Multi-Spot place the first
-        // stop of a new sequence and continue from the stop they reached.
-        let origin = mode == .jump || continuesSequence ? currentLocation : nil
+        let cursor = stopCursor(for: mode)
+        let origin = currentLocation
         guard let firstLeg = StopTravelPlanner.firstLeg(stops: stops, origin: origin, cursor: cursor, settings: settings) else {
-            failMove(mode, "All hops done — add another or clear")
+            failMove(mode, "Add a stop on the map")
             return
         }
         if let refusal = StopTravelPlanner.straightLineRefusal(
@@ -2405,13 +2418,25 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if StopTravelPlanner.isSingleImmediateJump(firstLeg, settings: settings) {
             // One teleport with no wait: the classic single hop, applied directly.
             Logger.info("[Move] \(mode): stop \(firstLeg.stopIndex + 1) of \(stops.count)", category: .session)
+            Logger.info(
+                firstLeg.from == nil
+                    ? StopRunLog.placed(stop: firstLeg.stopIndex, of: stops.count)
+                    : StopRunLog.legStart(
+                        stop: firstLeg.stopIndex, of: stops.count, arrival: .jump, path: nil,
+                        distanceMeters: firstLeg.from.map { Geo.distance(from: $0, to: firstLeg.to) } ?? 0, seconds: 0
+                    ),
+                category: .session
+            )
             isPaused = false
             isOneShotMoveInFlight = true
             defer { isOneShotMoveInFlight = false }
             await applyPlannedLocation(
                 firstLeg.to,
                 mode: mode,
-                stopArrival: StopArrival(cursor: firstLeg.cursorAfter, routeSnapshot: currentRoute)
+                stopArrival: StopArrival(
+                    cursor: firstLeg.cursorAfter, routeSnapshot: currentRoute,
+                    stopIndex: firstLeg.stopIndex, totalStops: stops.count
+                )
             )
             return
         }
@@ -2462,7 +2487,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         await locationBridge.setQueueStrategy(.sequential)
         guard stopRun?.id == run.id, locationClearTask == nil,
               operationGeneration == locationOperationGeneration else {
-            if stopRun?.id == run.id { stopRun = nil }
+            if stopRun?.id == run.id {
+                stopRun = nil
+                Logger.info(StopRunLog.ended("a Clear came first"), category: .session)
+            }
             return
         }
 
@@ -2576,6 +2604,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             stopRun = nil
             stopProgress = nil
             isPaused = false
+            Logger.info(StopRunLog.ended("a step failed; holding the last applied point"), category: .session)
         }
 
         /// Waits out `seconds` in ticks of at most 1 s, so Pause stops the countdown.
@@ -2608,7 +2637,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 guard isCurrent() else { return false }
             }
             lastApplyStarted = Date()
-            let arrival = arrivalLeg.map { StopArrival(cursor: $0.cursorAfter, routeSnapshot: run.routeSnapshot) }
+            let arrival = arrivalLeg.map {
+                StopArrival(
+                    cursor: $0.cursorAfter, routeSnapshot: run.routeSnapshot,
+                    stopIndex: $0.stopIndex, totalStops: run.stops.count
+                )
+            }
             guard await applyPlannedLocation(coordinate, mode: run.mode, stopArrival: arrival) != nil else {
                 if isCurrent() { stopAfterFailure() }
                 return false
@@ -2662,6 +2696,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 endStopRun("leg to stop \(current.stopIndex + 1) refused: \(error.message)")
                 return
             }
+            Logger.info(Self.legStartLogLine(current, steps: steps, path: path, run: run, pace: pace), category: .session)
 
             for step in steps {
                 switch step {
@@ -2725,19 +2760,47 @@ class AppState: ObservableObject, LocationTerminationHandling {
         } else if StopTravelPlanner.isFinished(reachedCursor, stopCount: run.stops.count) {
             statusMessage = "All jumps done; holding the last stop"
         }
-        Logger.info("[Stops] \(run.mode.rawValue) run complete; holding the last stop", category: .session)
+        Logger.info(StopRunLog.ended("completed; holding the last stop"), category: .session)
         stopRun = nil
         stopProgress = nil
     }
 
+    /// `[StopRun] Leg to stop k of n (...)` for a leg about to start: its distance on the
+    /// path it follows and its time (the travelled points, or a realistic jump's wait).
+    private static func legStartLogLine(
+        _ leg: StopTravelLeg,
+        steps: [StopTravelStep],
+        path: LegPath?,
+        run: StopRun,
+        pace: StopRunPace
+    ) -> String {
+        guard let from = leg.from else { return StopRunLog.placed(stop: leg.stopIndex, of: run.stops.count) }
+        var seconds: TimeInterval = 0
+        for step in steps {
+            switch step {
+            case .travel(let points, _): seconds += Double(points.count) * pace.interval
+            case .jump(_, _, let waitBefore): seconds += waitBefore
+            case .hold: break
+            }
+        }
+        let distance = Geo.totalDistance(
+            of: StopTravelPlanner.anchoredPoints(of: path ?? .straight(from: from, to: leg.to), from: from, to: leg.to)
+        )
+        return StopRunLog.legStart(
+            stop: leg.stopIndex, of: run.stops.count, arrival: run.settings.arrival,
+            path: path, distanceMeters: distance, seconds: seconds
+        )
+    }
+
     /// Ends the running stop run and holds the last applied point.
     private func endStopRun(_ reason: String) {
-        guard let run = stopRun else { return }
-        Logger.info("[Stops] \(run.mode.rawValue) run ended (\(reason)); holding the last applied point", category: .session)
+        guard stopRun != nil else { return }
+        Logger.info(StopRunLog.ended("\(reason); holding the last applied point"), category: .session)
+        // Cleared first so the engine's own "movement stopped" line does not repeat it.
+        stopRun = nil
         simulationTask?.cancel()
         simulationTask = nil
         routePlaybackID = nil
-        stopRun = nil
         stopProgress = nil
         isPaused = false
         // Completed only if a stop was actually reached (nothing moved otherwise).
@@ -2777,25 +2840,18 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     private func stopCursor(for mode: AppMode) -> StopCursor {
-        mode == .jump
-            ? StopCursor(nextIndex: jumpIndex, reversed: route.jumpReversed)
-            : route.routeStopCursor
+        route.stopCursor(for: mode)
     }
 
     private func setStopCursor(_ cursor: StopCursor, for mode: AppMode) {
-        if mode == .jump {
-            route.jumpIndex = cursor.nextIndex
-            route.jumpReversed = cursor.reversed
-        } else {
-            route.routeStopCursor = cursor
-        }
+        route.setStopCursor(cursor, for: mode)
     }
 
-    /// Two-Spot / Multi-Spot one-stop-per-Move progress starts over (mode change).
-    private func resetRouteStopProgress() {
-        route.routeStopCursor = StopCursor()
-        routeRunStops = nil
-        routeSequenceArrived = false
+    /// Every stop mode starts over at stop 1 (a confirmed Clear; stop edits and Reset
+    /// Route reset through the route and its observer).
+    private func resetStopProgress() {
+        route.resetStopProgress()
+        stopSequences = [:]
     }
 
     // MARK: Joystick Mode

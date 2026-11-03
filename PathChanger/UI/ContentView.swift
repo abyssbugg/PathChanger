@@ -283,7 +283,8 @@ struct ContentView: View {
                 appState.activeMode = newMode
             }
             guard oldMode != newMode else { return }
-            appState.jumpIndex = 0
+            // A mode change keeps each stop mode's progress (owner rule 2026-11-03); the
+            // truncation below is a stop edit and starts progress over.
             if newMode.maxStops > 0, appState.currentRoute.count > newMode.maxStops {
                 appState.loadRoute(from: Array(appState.currentRoute.prefix(newMode.maxStops)))
             }

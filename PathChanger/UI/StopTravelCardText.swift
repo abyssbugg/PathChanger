@@ -280,6 +280,67 @@ enum StopTravelCardText {
         return Int((seconds - 1e-9).rounded(.up))
     }
 
+    // MARK: Next Move
+
+    static let nextMoveIdentifier = "location.stops.nextMove"
+
+    /// One plain line saying what the next Move of a stop mode does, from where the run
+    /// stands (owner rule 2026-11-03): which stop it goes to and how, what follows with
+    /// Go through = Automatically, and whether it starts over. Uses the planner, so it
+    /// says what the engine will do. Nil for Teleport and Joystick or without stops.
+    /// - Parameters:
+    ///   - stops: the run's stops (`AppState.nextMoveStops(for:)`).
+    ///   - held: the location the phone holds (nil = the first stop is placed).
+    ///   - followsRoads: travelled legs ask for a road route.
+    static func nextMoveSummary(
+        mode: AppMode,
+        stops: [LocationCoordinate],
+        cursor: StopCursor,
+        settings: StopTravelSettings,
+        held: LocationCoordinate?,
+        followsRoads: Bool
+    ) -> String? {
+        guard showsStopOptions(for: mode),
+              let first = StopTravelPlanner.firstLeg(stops: stops, origin: held, cursor: cursor, settings: settings) else { return nil }
+        let count = stops.count
+        let start = StopTravelPlanner.startCursor(cursor, stopCount: count, repeatMode: settings.repeatMode)
+        let startsOver = settings.repeatMode == .oneWay && StopTravelPlanner.isFinished(cursor, stopCount: count)
+        let arrival: String
+        switch settings.arrival {
+        case .travel: arrival = followsRoads ? "travel by road" : "travel"
+        case .jump: arrival = "jump"
+        }
+        let placed = first.from == nil
+        var line: String
+        if placed {
+            // Nothing held: the stop is placed. Held at that very stop: the run starts there.
+            line = (held == nil ? "place stop " : "start at stop ") + "\(first.stopIndex + 1)"
+        } else {
+            let wait = settings.arrival == .jump && settings.jumpTiming == .realistic ? " (waits the trip time)" : ""
+            line = "\(arrival) to stop \(first.stopIndex + 1)\(wait)"
+        }
+
+        guard settings.progression == .automatic else { return "Next Move: " + (startsOver ? "start over — " : "") + line }
+        // Every stop automatically: the rest of this pass, then how the run repeats.
+        let headsBack = settings.repeatMode == .backAndForth && start.reversed
+        let following: [Int] = headsBack
+            ? Array((0..<first.stopIndex).reversed())
+            : Array((first.stopIndex + 1)..<max(count, first.stopIndex + 1))
+        if let firstFollowing = following.first, let lastFollowing = following.last {
+            let range = following.count == 1
+                ? "stop \(firstFollowing + 1)"
+                : "stops \(firstFollowing + 1)–\(lastFollowing + 1)"
+            line += placed ? ", then \(arrival) to \(range)" : ", then \(range)"
+        }
+        switch settings.repeatMode {
+        case .oneWay: break
+        case .loop: line += ", then back to stop 1 and repeat"
+        case .backAndForth:
+            line += headsBack ? ", then forward again and repeat" : ", then back through the stops to stop 1 and repeat"
+        }
+        return "Next Move: " + (startsOver ? "start over — " : "") + line
+    }
+
     // MARK: Move gating
 
     /// Jump's Move is possible while the planner has a next hop for these stops: a
@@ -346,6 +407,21 @@ extension AppState {
                 settings[keyPath: keyPath] = newValue
                 self.setStopTravelSettings(settings, for: mode)
             }
+        )
+    }
+
+    /// The card's "Next Move" line for `mode`; nil while a run of the mode is active (its
+    /// live panel shows where it stands) and for modes without stops.
+    func nextMoveSummary(for mode: AppMode) -> String? {
+        guard StopTravelCardText.showsStopOptions(for: mode), !isStopRunActive(for: mode),
+              case .success(let stops) = nextMoveStops(for: mode) else { return nil }
+        return StopTravelCardText.nextMoveSummary(
+            mode: mode,
+            stops: stops,
+            cursor: displayStopCursor(for: mode),
+            settings: stopTravelSettings(for: mode),
+            held: currentLocation,
+            followsRoads: legPathProvider != nil
         )
     }
 

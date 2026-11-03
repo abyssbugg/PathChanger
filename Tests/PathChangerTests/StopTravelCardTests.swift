@@ -200,7 +200,9 @@ final class StopTravelCardTests: XCTestCase {
             LocationCoordinate(latitude: 35.2, longitude: 139.2),
         ]
         let finished = StopCursor(nextIndex: 3)
-        XCTAssertFalse(StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .oneWay)))
+        // Owner rule 2026-11-03 (3): a finished One way run starts over at stop 1, so its
+        // Move stays possible (it used to be disabled: "All hops done").
+        XCTAssertTrue(StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .oneWay)))
         XCTAssertTrue(
             StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .loop)),
             "a finished one-way Jump switched to Loop continues"
@@ -208,10 +210,133 @@ final class StopTravelCardTests: XCTestCase {
         XCTAssertTrue(StopTravelCardText.jumpCanMove(stops: stops, cursor: finished, settings: settings(.jump, repeat: .backAndForth)))
         XCTAssertTrue(StopTravelCardText.jumpCanMove(stops: stops, cursor: StopCursor(nextIndex: 1), settings: settings(.jump)))
         XCTAssertFalse(StopTravelCardText.jumpCanMove(stops: [], cursor: StopCursor(), settings: settings(.jump, repeat: .loop)))
-        XCTAssertFalse(
+        XCTAssertTrue(
             StopTravelCardText.jumpCanMove(stops: [stops[0]], cursor: StopCursor(nextIndex: 1), settings: settings(.jump, repeat: .loop)),
-            "one stop has nothing to loop to"
+            "one reached stop starts over at itself"
         )
+    }
+
+    // MARK: - Next Move summary (owner rule 2026-11-03)
+
+    private static let six: [LocationCoordinate] = (0..<6).map {
+        LocationCoordinate(latitude: 35.0 + Double($0) * 0.01, longitude: 139.0)
+    }
+    private static let elsewhere = LocationCoordinate(latitude: 34.9, longitude: 139.0)
+
+    private func summary(
+        _ options: StopTravelSettings,
+        cursor: StopCursor,
+        held: LocationCoordinate? = StopTravelCardTests.elsewhere,
+        stops: [LocationCoordinate] = StopTravelCardTests.six,
+        mode: AppMode = .route,
+        roads: Bool = true
+    ) -> String? {
+        StopTravelCardText.nextMoveSummary(mode: mode, stops: stops, cursor: cursor, settings: options, held: held, followsRoads: roads)
+    }
+
+    func testNextMoveSummaryForAnUnfinishedRun() {
+        // Travel × every stop × One way, part way.
+        XCTAssertEqual(summary(settings(.travel), cursor: StopCursor(nextIndex: 2)), "Next Move: travel by road to stop 3, then stops 4–6")
+        XCTAssertEqual(summary(settings(.travel), cursor: StopCursor(nextIndex: 2), roads: false), "Next Move: travel to stop 3, then stops 4–6")
+        XCTAssertEqual(summary(settings(.travel), cursor: StopCursor(nextIndex: 5)), "Next Move: travel by road to stop 6")
+        // Travel × one per Move.
+        XCTAssertEqual(summary(settings(.travel, progression: .onePerMove), cursor: StopCursor(nextIndex: 2)), "Next Move: travel by road to stop 3")
+        // Jump × timing × progression.
+        XCTAssertEqual(
+            summary(settings(.jump, timing: .realistic, progression: .onePerMove), cursor: StopCursor(nextIndex: 1)),
+            "Next Move: jump to stop 2 (waits the trip time)"
+        )
+        XCTAssertEqual(summary(settings(.jump, progression: .onePerMove), cursor: StopCursor(nextIndex: 1)), "Next Move: jump to stop 2")
+        XCTAssertEqual(summary(settings(.jump, hold: 5), cursor: StopCursor(nextIndex: 4)), "Next Move: jump to stop 5, then stop 6")
+        XCTAssertEqual(
+            summary(settings(.jump, timing: .realistic), cursor: StopCursor(nextIndex: 1)),
+            "Next Move: jump to stop 2 (waits the trip time), then stops 3–6"
+        )
+    }
+
+    func testNextMoveSummaryForRepeatingRuns() {
+        let four = Array(Self.six.prefix(4))
+        XCTAssertEqual(
+            summary(settings(.travel, repeat: .loop), cursor: StopCursor(nextIndex: 3), stops: four, roads: false),
+            "Next Move: travel to stop 4, then back to stop 1 and repeat"
+        )
+        XCTAssertEqual(
+            summary(settings(.travel, repeat: .loop), cursor: StopCursor(nextIndex: 1)),
+            "Next Move: travel by road to stop 2, then stops 3–6, then back to stop 1 and repeat"
+        )
+        XCTAssertEqual(
+            summary(settings(.travel, repeat: .backAndForth), cursor: StopCursor(nextIndex: 2)),
+            "Next Move: travel by road to stop 3, then stops 4–6, then back through the stops to stop 1 and repeat"
+        )
+        XCTAssertEqual(
+            summary(settings(.travel, repeat: .backAndForth), cursor: StopCursor(nextIndex: 3, reversed: true)),
+            "Next Move: travel by road to stop 4, then stops 3–1, then forward again and repeat"
+        )
+        XCTAssertEqual(
+            summary(settings(.travel, repeat: .backAndForth), cursor: StopCursor(nextIndex: 0, reversed: true)),
+            "Next Move: travel by road to stop 1, then forward again and repeat"
+        )
+        // One per Move: only the next stop, also on the wrap home.
+        XCTAssertEqual(
+            summary(settings(.travel, progression: .onePerMove, repeat: .loop), cursor: StopCursor(), held: Self.six[5]),
+            "Next Move: travel by road to stop 1"
+        )
+        XCTAssertEqual(
+            summary(settings(.jump, progression: .onePerMove, repeat: .backAndForth), cursor: StopCursor(nextIndex: 4, reversed: true), held: Self.six[5]),
+            "Next Move: jump to stop 5"
+        )
+    }
+
+    func testNextMoveSummaryForAFinishedOneWayRun() {
+        let finished = StopCursor(nextIndex: 6)
+        XCTAssertEqual(
+            summary(settings(.travel, progression: .onePerMove), cursor: finished, held: Self.six[5], roads: false),
+            "Next Move: start over — travel to stop 1"
+        )
+        XCTAssertEqual(
+            summary(settings(.travel), cursor: finished, held: Self.six[5]),
+            "Next Move: start over — travel by road to stop 1, then stops 2–6"
+        )
+        XCTAssertEqual(
+            summary(settings(.jump, progression: .onePerMove), cursor: finished, held: Self.six[5]),
+            "Next Move: start over — jump to stop 1"
+        )
+        // Nothing held (the tunnel stop ended the location): stop 1 is placed.
+        XCTAssertEqual(
+            summary(settings(.travel, progression: .onePerMove), cursor: finished, held: nil),
+            "Next Move: start over — place stop 1"
+        )
+    }
+
+    func testNextMoveSummaryWhenNothingIsHeldOrTheRunStartsAtTheHeldStop() {
+        XCTAssertEqual(summary(settings(.travel), cursor: StopCursor(), held: nil), "Next Move: place stop 1, then travel by road to stops 2–6")
+        XCTAssertEqual(summary(settings(.jump), cursor: StopCursor(), held: nil), "Next Move: place stop 1, then jump to stops 2–6")
+        XCTAssertEqual(summary(settings(.travel, progression: .onePerMove), cursor: StopCursor(), held: nil), "Next Move: place stop 1")
+        // Not held, part way (a tunnel stop ended the location): the next stop is placed.
+        XCTAssertEqual(summary(settings(.travel), cursor: StopCursor(nextIndex: 3), held: nil), "Next Move: place stop 4, then travel by road to stops 5–6")
+        // Two-Spot with one spot: stop 1 is the held location itself.
+        let held = Self.six[0]
+        XCTAssertEqual(
+            summary(settings(.travel), cursor: StopCursor(), held: held, stops: [held, Self.six[1]], mode: .twospot),
+            "Next Move: start at stop 1, then travel by road to stop 2"
+        )
+    }
+
+    func testNextMoveSummaryOnlyForStopModesWithStops() {
+        XCTAssertNil(summary(settings(.travel), cursor: StopCursor(), mode: .teleport))
+        XCTAssertNil(summary(settings(.travel), cursor: StopCursor(), mode: .joystick))
+        XCTAssertNil(summary(settings(.travel), cursor: StopCursor(), stops: []))
+        for mode in RouteStateManager.stopModes {
+            XCTAssertNotNil(summary(settings(.travel), cursor: StopCursor(), mode: mode), "\(mode)")
+        }
+    }
+
+    func testTheCardShowsTheNextMoveLineWhenIdle() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("PathChanger/UI/ModeContextCard.swift"))
+        XCTAssertTrue(source.contains("appState.nextMoveSummary(for: mode)"))
+        XCTAssertTrue(source.contains("StopTravelCardText.nextMoveIdentifier"))
     }
 
     // MARK: Pause / Resume

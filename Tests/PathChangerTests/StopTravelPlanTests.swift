@@ -131,11 +131,68 @@ final class StopTravelPlanTests: XCTestCase {
 
     func testAFinishedCursorWrapsWhenTheRunRepeats() {
         let finished = StopCursor(nextIndex: 3)
-        XCTAssertNil(StopTravelPlanner.firstLeg(stops: [a, b, c], origin: c, cursor: finished, settings: settings(.jump)))
         let loop = StopTravelPlanner.firstLeg(stops: [a, b, c], origin: c, cursor: finished, settings: settings(.jump, repeat: .loop))
         XCTAssertEqual(loop?.stopIndex, 0)
         let backAndForth = StopTravelPlanner.firstLeg(stops: [a, b, c], origin: c, cursor: finished, settings: settings(.jump, repeat: .backAndForth))
         XCTAssertEqual(backAndForth?.stopIndex, 1)
+    }
+
+    /// Owner rule 2026-11-03 (3): a finished One way run starts over at stop 1, reached
+    /// from the held location per Getting there; with nothing held, stop 1 is placed.
+    /// (It used to return nil: "All hops done".)
+    func testAFinishedOneWayRunStartsOverAtTheFirstStop() {
+        let finished = StopCursor(nextIndex: 3)
+        for arrival in StopTravelSettings.Arrival.allCases {
+            for progression in StopTravelSettings.Progression.allCases {
+                let options = settings(arrival, progression: progression)
+                let label = "\(arrival) \(progression)"
+                let fromHeld = StopTravelPlanner.firstLeg(stops: [a, b, c], origin: c, cursor: finished, settings: options)
+                XCTAssertEqual(fromHeld?.stopIndex, 0, label)
+                XCTAssertEqual(fromHeld?.from, c, "reached from the held location, not placed (\(label))")
+                XCTAssertEqual(fromHeld?.cursorAfter, StopCursor(nextIndex: 1), label)
+                XCTAssertEqual(fromHeld?.endsMove, progression == .onePerMove, label)
+
+                let placed = StopTravelPlanner.firstLeg(stops: [a, b, c], origin: nil, cursor: finished, settings: options)
+                XCTAssertEqual(placed?.stopIndex, 0, label)
+                XCTAssertNil(placed?.from, "nothing held: stop 1 is placed (\(label))")
+            }
+        }
+        // One stop: the run starts over at it.
+        XCTAssertEqual(
+            StopTravelPlanner.firstLeg(stops: [a], origin: a, cursor: StopCursor(nextIndex: 1), settings: settings(.jump, repeat: .loop))?.stopIndex,
+            0
+        )
+        XCTAssertNil(StopTravelPlanner.firstLeg(stops: [], origin: a, cursor: StopCursor(), settings: settings(.jump)), "no stops, no leg")
+    }
+
+    func testAStartOverIsTravelledFromTheHeldLocation() {
+        let result = steps(plan([a, b], origin: b, cursor: StopCursor(nextIndex: 2), settings: settings(.travel, progression: .onePerMove), metersPerSecond: 50))
+        guard case .travel(let points, 0) = result.first, result.count == 1 else {
+            return XCTFail("one travelled leg to stop 1, got \(result)")
+        }
+        XCTAssertGreaterThan(points.count, 1, "never a silent teleport")
+        XCTAssertEqual(points.last, a)
+        XCTAssertLessThan(Geo.distance(from: points[0], to: b), 50 / 5 + 0.01)
+    }
+
+    // MARK: - Run log lines (no coordinates)
+
+    func testRunLogLinesNameTheLegWithoutCoordinates() {
+        XCTAssertEqual(
+            StopRunLog.legStart(stop: 2, of: 5, arrival: .travel, path: LegPath(points: [a, b, c], followsRoads: true, note: nil), distanceMeters: 812.4, seconds: 50.6),
+            "[StopRun] Leg to stop 3 of 5 (travel, road route, 812 m, 51 s)"
+        )
+        XCTAssertEqual(
+            StopRunLog.legStart(stop: 0, of: 2, arrival: .travel, path: .straight(from: a, to: b, note: MapKitRoadRouter.straightLineNote), distanceMeters: 140, seconds: 7),
+            "[StopRun] Leg to stop 1 of 2 (travel, straight line: \(MapKitRoadRouter.straightLineNote), 140 m, 7 s)"
+        )
+        XCTAssertEqual(
+            StopRunLog.legStart(stop: 1, of: 3, arrival: .jump, path: nil, distanceMeters: 99.6, seconds: 0),
+            "[StopRun] Leg to stop 2 of 3 (jump, straight line, 100 m, 0 s)"
+        )
+        XCTAssertEqual(StopRunLog.placed(stop: 0, of: 3), "[StopRun] Leg to stop 1 of 3 (jump, placed, 0 m, 0 s)")
+        XCTAssertEqual(StopRunLog.reached(stop: 2, of: 3), "[StopRun] Reached stop 3 of 3")
+        XCTAssertEqual(StopRunLog.ended("Stop"), "[StopRun] Run ended: Stop")
     }
 
     // MARK: - Travel

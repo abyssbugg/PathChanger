@@ -604,14 +604,16 @@ final class StopTravelEngineTests: XCTestCase {
 
     func testAFreshOneStopPerMoveRunStillPlacesItsStop() async {
         let looped = settings(.travel, progression: .onePerMove, repeat: .loop)
-        // After the stops change: the stop index resets and the first stop is placed.
+        // After the stops change: the stop index resets. Owner rule 2026-11-03: stop 1
+        // is reached from the held stop per Getting there (it used to be placed).
         let edited = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: looped)
         for _ in 0..<3 { _ = await pointsOfNextMove(edited) }
         edited.state.removeRouteWaypoint(at: 2)
         edited.state.stageLocation(s2, for: .route)
         XCTAssertEqual(edited.state.routeStopIndex, 0)
         let afterEdit = await pointsOfNextMove(edited)
-        XCTAssertEqual(afterEdit, [s0], "a new stop sequence places its first stop")
+        XCTAssertGreaterThan(afterEdit.count, 10, "travelled from the held stop, not placed")
+        XCTAssertEqual(afterEdit.last, s0, "the new stop sequence starts at its first stop")
 
         // After Clear: nothing is held, so the stop is placed, not travelled to.
         let cleared = await StopRunHarness.make(mode: .twospot, stops: [s0, s1], settings: looped)
@@ -743,19 +745,22 @@ final class StopTravelEngineTests: XCTestCase {
         state.setStopTravelSettings(settings(.jump, hold: 3), for: .route)  // ends the run
         let second = Task { await state.startSimulation() }
         for _ in 0..<200 { await Task.yield() }
-        var applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }.count
+        let applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }.count
         XCTAssertEqual(applies, 2, "no new apply while the old one is still at the bridge")
 
         await fake.releaseNextApplication(session: StopRunHarness.session)
         await first.value
         XCTAssertEqual(state.currentLocation, s1, "the old apply the device took holds")
-        for _ in 0..<3 {
-            await fake.waitUntilApplicationPending()
-            await fake.releaseNextApplication(session: StopRunHarness.session)
-        }
+        // Owner rule 2026-11-03: the Move after an option change continues from the held
+        // stop 2 to stop 3 (it used to replay all three stops from stop 1).
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: StopRunHarness.session)
         await second.value
-        applies = await fake.calls().filter { if case .apply = $0 { return true }; return false }.count
-        XCTAssertEqual(applies, 5)
+        let applied = await fake.calls().compactMap { call -> LocationCoordinate? in
+            if case .apply(let request) = call { return request.coordinate }
+            return nil
+        }
+        XCTAssertEqual(applied, [s0, s1, s2])
         XCTAssertEqual(state.currentLocation, s2)
         XCTAssertFalse(state.isMovementEngineRunning)
     }
@@ -1032,5 +1037,262 @@ final class StopTravelEngineTests: XCTestCase {
             expectedPoints([s0, s1], settings: .defaults(for: .twospot)),
             "the run travels at the travel speed (20 m/s), not the joystick's"
         )
+    }
+}
+
+// MARK: - Owner rule 2026-11-03: a Move continues from where the run stands
+
+/// The same rule for Jump, Two-Spot and Multi-Spot, for every combination of the stop
+/// options: (1) a Move goes to the next stop not yet reached, from the held location;
+/// Stop, Pause, an option change, a mode change and a connection loss never send the run
+/// back to stop 1. (2) Progress resets only on a stop edit, Reset Route or a confirmed
+/// Clear. (3) A finished One way run starts over at stop 1, reached per Getting there
+/// (placed only when nothing is held). (4) Loop and Back and forth return per their rule.
+extension StopTravelEngineTests {
+    private static let stopModes: [AppMode] = [.jump, .twospot, .route]
+
+    private func runStops(for mode: AppMode) -> [LocationCoordinate] {
+        mode == .twospot ? [s0, s1] : [s0, s1, s2]
+    }
+
+    private func options(
+        _ mode: AppMode,
+        arrival: StopTravelSettings.Arrival = .travel,
+        progression: StopTravelSettings.Progression,
+        repeat repeatMode: StopTravelSettings.RepeatMode = .oneWay
+    ) -> StopTravelSettings {
+        var options = StopTravelSettings.defaults(for: mode)
+        options.arrival = arrival
+        options.jumpTiming = .fixed
+        options.holdSeconds = 0
+        options.progression = progression
+        options.repeatMode = repeatMode
+        return options
+    }
+
+    private func move(_ harness: StopRunHarness) async -> [LocationCoordinate] {
+        let before = harness.applied.count
+        await harness.state.startSimulation()
+        return Array(harness.applied.dropFirst(before))
+    }
+
+    // MARK: Rule 1
+
+    func testAMoveAfterARunEndedMidLegContinuesToTheNextUnreachedStop() async {
+        for mode in Self.stopModes {
+            for ending in ["Stop", "Pause then Stop", "option change", "mode change"] {
+                let label = "\(mode) after \(ending)"
+                let stops = runStops(for: mode)
+                let harness = await StopRunHarness.make(mode: mode, stops: stops, settings: options(mode, progression: .automatic))
+                let state = harness.state!
+                harness.onApply = { count, _ in
+                    guard count == 6 else { return }
+                    switch ending {
+                    case "Stop":
+                        await state.stopSimulation()
+                    case "Pause then Stop":
+                        state.pauseMovement()
+                        await state.stopSimulation()
+                    case "option change":
+                        var changed = state.stopTravelSettings(for: mode)
+                        changed.jumpTiming = .realistic
+                        state.setStopTravelSettings(changed, for: mode)
+                    default:
+                        state.activeMode = .teleport
+                    }
+                }
+                await state.startSimulation()
+                harness.onApply = nil
+                XCTAssertEqual(harness.applied.count, 6, "the run ended mid-leg (\(label))")
+                if ending == "mode change" { state.activeMode = mode }
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, "stop 1 reached, stop 2 not (\(label))")
+                guard let held = state.currentLocation else { XCTFail("held (\(label))"); continue }
+                XCTAssertNotEqual(held, s0, label)
+
+                let next = await move(harness)
+                XCTAssertFalse(next.contains(s0), "never back to stop 1 (\(label))")
+                XCTAssertLessThan(Geo.distance(from: next.first ?? s0, to: held), 10, "it leaves from the held location (\(label))")
+                XCTAssertEqual(next.last, stops.last, "and goes on through every remaining stop (\(label))")
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, stops.count, label)
+                assertHeld(state, at: stops.last)
+            }
+        }
+    }
+
+    func testOneStopPerMoveKeepsItsPlaceAcrossAModeChangeAndAConnectionLoss() async {
+        for mode in Self.stopModes {
+            let stops = runStops(for: mode)
+            let harness = await StopRunHarness.make(mode: mode, stops: stops, settings: options(mode, progression: .onePerMove))
+            let state = harness.state!
+            _ = await move(harness)
+            _ = await move(harness)
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, "\(mode)")
+
+            state.activeMode = .teleport
+            state.activeMode = mode
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, "a mode change away and back keeps progress (\(mode))")
+
+            state.submitLocationBridgeEvent(.sessionLost(nil, reason: "Wi-Fi dropped"))
+            state.locationSessionCoordinator.connectionReady(
+                LocationSessionIdentity(stableDeviceID: "stop-device", transport: .wifi, endpointClass: .unresolved, generation: 2)
+            )
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, "a loss and recovery keep progress (\(mode))")
+
+            let next = await move(harness)
+            if mode == .twospot {
+                // Both spots reached (One way): start over, travelling back to stop 1.
+                XCTAssertGreaterThan(next.count, 10, "\(mode)")
+                XCTAssertEqual(next.last, s0, "\(mode)")
+            } else {
+                XCTAssertFalse(next.contains(s0), "never back to stop 1 (\(mode))")
+                XCTAssertGreaterThan(next.count, 10, "travelled from the held stop (\(mode))")
+                XCTAssertEqual(next.last, s2, "\(mode)")
+            }
+        }
+    }
+
+    func testAnArrivalAcknowledgedAfterAModeChangeStillAdvancesThatModesProgress() async {
+        for mode in Self.stopModes {
+            let (state, fake) = makeFakeState(mode: mode, stops: runStops(for: mode), settings: options(mode, arrival: .jump, progression: .onePerMove))
+            let run = Task { await state.startSimulation() }
+            await fake.waitUntilApplicationPending()
+            state.activeMode = .teleport
+            await fake.releaseNextApplication(session: StopRunHarness.session)
+            await run.value
+            XCTAssertEqual(state.currentLocation, s0, "\(mode)")
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, "the phone reached stop 1 (\(mode))")
+        }
+    }
+
+    func testEachStopModeKeepsItsOwnProgress() async {
+        let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove))
+        let state = harness.state!
+        _ = await move(harness)
+        _ = await move(harness)
+        state.activeMode = .twospot
+        XCTAssertEqual(state.displayStopCursor(for: .twospot), StopCursor(), "Two-Spot has not moved")
+        XCTAssertEqual(state.displayStopCursor(for: .jump), StopCursor(), "Jump has not moved")
+        state.activeMode = .route
+        XCTAssertEqual(state.displayStopCursor(for: .route).nextIndex, 2)
+    }
+
+    // MARK: Rule 2
+
+    func testEditingTheStopsOrResetRouteResetsProgressInEveryStopMode() async {
+        for mode in Self.stopModes {
+            for edit in ["add", "remove", "move", "reverse", "import", "Reset Route"] {
+                let label = "\(mode) \(edit)"
+                let harness = await StopRunHarness.make(mode: mode, stops: runStops(for: mode), settings: options(mode, progression: .onePerMove))
+                let state = harness.state!
+                _ = await move(harness)
+                _ = await move(harness)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, label)
+                let imported = mode == .twospot ? [s2, s0] : [s2, s0, s1]
+                switch edit {
+                case "add": state.stageLocation(LocationCoordinate(latitude: 35.68200, longitude: 139.76200), for: mode)
+                case "remove": state.removeRouteWaypoint(at: 0)
+                case "move": state.moveRouteWaypoint(from: 0, to: 1)
+                case "reverse": state.reverseRoute(for: mode)
+                case "import": state.loadRoute(from: imported)
+                default: state.clearRoute()
+                }
+                XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "progress starts over (\(label))")
+                guard edit == "import" else { continue }
+                // Stop 1 of the new stops is reached from the held stop, per Getting there.
+                let next = await move(harness)
+                XCTAssertGreaterThan(next.count, 10, "travelled, not teleported (\(label))")
+                XCTAssertLessThan(Geo.distance(from: next.first ?? s2, to: s1), 10, "from the held stop (\(label))")
+                XCTAssertEqual(next.last, s2, label)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, label)
+            }
+        }
+    }
+
+    func testAConfirmedClearResetsProgressAndThenPlacesStopOne() async {
+        for mode in Self.stopModes {
+            let harness = await StopRunHarness.make(mode: mode, stops: runStops(for: mode), settings: options(mode, progression: .onePerMove))
+            let state = harness.state!
+            _ = await move(harness)
+            _ = await move(harness)
+            await state.clearLocation()
+            XCTAssertNil(state.currentLocation, "\(mode)")
+            XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "a confirmed Clear resets progress (\(mode))")
+            let next = await move(harness)
+            XCTAssertEqual(next, [s0], "nothing held: stop 1 is placed (\(mode))")
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, "\(mode)")
+        }
+    }
+
+    // MARK: Rule 3
+
+    func testAFinishedOneWayRunStartsOverFromTheHeldStopPerGettingThere() async {
+        for mode in Self.stopModes {
+            for arrival in StopTravelSettings.Arrival.allCases {
+                let label = "\(mode) \(arrival)"
+                let stops = runStops(for: mode)
+                let harness = await StopRunHarness.make(mode: mode, stops: stops, settings: options(mode, arrival: arrival, progression: .onePerMove))
+                let state = harness.state!
+                for _ in stops { _ = await move(harness) }
+                XCTAssertEqual(state.currentLocation, stops.last, label)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, stops.count, "finished (\(label))")
+
+                let next = await move(harness)
+                switch arrival {
+                case .travel:
+                    XCTAssertGreaterThan(next.count, 10, "travelled home, never a silent teleport (\(label))")
+                    XCTAssertLessThan(Geo.distance(from: next.first ?? s0, to: stops.last!), 10, label)
+                case .jump:
+                    XCTAssertEqual(next.count, 1, "one jump (\(label))")
+                }
+                XCTAssertEqual(next.last, s0, label)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, label)
+                assertHeld(state, at: s0)
+            }
+        }
+    }
+
+    func testAFinishedAutomaticRunStartsOverAndGoesThroughEveryStopAgain() async {
+        for mode in Self.stopModes {
+            let stops = runStops(for: mode)
+            let harness = await StopRunHarness.make(mode: mode, stops: stops, settings: options(mode, progression: .automatic))
+            let state = harness.state!
+            _ = await move(harness)
+            XCTAssertEqual(state.currentLocation, stops.last, "\(mode)")
+
+            let next = await move(harness)
+            let home = next.firstIndex(of: s0) ?? 0
+            XCTAssertGreaterThan(home, 10, "stop 1 is travelled to from the held stop (\(mode))")
+            XCTAssertLessThan(Geo.distance(from: next.first ?? s0, to: stops.last!), 10, "\(mode)")
+            XCTAssertEqual(next.last, stops.last, "then every stop again (\(mode))")
+            assertHeld(state, at: stops.last)
+        }
+    }
+
+    // MARK: Next Move summary
+
+    func testTheNextMoveSummaryDescribesWhatTheNextMoveDoes() async {
+        let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove))
+        let state = harness.state!
+        XCTAssertEqual(state.nextMoveSummary(for: .route), "Next Move: place stop 1")
+        _ = await move(harness)
+        XCTAssertEqual(state.nextMoveSummary(for: .route), "Next Move: travel to stop 2", "no road router in tests")
+        _ = await move(harness)
+        _ = await move(harness)
+        XCTAssertEqual(state.nextMoveSummary(for: .route), "Next Move: start over — travel to stop 1")
+        XCTAssertNil(state.nextMoveSummary(for: .teleport))
+
+        // None while a run of the mode is active (the live panel shows it).
+        state.setStopTravelSettings(options(.route, progression: .automatic), for: .route)
+        var duringRun: String? = "unset"
+        let base = harness.applied.count
+        harness.onApply = { count, _ in if count == base + 3 { duringRun = state.nextMoveSummary(for: .route) } }
+        await state.startSimulation()
+        XCTAssertNil(duringRun)
+
+        // Two-Spot with one spot starts at the held location.
+        state.activeMode = .twospot
+        state.clearRoute()
+        state.stageLocation(s1, for: .twospot)
+        XCTAssertEqual(state.nextMoveSummary(for: .twospot), "Next Move: start at stop 1, then travel to stop 2")
     }
 }

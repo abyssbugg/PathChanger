@@ -795,6 +795,15 @@ struct ModeContextCard: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 7) {
             stopProgressReadout
+            if !showsStop, let nextMove = appState.nextMoveSummary(for: mode) {
+                // Idle stop modes: what Move will do from where the run stands.
+                Label(nextMove, systemImage: "arrow.turn.down.right")
+                    .font(Organic.body(11, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(nextMove)
+                    .accessibilityIdentifier(StopTravelCardText.nextMoveIdentifier)
+            }
             HStack(spacing: 8) {
                 if mode == .joystick {
                     Button("Stop movement") {
@@ -952,7 +961,10 @@ struct ModeContextCard: View {
             return "Stop"
         }
         if mode == .jump, !appState.currentRoute.isEmpty {
-            return "Move · \(min(appState.jumpIndex + 1, appState.currentRoute.count))/\(appState.currentRoute.count)"
+            // A finished One way run starts over at stop 1 (owner rule 2026-11-03).
+            let count = appState.currentRoute.count
+            let next = appState.jumpIndex >= count ? 1 : appState.jumpIndex + 1
+            return "Move · \(next)/\(count)"
         }
         return "Move"
     }

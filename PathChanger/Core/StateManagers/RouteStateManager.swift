@@ -63,8 +63,9 @@ final class RouteStateManager: ObservableObject {
 
     /// Current route coordinates
     @Published var currentRoute: [LocationCoordinate] = [] {
-        // Any change to the stops starts one-stop-per-Move progress over.
-        didSet { if currentRoute != oldValue { routeStopCursor = StopCursor() } }
+        // Any change to the stops starts every stop mode's progress over
+        // (owner rule 2026-11-03: add, remove, move, reverse, import).
+        didSet { if currentRoute != oldValue { resetStopProgress() } }
     }
 
     /// Playback progress (0.0 to 1.0)
@@ -94,16 +95,18 @@ final class RouteStateManager: ObservableObject {
     /// Index of the next hop in Jump mode
     @Published var jumpIndex: Int = 0 {
         // At the first stop the direction makes no difference; resetting it here keeps
-        // every "back to the first hop" reset (mode change, Reset) a clean restart.
+        // every "back to the first hop" reset (a stop edit, Reset, Clear) a clean restart.
         didSet { if jumpIndex == 0 { jumpReversed = false } }
     }
 
     /// Jump's back-and-forth direction (heading back toward the first stop).
     @Published var jumpReversed: Bool = false
 
-    /// Two-Spot / Multi-Spot: the next stop and direction of a one-stop-per-Move run.
-    /// Advances only on an acknowledged arrival; any stop edit resets it.
-    @Published var routeStopCursor = StopCursor()
+    /// Two-Spot and Multi-Spot: each mode's next stop and direction. Advances only on an
+    /// acknowledged arrival; a stop edit, Reset Route or a confirmed Clear resets it. One
+    /// entry per mode: the stop list is shared, but Two-Spot runs its first two spots and
+    /// Multi-Spot all of them, so one cursor would point into the other mode's run.
+    @Published private(set) var routeStopCursors: [AppMode: StopCursor] = [:]
 
     /// Stop-by-stop options per mode (PRODUCT_REQUIREMENTS 3.6); a missing entry means the
     /// mode's defaults.
@@ -178,6 +181,32 @@ final class RouteStateManager: ObservableObject {
         if let settingsDefaults, let data = try? JSONEncoder().encode(settings) {
             settingsDefaults.set(data, forKey: Self.settingsKey(for: mode))
         }
+    }
+
+    // MARK: Stop Progress
+
+    /// Where `mode`'s stop run stands: Jump's hop index and direction, or the Two-Spot /
+    /// Multi-Spot cursor.
+    func stopCursor(for mode: AppMode) -> StopCursor {
+        mode == .jump
+            ? StopCursor(nextIndex: jumpIndex, reversed: jumpReversed)
+            : routeStopCursors[mode] ?? StopCursor()
+    }
+
+    func setStopCursor(_ cursor: StopCursor, for mode: AppMode) {
+        if mode == .jump {
+            jumpIndex = cursor.nextIndex
+            jumpReversed = cursor.reversed
+        } else {
+            routeStopCursors[mode] = cursor
+        }
+    }
+
+    /// Every stop mode starts over at stop 1: a stop edit, Reset Route, a confirmed Clear.
+    func resetStopProgress() {
+        jumpIndex = 0
+        jumpReversed = false
+        if !routeStopCursors.isEmpty { routeStopCursors = [:] }
     }
 
     /// Set the simulation state manager reference
@@ -263,7 +292,7 @@ final class RouteStateManager: ObservableObject {
         routeName = nil
         progress = 0
         currentIndex = 0
-        jumpIndex = 0
+        resetStopProgress()
         totalDistance = 0
         estimatedRemainingTime = 0
         playbackState = .idle
