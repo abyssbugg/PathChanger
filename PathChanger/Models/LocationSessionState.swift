@@ -80,6 +80,13 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
         Self.supportedChannels.contains(self)
     }
 
+    /// The helper reaches the phone over Bonjour on this lane. Its link-local tunnel ends
+    /// shortly after the app that launched the helper quits (live 2026-11-03: 0.85 s), so
+    /// a location held on it does not survive Preserve and Quit.
+    var endsWithTheLaunchingApp: Bool {
+        self == .remotePairingRSD || self == .mobdev2RSD
+    }
+
     var endpointClass: LocationEndpointClass? {
         switch self {
         case .usbLockdown, .networkLockdown, .usbmuxDirect:

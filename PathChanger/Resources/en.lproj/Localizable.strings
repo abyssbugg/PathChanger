@@ -256,6 +256,7 @@
 // MARK: - Managed Location Quit
 "quit.location.title" = "A location is still active";
 "quit.location.message" = "Clear and Quit returns the device to its real location and stops everything PathChanger started. Preserve and Quit keeps the location helper and the device tunnel running in the background to hold the location, and PathChanger reconnects to them when it reopens. The location can still be lost if the phone locks or leaves the network.";
+"quit.location.message.endsAfterQuit" = "Clear and Quit returns the device to its real location and stops everything PathChanger started. This location is held over a Wi‑Fi (Bonjour) connection that ends about a second after PathChanger quits, so Preserve and Quit cannot keep it: the device goes back to its real location shortly after PathChanger quits. To keep this location, leave PathChanger open.";
 "quit.clearAndQuit" = "Clear and Quit";
 "quit.preserveAndQuit" = "Preserve and Quit";
 "quit.cancel" = "Cancel";

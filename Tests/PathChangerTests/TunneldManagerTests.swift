@@ -1572,6 +1572,30 @@ final class TunneldManagerTests: XCTestCase {
                        "the --native tunnel refused the location service; it must not be launched")
     }
 
+    /// The Quit dialog's text for a location held over a Bonjour lane must not promise that
+    /// Preserve and Quit keeps it (live 2026-11-03: it ended 0.85 s after the app exited).
+    func testTheQuitDialogDoesNotPromiseToPreserveALocationThatEndsWithTheApp() throws {
+        XCTAssertEqual(LocationQuitDialogText.messageKey(preservedLocationEndsAfterQuit: false), "quit.location.message")
+        XCTAssertEqual(LocationQuitDialogText.messageKey(preservedLocationEndsAfterQuit: true),
+                       "quit.location.message.endsAfterQuit")
+        let resources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("PathChanger/Resources")
+        for language in ["en", "ja"] {
+            let strings = try XCTUnwrap(NSDictionary(
+                contentsOf: resources.appendingPathComponent("\(language).lproj/Localizable.strings")
+            ) as? [String: String], language)
+            let message = try XCTUnwrap(strings["quit.location.message.endsAfterQuit"], language)
+            XCTAssertFalse(message.isEmpty, language)
+            XCTAssertNotEqual(message, strings["quit.location.message"], language)
+        }
+        let english = try XCTUnwrap(NSDictionary(
+            contentsOf: resources.appendingPathComponent("en.lproj/Localizable.strings")
+        ) as? [String: String])["quit.location.message.endsAfterQuit"] ?? ""
+        XCTAssertTrue(english.contains("Preserve and Quit cannot keep it"), english)
+        XCTAssertTrue(english.contains("about a second after PathChanger quits"), english)
+    }
+
     func testTerminationPreparationRetainsHandlerUntilReply() throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

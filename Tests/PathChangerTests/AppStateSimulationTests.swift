@@ -1669,6 +1669,67 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(helperShutdownsWhenTunnelStopped, 1)
     }
 
+    /// Live 2026-11-03: a location held over the helper's RemotePairing lane ended 0.85 s
+    /// after the app that launched the helper exited. Preserve and Quit cannot keep a
+    /// location held over a Bonjour lane (remote pairing or mobdev2), so the Quit dialog
+    /// must not promise it; over the other lanes it still may.
+    func testQuitKnowsALocationHeldOverABonjourLaneEndsWithTheApp() async throws {
+        let cases: [(LocationDVTChannel, LocationEndpointClass, Bool)] = [
+            (.remotePairingRSD, .remoteServiceDiscovery, true),
+            (.mobdev2RSD, .remoteServiceDiscovery, true),
+            (.userspaceRSD, .remoteServiceDiscovery, false),
+            (.usbmuxDirect, .direct, false),
+        ]
+        for (channel, endpointClass, endsAfterQuit) in cases {
+            let fake = FakeLocationInjector()
+            let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [])
+            let state = AppState(
+                startBackgroundServices: false,
+                locationInjector: fake,
+                managedLocationSessionSource: source,
+                tunnelQuitController: FakeTunnelQuitController()
+            )
+            state.selectedDevice = Device(id: "ack-device", displayName: "Ack Device", connectionType: .wifi)
+            state.isTunneldRunning = true
+            state.activeMode = .teleport
+            // The helper picks its lane: the session asks for none.
+            let session = LocationSessionIdentity(
+                stableDeviceID: "ack-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+            )
+            state.locationSessionCoordinator.connectionReady(session)
+            state.stageLocation(first, for: .teleport)
+            let application = Task { await state.startSimulation() }
+            await fake.waitUntilApplicationPending()
+            await fake.releaseNextApplication(
+                session: session, actualChannelOverride: channel, endpointClassOverride: endpointClass
+            )
+            await application.value
+
+            XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.actualChannel, channel)
+            XCTAssertTrue(state.requiresLocationQuitDecision)
+            XCTAssertEqual(state.preservedLocationEndsAfterQuit, endsAfterQuit, channel.rawValue)
+        }
+    }
+
+    func testAnUnrestoredRecordedSessionOnABonjourLaneAlsoEndsWithTheApp() {
+        let source = FakeManagedLocationSessionSource(helperID: UUID(), sessions: [ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash("ack-device"),
+            requestID: UUID().uuidString, sessionGeneration: 3, physicalTransport: "Network",
+            actualChannel: "mobdev2RSD", endpointClass: "remoteServiceDiscovery",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 36.3, longitude: -86.6),
+            acknowledgedAt: 1_789_000_000
+        )])
+        source.hasRecordedHeldSessions = true
+        let state = AppState(
+            startBackgroundServices: false,
+            managedLocationSessionSource: source,
+            tunnelQuitController: FakeTunnelQuitController()
+        )
+
+        XCTAssertTrue(state.requiresLocationQuitDecision)
+        XCTAssertTrue(state.preservedLocationEndsAfterQuit)
+    }
+
     func testUnrestoredPreservedSessionRequiresQuitDecision() {
         // After a Preserve relaunch the helper record still holds the location even
         // before any device is selected; a plain quit must not silently end it.

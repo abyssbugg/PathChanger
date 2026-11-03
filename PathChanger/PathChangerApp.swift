@@ -338,8 +338,18 @@ enum LocationQuitPreparationResult: Equatable, Sendable {
 @MainActor
 protocol LocationTerminationHandling: AnyObject {
     var requiresLocationQuitDecision: Bool { get }
+    /// The held location rides a connection that ends shortly after PathChanger quits, so
+    /// Preserve and Quit cannot keep it (the Quit dialog says so).
+    var preservedLocationEndsAfterQuit: Bool { get }
     func prepareForQuitWithoutLocation() async -> LocationQuitPreparationResult
     func prepareForQuit(_ choice: LocationQuitChoice) async -> LocationQuitPreparationResult
+}
+
+/// The Quit dialog's message for a held location.
+enum LocationQuitDialogText {
+    static func messageKey(preservedLocationEndsAfterQuit: Bool) -> String {
+        preservedLocationEndsAfterQuit ? "quit.location.message.endsAfterQuit" : "quit.location.message"
+    }
 }
 
 enum TunnelQuitStopResult: Equatable, Sendable {
@@ -2187,6 +2197,19 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     var requiresLocationQuitDecision: Bool {
         hasCoordinatorHeldLocation || managedLocationSessionSource.hasRecordedHeldSessions
+    }
+
+    /// The held location rides a Bonjour lane (remote pairing or mobdev2): the helper's
+    /// link-local tunnel ends shortly after the app that launched it quits (live
+    /// 2026-11-03: 0.85 s), so Preserve and Quit cannot keep it. Read from the receipt
+    /// this session holds, else from the sessions an adopted helper record lists.
+    var preservedLocationEndsAfterQuit: Bool {
+        if let channel = locationSessionCoordinator.state.lastAcknowledgedReceipt?.actualChannel {
+            return channel.endsWithTheLaunchingApp
+        }
+        return managedLocationSessionSource.adoptedHelperSessions.contains {
+            LocationDVTChannel(rawValue: $0.actualChannel).endsWithTheLaunchingApp
+        }
     }
 
     /// A location this app session applied or restored (as opposed to one only listed

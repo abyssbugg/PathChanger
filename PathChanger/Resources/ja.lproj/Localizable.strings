@@ -256,6 +256,7 @@
 // MARK: - Managed Location Quit
 "quit.location.title" = "位置情報がまだ有効です";
 "quit.location.message" = "「解除して終了」はデバイスを実際の位置に戻し、PathChangerが起動したものをすべて停止します。「保持して終了」は位置ヘルパーとデバイストンネルをバックグラウンドで動かし続けて位置を保持し、PathChangerを再度開くと再接続します。iPhoneがロックされたりネットワークから外れたりすると、位置が失われることがあります。";
+"quit.location.message.endsAfterQuit" = "「解除して終了」はデバイスを実際の位置に戻し、PathChangerが起動したものをすべて停止します。この位置はWi‑Fi（Bonjour）接続で保持されており、その接続はPathChangerの終了から約1秒で切れるため、「保持して終了」では保持できません。終了後まもなくデバイスは実際の位置に戻ります。この位置を保つには、PathChangerを開いたままにしてください。";
 "quit.clearAndQuit" = "解除して終了";
 "quit.preserveAndQuit" = "保持して終了";
 "quit.cancel" = "キャンセル";

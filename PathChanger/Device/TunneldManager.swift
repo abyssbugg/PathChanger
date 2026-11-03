@@ -2194,10 +2194,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "quit.location.title",
                 comment: "Quit while a managed location session is held"
             )
-            alert.informativeText = NSLocalizedString(
-                "quit.location.message",
-                comment: "Choose whether to clear or preserve the managed location"
-            )
+            // A location held over a Bonjour lane ends when PathChanger quits: the text
+            // must not promise that Preserve and Quit keeps it.
+            alert.informativeText = terminationHandler.preservedLocationEndsAfterQuit
+                ? NSLocalizedString(
+                    "quit.location.message.endsAfterQuit",
+                    comment: "Quit while a location is held over Wi-Fi (Bonjour), which ends when the app quits"
+                )
+                : NSLocalizedString(
+                    "quit.location.message",
+                    comment: "Choose whether to clear or preserve the managed location"
+                )
             alert.addButton(withTitle: NSLocalizedString(
                 "quit.clearAndQuit",
                 comment: "Clear location and quit"
