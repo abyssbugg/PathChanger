@@ -131,7 +131,7 @@ One rule for Jump, Two-Spot and Multi-Spot:
 #### 3.6.2 Map paths (owner decision 2026-11-03)
 
 - With Getting there = Travel, the map draws each leg's road route from Apple Maps directions as a solid line, including the leg the next Move drives from the held location; a leg without a road route is drawn dashed as a straight line. With Getting there = Jump the legs are drawn as thin dashed hops.
-- The map draws the travelled trail of the shown mode from acknowledged points only. The trail lasts as long as that mode's progress, and travel that leaves from somewhere else starts a new line.
+- Each stop mode keeps its own travelled trail (owner decision 2026-11-03), drawn from acknowledged points only while that mode is shown. A mode's trail lasts as long as that mode's progress, travel in another mode never erases it, and travel that leaves from somewhere else starts a new line at the point it left from.
 
 ## 4. State model and GUI truth
 
@@ -251,6 +251,8 @@ Current disposition:
 - If recovery is exhausted, report lost/error honestly and retain the desired coordinate for an explicit retry.
 - Automatic reconnect (owner decision 2026-11-02): when the phone becomes reachable again after a connection loss the user did not cause (not after Stop Tunnel), PathChanger reopens the helper's unprivileged device connection and reapplies the held desired coordinate without waiting for Start. This never elevates privileges, never starts a privileged tunnel or daemon, stays cancelable, and reports reconnecting until the reapplication is acknowledged.
 - Wi-Fi availability must not be inferred from a paired placeholder alone.
+- Controls (owner decision 2026-11-03): the tunnel status pill and Settings own the tunnel (Start, Reconnect tunnel, Stop Reconnecting, Stop); Reconnect tunnel never stops a live tunnel. The location area offers only Reapply location, which reapplies the held location over the live connection and never starts, restarts or stops the tunnel.
+- A location helper left running by an earlier PathChanger launch is replaced before a device connection is opened through it (macOS stops letting it use the local network once the app that started it exits), and a Clear, Stop or Move of the current launch supersedes the location it held.
 
 ### 7.4 Transport failover
 

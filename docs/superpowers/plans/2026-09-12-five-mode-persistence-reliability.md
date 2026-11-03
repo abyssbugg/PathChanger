@@ -139,6 +139,13 @@ CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
 PRODUCT_REQUIREMENTS.md: 13ae2745904df8274aa82e1c2bb9988e83537936af556bc50f0c88c468c30f6b
 ```
 
+Re-recorded 2026-11-03 (second) after the owner's per-mode trail and Reconnect-split decisions and the orphaned-helper rule in `PRODUCT_REQUIREMENTS.md` §3.6.2 and §7.3:
+
+```text
+CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
+PRODUCT_REQUIREMENTS.md: 7ab1db6a9ab3e04bedf71e30d7a3a7cf5d48dd14ab74f69db5e1d9b4fe2dc69c
+```
+
 - [x] **Step 2: Create a global documentation worktree**
 
 Use the normalized `main` as the base:
