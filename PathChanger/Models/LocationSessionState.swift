@@ -70,6 +70,10 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
     /// Helper lane 4: userspace tunnel over a mobdev2 (Bonjour, TCP) lockdown, used
     /// when usbmux lists no device (live 2026-11-01). Python emits this string.
     static let mobdev2RSD = Self(rawValue: "mobdev2RSD")
+    /// Helper remote pairing lane: userspace tunnel over a RemotePairing service found
+    /// by Bonjour at any Wi-Fi address, no usbmuxd (live read-only 2026-11-02). Python
+    /// emits this string.
+    static let remotePairingRSD = Self(rawValue: "remotePairingRSD")
     static let managedTunneldRSD = Self(rawValue: "managedTunneldRSD")
 
     var isSupported: Bool {
@@ -80,7 +84,7 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
         switch self {
         case .usbLockdown, .networkLockdown, .usbmuxDirect:
             return .direct
-        case .explicitRSD, .nativeRSD, .userspaceRSD, .mobdev2RSD, .managedTunneldRSD:
+        case .explicitRSD, .nativeRSD, .userspaceRSD, .mobdev2RSD, .remotePairingRSD, .managedTunneldRSD:
             return .remoteServiceDiscovery
         default:
             return nil
@@ -89,7 +93,7 @@ struct LocationDVTChannel: RawRepresentable, Codable, Hashable, Sendable {
 
     private static let supportedChannels: Set<Self> = [
         .usbLockdown, .networkLockdown, .usbmuxDirect, .explicitRSD,
-        .nativeRSD, .userspaceRSD, .mobdev2RSD, .managedTunneldRSD,
+        .nativeRSD, .userspaceRSD, .mobdev2RSD, .remotePairingRSD, .managedTunneldRSD,
     ]
 
     init(rawValue: String) {

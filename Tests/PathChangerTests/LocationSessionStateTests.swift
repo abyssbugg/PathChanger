@@ -349,4 +349,22 @@ final class LocationSessionStateTests: XCTestCase {
             channel: channel, endpointClass: .direct
         ), "a mobdev2RSD acknowledgement claiming a direct endpoint is inconsistent")
     }
+
+    /// The helper's remote pairing lane (RemotePairing Bonjour -> userspace tunnel, no
+    /// usbmuxd; proven live read-only 2026-11-02) acknowledges "remotePairingRSD".
+    func testRemotePairingRSDChannelIsSupportedRemoteServiceDiscovery() {
+        let channel = LocationDVTChannel(rawValue: "remotePairingRSD")
+        XCTAssertTrue(channel.isSupported)
+        XCTAssertEqual(channel.endpointClass, .remoteServiceDiscovery)
+
+        let acknowledgement = LocationProviderAcknowledgement(
+            requestID: deterministicUUID, sessionGeneration: 1, physicalTransport: .wifi,
+            channel: channel, endpointClass: .remoteServiceDiscovery
+        )
+        XCTAssertEqual(acknowledgement?.channel, channel)
+        XCTAssertNil(LocationProviderAcknowledgement(
+            requestID: deterministicUUID, sessionGeneration: 1, physicalTransport: .wifi,
+            channel: channel, endpointClass: .direct
+        ), "a remotePairingRSD acknowledgement claiming a direct endpoint is inconsistent")
+    }
 }

@@ -609,24 +609,40 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
     nonisolated static let wifiUnlistedByUsbmuxMessage =
         "Your iPhone answers on this Mac's network, but macOS has not picked it up for developer connections (this can happen after the phone's Wi‑Fi address changes). Connect it with a cable once, keep it unlocked, then press Start again."
 
+    /// The helper's remote pairing lane finds the phone at any Wi‑Fi address without
+    /// usbmuxd, but only with a RemotePairing record holding the phone's altIRK. A
+    /// missing or older record is fixed by Prepare for Wi‑Fi over the cable (a refresh,
+    /// not USB mode).
+    nonisolated static let wifiRemotePairingRefreshMessage =
+        "This Mac's Wi‑Fi pairing with your iPhone needs a refresh. Connect the iPhone with a cable once, keep it unlocked, press Prepare for Wi‑Fi, then unplug it and press Start again. Wi‑Fi mode stays on."
+
     /// Lane names and the classes that mean "this lane did not see the phone", as
     /// written by `DeviceLanesUnavailable` in scripts/location_bridge.py
     /// ("<lane>: <ErrorClass>: <message>", lanes joined by "; ").
     private nonisolated static let usbmuxLanes: Set<String> = ["userspace tunnel", "usbmux direct", "preferred RSD"]
     private nonisolated static let mobdev2Lane = "mobdev2"
+    private nonisolated static let remotePairingLane = "remote pairing"
     private nonisolated static let usbmuxAbsentErrors: Set<String> = ["DeviceNotFoundError", "NoDeviceConnectedError"]
     /// mobdev2 failures from before a paired lockdown was found (the browse wraps its
     /// OSErrors in Mobdev2BrowseError), or that observed nothing.
     private nonisolated static let mobdev2NotReachedErrors: Set<String> = [
         "Mobdev2DeviceNotFoundError", "Mobdev2BrowseError", "LaneUnsupportedError", "LanesTimedOutError",
     ]
+    /// Remote pairing failures from before a pair-verified service was found, or that
+    /// observed nothing (the record check runs before any browse).
+    private nonisolated static let remotePairingNotReachedErrors: Set<String> = [
+        "RemotePairingDeviceNotFoundError", "RemotePairingBrowseError", "RemotePairingRecordStaleError",
+        "LaneUnsupportedError", "LanesTimedOutError",
+    ]
+    private nonisolated static let remotePairingRecordStaleError = "RemotePairingRecordStaleError"
     private nonisolated static let laneFailurePattern =
-        "[(;]\\s*(userspace tunnel|usbmux direct|preferred RSD|mobdev2): ([A-Za-z_][A-Za-z0-9_]*):"
+        "[(;]\\s*(userspace tunnel|usbmux direct|preferred RSD|remote pairing|mobdev2): ([A-Za-z_][A-Za-z0-9_]*):"
 
-    /// The Wi‑Fi give-up message for the helper's last per-lane detail. When every
-    /// usbmux-backed lane missed the phone and the mobdev2 lane reached its lockdown,
-    /// the phone is on the network but unlisted by usbmuxd; anything else (including
-    /// a detail this cannot read) keeps the reachability advice.
+    /// The Wi‑Fi give-up message for the helper's last per-lane detail. A remote pairing
+    /// lane that had no usable record asks for the Prepare for Wi‑Fi refresh. When every
+    /// usbmux-backed lane missed the phone and a Wi‑Fi lane (remote pairing or mobdev2)
+    /// reached it, the phone is on the network but unlisted by usbmuxd; anything else
+    /// (including a detail this cannot read) keeps the reachability advice.
     nonisolated static func wifiGaveUpMessage(detail: String) -> String {
         guard let pattern = try? NSRegularExpression(pattern: laneFailurePattern) else {
             return wifiDeviceNotReachableMessage
@@ -638,11 +654,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
             guard errorByLane[lane] == nil else { return wifiDeviceNotReachableMessage }
             errorByLane[lane] = text.substring(with: match.range(at: 2))
         }
+        if errorByLane[remotePairingLane] == remotePairingRecordStaleError {
+            return wifiRemotePairingRefreshMessage
+        }
         let usbmuxMissedThePhone = usbmuxLanes.allSatisfy { lane in
             errorByLane[lane].map(usbmuxAbsentErrors.contains) ?? false
         }
         let mobdev2ReachedThePhone = errorByLane[mobdev2Lane].map { !mobdev2NotReachedErrors.contains($0) } ?? false
-        return usbmuxMissedThePhone && mobdev2ReachedThePhone
+        let remotePairingReachedThePhone = errorByLane[remotePairingLane]
+            .map { !remotePairingNotReachedErrors.contains($0) } ?? false
+        return usbmuxMissedThePhone && (mobdev2ReachedThePhone || remotePairingReachedThePhone)
             ? wifiUnlistedByUsbmuxMessage
             : wifiDeviceNotReachableMessage
     }
@@ -1406,7 +1427,11 @@ class TunneldManager: ObservableObject, TunnelQuitControlling {
                 let message = Self.wifiGaveUpMessage(detail: detail)
                 if message == Self.wifiUnlistedByUsbmuxMessage { phoneAnsweredUnlisted = true }
                 guard Date() < deadline else {
-                    lastError = phoneAnsweredUnlisted ? Self.wifiUnlistedByUsbmuxMessage : message
+                    // The refresh advice wins: it is the fix for any address. Otherwise an
+                    // earlier attempt's proof that the phone answers is kept.
+                    lastError = phoneAnsweredUnlisted && message == Self.wifiDeviceNotReachableMessage
+                        ? Self.wifiUnlistedByUsbmuxMessage
+                        : message
                     Logger.error(Self.wifiGaveUpLogLine(detail: detail), category: .device)
                     return false
                 }

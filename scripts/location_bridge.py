@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import signal
@@ -56,9 +57,15 @@ PROBE_TIMEOUT_SECONDS = 3.0
 # 2026-11-01: found in 1.7 s). The whole open stays inside CONNECT_TIMEOUT_SECONDS.
 MOBDEV2_BROWSE_TIMEOUT_SECONDS = 8.0
 
+# How long the remote pairing lane browses RemotePairing Bonjour for the phone (live
+# 2026-11-02, read-only: found and pair-verified in ~2 s at a rotated address).
+REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS = 8.0
+
 # The mobdev2 lane points pymobiledevice3.remote.userspace_tunnel's module-global
-# create_using_usbmux at its Bonjour lockdown for one tunnel open. Every userspace
-# tunnel open in this process holds this lock, so no other open ever sees the swap.
+# create_using_usbmux at its Bonjour lockdown for one tunnel open, and the remote
+# pairing lane points its module-global _create_no_root_tunnel_provider at its
+# RemotePairing service. Every userspace tunnel open in this process holds this lock,
+# so no other open ever sees either swap.
 _USBMUX_PROVIDER_SWAP_LOCK = asyncio.Lock()
 
 
@@ -68,6 +75,19 @@ class Mobdev2DeviceNotFoundError(LookupError):
 
 class Mobdev2BrowseError(OSError):
     """The mobdev2 Bonjour browse itself failed (mDNS socket); it observed no phone."""
+
+
+class RemotePairingDeviceNotFoundError(LookupError):
+    """RemotePairing Bonjour found no advert matching the phone's pair record."""
+
+
+class RemotePairingBrowseError(OSError):
+    """The RemotePairing Bonjour browse itself failed (mDNS socket); it observed no phone."""
+
+
+class RemotePairingRecordStaleError(LookupError):
+    """This Mac has no RemotePairing record for the phone, or one without its altIRK, so
+    RemotePairing Bonjour cannot recognize the phone. The lane looked at nothing."""
 
 
 class LaneUnsupportedError(RuntimeError):
@@ -83,9 +103,17 @@ class LanesTimedOutError(TimeoutError):
 # when every lane says this, the phone is not visible yet - not broken.
 _DEVICE_ABSENT_ERRORS = frozenset({
     "DeviceNotFoundError", "NoDeviceConnectedError", Mobdev2DeviceNotFoundError.__name__,
+    RemotePairingDeviceNotFoundError.__name__,
 })
 
 _MOBDEV2_LANE = "mobdev2"
+_REMOTE_PAIRING_LANE = "remote pairing"
+# The lanes that reach the phone over Wi-Fi (Bonjour), used when usbmux sees nothing.
+_WIFI_LANES = frozenset({_MOBDEV2_LANE, _REMOTE_PAIRING_LANE})
+
+# Lane failures that looked at nothing (a missing API, or a pair record that cannot
+# match the phone): they neither prove nor disprove that the phone is visible.
+_LANE_DID_NOT_LOOK = (LaneUnsupportedError, RemotePairingRecordStaleError)
 
 # pymobiledevice3's own transport failures, matched by class name over the MRO (the
 # helper does not import upstream exception classes at module load). Upstream wraps
@@ -114,24 +142,25 @@ def _keeps_waiting(lane: str, error: BaseException, earlier=()) -> bool:
     """True when this lane failure leaves the phone possibly about to come back.
 
     Owner decision 2026-11-01: Start keeps trying while the phone may return. Only
-    the mobdev2 lane (the last one, used when usbmux sees nothing) treats transport
-    errors as "not visible yet": a reset, refused or timed-out Wi-Fi link to a dozing
-    phone (builtin or pymobiledevice3's own transport classes), or a failed Bonjour
-    browse. Running out of the whole open's time budget counts only while the
-    mobdev2 lane was in flight, or when every lane that finished before (`earlier`,
+    the Wi-Fi lanes (remote pairing and mobdev2, used when usbmux sees nothing) treat
+    transport errors as "not visible yet": a reset, refused or timed-out Wi-Fi link to
+    a dozing phone (builtin or pymobiledevice3's own transport classes), or a failed
+    Bonjour browse. Running out of the whole open's time budget counts only while a
+    Wi-Fi lane was in flight, or when every lane that finished before (`earlier`,
     at least one) said the phone is absent: a hang in lane 1 with nothing collected
     cannot be won by waiting for the phone. Any other failure is real.
     """
     if _is_device_absent(error):
         return True
     if isinstance(error, LanesTimedOutError):
-        return lane == _MOBDEV2_LANE or (
+        return lane in _WIFI_LANES or (
             bool(earlier) and all(_is_device_absent(previous) for _, previous in earlier)
         )
-    if lane != _MOBDEV2_LANE:
+    if lane not in _WIFI_LANES:
         return False
     return isinstance(
-        error, (ConnectionError, asyncio.TimeoutError, TimeoutError, Mobdev2BrowseError)
+        error,
+        (ConnectionError, asyncio.TimeoutError, TimeoutError, Mobdev2BrowseError, RemotePairingBrowseError),
     ) or bool(_class_names(error) & _UPSTREAM_TRANSPORT_ERRORS)
 
 
@@ -140,11 +169,12 @@ class DeviceLanesUnavailable(RuntimeError):
 
     def __init__(self, failures):
         self.failures = list(failures)
-        # A lane that could not run (missing API) saw nothing either way, so it
-        # neither proves nor disproves that the phone is visible.
+        # A lane that could not run (missing API) or could not match the phone (no
+        # usable pair record) saw nothing either way, so it neither proves nor
+        # disproves that the phone is visible.
         observed = [
             (lane, error) for lane, error in self.failures
-            if not isinstance(error, LaneUnsupportedError)
+            if not isinstance(error, _LANE_DID_NOT_LOOK)
         ]
         self.device_not_visible = bool(observed) and all(
             _keeps_waiting(lane, error, observed[:index])
@@ -194,6 +224,9 @@ class DeviceConnection:
         self._tunnel_required_errors: tuple = ()
         self._device_info_module = None
         self._mobdev2_lockdowns = None
+        self._remote_pairing_services = None
+        self._remote_pair_records = None
+        self._peer_alt_irk_key = None
         self._userspace_tunnel_module = None
         self._open_locks: dict = {}
         # Called with the device id whenever its connection is closed, so the helper
@@ -221,8 +254,21 @@ class DeviceConnection:
                 from pymobiledevice3.lockdown import get_mobdev2_lockdowns
             except ImportError:
                 get_mobdev2_lockdowns = None
+            # Optional too: without them only the remote pairing lane is unavailable.
+            try:
+                from pymobiledevice3.remote.tunnel_service import (
+                    PEER_ALT_IRK_KEY, get_remote_pairing_tunnel_services,
+                )
+                from pymobiledevice3.pair_records import iter_remote_pair_records_by_identifier
+            except ImportError:
+                PEER_ALT_IRK_KEY = None
+                get_remote_pairing_tunnel_services = None
+                iter_remote_pair_records_by_identifier = None
 
             self._mobdev2_lockdowns = get_mobdev2_lockdowns
+            self._remote_pairing_services = get_remote_pairing_tunnel_services
+            self._remote_pair_records = iter_remote_pair_records_by_identifier
+            self._peer_alt_irk_key = PEER_ALT_IRK_KEY
             self._userspace_tunnel_module = userspace_tunnel_module
             self._dvt_module = DvtProvider
             self._location_module = LocationSimulation
@@ -279,10 +325,15 @@ class DeviceConnection:
            developer commands are served over lockdown directly.
         3. the full ``PreferredRsdTunnel`` chain (native remoted included) last —
            covers iOS 17.0-17.3 (no CoreDeviceProxy) and exotic deployments.
-        4. mobdev2 — only after every usbmux-backed lane failed (live 2026-11-01:
-           usbmux listed no Wi-Fi phone for 3.5 minutes while Bonjour still reached
-           its lockdown): the same userspace tunnel over a mobdev2 TCP lockdown.
-           Skipped when the request names USB (it reaches the phone over Wi-Fi).
+        4. remote pairing — only after every usbmux-backed lane failed (live
+           2026-11-02: once the phone's private Wi-Fi address rotated, usbmuxd listed
+           nothing for hours): RemotePairing Bonjour finds the phone at any address by
+           the altIRK in its RemotePairing record, then the same userspace tunnel opens
+           over that RemotePairing service. Proven live read-only, no usbmuxd.
+        5. mobdev2 — after that: the same userspace tunnel over a mobdev2 TCP lockdown
+           (live 2026-11-01: usbmux listed no Wi-Fi phone for 3.5 minutes while Bonjour
+           still reached its lockdown).
+           Lanes 4 and 5 reach the phone over Wi-Fi: skipped when the request names USB.
         """
         if connection_type not in (None, "USB", "Network"):
             raise ValueError("connection_type must be USB or Network")
@@ -333,9 +384,10 @@ class DeviceConnection:
             ("usbmux direct", lambda: self._open_usbmux_direct(udid, cache_key, connection_type)),
             ("preferred RSD", lambda: self._open_preferred_rsd(udid, cache_key)),
         ]
-        # mobdev2 reaches the phone over Wi-Fi (Bonjour): a request that names USB
-        # never crosses to Wi-Fi.
+        # The remote pairing and mobdev2 lanes reach the phone over Wi-Fi (Bonjour): a
+        # request that names USB never crosses to Wi-Fi.
         if connection_type in (None, "Network"):
+            lanes.append((_REMOTE_PAIRING_LANE, lambda: self._open_remote_pairing(udid, cache_key)))
             lanes.append((_MOBDEV2_LANE, lambda: self._open_mobdev2(udid, cache_key)))
         for lane, open_lane in lanes:
             progress["lane"] = lane
@@ -570,10 +622,12 @@ class DeviceConnection:
         return found
 
     @staticmethod
-    def _swap_missed(cause: Optional[BaseException] = None) -> LaneUnsupportedError:
+    def _swap_missed(cause: Optional[BaseException] = None,
+                     global_name: str = "create_using_usbmux",
+                     served: str = "the mobdev2 lockdown") -> LaneUnsupportedError:
         message = (
-            "pymobiledevice3 no longer reads userspace_tunnel.create_using_usbmux: "
-            "the userspace tunnel opened without asking it for the mobdev2 lockdown"
+            f"pymobiledevice3 no longer reads userspace_tunnel.{global_name}: "
+            f"the userspace tunnel opened without asking it for {served}"
         )
         if cause is not None:
             message += f" (the open failed with {type(cause).__name__}: {cause})"
@@ -589,7 +643,7 @@ class DeviceConnection:
         return _UPSTREAM_BASE_ERROR in names and not (names & _USBMUX_LOOKUP_ERRORS)
 
     async def _open_mobdev2(self, udid: str, cache_key: str) -> Tuple[any, any, str, str]:
-        """Lane 4 — usbmuxd-free (proven live 2026-11-01, read-only): mobdev2 Bonjour
+        """The mobdev2 lane — usbmuxd-free (proven live 2026-11-01, read-only): mobdev2 Bonjour
         lockdown -> CoreDeviceProxy userspace tunnel -> RSD -> DVT.
 
         UserspaceRsdTunnel takes its lockdown from the module-global
@@ -650,6 +704,184 @@ class DeviceConnection:
             dvt = await stack.enter_async_context(self._dvt_module(rsd))
             location = await stack.enter_async_context(self._location_module(dvt))
             channel = "mobdev2RSD"
+            endpoint_class = "remoteServiceDiscovery"
+            self._service_cache[cache_key] = {
+                "stack": stack,
+                "dvt": dvt,
+                "location": location,
+                "channel": channel,
+                "endpoint_class": endpoint_class,
+            }
+            return dvt, location, channel, endpoint_class
+        except BaseException:
+            await stack.aclose()
+            raise
+
+    _REMOTE_PAIRING_REFRESH_ADVICE = (
+        "connect the cable once and press Prepare for Wi-Fi to refresh it"
+    )
+
+    def _check_remote_pair_record(self, udid: str) -> None:
+        """Raise RemotePairingRecordStaleError unless this Mac holds a RemotePairing
+        record for `udid` with the phone's altIRK.
+
+        Reads the records exactly as get_remote_pairing_tunnel_services does (same
+        iterator, same key): without the altIRK the browse cannot match the phone's
+        advert and returns nothing, which would otherwise read as "not visible".
+        Only the key's presence is checked; no record content leaves this function.
+        """
+        try:
+            records = [
+                record for identifier, _path, record in self._remote_pair_records()
+                if identifier == udid
+            ]
+        except OSError as error:
+            raise RemotePairingRecordStaleError(
+                f"could not read this Mac's RemotePairing records ({type(error).__name__}); "
+                f"{self._REMOTE_PAIRING_REFRESH_ADVICE}"
+            ) from None
+        if not records:
+            raise RemotePairingRecordStaleError(
+                "this Mac has no RemotePairing record for the phone; "
+                f"{self._REMOTE_PAIRING_REFRESH_ADVICE}"
+            )
+        key = self._peer_alt_irk_key
+        if not any(isinstance(record, dict) and record.get(key) is not None for record in records):
+            raise RemotePairingRecordStaleError(
+                "the phone's RemotePairing record predates altIRK, so Bonjour cannot recognize "
+                f"the phone at a new Wi-Fi address; {self._REMOTE_PAIRING_REFRESH_ADVICE}"
+            )
+
+    @staticmethod
+    def _remote_pairing_address_rank(hostname: str) -> int:
+        """0: a routable IPv4 address; 1: any other IPv4 (169.254/16 link-local, used by
+        the USB link); 2: IPv6 or anything else (often a USB-link fe80:: address)."""
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            return 2
+        if address.version != 4:
+            return 2
+        if address.is_link_local or address.is_loopback or address.is_unspecified:
+            return 1
+        return 0
+
+    @classmethod
+    def _preferred_remote_pairing_service(cls, services):
+        """The advertised service to tunnel over: the first with the best address rank."""
+        best = None
+        for service in services:
+            rank = cls._remote_pairing_address_rank(str(getattr(service, "hostname", "") or ""))
+            if best is None or rank < best[0]:
+                best = (rank, service)
+        return None if best is None else best[1]
+
+    @staticmethod
+    async def _close_services(services) -> None:
+        """Close every service, also when cancelled part-way; re-raise afterwards."""
+        pending = None
+        for service in services:
+            try:
+                await _close_quietly(service)
+            except BaseException as error:  # CancelledError: keep closing the rest.
+                pending = pending or error
+        if pending is not None:
+            raise pending
+
+    async def _find_remote_pairing_service(self, udid: str):
+        """Return one connected RemotePairing service for `udid`, closing the others.
+
+        Raises RemotePairingDeviceNotFoundError when Bonjour has no matching advert, and
+        RemotePairingBrowseError when the browse itself fails (it observed nothing).
+        """
+        try:
+            services = await self._remote_pairing_services(
+                udid=udid, bonjour_timeout=REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS)
+        except OSError as error:
+            raise RemotePairingBrowseError(f"{type(error).__name__}: {error}") from error
+        services = list(services or [])
+        chosen = None
+        try:
+            chosen = self._preferred_remote_pairing_service(services)
+        finally:
+            unused = [service for service in services if service is not chosen]
+            try:
+                await self._close_services(unused)
+            except BaseException:
+                if chosen is not None:
+                    await self._close_services([chosen])
+                raise
+        if chosen is None:
+            raise RemotePairingDeviceNotFoundError(
+                "RemotePairing Bonjour found no advert matching this phone's pair record "
+                f"within {REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS:g}s"
+            )
+        return chosen
+
+    async def _open_remote_pairing(self, udid: str, cache_key: str) -> Tuple[any, any, str, str]:
+        """Remote pairing lane — usbmuxd-free at any Wi-Fi address (proven live
+        2026-11-02, read-only): RemotePairing Bonjour advert matched by the record's
+        altIRK -> pair-verified RemotePairingTunnelService -> userspace tunnel -> RSD -> DVT.
+
+        UserspaceRsdTunnel picks its provider through the module-global
+        ``_create_no_root_tunnel_provider`` and has no parameter for another one, so for
+        this one open that global returns the chosen service. As in the mobdev2 lane, the
+        swap holds _USBMUX_PROVIDER_SWAP_LOCK, is restored in ``finally`` (also on
+        cancellation), and reports drift when the open ends without asking for it.
+        pymobiledevice3 allows one userspace tunnel per process; its guard raises before
+        the provider call and is re-raised as is.
+        """
+        find = self._remote_pairing_services
+        module = self._userspace_tunnel_module
+        if (find is None or self._remote_pair_records is None or self._peer_alt_irk_key is None
+                or module is None or not hasattr(module, "_create_no_root_tunnel_provider")):
+            raise LaneUnsupportedError(
+                "remote pairing lane needs pymobiledevice3.remote.tunnel_service."
+                "get_remote_pairing_tunnel_services and PEER_ALT_IRK_KEY, "
+                "pymobiledevice3.pair_records.iter_remote_pair_records_by_identifier and "
+                "pymobiledevice3.remote.userspace_tunnel._create_no_root_tunnel_provider; "
+                "the installed pymobiledevice3 lacks one"
+            )
+        self._check_remote_pair_record(udid)
+        stack = AsyncExitStack()
+        try:
+            service = await self._find_remote_pairing_service(udid)
+            # Backstop owner of the service. Once the tunnel has taken it, upstream also
+            # closes it (its exit stack, every failure path); a second close is a no-op.
+            stack.push_async_callback(_close_quietly, service)
+            tunnel = self._userspace_tunnel_factory(
+                serial=udid, autopair=True, remotepairing_fallback=False)
+            served = False
+            async with _USBMUX_PROVIDER_SWAP_LOCK:
+                original = module._create_no_root_tunnel_provider
+
+                async def provider_from_remote_pairing(
+                    serial=None, autopair=True, remotepairing_fallback=True, *args, **kwargs
+                ):
+                    nonlocal served
+                    if serial == udid:
+                        served = True
+                        return service, None
+                    return await original(serial, autopair, remotepairing_fallback, *args, **kwargs)
+
+                module._create_no_root_tunnel_provider = provider_from_remote_pairing
+                try:
+                    rsd = await tunnel.aopen()
+                except Exception as error:
+                    if not served and not self._is_pre_provider_failure(error):
+                        raise self._swap_missed(
+                            error, "_create_no_root_tunnel_provider", "the RemotePairing service"
+                        ) from error
+                    raise
+                finally:
+                    module._create_no_root_tunnel_provider = original
+            stack.push_async_callback(tunnel.aclose)
+            if not served:
+                raise self._swap_missed(
+                    None, "_create_no_root_tunnel_provider", "the RemotePairing service")
+            dvt = await stack.enter_async_context(self._dvt_module(rsd))
+            location = await stack.enter_async_context(self._location_module(dvt))
+            channel = "remotePairingRSD"
             endpoint_class = "remoteServiceDiscovery"
             self._service_cache[cache_key] = {
                 "stack": stack,

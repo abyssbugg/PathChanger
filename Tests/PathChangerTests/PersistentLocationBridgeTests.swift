@@ -339,6 +339,24 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             XCTAssertEqual(receipt.transport, expected)
             XCTAssertEqual(receipt.actualChannel, .userspaceRSD)
         }
+        // The remote pairing lane's held session (Wi-Fi, no usbmuxd) must also restore.
+        let remotePairing = """
+        {"device_id_sha256": "\(ManagedLocationHelperSession.deviceIDHash("device-123"))",
+         "request_id": "D81A6845-7B11-43EF-9D19-A3149FD0D097",
+         "session_generation": 5,
+         "physical_transport": "Network",
+         "actual_channel": "remotePairingRSD",
+         "endpoint_class": "remoteServiceDiscovery",
+         "coordinate": {"latitude": 36.3043026, "longitude": -86.6413561},
+         "acknowledged_at": 1761969911.5}
+        """
+        let session = try JSONDecoder().decode(
+            ManagedLocationHelperSession.self, from: Data(remotePairing.utf8))
+        let receipt = try XCTUnwrap(session.locationReceipt(helperID: UUID()),
+                                    "a remotePairingRSD session must produce a receipt")
+        XCTAssertEqual(receipt.transport, .wifi)
+        XCTAssertEqual(receipt.actualChannel?.rawValue, "remotePairingRSD")
+        XCTAssertEqual(receipt.endpointClass, .remoteServiceDiscovery)
     }
 
     func testLocationTransportHelperWireValueRoundTrips() {
@@ -1131,6 +1149,45 @@ final class PersistentLocationBridgeTests: XCTestCase {
         XCTAssertEqual(acknowledgement.sessionGeneration, 1)
         XCTAssertEqual(acknowledgement.channel, .explicitRSD)
         XCTAssertEqual(acknowledgement.endpointClass, .remoteServiceDiscovery)
+    }
+
+    /// The remote pairing lane's success payload (connect_device / set_location) pins
+    /// "remotePairingRSD"; an unsupported channel would reject every location the phone
+    /// applied over the lane that works when usbmuxd lists nothing.
+    func testRemotePairingSocketResponseGoldenFixtureDecodesToAcknowledgement() throws {
+        let json = """
+        {"success": true, "actual_channel": "remotePairingRSD",
+         "endpoint_class": "remoteServiceDiscovery",
+         "request_id": "D81A6845-7B11-43EF-9D19-A3149FD0D097",
+         "session_generation": 4, "helper_id": "golden-fixture"}
+        """
+        let response = try JSONDecoder().decode(
+            PersistentBridgeWireResponse.self, from: Data(json.utf8))
+        let acknowledgement = try response.acknowledgement(physicalTransport: .wifi)
+        XCTAssertEqual(acknowledgement.channel.rawValue, "remotePairingRSD")
+        XCTAssertEqual(acknowledgement.endpointClass, .remoteServiceDiscovery)
+        XCTAssertEqual(acknowledgement.sessionGeneration, 4)
+    }
+
+    /// Python/Swift parity: every channel string scripts/location_bridge.py can
+    /// acknowledge must be a supported Swift channel with the endpoint class the helper
+    /// pairs it with.
+    func testEveryChannelTheHelperEmitsIsSupportedBySwift() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("scripts/location_bridge.py"), encoding: .utf8)
+        let pattern = try NSRegularExpression(pattern: "\"([a-z][A-Za-z0-9]*(?:RSD|Direct))\"")
+        let text = source as NSString
+        let emitted = Set(pattern.matches(in: source, range: NSRange(location: 0, length: text.length))
+            .map { text.substring(with: $0.range(at: 1)) })
+        XCTAssertTrue(emitted.isSuperset(of: ["userspaceRSD", "usbmuxDirect", "nativeRSD",
+                                              "mobdev2RSD", "remotePairingRSD"]), "\(emitted.sorted())")
+        for raw in emitted {
+            let channel = LocationDVTChannel(rawValue: raw)
+            XCTAssertTrue(channel.isSupported, raw)
+            XCTAssertEqual(channel.endpointClass, raw == "usbmuxDirect" ? .direct : .remoteServiceDiscovery, raw)
+        }
     }
 
     @MainActor
@@ -2226,6 +2283,17 @@ asyncio.run(verify())
             assert not browse_calls, browse_calls
             assert ("dev", False) not in seen, seen
             assert "mobdev2" not in result["error"], result
+            # The remote pairing lane reaches the phone over Wi-Fi too: never for USB.
+            rp_records["dev"] = {"peer_alt_irk": b"k" * 16}
+            rp_adverts["dev"] = ["192.168.0.177"]
+            c = make_connection()
+            result = await connect(c, connection_type="USB")
+            await c.close_all()
+            assert result["success"] is False and result["reason"] == "device_not_visible", result
+            assert not rp_calls and not rp_services, (rp_calls, rp_services)
+            assert "remote pairing" not in result["error"], result
+            rp_records.clear()
+            rp_adverts.clear()
             for text in ("userspace tunnel: DeviceNotFoundError", "usbmux direct: DeviceNotFoundError",
                          "preferred RSD: DeviceNotFoundError"):
                 assert text in result["error"], result
@@ -2236,6 +2304,404 @@ asyncio.run(verify())
                 await c.close_all()
                 assert result["success"] is True and result["actual_channel"] == "mobdev2RSD", (hint, result)
         asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// Live 2026-11-02: after the phone's private Wi-Fi address rotated, usbmuxd listed
+    /// nothing for hours (lanes 1-3) and the phone refused the mobdev2 lockdown's tunnel
+    /// (lane 4). With a RemotePairing record that holds the phone's altIRK, RemotePairing
+    /// Bonjour finds the phone at any address and opens the userspace tunnel without
+    /// usbmuxd (proven live read-only). Lane 5 runs before mobdev2, picks one advertised
+    /// address, closes the rest, and swaps the tunnel module's provider for one open only.
+    func testPythonHelperOpensRemotePairingLaneWhenUsbmuxSeesNoDevice() throws {
+        let code = mobdev2LaneFixture() + """
+
+        GOOD = {"peer_alt_irk": b"k" * 16, "private_key": b"x" * 32}
+
+        def reset():
+            rp_records.clear(); rp_adverts.clear(); rp_services.clear(); rp_calls.clear()
+            providers.clear(); browse_calls.clear(); mobdev2_visible.clear()
+
+        def assert_restored(where):
+            assert usermod._create_no_root_tunnel_provider is ORIGINAL_PROVIDER, f"provider restored {where}"
+            assert usermod.create_using_usbmux is ORIGINAL, f"usbmux global untouched {where}"
+
+        async def verify():
+            # Address preference: routable IPv4, then any IPv4 (169.254 link-local), then IPv6.
+            pick = bridge.DeviceConnection._preferred_remote_pairing_service
+            def hosts(*names): return [types.SimpleNamespace(hostname=name) for name in names]
+            for names, expected in [
+                (("fe80::1%anri0", "169.254.10.2", "fe80::2%en7", "192.168.0.177"), "192.168.0.177"),
+                (("fe80::1%anri0", "169.254.10.2", "10.0.0.5", "192.168.0.177"), "10.0.0.5"),
+                (("fe80::1%anri0", "169.254.10.2"), "169.254.10.2"),
+                (("fe80::1%en0", "2001:db8::1"), "fe80::1%en0"),
+                (("not-an-address", "fe80::1%en0"), "not-an-address"),
+            ]:
+                chosen = pick(hosts(*names))
+                assert chosen is not None and chosen.hostname == expected, (names, chosen)
+            assert pick([]) is None
+
+            # (a) usbmux lists nothing, RemotePairing Bonjour finds the phone at its Wi-Fi
+            # address and at USB-link addresses: connected over remotePairingRSD via the
+            # Wi-Fi one; the others are closed at once; mobdev2 is never browsed.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["fe80::1%anri0", "169.254.10.2", "fe80::2%en7", "192.168.0.177"]
+            mobdev2_visible.add("dev")
+            c = make_connection()
+            result = await connect(c)
+            assert result["success"] is True and result["actual_channel"] == "remotePairingRSD", result
+            assert result["endpoint_class"] == "remoteServiceDiscovery", result
+            assert not browse_calls, "mobdev2 runs only after the remote pairing lane failed"
+            assert rp_calls == [{"udid": "dev", "bonjour_timeout": bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS}], rp_calls
+            chosen = providers[-1]
+            assert chosen.source == "remotepairing" and chosen.hostname == "192.168.0.177", chosen
+            assert chosen.closed == 0, "the open connection keeps its service"
+            assert all(s.closed >= 1 for s in rp_services if s is not chosen), [(s.hostname, s.closed) for s in rp_services]
+            assert_restored("after success")
+            moved = await bridge.process_command(c, {"cmd": "set_location", "lat": 1.0,
+                "lng": 2.0, "udid": "dev", "connection_type": "Network"})
+            assert moved["success"] is True and moved["actual_channel"] == "remotePairingRSD", moved
+            status = await bridge.process_command(c, {"cmd": "connection_status", "udid": "dev"})
+            assert status["connected"] is True and status["actual_channel"] == "remotePairingRSD", status
+            await bridge.process_command(c, {"cmd": "disconnect_device", "udid": "dev"})
+            assert chosen.closed >= 1, "invalidating the connection closes its service"
+            await c.close_all()
+
+            # No transport hint also runs the lane.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["192.168.0.177"]
+            c = make_connection()
+            result = await connect(c, connection_type=None)
+            await c.close_all()
+            assert result["success"] is True and result["actual_channel"] == "remotePairingRSD", result
+
+            # (b) The tunnel fails for a non-transport reason after the phone answered: a
+            # real failure; every service closed; the provider restored.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["fe80::1%anri0", "192.168.0.177"]
+            state["tunnel_error"] = UserspaceTunnelUnavailableError("CoreDeviceProxy refused")
+            c = make_connection()
+            result = await connect(c)
+            await c.close_all()
+            state["tunnel_error"] = None
+            assert result["success"] is False and result.get("reason") is None, result
+            assert "remote pairing: UserspaceTunnelUnavailableError: CoreDeviceProxy refused" in result["error"], result
+            assert rp_services and all(s.closed >= 1 for s in rp_services), [(s.hostname, s.closed) for s in rp_services]
+            assert_restored("after failure")
+
+            # (c) Cancellation mid-open restores the provider and closes every service.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["fe80::1%anri0", "192.168.0.177"]
+            state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+            c = make_connection()
+            task = asyncio.create_task(connect(c))
+            await asyncio.wait_for(state["entered"].wait(), 2)
+            assert usermod._create_no_root_tunnel_provider is not ORIGINAL_PROVIDER, "swapped while the tunnel opens"
+            task.cancel()
+            try:
+                await task
+                raise AssertionError("connect was not cancelled")
+            except asyncio.CancelledError:
+                pass
+            state["hold"] = None
+            assert_restored("after cancellation")
+            assert all(s.closed >= 1 for s in rp_services), [(s.hostname, s.closed) for s in rp_services]
+            await c.close_all()
+
+            # Cancellation during the browse leaves the provider untouched.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_state["browse_hold"], rp_state["browse_entered"] = asyncio.Event(), asyncio.Event()
+            c = make_connection()
+            task = asyncio.create_task(connect(c))
+            await asyncio.wait_for(rp_state["browse_entered"].wait(), 2)
+            task.cancel()
+            try:
+                await task
+                raise AssertionError("connect was not cancelled")
+            except asyncio.CancelledError:
+                pass
+            rp_state["browse_hold"] = None
+            assert_restored("after a cancelled browse")
+            await c.close_all()
+
+            # (d) The swap never leaks into a concurrent open of another device.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["192.168.0.177"]
+            usbmux_visible.add("other")
+            state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+            c = make_connection()
+            first = asyncio.create_task(connect(c, "dev"))
+            await asyncio.wait_for(state["entered"].wait(), 2)
+            second = asyncio.create_task(connect(c, "other"))
+            await asyncio.sleep(0.05)
+            assert not second.done(), "the other device's tunnel open waited for the swap"
+            state["hold"].set()
+            r1, r2 = await asyncio.gather(first, second)
+            await c.close_all()
+            state["hold"] = None
+            usbmux_visible.discard("other")
+            assert r1["actual_channel"] == "remotePairingRSD" and r2["actual_channel"] == "userspaceRSD", (r1, r2)
+            assert getattr(providers[-1], "source", None) == "usbmux", "the other device got its own lockdown"
+
+            # (e) pymobiledevice3 stops reading the swapped provider: the lane says so and
+            # observed nothing; the chosen service is closed; a stray tunnel is closed.
+            for mode in ("ignores-global", "ignores-global-returns"):
+                reset()
+                rp_records["dev"] = GOOD
+                rp_adverts["dev"] = ["192.168.0.177"]
+                state["upstream"], state["usbmux_now"] = mode, set()
+                closed_before = state["aclosed"]
+                c = make_connection()
+                result = await connect(c)
+                aclosed = state["aclosed"]
+                await c.close_all()
+                state["upstream"] = "global"
+                lane = result["error"].partition("remote pairing: ")[2].partition("; mobdev2:")[0]
+                assert lane.startswith("LaneUnsupportedError: pymobiledevice3 no longer reads "
+                                       "userspace_tunnel._create_no_root_tunnel_provider"), (mode, result)
+                assert result.get("reason") == "device_not_visible", (mode, result)
+                assert all(s.closed >= 1 for s in rp_services), (mode, [s.closed for s in rp_services])
+                if mode == "ignores-global":
+                    assert "DeviceNotFoundError: usbmux has no device matching udid dev" in lane, (mode, lane)
+                else:
+                    assert aclosed > closed_before, (mode, "the stray tunnel is closed")
+                assert_restored(f"after {mode}")
+
+            # (f) A pymobiledevice3 error from before the provider call (its one-tunnel
+            # guard) is upstream's verdict, re-raised as is.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_adverts["dev"] = ["192.168.0.177"]
+            state["pre_provider_error"] = PyMobileDevice3Exception(
+                "A userspace tunnel is already active in this process; only one userspace tunnel per "
+                "process is supported.")
+            c = make_connection()
+            result = await connect(c)
+            await c.close_all()
+            state["pre_provider_error"] = None
+            assert "remote pairing: PyMobileDevice3Exception: A userspace tunnel is already active" in result["error"], result
+            assert "remote pairing: LaneUnsupportedError" not in result["error"], result
+            assert result.get("reason") is None, result
+            assert all(s.closed >= 1 for s in rp_services), [s.closed for s in rp_services]
+            assert_restored("after the pre-provider guard")
+
+            # (g) A runtime without the APIs the lane needs reports a clear lane error and
+            # observed nothing; the next lane still runs.
+            for broken in ("services", "records", "module"):
+                reset()
+                rp_records["dev"] = GOOD
+                rp_adverts["dev"] = ["192.168.0.177"]
+                mobdev2_visible.add("dev")
+                c = make_connection()
+                if broken == "services":
+                    c._remote_pairing_services = None
+                elif broken == "records":
+                    c._remote_pair_records = None
+                else:
+                    c._userspace_tunnel_module = types.SimpleNamespace(create_using_usbmux=usbmux_lockdown)
+                result = await connect(c)
+                await c.close_all()
+                assert not rp_calls, (broken, rp_calls)
+                assert not any(getattr(p, "source", None) == "remotepairing" for p in providers), (broken, providers)
+                if broken == "module":
+                    assert "remote pairing: LaneUnsupportedError: remote pairing lane needs" in result["error"], result
+                else:
+                    assert result["success"] is True and result["actual_channel"] == "mobdev2RSD", (broken, result)
+                    # The lane's own verdict, seen directly: unsupported, before any browse.
+                    c = make_connection()
+                    if broken == "services":
+                        c._remote_pairing_services = None
+                    else:
+                        c._remote_pair_records = None
+                    try:
+                        await c._open_remote_pairing("dev", "dev")
+                        raise AssertionError("the lane opened without its APIs")
+                    except bridge.LaneUnsupportedError as error:
+                        assert "the installed pymobiledevice3 lacks one" in str(error), error
+                    await c.close_all()
+            assert_restored("after unsupported runtimes")
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// The remote pairing lane's verdicts. Bonjour not finding the phone, or the browse
+    /// failing, is "not visible yet" (Start keeps waiting), and mobdev2 still runs. A
+    /// missing or pre-altIRK record is its own class telling the user to refresh it over
+    /// the cable; it looked at nothing, so it neither starts nor ends the wait.
+    func testPythonHelperRemotePairingLaneVerdicts() throws {
+        let code = mobdev2LaneFixture() + """
+
+        GOOD = {"peer_alt_irk": b"k" * 16, "private_key": b"x" * 32}
+        problems = []
+        def check(name, ok, detail):
+            if not ok:
+                problems.append(f"{name}: {detail}")
+
+        def reset():
+            rp_records.clear(); rp_adverts.clear(); rp_services.clear(); rp_calls.clear()
+            providers.clear(); browse_calls.clear(); mobdev2_visible.clear()
+
+        async def attempt():
+            c = make_connection()
+            try:
+                result = await connect(c)
+                result.setdefault("error", "")
+                result["_services_closed"] = all(s.closed >= 1 for s in rp_services)
+                return result
+            finally:
+                await c.close_all()
+
+        def lane_text(result):
+            return result["error"].partition("remote pairing: ")[2].partition("; mobdev2:")[0]
+
+        async def verify():
+            # No advert matches the phone's record: not visible, and mobdev2 runs next.
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt()
+            check("not found keeps waiting", result.get("reason") == "device_not_visible", result)
+            check("not found is named", lane_text(result).startswith("RemotePairingDeviceNotFoundError"), result)
+            check("mobdev2 runs after", len(browse_calls) == 1, browse_calls)
+            check("lane order", result["error"].index("preferred RSD:") < result["error"].index("remote pairing:")
+                  < result["error"].index("mobdev2:"), result)
+            mobdev2_visible.add("dev")
+            result = await attempt()
+            check("mobdev2 still wins after not found", result.get("actual_channel") == "mobdev2RSD", result)
+
+            # A record without the phone's altIRK, or no record at all: its own class,
+            # telling the user to refresh it over the cable; nothing is browsed.
+            for name, record in (("stale", {"private_key": b"x" * 32}), ("missing", None)):
+                reset()
+                if record is not None:
+                    rp_records["dev"] = record
+                rp_records["someone-else"] = GOOD
+                result = await attempt()
+                text = lane_text(result)
+                check(f"{name} record class", text.startswith("RemotePairingRecordStaleError: "), result)
+                check(f"{name} record advice", "connect the cable once and press Prepare for Wi-Fi" in text, text)
+                check(f"{name} record browses nothing", not rp_calls, rp_calls)
+                check(f"{name} record, absent lanes: still not visible",
+                      result.get("reason") == "device_not_visible", result)
+                check(f"{name} record keeps the secrets out", "private_key" not in text and "kkkk" not in text, text)
+                if name == "stale":
+                    check("stale record names altIRK", "altIRK" in text, text)
+                else:
+                    check("missing record says so", "no RemotePairing record" in text, text)
+                mobdev2_visible.add("dev")
+                result = await attempt()
+                check(f"{name} record, mobdev2 still runs", result.get("actual_channel") == "mobdev2RSD", result)
+
+            # A stale record never turns a real failure elsewhere into a wait.
+            reset()
+            rp_records["dev"] = {"private_key": b"x" * 32}
+            state["preferred_error"] = PermissionError("pairing rejected (preferred)")
+            result = await attempt()
+            state["preferred_error"] = None
+            check("stale + real failure fails fast", result.get("reason") is None, result)
+
+            # The records folder cannot be read: the same class, the lane looked at nothing.
+            reset()
+            rp_state["records_error"] = PermissionError(13, "Permission denied")
+            result = await attempt()
+            rp_state["records_error"] = None
+            check("unreadable records class", lane_text(result).startswith("RemotePairingRecordStaleError"), result)
+            check("unreadable records keeps waiting", result.get("reason") == "device_not_visible", result)
+
+            # The Bonjour browse itself fails (mDNS socket): observed nothing, keep waiting.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_state["browse_error"] = OSError(49, "Can't assign requested address")
+            result = await attempt()
+            rp_state["browse_error"] = None
+            check("browse failure class", lane_text(result).startswith("RemotePairingBrowseError"), result)
+            check("browse failure keeps waiting", result.get("reason") == "device_not_visible", result)
+
+            # Transport-class failures after the phone answered keep waiting (a dozing
+            # phone on Wi-Fi), as on the mobdev2 lane; every service is closed.
+            for error in (ConnectionResetError("reset by peer"), asyncio.TimeoutError(), TimeoutError("handshake"),
+                          ConnectionTerminatedError("TLS handshake reset"), ConnectionFailedError("could not connect")):
+                reset()
+                rp_records["dev"] = GOOD
+                rp_adverts["dev"] = ["192.168.0.177", "fe80::1%en0"]
+                state["tunnel_error"] = error
+                result = await attempt()
+                name = type(error).__name__
+                check(f"transport {name} keeps waiting", result.get("reason") == "device_not_visible", result)
+                check(f"transport {name} is reported", lane_text(result).startswith(name), result)
+                check(f"transport {name} closes services", result["_services_closed"], result)
+            state["tunnel_error"] = None
+
+            # The whole open runs out of time while the lane's tunnel hangs: keep waiting.
+            saved = bridge.CONNECT_TIMEOUT_SECONDS
+            bridge.CONNECT_TIMEOUT_SECONDS = 0.3
+            try:
+                reset()
+                rp_records["dev"] = GOOD
+                rp_adverts["dev"] = ["192.168.0.177", "fe80::1%en0"]
+                state["hold"], state["entered"] = asyncio.Event(), asyncio.Event()
+                result = await attempt()
+                check("outer timeout keeps waiting", result.get("reason") == "device_not_visible", result)
+                check("outer timeout names the lane", "remote pairing: LanesTimedOutError" in result["error"], result)
+                check("outer timeout closes services", result["_services_closed"], result)
+                check("outer timeout restores provider",
+                      usermod._create_no_root_tunnel_provider is ORIGINAL_PROVIDER, "")
+            finally:
+                bridge.CONNECT_TIMEOUT_SECONDS = saved
+                state["hold"] = None
+
+            if problems:
+                raise AssertionError("\\n".join(problems))
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// The remote pairing lane depends on pymobiledevice3 APIs that may move under the
+    /// rolling-latest policy; the managed runtime must have them and the helper must
+    /// wire exactly those objects.
+    func testManagedRuntimeProvidesRemotePairingLaneAPI() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import importlib.util, inspect
+        import pymobiledevice3.remote.tunnel_service as ts
+        import pymobiledevice3.pair_records as pr
+        import pymobiledevice3.remote.userspace_tunnel as ut
+        assert inspect.iscoroutinefunction(ts.get_remote_pairing_tunnel_services)
+        parameters = inspect.signature(ts.get_remote_pairing_tunnel_services).parameters
+        assert "udid" in parameters and "bonjour_timeout" in parameters, parameters
+        assert ts.PEER_ALT_IRK_KEY == "peer_alt_irk"
+        # The record the lane checks is the one the browse matches adverts with.
+        names = ts.get_remote_pairing_tunnel_services.__code__.co_names
+        assert "iter_remote_pair_records_by_identifier" in names and "PEER_ALT_IRK_KEY" in names, names
+        assert inspect.isgeneratorfunction(pr.iter_remote_pair_records_by_identifier)
+        assert "hostname" in inspect.signature(ts.RemotePairingTunnelService.__init__).parameters
+        assert inspect.iscoroutinefunction(ut._create_no_root_tunnel_provider)
+        assert list(inspect.signature(ut._create_no_root_tunnel_provider).parameters)[:3] == [
+            "serial", "autopair", "remotepairing_fallback"]
+        assert "_create_no_root_tunnel_provider" in ut.UserspaceRsdTunnel._aopen_locked.__code__.co_names
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        c = bridge.DeviceConnection()
+        assert c._lazy_import()
+        assert c._remote_pairing_services is ts.get_remote_pairing_tunnel_services
+        assert c._remote_pair_records is pr.iter_remote_pair_records_by_identifier
+        assert c._peer_alt_irk_key == ts.PEER_ALT_IRK_KEY
+        assert c._userspace_tunnel_module is ut
+        assert bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS < bridge.CONNECT_TIMEOUT_SECONDS
         """
         let (status, errorOutput) = try runManagedPython(code)
         XCTAssertEqual(status, 0, errorOutput)
@@ -2268,7 +2734,7 @@ asyncio.run(verify())
                  "preferred_error": None, "upstream": "global", "usbmux_now": set(),
                  "ignore_only_paired": False, "aclosed": 0, "userspace_hold": None,
                  "pre_provider_error": None, "preferred_hold": None}
-        seen, lockdowns, browse_calls = [], [], []
+        seen, lockdowns, browse_calls, providers = [], [], [], []
 
         class Lockdown:
             def __init__(self, udid, source, paired=True):
@@ -2279,7 +2745,45 @@ asyncio.run(verify())
                 raise DeviceNotFoundError(f"usbmux has no device matching udid {serial}")
             return Lockdown(serial, "usbmux")
         ORIGINAL = usbmux_lockdown
-        usermod = types.SimpleNamespace(create_using_usbmux=usbmux_lockdown)
+
+        # pymobiledevice3 11.49.1: UserspaceRsdTunnel._aopen_locked asks the module-global
+        # _create_no_root_tunnel_provider(serial, autopair, remotepairing_fallback), which
+        # takes its lockdown from the module-global create_using_usbmux.
+        async def no_root_provider(serial, autopair, remotepairing_fallback=True):
+            lockdown = await usermod.create_using_usbmux(serial=serial, autopair=autopair)
+            return lockdown, lockdown
+        ORIGINAL_PROVIDER = no_root_provider
+        usermod = types.SimpleNamespace(create_using_usbmux=usbmux_lockdown,
+                                        _create_no_root_tunnel_provider=no_root_provider)
+
+        # RemotePairing (lane 5): records by UDID, Bonjour adverts by UDID (hostnames).
+        rp_records, rp_adverts, rp_services, rp_calls = {}, {}, [], []
+        rp_state = {"records_error": None, "browse_error": None, "browse_hold": None,
+                    "browse_entered": None}
+        def rp_iter_records():
+            if rp_state["records_error"] is not None:
+                raise rp_state["records_error"]
+            for identifier, record in list(rp_records.items()):
+                yield identifier, f"/fake/remote_{identifier}.plist", record
+        class RPService:
+            source = "remotepairing"
+            def __init__(self, identifier, hostname):
+                self.remote_identifier, self.hostname, self.port, self.closed = identifier, hostname, 49152, 0
+            async def close(self): self.closed += 1
+        async def rp_tunnel_services(bonjour_timeout=None, udid=None, excluded_identifiers=()):
+            rp_calls.append({"udid": udid, "bonjour_timeout": bonjour_timeout})
+            if rp_state["browse_error"] is not None:
+                raise rp_state["browse_error"]
+            if rp_state["browse_hold"] is not None:
+                rp_state["browse_entered"].set()
+                await rp_state["browse_hold"].wait()
+            # Upstream matches adverts by the record's altIRK; a stale record matches nothing.
+            record = rp_records.get(udid)
+            if not record or record.get("peer_alt_irk") is None:
+                return []
+            made = [RPService(udid, host) for host in rp_adverts.get(udid, [])]
+            rp_services.extend(made)
+            return made
 
         async def mobdev2_lockdowns(udid=None, timeout=None, only_paired=False):
             browse_calls.append({"udid": udid, "timeout": timeout, "only_paired": only_paired})
@@ -2304,13 +2808,15 @@ asyncio.run(verify())
             async def set(self, lat, lng): pass
         class Userspace:
             def __init__(self, serial=None, autopair=True, remotepairing_fallback=True):
-                self.serial = serial
+                self.serial, self.remotepairing_fallback = serial, remotepairing_fallback
             async def aopen(self):
+                swapped = (usermod.create_using_usbmux is not ORIGINAL
+                           or usermod._create_no_root_tunnel_provider is not ORIGINAL_PROVIDER)
                 seen.append((self.serial, usermod.create_using_usbmux is ORIGINAL))
-                if state["userspace_hold"] is not None and usermod.create_using_usbmux is ORIGINAL:
+                if state["userspace_hold"] is not None and not swapped:
                     # Lane 1 hangs (for example a wedged lifecycle lock in the helper).
                     await state["userspace_hold"].wait()
-                if state["pre_provider_error"] is not None and usermod.create_using_usbmux is not ORIGINAL:
+                if state["pre_provider_error"] is not None and swapped:
                     # Upstream fails before it asks for a lockdown (its one-tunnel guard).
                     raise state["pre_provider_error"]
                 if state["upstream"] == "ignores-global":
@@ -2322,8 +2828,10 @@ asyncio.run(verify())
                         state["usbmux_now"].add(self.serial)
                         raise DeviceNotFoundError(f"usbmux has no device matching udid {self.serial}")
                     return object()
-                lockdown = await usermod.create_using_usbmux(serial=self.serial, autopair=True)
-                if lockdown.source == "mobdev2":
+                provider, _ = await usermod._create_no_root_tunnel_provider(
+                    self.serial, True, self.remotepairing_fallback)
+                providers.append(provider)
+                if getattr(provider, "source", None) in ("mobdev2", "remotepairing"):
                     if state["hold"] is not None:
                         state["entered"].set()
                         await state["hold"].wait()
@@ -2351,6 +2859,9 @@ asyncio.run(verify())
             c._preferred_tunnel_factory = Preferred
             c._mobdev2_lockdowns = mobdev2_lockdowns
             c._userspace_tunnel_module = usermod
+            c._remote_pairing_services = rp_tunnel_services
+            c._remote_pair_records = rp_iter_records
+            c._peer_alt_irk_key = "peer_alt_irk"
             c._dvt_module = lambda provider: Context()
             c._location_module = lambda dvt: Location()
             c._device_info_module = lambda dvt: Info()
@@ -2408,7 +2919,8 @@ asyncio.run(verify())
         # on must still exist in pymobiledevice3.exceptions with the same meaning.
         import pymobiledevice3.exceptions as exceptions
         names = set(bridge._UPSTREAM_TRANSPORT_ERRORS) | set(bridge._USBMUX_LOOKUP_ERRORS) | {
-            name for name in bridge._DEVICE_ABSENT_ERRORS if name != bridge.Mobdev2DeviceNotFoundError.__name__}
+            name for name in bridge._DEVICE_ABSENT_ERRORS
+            if name not in (bridge.Mobdev2DeviceNotFoundError.__name__, "RemotePairingDeviceNotFoundError")}
         names.add(bridge._UPSTREAM_BASE_ERROR)
         assert {"ConnectionTerminatedError", "ConnectionFailedError"} <= set(bridge._UPSTREAM_TRANSPORT_ERRORS)
         for name in sorted(names):

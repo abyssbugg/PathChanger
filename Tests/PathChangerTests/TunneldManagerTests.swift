@@ -206,6 +206,96 @@ final class TunneldManagerTests: XCTestCase {
         }
     }
 
+    // The helper's remote pairing lane finds the phone over RemotePairing Bonjour at any
+    // address without usbmuxd, but only with a RemotePairing record that holds the
+    // phone's altIRK. A missing or pre-altIRK record is fixed by a refresh over the
+    // cable (Prepare for Wi‑Fi), not by USB mode.
+
+    private static let remotePairingRefreshMessage =
+        "This Mac's Wi‑Fi pairing with your iPhone needs a refresh. Connect the iPhone with a cable once, keep it unlocked, press Prepare for Wi‑Fi, then unplug it and press Start again. Wi‑Fi mode stays on."
+
+    private static let staleRemotePairingLane =
+        "remote pairing: RemotePairingRecordStaleError: the phone's RemotePairing record predates altIRK, "
+        + "so Bonjour cannot find the phone at a new Wi-Fi address; connect the cable once and press Prepare for Wi-Fi"
+
+    func testGaveUpMessageAsksForAWiFiPairingRefreshWhenTheRemotePairingRecordIsStale() {
+        for mobdev2 in [
+            "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly.",
+            "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s",
+        ] {
+            for remotePairing in [
+                Self.staleRemotePairingLane,
+                "remote pairing: RemotePairingRecordStaleError: this Mac has no RemotePairing record for the phone",
+            ] {
+                let detail = Self.lanes(Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1],
+                                        Self.usbmuxAbsentLanes[2], remotePairing, mobdev2)
+                XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                               Self.remotePairingRefreshMessage, detail)
+            }
+        }
+        let message = Self.remotePairingRefreshMessage
+        XCTAssertEqual(TunneldManager.wifiRemotePairingRefreshMessage, message)
+        XCTAssertTrue(message.contains("Prepare for Wi‑Fi") && message.contains("cable") && message.contains("unlocked"))
+        XCTAssertFalse(message.contains("USB Only"), "a refresh, not USB mode")
+    }
+
+    func testGaveUpMessageNamesTheUsbmuxGapWhenTheRemotePairingLaneReachedThePhone() {
+        for remotePairing in [
+            "remote pairing: ConnectionTerminatedError: Connection was terminated abruptly.",
+            "remote pairing: ConnectionResetError: [Errno 54] Connection reset by peer",
+            "remote pairing: TimeoutError: ",
+        ] {
+            let detail = Self.lanes(
+                Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2], remotePairing,
+                "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s"
+            )
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiUnlistedByUsbmuxMessage, detail)
+        }
+    }
+
+    func testGaveUpMessageKeepsTheReachabilityAdviceWhenNeitherWiFiLaneReachedThePhone() {
+        for remotePairing in [
+            "remote pairing: RemotePairingDeviceNotFoundError: RemotePairing Bonjour found no advert for this phone within 8s",
+            "remote pairing: RemotePairingBrowseError: OSError: [Errno 65] No route to host",
+            "remote pairing: LaneUnsupportedError: remote pairing lane needs pymobiledevice3 APIs",
+            "remote pairing: LanesTimedOutError: no lane opened within 30s",
+        ] {
+            let detail = Self.lanes(
+                Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2], remotePairing,
+                "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s"
+            )
+            XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail),
+                           TunneldManager.wifiDeviceNotReachableMessage, detail)
+        }
+        // A remote pairing lane that did not reach the phone keeps mobdev2's verdict.
+        let detail = Self.lanes(
+            Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2],
+            "remote pairing: RemotePairingDeviceNotFoundError: none",
+            "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly."
+        )
+        XCTAssertEqual(TunneldManager.wifiGaveUpMessage(detail: detail), TunneldManager.wifiUnlistedByUsbmuxMessage)
+    }
+
+    /// The refresh is the fix that lets Wi‑Fi work at any address, so it wins over an
+    /// earlier attempt's "answers but unlisted" advice.
+    func testWiFiStartAsksForTheRefreshEvenAfterAnEarlierAttemptReachedThePhone() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 0.15, interval: 0.02)
+        let stale = Self.lanes(
+            Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2],
+            Self.staleRemotePairingLane,
+            "mobdev2: Mobdev2DeviceNotFoundError: mobdev2 Bonjour found no paired lockdown for udid 00008130… within 8s"
+        )
+        connector.connectErrors = [PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(Self.usbmuxUnlistedDetail)]
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.deviceNotVisible(stale)
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        XCTAssertEqual(manager.lastError, Self.remotePairingRefreshMessage)
+    }
+
     func testGaveUpMessageKeepsTheReachabilityAdviceUnlessEveryUsbmuxLaneMissedThePhone() {
         let reached = "mobdev2: ConnectionTerminatedError: Connection was terminated abruptly."
         let details = [
