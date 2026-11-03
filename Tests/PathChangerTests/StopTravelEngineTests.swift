@@ -1381,6 +1381,43 @@ extension StopTravelEngineTests {
         }
     }
 
+    /// Loading or importing stops starts progress over even when they begin with the
+    /// current stops, or are the same (review 2026-11-03 issue 13; owner rule 2026-11-03
+    /// lists import as a stop edit). A mode change is not one (the GUI round-trip test).
+    func testLoadingOrImportingStopsResetsProgressEvenWhenTheyExtendTheStops() async throws {
+        let s3 = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        for mode: AppMode in [.jump, .route] {
+            for load in ["extending load", "same load", "extending GPX import"] {
+                let label = "\(mode) \(load)"
+                let harness = await StopRunHarness.make(mode: mode, stops: [s0, s1, s2], settings: options(mode, progression: .onePerMove))
+                let state = harness.state!
+                _ = await move(harness)
+                _ = await move(harness)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, label)
+                XCTAssertFalse(state.travelTrail.points.isEmpty, "the second Move travelled (\(label))")
+
+                switch load {
+                case "extending load": state.loadRoute(from: [s0, s1, s2, s3])
+                case "same load": state.loadRoute(from: [s0, s1, s2])
+                default:
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("tmp_rovodev_import-\(UUID().uuidString).gpx")
+                    let points = [s0, s1, s2, s3].map { "<rtept lat=\"\($0.latitude)\" lon=\"\($0.longitude)\"/>" }.joined()
+                    try Data("<?xml version=\"1.0\"?><gpx version=\"1.1\" creator=\"test\"><rte>\(points)</rte></gpx>".utf8).write(to: url)
+                    defer { try? FileManager.default.removeItem(at: url) }
+                    state.importRoute(from: url)
+                    XCTAssertEqual(state.currentRoute, [s0, s1, s2, s3], label)
+                }
+                XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "progress starts over (\(label))")
+                XCTAssertTrue(state.travelTrail.points.isEmpty, "and the trail with it (\(label))")
+                let next = await move(harness)
+                XCTAssertLessThan(Geo.distance(from: next.first ?? s2, to: s1), 10, "from the held stop (\(label))")
+                XCTAssertEqual(next.last, s0, "to stop 1 (\(label))")
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, label)
+            }
+        }
+    }
+
     func testOnlyAPureAppendKeepsStopProgress() {
         let s3 = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
         XCTAssertTrue(RouteStateManager.keepsStopProgress(.jump, from: [s0, s1], to: [s0, s1, s2]))

@@ -314,6 +314,9 @@ final class RouteStateManager: ObservableObject {
         }
 
         currentRoute = coordinates
+        // Loaded or imported stops are new stops, even when they begin with the current
+        // ones or are the same: the shown mode starts over (owner rule 2026-11-03).
+        resetStopProgress(for: stopsMode)
         routeName = name
         progress = 0
         currentIndex = 0

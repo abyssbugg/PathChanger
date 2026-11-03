@@ -2296,6 +2296,19 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     func loadRoute(from coordinates: [LocationCoordinate]) {
         route.loadRoute(from: coordinates)
+        resetShownStopProgressAfterLoad()
+    }
+
+    /// Loaded or imported stops start the shown mode over, even when they begin with the
+    /// current stops (which the route observer would keep as an append) or are the same
+    /// (owner rule 2026-11-03: import is a stop edit). A mode change does not come here.
+    private func resetShownStopProgressAfterLoad() {
+        let mode = route.stopsMode
+        guard RouteStateManager.stopModes.contains(mode) else { return }
+        if let run = stopRun, run.mode == mode { endStopRun("the stops were loaded") }
+        route.resetStopProgress(for: mode)
+        stopSequences[mode] = nil
+        travelTrail.reset()
     }
 
     /// A route is playing or paused mid-route: its stops must not change under it.
@@ -2419,6 +2432,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     func importRoute(from url: URL) {
         do {
             let count = try route.importRoute(from: url)
+            resetShownStopProgressAfterLoad()
             targetLocation = currentRoute.last
             lastError = nil
             statusMessage = "Imported \(count) points"
