@@ -123,7 +123,10 @@ struct AutomaticReconnectEnvironment {
 /// next wait; a kept visibility signal outranks a kept advert.
 @MainActor
 final class AutoReconnectWaiter {
-    enum Wake: Equatable {
+    enum Wake: Hashable {
+        /// The device tunnel is live again (live 2026-11-03: it came back 12 s before the
+        /// reapply, which waited out the burst spacing). Ends the spacing too.
+        case tunnelLive
         /// usbmux or mobdev2 lists the awaited phone again.
         case reachable
         /// Only a RemotePairing advert appeared: a hint, never visibility (review
@@ -135,9 +138,20 @@ final class AutoReconnectWaiter {
         /// Why the wait ended, as the reconnect logs it.
         var logText: String {
             switch self {
+            case .tunnelLive: return "The tunnel is live again"
             case .reachable: return "The phone is visible again"
             case .remotePairingAdvert: return "A RemotePairing advert appeared (a hint, not visibility)"
             case .timeout, .cancelled: return "Fallback timer"
+            }
+        }
+
+        /// Which signal a pending one keeps when several arrive: the strongest.
+        fileprivate var strength: Int {
+            switch self {
+            case .tunnelLive: return 3
+            case .reachable: return 2
+            case .remotePairingAdvert: return 1
+            case .timeout, .cancelled: return 0
             }
         }
     }
@@ -145,6 +159,12 @@ final class AutoReconnectWaiter {
     private var continuation: CheckedContinuation<Wake, Never>?
     private var waitID: UInt64 = 0
     private var pendingSignal: Wake?
+    /// The signals that end the wait in progress (nil: every signal).
+    private var endingSignals: Set<Wake>?
+
+    func signalTunnelLive() {
+        signal(.tunnelLive)
+    }
 
     func signalReachable() {
         signal(.reachable)
@@ -159,16 +179,22 @@ final class AutoReconnectWaiter {
     }
 
     private func signal(_ wake: Wake) {
-        if continuation != nil {
+        if continuation != nil, endingSignals?.contains(wake) ?? true {
             finish(wake, waitID: waitID)
-        } else if pendingSignal != .reachable {
+        } else if wake.strength >= (pendingSignal?.strength ?? 0) {
             pendingSignal = wake
         }
     }
 
-    func wait(timeout: TimeInterval, sleeper: any RecoverySleeping) async -> Wake {
+    /// Waits for a signal, the timeout, or cancellation. With `endingOn`, only those
+    /// signals end the wait; others stay pending for the next one.
+    func wait(
+        timeout: TimeInterval,
+        sleeper: any RecoverySleeping,
+        endingOn ending: Set<Wake>? = nil
+    ) async -> Wake {
         guard !Task.isCancelled else { return .cancelled }
-        if let pending = pendingSignal {
+        if let pending = pendingSignal, ending?.contains(pending) ?? true {
             pendingSignal = nil
             return pending
         }
@@ -196,6 +222,7 @@ final class AutoReconnectWaiter {
                         previous.resume(returning: .cancelled)
                     }
                     self.continuation = continuation
+                    self.endingSignals = ending
                 }
             }
         } onCancel: {
@@ -206,6 +233,7 @@ final class AutoReconnectWaiter {
     private func finish(_ wake: Wake, waitID id: UInt64) {
         guard id == waitID, let continuation else { return }
         self.continuation = nil
+        endingSignals = nil
         continuation.resume(returning: wake)
     }
 }

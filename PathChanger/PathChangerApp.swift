@@ -1139,8 +1139,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
 
         device.onTunnelActiveChanged = { [weak self] isActive in
-            guard let self, !isActive else { return }
-            Task { await self.locationBridge.stopTunnelDependentSimulation() }
+            guard let self else { return }
+            guard isActive else {
+                Task { await self.locationBridge.stopTunnelDependentSimulation() }
+                return
+            }
+            self.tunnelBecameLive()
         }
 
         device.onLocationSessionLoss = { [weak self] event in
@@ -3455,6 +3459,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
     }
 
+    /// The device tunnel is live again: a wait for the phone runs its burst now, also
+    /// during the spacing after a failed burst (live 2026-11-03: the tunnel was back at
+    /// 04:00:30 and the location only at 04:00:42).
+    private func tunnelBecameLive() {
+        guard automaticReconnectTask != nil else { return }
+        Logger.info("[AutoReconnect] The tunnel is live again; reapplying the held location now", category: .session)
+        automaticReconnectWaiter.signalTunnelLive()
+    }
+
     private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {
         device.usbDirectDeviceIds.contains(deviceID)
             || device.wifiDirectDeviceIds.contains(deviceID)
@@ -3555,17 +3568,20 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 sleeper: automaticReconnect.sleeper
             )
             guard wake != .cancelled, !Task.isCancelled else { return }
-            if let lastBurstEnded {
+            // The spacing between bursts holds unless the tunnel is live again, the
+            // strongest sign the phone is back (other signals stay pending meanwhile).
+            if wake != .tunnelLive, let lastBurstEnded {
                 let earliest = lastBurstEnded.addingTimeInterval(
                     AutoReconnectSchedule.spacing(afterFailedBursts: failedBursts)
                 )
                 let remaining = earliest.timeIntervalSince(automaticReconnect.now())
                 if remaining > 0 {
-                    do {
-                        try await automaticReconnect.sleeper.sleep(seconds: remaining)
-                    } catch {
-                        return
-                    }
+                    let spacingEnd = await automaticReconnectWaiter.wait(
+                        timeout: remaining,
+                        sleeper: automaticReconnect.sleeper,
+                        endingOn: [.tunnelLive]
+                    )
+                    guard spacingEnd != .cancelled else { return }
                 }
             }
             guard !Task.isCancelled else { return }

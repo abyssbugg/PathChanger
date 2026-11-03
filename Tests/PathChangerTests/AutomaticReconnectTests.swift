@@ -302,6 +302,44 @@ final class AutoReconnectWaiterTests: XCTestCase {
         XCTAssertTrue(advert.contains("RemotePairing advert"), advert)
         XCTAssertFalse(advert.contains("visible again"), advert)
     }
+
+    func testTheTunnelGoingLiveOutranksEveryOtherPendingSignal() async {
+        let waiter = AutoReconnectWaiter()
+        let sleeper = ControlledReconnectSleeper()
+
+        waiter.signalTunnelLive()
+        waiter.signalReachable()
+        waiter.signalRemotePairingAdvert()
+        let pending = await waiter.wait(timeout: 60, sleeper: sleeper)
+        XCTAssertEqual(pending, .tunnelLive)
+        XCTAssertEqual(AutoReconnectWaiter.Wake.tunnelLive.logText, "The tunnel is live again")
+    }
+
+    /// The spacing between bursts ends early only for the tunnel going live; other signals
+    /// stay pending (the next burst starts with them discarded, as before).
+    func testAWaitThatEndsOnlyOnTheTunnelKeepsOtherSignalsPending() async throws {
+        let waiter = AutoReconnectWaiter()
+        let sleeper = ControlledReconnectSleeper()
+        let wait = Task { @MainActor in
+            await waiter.wait(timeout: 20, sleeper: sleeper, endingOn: [.tunnelLive])
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while await sleeper.pendingCount() < 1, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        waiter.signalReachable()
+        waiter.signalRemotePairingAdvert()
+        for _ in 0..<10 { await Task.yield() }
+        let pendingSleeps = await sleeper.pendingCount()
+        XCTAssertEqual(pendingSleeps, 1, "visibility does not end the spacing")
+
+        waiter.signalTunnelLive()
+        let wake = await wait.value
+        XCTAssertEqual(wake, .tunnelLive)
+        let next = await waiter.wait(timeout: 60, sleeper: sleeper)
+        XCTAssertEqual(next, .reachable, "the visibility seen meanwhile is still pending")
+    }
 }
 
 @MainActor
@@ -498,6 +536,62 @@ final class AutomaticReconnectTests: XCTestCase {
         let observed326 = await fixture.sleeper.pendingCount()
         XCTAssertEqual(observed326, 0, "the fallback timer was cancelled")
         XCTAssertTrue(fixture.tunnel.resumedDevices.isEmpty, "auto reconnect never lifts a Stop's block")
+    }
+
+    // MARK: The tunnel coming back (live 2026-11-03)
+
+    /// Live 2026-11-03 04:00: the tunnel was live again at 04:00:30, but the held location
+    /// was reapplied only at 04:00:42, when the 20 s spacing after an exhausted burst ran
+    /// out. The tunnel becoming live is the strongest sign the phone is back: the wait
+    /// runs its burst at once, also during the spacing.
+    func testTheTunnelComingBackReappliesAtOnceInsteadOfAfterTheSpacing() async throws {
+        let fixture = makeFixture()
+        try seedHeldLocation(fixture)
+        losePhone(fixture)
+        try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
+
+        fixture.state.device.wifiDirectDeviceIds = [deviceID]
+        try await waitUntil("burst 1") { await fixture.injector.pendingApplicationCount() == 1 }
+        await fixture.injector.failNextApplication(code: "No route to host")
+        try await waitUntil("the next wait") { await fixture.sleeper.recordedRequests().count == 2 }
+        fixture.state.device.wifiDirectDeviceIds = [deviceID]
+        try await waitUntil("the spacing wait") { await fixture.sleeper.recordedRequests() == [60, 60, 20] }
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("the reapply at once") { await fixture.injector.pendingApplicationCount() == 1 }
+        let identity = try await readyIdentity(fixture.state)
+        await fixture.injector.releaseNextApplication(session: identity)
+        try await waitUntil("reconnected") { !fixture.state.isAwaitingAutomaticReconnect }
+        XCTAssertTrue(fixture.state.locationSessionCoordinator.state.application.isActive)
+        let requests = await fixture.sleeper.recordedRequests()
+        XCTAssertEqual(requests, [60, 60, 20], "no further wait: the spacing ended when the tunnel came back")
+    }
+
+    func testTheTunnelComingBackWakesTheWaitForThePhone() async throws {
+        let fixture = makeFixture()
+        try seedHeldLocation(fixture)
+        losePhone(fixture)
+        try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
+        // The tunnel came back over a lane no device list shows (remote pairing).
+        fixture.state.device.wifiDirectDeviceIds = []
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("a burst before the 60 s fallback") { fixture.deviceManager.refreshCount >= 1 }
+    }
+
+    func testTheTunnelComingBackWithNothingAwaitedStartsNothing() async throws {
+        let fixture = makeFixture()
+        try seedHeldLocation(fixture)
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        XCTAssertEqual(fixture.deviceManager.refreshCount, 0)
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0)
+        XCTAssertFalse(fixture.state.isAwaitingAutomaticReconnect)
     }
 
     func testABonjourOnlySightingAlsoTriggersTheReconnect() async throws {
