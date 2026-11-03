@@ -1799,6 +1799,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // It also lifts Stop's or Clear's hold on automatic reconnect and replaces a wait
         // still running (its burst is awaited, so the two never drive the coordinator).
         isAutomaticReconnectLatchedByUser = false
+        // Lifting the latch must not let a location a replaced helper held through: the
+        // Move supersedes it even if it is refused below before any apply ran (review
+        // 2026-11-03 reconnect-audit-fixes issue 2).
+        locationSupersedeGeneration &+= 1
+        managedLocationSessionSource.discardInheritedHeldSessions()
         // And Stop Tunnel's latch on the tunnel reconnect (review 2026-11-03 issue 7). Not
         // under test hosts and previews, where the tunnel is the shared live manager.
         if tunnelAutoReconnect.isEnabled {

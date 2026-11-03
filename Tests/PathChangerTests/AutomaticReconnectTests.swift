@@ -914,6 +914,42 @@ final class AutomaticReconnectTests: XCTestCase {
         XCTAssertEqual(applied, [held])
     }
 
+    /// Review 2026-11-03 reconnect-audit-fixes issue 2: Move lifts the latch, then waits for
+    /// the reconnect burst it replaces; the phone dropping out meanwhile refuses the Move
+    /// before any apply ran. That Move still superseded the location a replaced helper held.
+    func testAMoveRefusedAfterItLiftedTheLatchDropsTheLocationAReplacedHelperHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let tunnel = FakeReconnectTunnel()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: tunnel)
+        try seedHeldLocation(fixture)
+        losePhone(fixture)
+        try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
+        fixture.state.device.wifiDirectDeviceIds = [deviceID]
+        try await waitUntil("burst 1") { await fixture.injector.pendingApplicationCount() == 1 }
+        fixture.state.device.selectedDevice = phone
+        let older = LocationCoordinate(latitude: 51.5074, longitude: -0.1278)
+        source.inherit(replacedHelperSession(at: older))
+        fixture.state.activeMode = .teleport
+
+        let move = Task { await fixture.state.startSimulation() }
+        try await waitUntil("the Move lifted the latch") { tunnel.latchLifts == 1 }
+        // The phone drops out while the Move waits for the burst it replaces.
+        fixture.state.device.wifiDirectDeviceIds = []
+        await fixture.injector.failNextApplication(code: "No route to host")
+        await move.value
+        XCTAssertFalse(fixture.state.canStartSimulation, "the Move was refused after lifting the latch")
+
+        // The phone and the tunnel come back.
+        fixture.state.device.wifiDirectDeviceIds = [deviceID]
+        await settle()
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applied = await appliedCoordinates(fixture.injector)
+        XCTAssertFalse(applied.contains(older), "the refused Move superseded it: \(applied)")
+    }
+
     func testTheTunnelComingBackWithNothingAwaitedStartsNothing() async throws {
         let fixture = makeFixture()
         try seedHeldLocation(fixture)
