@@ -42,16 +42,28 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// so the phone no longer holds it), handed out once so the coordinate can be
     /// reapplied over the new helper. Nil when there is none.
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession?
+    /// Drop every held session inherited from a replaced helper, for every device. Clear,
+    /// Stop Tunnel and an explicit Move supersede what that helper held, whether or not
+    /// they reached the phone (review 2026-11-03 reconnect-audit issue 1).
+    func discardInheritedHeldSessions()
+    /// The counter AppState advances on every Clear, read when a replaced helper's held
+    /// sessions are inherited and stamped on them (`ManagedLocationInheritedSession.clearEpoch`).
+    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64)
 }
 
 extension ManagedLocationSessionSource {
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
+    func discardInheritedHeldSessions() {}
+    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {}
 }
 
 /// A held session read from the record of a foreign helper the app replaced.
 struct ManagedLocationInheritedSession: Equatable {
     let helperID: UUID
     let session: ManagedLocationHelperSession
+    /// AppState's Clear counter when the session was inherited; nil when no source was
+    /// set. A Clear since then makes the session stale.
+    var clearEpoch: UInt64? = nil
 }
 
 struct ManagedLocationHelperPaths {
@@ -1375,8 +1387,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var processGeneration: UInt64 = 0
     private var helperController: ManagedLocationHelperController?
     private var helperConnection: ManagedLocationHelperConnection?
-    /// Held sessions a replaced foreign helper listed (see `takeInheritedHeldSession`).
-    private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession])?
+    /// Held sessions a replaced foreign helper listed (see `takeInheritedHeldSession`),
+    /// with AppState's Clear counter when they were inherited.
+    private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession], clearEpoch: UInt64?)?
+    private var inheritedSessionClearEpochSource: (@MainActor () -> UInt64)?
     /// A foreign-helper replacement in flight; concurrent connects wait for it.
     private var helperReplacement: Task<Void, Error>?
 
@@ -1894,7 +1908,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             let inheritedGeneration = record.activeSessions.map(\.sessionGeneration).max() ?? 0
             processGeneration = max(processGeneration &+ 1, inheritedGeneration &+ 1)
             if !record.activeSessions.isEmpty {
-                inheritedHeldSessions = (record.helperID, record.activeSessions)
+                inheritedHeldSessions = (record.helperID, record.activeSessions, inheritedSessionClearEpochSource?())
             }
             isRunning = true
             Logger.info("[PersistentBridge] Managed helper started (replacing an earlier one)", category: .device)
@@ -1920,15 +1934,27 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
         var remaining = inherited.sessions
         let session = remaining.remove(at: index)
-        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining)
-        return ManagedLocationInheritedSession(helperID: inherited.helperID, session: session)
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.clearEpoch)
+        return ManagedLocationInheritedSession(
+            helperID: inherited.helperID,
+            session: session,
+            clearEpoch: inherited.clearEpoch
+        )
+    }
+
+    func discardInheritedHeldSessions() {
+        inheritedHeldSessions = nil
+    }
+
+    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {
+        inheritedSessionClearEpochSource = source
     }
 
     /// A location this app applied or cleared supersedes what a replaced helper held.
     private func discardInheritedHeldSessions(for deviceID: String) {
         guard let inherited = inheritedHeldSessions else { return }
         let remaining = inherited.sessions.filter { !$0.matches(deviceID: deviceID) }
-        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining)
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.clearEpoch)
     }
 
     private func sendConnectDevice(

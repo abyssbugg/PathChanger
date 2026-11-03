@@ -106,9 +106,13 @@ private final class EmptyManagedSessionSource: ManagedLocationSessionSource {
 }
 
 /// Like the bridge after it replaced a foreign helper: hands out the held session that
-/// helper listed, once.
+/// helper listed, once, stamped with AppState's Clear counter at inheritance.
 private final class InheritingManagedSessionSource: ManagedLocationSessionSource {
     var inherited: ManagedLocationInheritedSession?
+    /// False: behaves like a bridge that never heard of a Clear (only the stamp is left).
+    var honoursDiscard = true
+    private(set) var discardCount = 0
+    private var clearEpochSource: (@MainActor () -> UInt64)?
     var adoptedHelperID: UUID? { nil }
     var adoptedHelperSessions: [ManagedLocationHelperSession] { [] }
     var hasRecordedHeldSessions: Bool { false }
@@ -125,6 +129,18 @@ private final class InheritingManagedSessionSource: ManagedLocationSessionSource
         guard let inherited, inherited.session.matches(deviceID: deviceID) else { return nil }
         self.inherited = nil
         return inherited
+    }
+    func discardInheritedHeldSessions() {
+        discardCount += 1
+        if honoursDiscard { inherited = nil }
+    }
+    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {
+        clearEpochSource = source
+    }
+    /// The bridge replacing the helper now: keeps its session with the current stamp.
+    func inherit(_ session: ManagedLocationHelperSession, helperID: UUID = UUID()) {
+        inherited = ManagedLocationInheritedSession(helperID: helperID, session: session,
+                                                    clearEpoch: clearEpochSource?())
     }
 }
 
@@ -645,6 +661,98 @@ final class AutomaticReconnectTests: XCTestCase {
         await settle()
         let applies = await applyCount(fixture.injector)
         XCTAssertEqual(applies, 1, "a later tunnel edge reapplies nothing more")
+    }
+
+    // MARK: A replaced helper's location vs Clear, Stop Tunnel and Move (review 2026-11-03 issue 1)
+
+    private func replacedHelperSession(at coordinate: LocationCoordinate) -> ManagedLocationHelperSession {
+        ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(deviceID),
+            requestID: UUID().uuidString, sessionGeneration: 4, physicalTransport: "Network",
+            actualChannel: "usbmuxDirect", endpointClass: "direct",
+            coordinate: ManagedLocationHelperCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
+            acknowledgedAt: 1_789_000_000
+        )
+    }
+
+    private func appliedCoordinates(_ injector: FakeLocationInjector) async -> [LocationCoordinate] {
+        await injector.calls().compactMap { if case .apply(let request) = $0 { return request.coordinate }; return nil }
+    }
+
+    /// Clear while the phone is away never reaches the helper ("connection ended" / "not
+    /// sent"). The location the replaced helper held must not come back with the tunnel.
+    func testAClearThatNeverReachedThePhoneDropsTheLocationAReplacedHelperHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source)
+        source.inherit(replacedHelperSession(at: held))
+
+        await fixture.state.clearLocation()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0, "a cleared location is never reapplied")
+        XCTAssertNotEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, held)
+        XCTAssertNil(source.inherited, "Clear dropped it")
+    }
+
+    /// The stamp alone: a bridge that missed the drop still holds the session, and an
+    /// explicit tunnel action lifted Clear's latch. The Clear since inheritance refuses it.
+    func testAnInheritedLocationFromBeforeAClearIsRefusedEvenIfTheBridgeKeptIt() async throws {
+        let source = InheritingManagedSessionSource()
+        source.honoursDiscard = false
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        source.inherit(replacedHelperSession(at: held))
+
+        await fixture.state.clearLocation()
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0, "inherited before the Clear: stale")
+        XCTAssertNotEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, held)
+    }
+
+    /// Stop Tunnel, then Start (Reconnect tunnel here: Start drives the shared tunnel
+    /// manager): the location from before the Stop must not come back.
+    func testStopTunnelThenStartSendsNothingAReplacedHelperHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        source.inherit(replacedHelperSession(at: held))
+
+        fixture.state.device.onLocationSessionLoss?(.tunnelStoppedByUser)
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0)
+        XCTAssertNil(source.inherited, "Stop Tunnel dropped it")
+    }
+
+    /// A Move to Y while the phone is away fails; its own connect replaced the orphan that
+    /// held X. The tunnel coming back must never apply the older X over the newer Y.
+    func testAFailedMoveIsNeverOverwrittenByTheOlderLocationAReplacedHelperHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source)
+        let newer = LocationCoordinate(latitude: 48.8566, longitude: 2.3522)
+        fixture.state.activeMode = .teleport
+        fixture.state.stageLocation(newer, for: .teleport)
+
+        let move = Task { await fixture.state.startSimulation() }
+        try await waitUntil("the Move apply") { await fixture.injector.pendingApplicationCount() == 1 }
+        source.inherit(replacedHelperSession(at: held))
+        await fixture.injector.failNextApplication(code: "No route to host")
+        await move.value
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applied = await appliedCoordinates(fixture.injector)
+        XCTAssertEqual(applied, [newer], "only the Move's own attempt; the older X is never sent")
+        XCTAssertEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, newer)
+        XCTAssertNil(source.inherited, "the Move dropped it")
     }
 
     func testTheTunnelComingBackWithNothingAwaitedStartsNothing() async throws {

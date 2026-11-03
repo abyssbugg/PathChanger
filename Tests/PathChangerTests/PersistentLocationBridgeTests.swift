@@ -599,6 +599,7 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
             parentProcessID: Self.everyHelperIsOrphaned)
         let bridge = PersistentLocationBridge(helperController: controller)
+        bridge.setInheritedSessionClearEpochSource { 7 }
 
         do {
             try await bridge.start()
@@ -612,6 +613,7 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             let inherited = try XCTUnwrap(bridge.takeInheritedHeldSession(for: deviceID))
             XCTAssertEqual(inherited.helperID, orphan.record.helperID)
             XCTAssertEqual(inherited.session, held)
+            XCTAssertEqual(inherited.clearEpoch, 7, "stamped with the Clear counter at inheritance")
             XCTAssertNil(bridge.takeInheritedHeldSession(for: deviceID), "taken once")
 
             // The new helper is this app's own: never replaced again.

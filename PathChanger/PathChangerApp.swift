@@ -1160,6 +1160,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
             self?.handleLocationSessionLoss(event)
         }
 
+        // A replaced helper's held sessions carry the Clear counter they were inherited
+        // at, so one inherited before a Clear is never restored (review 2026-11-03 issue 1).
+        self.managedLocationSessionSource.setInheritedSessionClearEpochSource { [weak self] in
+            self?.locationOperationGeneration ?? 0
+        }
+
         // The awaited phone is visible again over any live source. A paired placeholder
         // in the device list is not evidence (§7.3); the fallback timer covers sources
         // that never update.
@@ -1458,6 +1464,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     )
                     locationSessionCoordinator.failClear(reason: "The Clear did not complete")
                 }
+                // Whatever the outcome, and also when the Clear never reached the phone,
+                // a replaced helper's held location is not reapplied later (review
+                // 2026-11-03 issue 1). Dropped at the end: this Clear's own connect may
+                // have replaced that helper.
+                managedLocationSessionSource.discardInheritedHeldSessions()
                 locationClearTask = nil
             }
             let producers = [simulationTask, joystickTask, joystickStartTask, locationRecoveryTask, automaticReconnectTask].compactMap { $0 }
@@ -1850,6 +1861,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
             Logger.info("[Apply] Skipped (\(mode)): a Clear is in progress or unresolved", category: .session)
             return nil
         }
+        // An explicit apply (Move, Reapply location) supersedes a location a replaced
+        // helper held, also when it fails or its own connect replaced that helper
+        // (review 2026-11-03 issue 1).
+        managedLocationSessionSource.discardInheritedHeldSessions()
+        defer { managedLocationSessionSource.discardInheritedHeldSessions() }
         let operationGeneration = locationOperationGeneration
         let locationMode = mode.locationMode ?? .teleport
         locationSessionCoordinator.select(coordinate, mode: locationMode)
@@ -3254,6 +3270,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             // tunnel's own restart is not a Stop: it is the user asking to reconnect.
             if tunnelReconnectTask == nil {
                 isAutomaticReconnectLatchedByUser = true
+                // The location a replaced helper held ends with the Stop, too.
+                managedLocationSessionSource.discardInheritedHeldSessions()
             }
             cancelAutomaticReconnect(reason: "Tunnel stopped")
             locationSessionCoordinator.stopMovement()
@@ -3414,6 +3432,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     func stopTunnelReconnect() {
         Logger.info("[TunnelReconnect] Stop pressed while reconnecting", category: .device)
         isAutomaticReconnectLatchedByUser = true
+        managedLocationSessionSource.discardInheritedHeldSessions()
         cancelAutomaticReconnect(reason: "Stop pressed while the tunnel reconnected")
         locationRecoveryTask?.cancel()
         locationRecoveryTask = nil
@@ -3508,7 +3527,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// during the spacing after a failed burst (live 2026-11-03: the tunnel was back at
     /// 04:00:30 and the location only at 04:00:42).
     private func tunnelBecameLive() {
-        if let device = selectedDevice, !ownsLocationOperation,
+        // A Clear or Stop the user pressed holds automatic reapplies back, this one too.
+        if let device = selectedDevice, !ownsLocationOperation, !isAutomaticReconnectLatchedByUser,
            let inherited = managedLocationSessionSource.takeInheritedHeldSession(for: device.id) {
             Task { @MainActor [weak self] in
                 await self?.reapplyInheritedHeldLocation(inherited, for: device)
@@ -3524,8 +3544,26 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// PathChanger's (live 2026-11-03: orphaned helpers lost the local network). The held
     /// location the old helper listed is restored as held, then marked lost: stopping that
     /// helper ended it on the phone, and the recovery reapplies it over the live tunnel.
+    /// Only while no Clear ran since it was inherited (its stamp is that Clear counter).
     private func reapplyInheritedHeldLocation(_ inherited: ManagedLocationInheritedSession, for device: Device) async {
-        guard await restoreManagedHelperSession(inherited.session, helperID: inherited.helperID, for: device) else {
+        let clearEpoch = inherited.clearEpoch ?? locationOperationGeneration
+        guard clearEpoch == locationOperationGeneration else {
+            Logger.info("[AppState] Not restoring the location a replaced helper held: a Clear came after it", category: .session)
+            managedLocationSessionSource.discardInheritedHeldSessions()
+            return
+        }
+        guard await restoreManagedHelperSession(
+            inherited.session,
+            helperID: inherited.helperID,
+            for: device,
+            expectedClearEpoch: clearEpoch
+        ) else {
+            return
+        }
+        // A Stop pressed while the restore awaited: hold the location back, as for any
+        // automatic reapply (it reads uncertain, nothing is sent).
+        guard !isAutomaticReconnectLatchedByUser else {
+            locationSessionCoordinator.connectionLost(reason: "The location helper that held it was replaced")
             return
         }
         Logger.info("[AppState] Restored the location a replaced helper held; reapplying it", category: .session)
