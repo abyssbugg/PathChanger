@@ -1166,17 +1166,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
             self?.handleLocationSessionLoss(event)
         }
 
-        // A replaced helper's held sessions carry AppState's counters from when the bridge
-        // first saw that helper's record, so a session a Clear, Stop or explicit apply
-        // superseded is never restored (review 2026-11-03 issue 1).
-        self.managedLocationSessionSource.setInheritanceStampSource { [weak self] in
-            guard let self else { return .initial }
-            return ManagedLocationInheritanceStamp(
-                clearEpoch: self.locationOperationGeneration,
-                supersedeGeneration: self.locationSupersedeGeneration
-            )
-        }
-
         // The awaited phone is visible again over any live source. A paired placeholder
         // in the device list is not evidence (§7.3); the fallback timer covers sources
         // that never update.

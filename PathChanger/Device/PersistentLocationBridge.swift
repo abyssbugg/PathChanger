@@ -48,16 +48,12 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// Stop Tunnel and an explicit Move supersede what that helper held, whether or not
     /// they reached the phone (review 2026-11-03 reconnect-audit issue 1).
     func discardInheritedHeldSessions()
-    /// AppState's counters, read when the bridge first sees a foreign helper's record and
-    /// stamped on the held sessions it later inherits from that helper.
-    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp)
 }
 
 extension ManagedLocationSessionSource {
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func discardInheritedHeldSessions() {}
-    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp) {}
 }
 
 /// AppState's counters at one moment: its Clear counter, and the supersede generation
@@ -76,8 +72,8 @@ struct ManagedLocationInheritanceStamp: Equatable {
 struct ManagedLocationInheritedSession: Equatable {
     let helperID: UUID
     let session: ManagedLocationHelperSession
-    /// AppState's Clear counter when the bridge first saw the replaced helper's record;
-    /// nil when no source was set. A Clear since then makes the session stale.
+    /// AppState's Clear counter the session is as old as: 0, since an earlier launch
+    /// recorded it. Any Clear of this launch makes the session stale.
     var clearEpoch: UInt64? = nil
     /// AppState's supersede generation at that same moment. Any Clear, Stop or explicit
     /// apply since then makes the session stale.
@@ -1406,17 +1402,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var helperController: ManagedLocationHelperController?
     private var helperConnection: ManagedLocationHelperConnection?
     /// Held sessions a replaced foreign helper listed (see `takeInheritedHeldSession`),
-    /// with AppState's counters from when the bridge first saw that helper's record.
+    /// stamped `.initial`: a foreign helper is not this app's child, so everything it lists
+    /// was recorded by an earlier launch, before any Clear, Stop or Move of this one
+    /// (review 2026-11-03 reconnect-audit round 2 issue 1).
     private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession], stamp: ManagedLocationInheritanceStamp)?
-    private var inheritanceStampSource: (@MainActor () -> ManagedLocationInheritanceStamp)?
-    /// AppState's counters read just before this bridge first read a foreign helper's
-    /// record (its adoption): the held sessions that record lists are as old as this. Kept
-    /// for that helper ID across re-adoptions, so a Clear, Stop or Move after the first
-    /// read always makes them stale (review 2026-11-03 reconnect-audit-fixes issue 1).
-    private var foreignHelperInheritanceStamp: (helperID: UUID, stamp: ManagedLocationInheritanceStamp)?
-    /// Test seam: runs just before the replacement awaits the old helper's exit and the
-    /// new helper's launch.
-    private var foreignHelperReplacementWillAwait: (@MainActor () async -> Void)?
     /// Test seam: answers `connectDevice` instead of the helper's `connect_device`, so a
     /// connect failure is testable without any device lane.
     private var deviceConnectSender: ((String, LocationTransport) async throws -> HelperDeviceConnection)?
@@ -1468,12 +1457,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     init(
         helperController: ManagedLocationHelperController,
         foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)? = nil,
-        foreignHelperReplacementWillAwait: (@MainActor () async -> Void)? = nil,
         deviceConnectSender: ((String, LocationTransport) async throws -> HelperDeviceConnection)? = nil
     ) {
         self.helperController = helperController
         self.foreignHelperStatusProbe = foreignHelperStatusProbe
-        self.foreignHelperReplacementWillAwait = foreignHelperReplacementWillAwait
         self.deviceConnectSender = deviceConnectSender
         findPaths()
     }
@@ -1524,17 +1511,11 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         let controller = try resolveHelperController()
 
         Logger.info("[PersistentBridge] Starting or adopting managed helper", category: .device)
-        // Read before the record is: what an adopted foreign helper lists is no newer.
-        let stampBeforeRecordRead = inheritanceStampSource?() ?? .initial
         do {
             let connection = try await controller.connectOrLaunch()
             helperConnection = connection
             adoptedHelperID = connection.record.helperID
             adoptedHelperSessions = connection.record.activeSessions
-            if controller.isForeign(connection.record),
-               foreignHelperInheritanceStamp?.helperID != connection.record.helperID {
-                foreignHelperInheritanceStamp = (connection.record.helperID, stampBeforeRecordRead)
-            }
             let adoptedGeneration = connection.record.activeSessions
                 .map(\.sessionGeneration)
                 .max() ?? 0
@@ -1981,12 +1962,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         // already reset the bridge's view of the helper.
         guard let helperController, let adopted = helperController.activeRecord,
               helperController.isForeign(adopted) else { return }
-        // The stamp from before the bridge first read this helper's record, never one read
-        // after an await: a Clear, Stop or Move pressed since then (it may not have reached
-        // this helper, or ran while this replacement was in flight) supersedes what it lists.
-        let stamp = foreignHelperInheritanceStamp?.helperID == adopted.helperID
-            ? foreignHelperInheritanceStamp?.stamp ?? .initial
-            : inheritanceStampSource?() ?? .initial
+        // An earlier launch recorded what this helper lists, so any Clear, Stop or Move of
+        // this launch supersedes it, including one that never reached the helper or came
+        // before the bridge first adopted it.
+        let stamp = ManagedLocationInheritanceStamp.initial
         let current = try? helperController.currentRecord()
         let record = current?.helperID == adopted.helperID ? current ?? adopted : adopted
         Logger.info(
@@ -1995,7 +1974,6 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             category: .device
         )
         do {
-            if let foreignHelperReplacementWillAwait { await foreignHelperReplacementWillAwait() }
             let fresh = try await helperController.replaceForeignHelper()
             helperConnection = fresh
             adoptedHelperID = fresh.record.helperID
@@ -2010,7 +1988,6 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             if !record.activeSessions.isEmpty {
                 inheritedHeldSessions = (record.helperID, record.activeSessions, stamp)
             }
-            foreignHelperInheritanceStamp = nil
             isRunning = true
             Logger.info("[PersistentBridge] Managed helper started (replacing an earlier one)", category: .device)
         } catch {
@@ -2059,10 +2036,6 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             clearEpoch: inherited.stamp.clearEpoch,
             supersedeGeneration: inherited.stamp.supersedeGeneration
         )
-    }
-
-    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp) {
-        inheritanceStampSource = source
     }
 
     /// A location this app applied or cleared supersedes what a replaced helper held.

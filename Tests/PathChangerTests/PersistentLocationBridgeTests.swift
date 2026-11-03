@@ -599,7 +599,6 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
             parentProcessID: Self.everyHelperIsOrphaned)
         let bridge = PersistentLocationBridge(helperController: controller)
-        bridge.setInheritanceStampSource { ManagedLocationInheritanceStamp(clearEpoch: 7, supersedeGeneration: 2) }
 
         do {
             try await bridge.start()
@@ -614,8 +613,8 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             let inherited = try XCTUnwrap(bridge.takeInheritedHeldSession(for: deviceID))
             XCTAssertEqual(inherited.helperID, orphan.record.helperID)
             XCTAssertEqual(inherited.session, held)
-            XCTAssertEqual(inherited.clearEpoch, 7, "stamped with the Clear counter")
-            XCTAssertEqual(inherited.supersedeGeneration, 2, "and the supersede generation")
+            XCTAssertEqual(inherited.clearEpoch, 0, "recorded by an earlier launch")
+            XCTAssertEqual(inherited.supersedeGeneration, 0)
             XCTAssertNil(bridge.takeInheritedHeldSession(for: deviceID), "taken once")
 
             // The new helper is this app's own: never replaced again.
@@ -630,14 +629,12 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
-    /// Review 2026-11-03 reconnect-audit-fixes issue 1: the stamp was read after the
-    /// replacement's await, so a Clear that never reached the orphan ("not sent: no
-    /// connection") or one pressed while the replacement was in flight stamped the
-    /// pre-Clear location as current. The stamp is AppState's counters from when the
-    /// bridge first saw the orphan's record, before any await.
+    /// Review 2026-11-03 round 2 issue 1: a foreign helper's sessions predate this app run,
+    /// so they carry the counters from before any user action, whenever the bridge first
+    /// adopts that helper (a Clear can come before the first adoption).
     @MainActor
-    func testAnInheritedSessionCarriesTheStampFromBeforeTheReplacementAwaited() async throws {
-        let (paths, bridgeScript, root) = try orphanFixture("orphan-stamp")
+    func testAForeignHelpersSessionsCarryTheInitialStampEvenWhenFirstAdoptedAfterAClear() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-initial-stamp")
         defer { try? FileManager.default.removeItem(at: root) }
         let earlier = ManagedLocationHelperController(
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
@@ -647,23 +644,13 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         let controller = ManagedLocationHelperController(
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
             parentProcessID: Self.everyHelperIsOrphaned)
-        var stamp = ManagedLocationInheritanceStamp(clearEpoch: 3, supersedeGeneration: 5)
-        let bridge = PersistentLocationBridge(helperController: controller, foreignHelperReplacementWillAwait: {
-            // A Clear pressed while the replacement is in flight.
-            stamp = ManagedLocationInheritanceStamp(clearEpoch: 5, supersedeGeneration: 8)
-        })
-        bridge.setInheritanceStampSource { stamp }
+        let bridge = PersistentLocationBridge(helperController: controller)
         do {
             try await bridge.start()
-            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID, "the orphan's record is first seen here")
-            // A Clear that never reached the orphan (no connection), then Stop.
-            stamp = ManagedLocationInheritanceStamp(clearEpoch: 4, supersedeGeneration: 7)
-
             try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
-
             let inherited = try XCTUnwrap(bridge.inheritedHeldSession(for: deviceID))
-            XCTAssertEqual(inherited.clearEpoch, 3, "the Clear counter from before the Clears")
-            XCTAssertEqual(inherited.supersedeGeneration, 5, "the supersede generation from before them")
+            XCTAssertEqual(inherited.clearEpoch, 0, "recorded by an earlier launch: older than every Clear of this one")
+            XCTAssertEqual(inherited.supersedeGeneration, 0)
             try await bridge.shutdownHelper()
         } catch {
             try? await bridge.shutdownHelper()
