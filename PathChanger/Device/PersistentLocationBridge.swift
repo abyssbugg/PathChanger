@@ -1396,6 +1396,13 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var inheritedSessionClearEpochSource: (@MainActor () -> UInt64)?
     /// A foreign-helper replacement in flight; concurrent connects wait for it.
     private var helperReplacement: Task<Void, Error>?
+    /// The keep-or-replace probe of an adopted foreign helper (tests inject it; nil asks
+    /// the helper with `deviceConnectionStatus`).
+    private var foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)?
+    /// The adopted foreign helper a probe found holding a live connection: kept, and not
+    /// probed again before each connect (review 2026-11-03 issue 4). If it later loses that
+    /// connection and macOS blocks it, `connectDevice` replaces it on that typed failure.
+    private var keptForeignHelperID: UUID?
 
     private var python3Path: String { PythonPathResolver.path }
     private var bridgeScriptPath: String?
@@ -1430,8 +1437,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         findPaths()
     }
 
-    init(helperController: ManagedLocationHelperController) {
+    init(
+        helperController: ManagedLocationHelperController,
+        foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)? = nil
+    ) {
         self.helperController = helperController
+        self.foreignHelperStatusProbe = foreignHelperStatusProbe
         findPaths()
     }
 
@@ -1869,10 +1880,22 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             try await helperReplacement.value
             return
         }
-        guard let helperController, helperController.activeConnectionIsForeign else { return }
-        let status = await deviceConnectionStatus(deviceId, transport: transport)
+        guard let helperController, helperController.activeConnectionIsForeign,
+              let adoptedID = helperController.activeRecord?.helperID else { return }
+        // Decided once per adopted helper: a kept orphan is not probed before every Move.
+        guard keptForeignHelperID != adoptedID else { return }
+        let status: HelperConnectionStatus
+        if let foreignHelperStatusProbe {
+            status = await foreignHelperStatusProbe(deviceId, transport)
+        } else {
+            status = await deviceConnectionStatus(deviceId, transport: transport)
+        }
         guard Self.foreignHelperDecision(isForeign: helperController.activeConnectionIsForeign,
-                                         status: status) == .replace else { return }
+                                         status: status) == .replace else {
+            // Still the helper probed (no replacement or reset ran during the probe).
+            if helperController.activeRecord?.helperID == adoptedID { keptForeignHelperID = adoptedID }
+            return
+        }
         try await replaceForeignHelper(because: "holds no device connection (\(status))")
     }
 
@@ -2375,6 +2398,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             )
             return
         }
+        keptForeignHelperID = nil
         helperConnection = nil
         isRunning = false
         usesTunnelTransport = false

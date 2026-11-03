@@ -650,6 +650,40 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    /// Review 2026-11-03 issue 4: while an orphan with a live connection is kept, every
+    /// connect probed it again (`connection_status`, up to 5 s on a stalled link) before
+    /// the `connect_device` that proves DVT anyway. One probe per adopted helper decides.
+    @MainActor
+    func testAKeptOrphanIsProbedOnceNotBeforeEveryConnect() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-keep")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        var probes = 0
+        let bridge = PersistentLocationBridge(helperController: controller, foreignHelperStatusProbe: { _, _ in
+            probes += 1
+            return .connected // the orphan still holds a live usbmux connection
+        })
+        do {
+            try await bridge.start()
+
+            try await bridge.replaceForeignHelperIfDisconnected("00008130-0011223344556677", transport: .wifi)
+            try await bridge.replaceForeignHelperIfDisconnected("00008130-0011223344556677", transport: .wifi)
+
+            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID, "kept for its live connection")
+            XCTAssertEqual(probes, 1, "decided once for this adopted helper")
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            throw error
+        }
+    }
+
     /// Review 2026-11-03 issue 2: a request still in flight to the orphan fails after the
     /// replacement installed the new helper's connection. That late failure is about the
     /// replaced helper and must not wipe the new helper's state.
