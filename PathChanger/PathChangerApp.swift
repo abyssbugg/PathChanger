@@ -889,6 +889,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Nil wherever background services are off, unless a test injects one.
     private let remotePairingAdvertBrowser: (any RemotePairingAdvertBrowsing)?
     private var isBrowsingRemotePairingAdverts = false
+    /// Waits out `RemotePairingBrowseRestart.delay` after a failed browse.
+    private let remotePairingBrowseRestartSleeper: any RecoverySleeping
+    private var remotePairingBrowseRestartTask: Task<Void, Never>?
+    /// Failed browses since the reconnect armed.
+    private var remotePairingBrowseFailures = 0
     /// Advert-only wakes of the location wait: the first after arming, then one per window.
     private var locationAdvertHints = RemotePairingAdvertHintLimiter()
     /// Set by Quit: the browser never starts again.
@@ -934,6 +939,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         automaticReconnect: AutomaticReconnectEnvironment? = nil,
         tunnelAutoReconnect: TunnelAutoReconnectEnvironment? = nil,
         remotePairingAdvertBrowser: (any RemotePairingAdvertBrowsing)? = nil,
+        remotePairingBrowseRestartSleeper: (any RecoverySleeping)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -966,6 +972,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         self.tunnelAutoReconnector = TunnelAutoReconnector(environment: resolvedTunnelReconnect)
         self.remotePairingAdvertBrowser = remotePairingAdvertBrowser
             ?? (effectiveBackgroundServices ? NetworkRemotePairingAdvertBrowser() : nil)
+        self.remotePairingBrowseRestartSleeper = remotePairingBrowseRestartSleeper ?? TaskRecoverySleeper()
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(
@@ -3442,12 +3449,53 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private func updateRemotePairingBrowsing(armed: Bool) {
         guard let browser = remotePairingAdvertBrowser else { return }
         let shouldBrowse = armed && !isRemotePairingBrowsingShutDown
+        if !shouldBrowse {
+            // Nothing armed: a restart after a failure is moot, and the next reconnect
+            // gets its own restarts.
+            remotePairingBrowseRestartTask?.cancel()
+            remotePairingBrowseRestartTask = nil
+            remotePairingBrowseFailures = 0
+        }
         guard shouldBrowse != isBrowsingRemotePairingAdverts else { return }
         isBrowsingRemotePairingAdverts = shouldBrowse
         if shouldBrowse {
-            browser.start { [weak self] in self?.remotePairingAdvertAppeared() }
+            browser.start(
+                onAdvert: { [weak self] in self?.remotePairingAdvertAppeared() },
+                onFailure: { [weak self] in self?.remotePairingBrowseFailed() }
+            )
         } else {
             browser.stop()
+        }
+    }
+
+    /// The browse failed and ended itself (review 2026-11-03 issue 10). While a reconnect
+    /// is still armed, browse again after `RemotePairingBrowseRestart.delay`, at most
+    /// `maximumRestarts` times per reconnect; the reconnect timers run regardless.
+    private func remotePairingBrowseFailed() {
+        guard isBrowsingRemotePairingAdverts else { return }
+        isBrowsingRemotePairingAdverts = false
+        remotePairingBrowseFailures += 1
+        guard remotePairingBrowseFailures <= RemotePairingBrowseRestart.maximumRestarts else {
+            Logger.info(
+                "[RemotePairingBrowse] Not browsing again for this reconnect after "
+                    + "\(remotePairingBrowseFailures) failures; the reconnect timers still run",
+                category: .device
+            )
+            return
+        }
+        let sleeper = remotePairingBrowseRestartSleeper
+        remotePairingBrowseRestartTask?.cancel()
+        remotePairingBrowseRestartTask = Task { @MainActor [weak self] in
+            do {
+                try await sleeper.sleep(seconds: RemotePairingBrowseRestart.delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.remotePairingBrowseRestartTask = nil
+            self.updateRemotePairingBrowsing(
+                armed: self.tunnelAutoReconnector.isReconnecting || self.isAwaitingAutomaticReconnect
+            )
         }
     }
 

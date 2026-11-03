@@ -20,12 +20,20 @@ import Network
 /// production conformer; tests substitute a fake.
 @MainActor
 protocol RemotePairingAdvertBrowsing: AnyObject {
-    /// Starts browsing (a no-op while already browsing, apart from replacing `onAdvert`).
+    /// Starts browsing (a no-op while already browsing, apart from replacing the handlers).
     /// `onAdvert` runs on the main actor when an advert appears or changes after the
-    /// browse began; the adverts already known when it starts are not news.
-    func start(onAdvert: @escaping @MainActor () -> Void)
-    /// Stops browsing. No `onAdvert` runs afterwards.
+    /// browse began; the adverts already known when it starts are not news. `onFailure`
+    /// runs once if the browse fails and ends on its own; a later `start` browses again.
+    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void)
+    /// Stops browsing. Neither handler runs afterwards.
     func stop()
+}
+
+/// Starting a browse again after it failed while a reconnect is armed (review 2026-11-03
+/// issue 10). A few tries per reconnect, spaced out: the reconnect timers run regardless.
+enum RemotePairingBrowseRestart {
+    static let delay: TimeInterval = 30
+    static let maximumRestarts = 3
 }
 
 /// Decides which browse results are news. Pure, so the rule is testable without a network.
@@ -73,12 +81,14 @@ final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
 
     private var browser: NWBrowser?
     private var onAdvert: (@MainActor () -> Void)?
+    private var onFailure: (@MainActor () -> Void)?
     private var tracker = RemotePairingAdvertTracker()
     /// Bumped by every start and stop, so a callback queued by an ended browse is ignored.
     private var generation: UInt64 = 0
 
-    func start(onAdvert: @escaping @MainActor () -> Void) {
+    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void) {
         self.onAdvert = onAdvert
+        self.onFailure = onFailure
         guard browser == nil else { return }
         generation &+= 1
         let id = generation
@@ -107,6 +117,7 @@ final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
 
     func stop() {
         onAdvert = nil
+        onFailure = nil
         guard let browser else { return }
         generation &+= 1
         self.browser = nil
@@ -126,11 +137,15 @@ final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
         guard id == generation else { return }
         switch state {
         case .failed(let error):
-            // A later start (the next reconnect) browses again.
+            // The browse ended itself; the owner decides whether to start again.
             Logger.error("[RemotePairingBrowse] Browse failed: \(error)", category: .device)
+            let failure = onFailure
+            onAdvert = nil
+            onFailure = nil
             browser?.cancel()
             browser = nil
             generation &+= 1
+            failure?()
         case .waiting(let error):
             // For example Local Network access denied: no adverts, the timers still run.
             Logger.info("[RemotePairingBrowse] Browse waiting: \(error)", category: .device)

@@ -26,12 +26,14 @@ final class FakeRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private var onAdvert: (@MainActor () -> Void)?
+    private var onFailure: (@MainActor () -> Void)?
     private var lastHandler: (@MainActor () -> Void)?
 
-    func start(onAdvert: @escaping @MainActor () -> Void) {
+    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void) {
         isBrowsing = true
         startCount += 1
         self.onAdvert = onAdvert
+        self.onFailure = onFailure
         lastHandler = onAdvert
     }
 
@@ -39,6 +41,7 @@ final class FakeRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
         isBrowsing = false
         stopCount += 1
         onAdvert = nil
+        onFailure = nil
     }
 
     func advertAppeared() {
@@ -47,6 +50,15 @@ final class FakeRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
 
     func deliverLateAdvert() {
         lastHandler?()
+    }
+
+    /// Like `NWBrowser` reaching `.failed`: the browse ends on its own and says so once.
+    func fail() {
+        let failure = onFailure
+        isBrowsing = false
+        onAdvert = nil
+        onFailure = nil
+        failure?()
     }
 }
 
@@ -313,6 +325,7 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         let tunnel: FakeReconnectTunnel
         let tunnelSleeper: ControlledReconnectSleeper
         let locationSleeper: ControlledReconnectSleeper
+        let browseRestartSleeper: ControlledReconnectSleeper
         let clock: ReconnectTestClock
         let deviceManager: QuietAdvertTestDeviceManager
         let injector: FakeLocationInjector
@@ -327,6 +340,7 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         if daemonMode { tunnel.preferredMode = .daemon }
         let tunnelSleeper = ControlledReconnectSleeper()
         let locationSleeper = ControlledReconnectSleeper()
+        let browseRestartSleeper = ControlledReconnectSleeper()
         let clock = ReconnectTestClock()
         let state = AppState(
             startBackgroundServices: false,
@@ -344,7 +358,8 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
             tunnelAutoReconnect: TunnelAutoReconnectEnvironment(
                 isEnabled: true, tunnel: tunnel, sleeper: tunnelSleeper, now: { clock.now }
             ),
-            remotePairingAdvertBrowser: browser
+            remotePairingAdvertBrowser: browser,
+            remotePairingBrowseRestartSleeper: browseRestartSleeper
         )
         state.device.availableDevices = [phone]
         state.device.wifiDirectDeviceIds = [deviceID]
@@ -362,7 +377,8 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
             await stop.value
         }
         return Fixture(state: state, browser: browser, tunnel: tunnel, tunnelSleeper: tunnelSleeper,
-                       locationSleeper: locationSleeper, clock: clock, deviceManager: deviceManager,
+                       locationSleeper: locationSleeper, browseRestartSleeper: browseRestartSleeper,
+                       clock: clock, deviceManager: deviceManager,
                        injector: injector)
     }
 
@@ -514,5 +530,84 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         XCTAssertEqual(fixture.deviceManager.refreshCount, 2)
         let requests = await fixture.locationSleeper.recordedRequests()
         XCTAssertEqual(requests, [60, 60, 120])
+    }
+    // MARK: A failed browse (review 2026-11-03 issue 10)
+
+    func testAFailedBrowseStartsAgainAfterADelayWhileArmed() async throws {
+        let fixture = makeFixture()
+        fixture.tunnel.automaticStartResult = .running
+        loseTunnel(fixture)
+        try await waitUntil("browsing") { fixture.browser.isBrowsing }
+        try await waitUntil("the periodic wait") { await fixture.tunnelSleeper.pendingCount() == 1 }
+
+        fixture.browser.fail()
+        try await waitUntil("the restart delay") { await fixture.browseRestartSleeper.pendingCount() == 1 }
+        let requests = await fixture.browseRestartSleeper.recordedRequests()
+        XCTAssertEqual(requests, [RemotePairingBrowseRestart.delay], "never a tight loop")
+        XCTAssertFalse(fixture.browser.isBrowsing)
+        XCTAssertEqual(fixture.browser.startCount, 1, "not before the delay")
+
+        await fixture.browseRestartSleeper.releaseOldest()
+        try await waitUntil("browsing again") { fixture.browser.isBrowsing }
+        XCTAssertEqual(fixture.browser.startCount, 2)
+
+        // The restarted browse is live: its advert reaches the tunnel reconnect.
+        fixture.clock.now += 3
+        fixture.browser.advertAppeared()
+        try await waitUntil("the attempt") { fixture.tunnel.automaticStarts == [self.deviceID] }
+    }
+
+    func testBrowseRestartsAreBoundedPerReconnect() async throws {
+        let fixture = makeFixture()
+        loseTunnel(fixture)
+        try await waitUntil("browsing") { fixture.browser.isBrowsing }
+
+        for restart in 1...RemotePairingBrowseRestart.maximumRestarts {
+            fixture.browser.fail()
+            try await waitUntil("restart delay \(restart)") { await fixture.browseRestartSleeper.pendingCount() == 1 }
+            await fixture.browseRestartSleeper.releaseOldest()
+            try await waitUntil("restart \(restart)") { fixture.browser.startCount == restart + 1 }
+        }
+        fixture.browser.fail()
+        await settle()
+
+        let pendingAfterLastFailure = await fixture.browseRestartSleeper.pendingCount()
+        XCTAssertEqual(pendingAfterLastFailure, 0, "no further restart")
+        XCTAssertEqual(fixture.browser.startCount, RemotePairingBrowseRestart.maximumRestarts + 1)
+        XCTAssertFalse(fixture.browser.isBrowsing)
+        XCTAssertTrue(fixture.state.isTunnelAutoReconnecting, "the retry timers still run")
+    }
+
+    func testDisarmingCancelsAPendingRestartAndTheNextReconnectBrowsesAtOnce() async throws {
+        let fixture = makeFixture()
+        loseTunnel(fixture)
+        try await waitUntil("browsing") { fixture.browser.isBrowsing }
+        fixture.browser.fail()
+        try await waitUntil("the restart delay") { await fixture.browseRestartSleeper.pendingCount() == 1 }
+
+        fixture.tunnel.state = .running // adopted or reconnected: nothing armed
+        try await waitUntil("the restart cancelled") { await fixture.browseRestartSleeper.pendingCount() == 0 }
+        let cancellations = await fixture.browseRestartSleeper.cancellationCount()
+        XCTAssertEqual(cancellations, 1)
+        XCTAssertFalse(fixture.browser.isBrowsing)
+        XCTAssertEqual(fixture.browser.startCount, 1)
+
+        fixture.tunnel.state = .error("Health check failed")
+        try await waitUntil("browsing for the next reconnect") { fixture.browser.isBrowsing }
+        XCTAssertEqual(fixture.browser.startCount, 2)
+    }
+
+    func testAFailureAfterQuitNeverRestarts() async throws {
+        let fixture = makeFixture()
+        loseTunnel(fixture)
+        try await waitUntil("browsing") { fixture.browser.isBrowsing }
+
+        _ = await fixture.state.prepareForQuitWithoutLocation()
+        fixture.browser.fail() // a failure callback that was already on its way
+        await settle()
+
+        let pendingAfterQuit = await fixture.browseRestartSleeper.pendingCount()
+        XCTAssertEqual(pendingAfterQuit, 0)
+        XCTAssertEqual(fixture.browser.startCount, 1)
     }
 }
