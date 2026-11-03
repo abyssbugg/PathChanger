@@ -62,7 +62,7 @@ The Python dependency is `pymobiledevice3`. “PyMobile3” in informal discussi
 ### 3.2 Jump Teleport
 
 - The user creates an ordered list of discrete destinations.
-- Each explicit Move action applies exactly one next destination.
+- Each explicit Move action applies exactly one next destination (with the default Go through = one stop per Move; §3.6 and §3.6.1 govern where each Move continues).
 - Optional Auto jump (owner decision 2026-11-01): when the user turns Auto jump on, one Move applies every remaining destination in order, holding each for a user-chosen pause (1–60 s) before the next. Movement reports running during the sequence and completed at the end; Stop, Clear, leaving Jump mode, editing the stops, or turning Auto jump off ends the sequence and holds the last applied destination.
 - The jump index advances only after successful injection.
 - The most recently successful jump remains active while waiting for the next action.
@@ -116,6 +116,22 @@ Owner decision 2026-11-02. One shared set of options, each with per-mode default
 - **Pause and Resume** are available while moving; resume continues from the latest acknowledged coordinate. Stop ends the run and holds.
 - The GUI shows the next stop, the time left, and a countdown while holding at a stop.
 - Every applied point, hop and hold follows §4: progress advances only on acknowledged updates.
+
+#### 3.6.1 Stop progress (owner decision 2026-11-03)
+
+One rule for Jump, Two-Spot and Multi-Spot:
+
+- **Continue:** every Move continues from the next stop not yet reached, starting from the held location and reached per Getting there. A Move never goes back to stop 1 because of Stop, Pause, an option change, a mode change or a connection loss; all of these keep progress.
+- **Start over:** progress resets only when the mode's own stops are edited (remove, move, insert, reverse, import or load), on Reset Route, and on a confirmed Clear. Appending a stop keeps progress, and the next Moves reach the new stop. In Two-Spot a further click replaces the destination, which is an edit.
+- **Finished run:** a finished One way run starts over at stop 1, reached from the held stop per Getting there. Loop and Back and forth return home by design.
+- **Per-mode stops:** each mode keeps its own stops and its own progress. Switching modes shows that mode's stops and never edits another mode's. On a mode's first visit it starts from the stops of the mode being left, as many as it holds.
+- **Too far:** when the leg from the held location to the next stop is too long to travel at the chosen speed and update frequency, the Move is refused with a message that names the stop and distance and offers Jump in Getting there or Clear.
+- **Readout:** the card shows what the next Move does (the "Next Move" line). A stop index advance is logged per leg.
+
+#### 3.6.2 Map paths (owner decision 2026-11-03)
+
+- With Getting there = Travel, the map draws each leg's road route from Apple Maps directions as a solid line, including the leg the next Move drives from the held location; a leg without a road route is drawn dashed as a straight line. With Getting there = Jump the legs are drawn as thin dashed hops.
+- The map draws the travelled trail of the shown mode from acknowledged points only. The trail lasts as long as that mode's progress, and travel that leaves from somewhere else starts a new line.
 
 ## 4. State model and GUI truth
 
