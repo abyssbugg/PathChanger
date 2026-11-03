@@ -166,6 +166,42 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.travelTrail.points, [s1, s2], "appending keeps Multi-Spot's progress and its trail")
     }
 
+    func testTheRunsLastReceiptAfterStopIsDrawn() async {
+        // Review 2026-11-03 issue 8: a receipt landing after Stop is committed as held but
+        // was not drawn, so the trail ended short of the held dot.
+        let fake = FakeLocationInjector()
+        let session = LocationSessionIdentity(stableDeviceID: "trail-device", transport: .wifi, endpointClass: .unresolved, generation: 1)
+        let state = AppState(startBackgroundServices: false, locationInjector: fake, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "trail-device", displayName: "Trail Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .route
+        state.autoSpeed = false
+        state.customSpeedMps = 20
+        state.updateFrequencyHz = 5
+        for stop in [s0, s1, s2] { state.stageLocation(stop, for: .route) }
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .automatic, repeatMode: .oneWay),
+            for: .route
+        )
+        state.locationSessionCoordinator.connectionReady(session)
+
+        let run = Task { await state.startSimulation() }
+        for _ in 0..<2 {
+            await fake.waitUntilApplicationPending()
+            await fake.releaseNextApplication(session: session)
+        }
+        await fake.waitUntilApplicationPending()
+        await state.stopSimulation()
+        await fake.releaseNextApplication(session: session)
+        await run.value
+        for _ in 0..<50 { await Task.yield() }
+
+        let held = state.currentLocation
+        XCTAssertNotNil(held)
+        XCTAssertEqual(state.travelTrail.points.count, 3, "the receipt after Stop is drawn too")
+        XCTAssertEqual(state.travelTrail.points.last, held, "the trail ends at the held dot")
+    }
+
     func testAJumpRunDrawsNoTrail() async {
         let (state, injector) = makeState(mode: .route, stops: [s0, s1, s2], arrival: .jump)
         await state.startSimulation()

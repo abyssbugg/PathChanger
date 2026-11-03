@@ -775,12 +775,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// at the production entry point; nil in tests/previews so no device
     /// commands run outside the real app.
     private let ddiPreparer: DeveloperDiskImagePreparer?
-    /// Requests in flight: the mode that applied each, and the stop it arrives at (the
-    /// stop index advances only when that receipt is acknowledged).
+    /// Requests in flight: the mode that applied each, the stop it arrives at (the
+    /// stop index advances only when that receipt is acknowledged), and whether it is a
+    /// travelled step the map's trail draws (also when it lands after the run ended).
     private var pendingApplications: [UUID: PendingApplication] = [:]
     private struct PendingApplication {
         let mode: AppMode
         let stopArrival: StopArrival?
+        var drawsTrail = false
     }
     /// Where a run stands once an arrival is acknowledged.
     private struct StopArrival {
@@ -1787,7 +1789,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private func applyPlannedLocation(
         _ coordinate: LocationCoordinate,
         mode: AppMode,
-        stopArrival: StopArrival? = nil
+        stopArrival: StopArrival? = nil,
+        drawsTrail: Bool = false
     ) async -> LocationInjectionReceipt? {
         guard canBeginLocationOperation else {
             Logger.info("[Apply] Skipped (\(mode)): a Clear is in progress or unresolved", category: .session)
@@ -1809,7 +1812,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         do {
             let request = try locationSessionCoordinator.beginApplication()
             ownRequestID = request.id
-            pendingApplications[request.id] = PendingApplication(mode: mode, stopArrival: stopArrival)
+            pendingApplications[request.id] = PendingApplication(mode: mode, stopArrival: stopArrival, drawsTrail: drawsTrail)
 
             // Device-readiness gate before injection: with no mounted
             // personalized Developer Disk Image, DVT injection completes
@@ -2129,9 +2132,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         stagedStartAfterClear = nil
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
-        // The map's trail of a travelled run: acknowledged points only.
-        if let run = stopRun, run.settings.arrival == .travel {
-            travelTrail.record(receipt.coordinate, mode: run.mode)
+        // The map's trail of a travelled run: acknowledged points only, including the
+        // run's last step when it lands after Stop (it is what the phone holds).
+        if pending.drawsTrail {
+            travelTrail.record(receipt.coordinate, mode: pending.mode)
         }
         // A paused run stays paused when the point in flight lands.
         if stopRun == nil { simulation.isPaused = false }
@@ -2734,7 +2738,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     stopIndex: $0.stopIndex, totalStops: run.stops.count
                 )
             }
-            guard await applyPlannedLocation(coordinate, mode: run.mode, stopArrival: arrival) != nil else {
+            guard await applyPlannedLocation(
+                coordinate, mode: run.mode, stopArrival: arrival, drawsTrail: run.settings.arrival == .travel
+            ) != nil else {
                 if isCurrent() { stopAfterFailure() }
                 return false
             }
