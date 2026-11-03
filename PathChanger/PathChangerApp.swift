@@ -494,6 +494,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             // Progress is kept: coming back, Move continues where the run stood (owner
             // rule 2026-11-03; it used to start over at stop 1).
             if let run = stopRun, run.mode != newValue { endStopRun("left \(run.mode.rawValue)") }
+            // Each mode keeps its own stops: the GUI's mode change shows the new mode's
+            // and never edits a stop (owner rule 2026-11-03). A first visit is seeded from
+            // the stops being left and starts at stop 1.
+            if route.switchStops(to: newValue) { stopSequences[newValue] = nil }
         }
     }
     var autoSpeed: Bool {
@@ -1004,13 +1008,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // Editing the stops (by any path) ends a stop run and holds the stop it reached.
         route.$currentRoute
             .sink { [weak self] newRoute in
-                guard let self, newRoute != self.route.currentRoute else { return }
-                // The route's `currentRoute` didSet resets each stop index the edit does
-                // not keep; the remembered stops follow the same rule. Appending keeps a
-                // sequence, which then runs through the new stops too (Two-Spot's two
-                // stops are unchanged).
+                // Showing another mode's stops edits none (owner rule 2026-11-03).
+                guard let self, newRoute != self.route.currentRoute,
+                      self.route.stopListChange == .edit else { return }
+                // The route's `currentRoute` didSet resets the shown mode's stop index
+                // unless the edit keeps it; its remembered stops follow the same rule.
+                // Appending keeps a sequence, which then runs through the new stops too
+                // (Two-Spot's two stops are unchanged). Other modes' stops did not change.
                 let old = self.route.currentRoute
-                for mode in Array(self.stopSequences.keys) {
+                let mode = self.route.stopsMode
+                if self.stopSequences[mode] != nil {
                     if !RouteStateManager.keepsStopProgress(mode, from: old, to: newRoute) {
                         self.stopSequences[mode] = nil
                     } else if mode != .twospot {
@@ -1018,7 +1025,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
                     }
                 }
                 // The trail shows how the kept progress got there; it goes with a reset.
-                if !RouteStateManager.keepsStopProgress(.jump, from: old, to: newRoute) {
+                if RouteStateManager.stopModes.contains(mode),
+                   !RouteStateManager.keepsStopProgress(.jump, from: old, to: newRoute) {
                     self.travelTrail.reset()
                 }
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
@@ -2128,10 +2136,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.isSimulating = true
 
         // The stop index advances only on the acknowledged arrival at that stop, and only
-        // while the stops are the ones the run began with (any edit started progress
-        // over). It advances also after a mode change: the phone reached the stop, and
-        // each mode keeps its own progress (owner rule 2026-11-03).
-        if let arrival = pending.stopArrival, currentRoute == arrival.routeSnapshot {
+        // while the mode's stops are the ones the run began with (any edit started
+        // progress over). It advances also after a mode change: the phone reached the
+        // stop, and each mode keeps its own stops and progress (owner rule 2026-11-03).
+        if let arrival = pending.stopArrival, route.stops(for: pending.mode) == arrival.routeSnapshot {
             setStopCursor(arrival.cursor, for: pending.mode)
             stopSequences[pending.mode]?.arrived = true
             Logger.info(StopRunLog.reached(stop: arrival.stopIndex, of: arrival.totalStops), category: .session)
@@ -2910,7 +2918,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     /// Every stop mode starts over at stop 1 (a confirmed Clear; stop edits and Reset
-    /// Route reset through the route and its observer).
+    /// Route reset the shown mode through the route and its observer).
     private func resetStopProgress() {
         route.resetStopProgress()
         stopSequences = [:]

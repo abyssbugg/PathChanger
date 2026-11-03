@@ -61,12 +61,36 @@ final class RouteStateManager: ObservableObject {
 
     // MARK: Published Properties
 
-    /// Current route coordinates
+    /// Current route coordinates: the stops of the active mode (`stopsMode`). Each mode
+    /// keeps its own stops (`switchStops(to:)`), so the GUI reads one list.
     @Published var currentRoute: [LocationCoordinate] = [] {
-        // A change to the stops starts the stop modes' progress over, except appending
-        // stops (owner rule 2026-11-03; `keepsStopProgress`).
-        didSet { if currentRoute != oldValue { applyStopEdit(from: oldValue, to: currentRoute) } }
+        // A change to the stops starts the active stop mode's progress over, except
+        // appending stops (owner rule 2026-11-03; `keepsStopProgress`). Loading another
+        // mode's stops is not a change to them.
+        didSet {
+            if currentRoute != oldValue, stopListChange == .edit { applyStopEdit(from: oldValue, to: currentRoute) }
+        }
     }
+
+    /// What the change to `currentRoute` being published is, for observers that see it
+    /// before it lands (`$currentRoute` fires on willSet).
+    enum StopListChange: Equatable {
+        /// The user's stops changed (click, remove, move, reverse, import, Reset Route).
+        case edit
+        /// Another mode's stops are being shown; nobody edited a stop.
+        case modeSwitch
+    }
+    private(set) var stopListChange: StopListChange = .edit
+
+    /// The mode whose stops `currentRoute` is.
+    private(set) var stopsMode: AppMode = .teleport
+
+    /// The stops of every mode not shown now (the shown mode's are `currentRoute`).
+    private struct StopSlot {
+        var stops: [LocationCoordinate]
+        var name: String?
+    }
+    private var stopSlots: [AppMode: StopSlot] = [:]
 
     /// Playback progress (0.0 to 1.0)
     @Published var progress: Double = 0
@@ -104,8 +128,7 @@ final class RouteStateManager: ObservableObject {
 
     /// Two-Spot and Multi-Spot: each mode's next stop and direction. Advances only on an
     /// acknowledged arrival; a stop edit, Reset Route or a confirmed Clear resets it. One
-    /// entry per mode: the stop list is shared, but Two-Spot runs its first two spots and
-    /// Multi-Spot all of them, so one cursor would point into the other mode's run.
+    /// entry per mode, like the stops (`stopSlots`).
     @Published private(set) var routeStopCursors: [AppMode: StopCursor] = [:]
 
     /// Stop-by-stop options per mode (PRODUCT_REQUIREMENTS 3.6); a missing entry means the
@@ -202,11 +225,21 @@ final class RouteStateManager: ObservableObject {
         }
     }
 
-    /// Every stop mode starts over at stop 1: a stop edit, Reset Route, a confirmed Clear.
+    /// Every stop mode starts over at stop 1 (a confirmed Clear).
     func resetStopProgress() {
         jumpIndex = 0
         jumpReversed = false
         if !routeStopCursors.isEmpty { routeStopCursors = [:] }
+    }
+
+    /// `mode` starts over at stop 1: its stops changed, were reset or were seeded.
+    func resetStopProgress(for mode: AppMode) {
+        if mode == .jump {
+            jumpIndex = 0
+            jumpReversed = false
+        } else if routeStopCursors[mode] != nil {
+            routeStopCursors[mode] = nil
+        }
     }
 
     /// Whether `mode`'s stop progress survives the stops changing from `old` to `new`.
@@ -220,15 +253,50 @@ final class RouteStateManager: ObservableObject {
         return mode == .twospot ? old.filter(\.isValid).count >= 2 : true
     }
 
-    /// The stops changed: reset each mode whose progress the change does not keep.
+    /// The shown mode's stops changed: reset its progress unless the change keeps it.
+    /// Other modes' stops did not change, so their progress stays.
     private func applyStopEdit(from old: [LocationCoordinate], to new: [LocationCoordinate]) {
-        if !Self.keepsStopProgress(.jump, from: old, to: new) {
-            jumpIndex = 0
-            jumpReversed = false
+        guard Self.stopModes.contains(stopsMode), !Self.keepsStopProgress(stopsMode, from: old, to: new) else { return }
+        resetStopProgress(for: stopsMode)
+    }
+
+    // MARK: Per-mode Stops
+
+    /// The stops of `mode`, shown or not.
+    func stops(for mode: AppMode) -> [LocationCoordinate] {
+        if mode == stopsMode { return currentRoute }
+        return mode == .joystick ? [] : stopSlots[mode]?.stops ?? []
+    }
+
+    /// Shows `mode`'s stops: the GUI's mode change. Each mode keeps its own stops, so a
+    /// round trip through other modes keeps a stop mode's stops and progress (owner rule
+    /// 2026-11-03; the shared list used to be truncated to the new mode's stop limit,
+    /// which reset every stop mode). A mode's first visit starts from the stops being
+    /// left, as many as it holds (the old truncation), at stop 1. Joystick has no stops;
+    /// Settings keeps the current mode's.
+    /// - Returns: whether `mode` was seeded (its progress was reset).
+    @discardableResult
+    func switchStops(to mode: AppMode) -> Bool {
+        guard mode != stopsMode, mode != .settings else { return false }
+        if stopsMode != .joystick {
+            stopSlots[stopsMode] = StopSlot(stops: currentRoute, name: routeName)
         }
-        for mode in routeStopCursors.keys where !Self.keepsStopProgress(mode, from: old, to: new) {
-            routeStopCursors[mode] = nil
-        }
+        let seeded = mode != .joystick && stopSlots[mode] == nil
+        let slot = mode == .joystick
+            ? StopSlot(stops: [], name: nil)
+            : stopSlots[mode] ?? StopSlot(stops: Array(currentRoute.prefix(mode.maxStops)), name: nil)
+        stopsMode = mode
+        stopListChange = .modeSwitch
+        currentRoute = slot.stops
+        stopListChange = .edit
+        routeName = slot.name
+        progress = 0
+        currentIndex = 0
+        totalDistance = Geo.totalDistance(of: slot.stops)
+        estimatedRemainingTime = 0
+        playbackState = slot.stops.isEmpty ? .idle : .ready
+        if seeded { resetStopProgress(for: mode) }
+        return seeded
     }
 
     /// Set the simulation state manager reference
@@ -307,14 +375,14 @@ final class RouteStateManager: ObservableObject {
         }
     }
 
-    /// Clear the current route
+    /// Clear the current route (Reset Route): the shown mode's stops, and its progress.
     func clearRoute() {
         stopPlayback()
         currentRoute = []
         routeName = nil
         progress = 0
         currentIndex = 0
-        resetStopProgress()
+        resetStopProgress(for: stopsMode)
         totalDistance = 0
         estimatedRemainingTime = 0
         playbackState = .idle

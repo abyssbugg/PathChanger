@@ -283,14 +283,10 @@ struct ContentView: View {
                 appState.activeMode = newMode
             }
             guard oldMode != newMode else { return }
-            // A mode change keeps each stop mode's progress (owner rule 2026-11-03); the
-            // truncation below is a stop edit and starts progress over.
-            if newMode.maxStops > 0, appState.currentRoute.count > newMode.maxStops {
-                appState.loadRoute(from: Array(appState.currentRoute.prefix(newMode.maxStops)))
-            }
-            if newMode == .joystick {
-                appState.clearRoute()
-            }
+            // Each mode keeps its own stops: `activeMode` shows the new mode's and keeps
+            // every stop mode's progress (owner rule 2026-11-03). It used to truncate the
+            // shared list to the new mode's stop limit and clear it for Joystick, which
+            // reset every stop mode.
             cardOpen = true
             savedOpen = false
             coachOpen = false

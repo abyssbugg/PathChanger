@@ -992,9 +992,6 @@ final class ModePersistenceTests: XCTestCase {
         XCTAssertFalse(state.isMovementEngineRunning, file: file, line: line)
 
         state.activeMode = .twospot
-        if AppMode.twospot.maxStops > 0, state.currentRoute.count > AppMode.twospot.maxStops {
-            state.loadRoute(from: Array(state.currentRoute.prefix(AppMode.twospot.maxStops)))
-        }
     }
 
     /// `ContentView.performMove` for a Move (not Stop) press in `selectedMode`.

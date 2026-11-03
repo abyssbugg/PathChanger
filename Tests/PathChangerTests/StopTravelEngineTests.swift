@@ -1176,6 +1176,62 @@ extension StopTravelEngineTests {
         XCTAssertEqual(state.displayStopCursor(for: .route).nextIndex, 2)
     }
 
+    /// The GUI's mode change (`ContentView.onChange(of: selectedMode)` only assigns
+    /// `activeMode`) through every other mode, a Teleport click included, keeps the stop
+    /// mode's own stops and progress (review 2026-11-03 issue 1: the shared list used to
+    /// be truncated to one stop, cleared for Joystick and replaced by a Teleport click).
+    func testAGUIModeRoundTripKeepsTheStopModesStopsAndProgress() async {
+        let far = LocationCoordinate(latitude: 35.69000, longitude: 139.77000)
+        for mode in Self.stopModes {
+            let stops = runStops(for: mode)
+            let harness = await StopRunHarness.make(mode: mode, stops: stops, settings: options(mode, progression: .onePerMove))
+            let state = harness.state!
+            let reached = mode == .twospot ? 1 : 2
+            for _ in 0..<reached { _ = await move(harness) }
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, reached, "\(mode)")
+
+            let others: [AppMode] = [.twospot, .teleport, .joystick, .jump, .route].filter { $0 != mode }
+            for other in others {
+                state.activeMode = other
+                if other == .teleport { state.stageLocation(far, for: .teleport) }
+            }
+            state.activeMode = mode
+
+            XCTAssertEqual(state.currentRoute, stops, "the mode's stops are kept (\(mode))")
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, reached, "and its progress (\(mode))")
+            let next = await move(harness)
+            if mode != .twospot { XCTAssertFalse(next.contains(s0), "never back to stop 1 (\(mode))") }
+            XCTAssertEqual(next.last, stops[reached], "the next Move continues to the next stop (\(mode))")
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, reached + 1, "\(mode)")
+        }
+    }
+
+    /// A mode's first visit starts from the stops being left, as many as it holds (the
+    /// old truncation); Joystick has no stops; Settings keeps the current mode's stops.
+    func testAModesFirstVisitIsSeededFromTheStopsBeingLeft() async {
+        let harness = await StopRunHarness.make(mode: .jump, stops: [s0, s1, s2], settings: options(.jump, progression: .onePerMove))
+        let state = harness.state!
+        _ = await move(harness)
+        XCTAssertEqual(state.displayStopCursor(for: .jump).nextIndex, 1)
+
+        state.activeMode = .route
+        XCTAssertEqual(state.currentRoute, [s0, s1, s2], "Multi-Spot holds 24 stops")
+        XCTAssertEqual(state.displayStopCursor(for: .route), StopCursor(), "a seeded mode starts at stop 1")
+        state.activeMode = .twospot
+        XCTAssertEqual(state.currentRoute, [s0], "Two-Spot keeps the first spot")
+        state.activeMode = .joystick
+        XCTAssertEqual(state.currentRoute, [], "Joystick has no stops")
+        state.activeMode = .teleport
+        XCTAssertEqual(state.currentRoute, [], "seeded from Joystick's (empty) stops")
+
+        state.activeMode = .jump
+        XCTAssertEqual(state.currentRoute, [s0, s1, s2], "Jump's own stops")
+        XCTAssertEqual(state.displayStopCursor(for: .jump).nextIndex, 1, "and progress")
+        state.activeMode = .settings
+        XCTAssertEqual(state.currentRoute, [s0, s1, s2], "Settings keeps the current stops")
+        XCTAssertEqual(state.displayStopCursor(for: .jump).nextIndex, 1)
+    }
+
     // MARK: Rule 2
 
     func testEditingTheStopsOrResetRouteResetsProgressInEveryStopMode() async {
