@@ -533,6 +533,159 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         XCTAssertFalse(stillRunning, "the earlier session's helper must be shut down")
     }
 
+    // MARK: An orphaned helper (live 2026-11-03)
+
+    /// Live 2026-11-03: helper 95276, launched by app 94135, was adopted by the next app
+    /// after 94135 exited (its parent PID was 1). macOS denied the orphan the local
+    /// network (EHOSTUNREACH) and its RemotePairing tunnel dropped 0.85 s after its app
+    /// exited, so every Wi-Fi lane failed for 15 minutes while the phone advertised.
+    @MainActor
+    private func orphanFixture(_ label: String) throws -> (
+        paths: ManagedLocationHelperPaths, bridgeScript: String, root: URL
+    ) {
+        guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {
+            throw XCTSkip("Managed Python runtime is unavailable")
+        }
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-\(label)-\(UUID().uuidString.prefix(8))")
+        return (ManagedLocationHelperPaths(baseDirectory: root),
+                repositoryRoot.appendingPathComponent("scripts/location_bridge.py").path, root)
+    }
+
+    /// Every helper reports the parent PID 1 (an orphan), except the ones the asking
+    /// controller launched itself.
+    private static let everyHelperIsOrphaned: (Int32) -> Int32? = { _ in 1 }
+
+    private func writeRecord(_ record: ManagedLocationHelperRecord, sessions: [ManagedLocationHelperSession],
+                             to paths: ManagedLocationHelperPaths) throws {
+        let updated = ManagedLocationHelperRecord(
+            protocolVersion: record.protocolVersion, helperID: record.helperID, pid: record.pid,
+            socketPath: record.socketPath, pythonPath: record.pythonPath, pythonSHA256: record.pythonSHA256,
+            bridgePath: record.bridgePath, bridgeSHA256: record.bridgeSHA256, tokenSHA256: record.tokenSHA256,
+            activeSessions: sessions
+        )
+        try JSONEncoder().encode(updated).write(to: paths.recordURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.recordURL.path)
+    }
+
+    private func heldSession(for deviceID: String) -> ManagedLocationHelperSession {
+        ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(deviceID),
+            requestID: UUID().uuidString, sessionGeneration: 7, physicalTransport: "Network",
+            actualChannel: "usbmuxDirect", endpointClass: "direct",
+            coordinate: ManagedLocationHelperCoordinate(latitude: 36.304303, longitude: -86.641356),
+            acknowledgedAt: Date().timeIntervalSince1970
+        )
+    }
+
+    func testTheLiveParentProcessIDIsTheKernelsAnswer() {
+        XCTAssertEqual(ManagedLocationHelperController.liveParentProcessID(getpid()), getppid())
+        XCTAssertNil(ManagedLocationHelperController.liveParentProcessID(-1))
+    }
+
+    @MainActor
+    func testAnOrphanedHelperWithoutADeviceConnectionIsReplacedKeepingItsHeldSession() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-replace")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let deviceID = "00008130-0011223344556677"
+        let held = heldSession(for: deviceID)
+        try writeRecord(orphan.record, sessions: [held], to: paths)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let bridge = PersistentLocationBridge(helperController: controller)
+
+        do {
+            try await bridge.start()
+            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID, "adopted first, as on relaunch")
+
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+
+            XCTAssertNotEqual(bridge.adoptedHelperID, orphan.record.helperID, "a new helper under this app")
+            XCTAssertTrue(bridge.isRunning)
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: orphan.record.pid), "the orphan was stopped")
+            let inherited = try XCTUnwrap(bridge.takeInheritedHeldSession(for: deviceID))
+            XCTAssertEqual(inherited.helperID, orphan.record.helperID)
+            XCTAssertEqual(inherited.session, held)
+            XCTAssertNil(bridge.takeInheritedHeldSession(for: deviceID), "taken once")
+
+            // The new helper is this app's own: never replaced again.
+            let ownHelper = bridge.adoptedHelperID
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+            XCTAssertEqual(bridge.adoptedHelperID, ownHelper)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            throw error
+        }
+    }
+
+    @MainActor
+    func testAHelperThisAppLaunchedIsNeverTreatedAsAnOrphan() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("own-helper")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let bridge = PersistentLocationBridge(helperController: controller)
+        do {
+            try await bridge.start()
+            let launched = bridge.adoptedHelperID
+            try await bridge.replaceForeignHelperIfDisconnected("00008130-0011223344556677", transport: .wifi)
+            XCTAssertEqual(bridge.adoptedHelperID, launched)
+            XCTAssertNil(bridge.takeInheritedHeldSession(for: "00008130-0011223344556677"))
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            throw error
+        }
+    }
+
+    /// The orphan cannot be asked to quit (its socket is gone): SIGTERM goes only to the
+    /// PID its validated record names, and a new helper starts.
+    @MainActor
+    func testAnOrphanThatCannotBeAskedToQuitIsTerminatedByItsRecordedPID() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-sigterm")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let bridge = PersistentLocationBridge(helperController: controller)
+        do {
+            try await bridge.start()
+            try FileManager.default.removeItem(at: paths.socketURL)
+
+            try await bridge.replaceForeignHelperIfDisconnected("00008130-0011223344556677", transport: .wifi)
+
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: orphan.record.pid))
+            XCTAssertNotEqual(bridge.adoptedHelperID, orphan.record.helperID)
+            XCTAssertTrue(bridge.isRunning)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            if TunnelProcessTerminator.isAlive(pid: orphan.record.pid) { kill(orphan.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
+    /// Which helper the app may open a device connection through. An orphan that still
+    /// holds a live connection keeps being adopted (usbmux lanes survive a relaunch).
+    func testAnOrphanIsReplacedOnlyWhenItHasNoLiveConnection() {
+        typealias Decision = PersistentLocationBridge.ForeignHelperDecision
+        XCTAssertEqual(PersistentLocationBridge.foreignHelperDecision(isForeign: false, status: .notConnected("x")), .keep)
+        XCTAssertEqual(PersistentLocationBridge.foreignHelperDecision(isForeign: true, status: .connected), .keep)
+        XCTAssertEqual(PersistentLocationBridge.foreignHelperDecision(isForeign: true, status: .notConnected("x")), .replace)
+    }
+
     @MainActor
     func testPersistentBridgeUsesManagedHelperForStartPingAndShutdown() async throws {
         guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {

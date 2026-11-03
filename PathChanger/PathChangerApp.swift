@@ -3463,9 +3463,31 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// during the spacing after a failed burst (live 2026-11-03: the tunnel was back at
     /// 04:00:30 and the location only at 04:00:42).
     private func tunnelBecameLive() {
+        if let device = selectedDevice, !ownsLocationOperation,
+           let inherited = managedLocationSessionSource.takeInheritedHeldSession(for: device.id) {
+            Task { @MainActor [weak self] in
+                await self?.reapplyInheritedHeldLocation(inherited, for: device)
+            }
+            return
+        }
         guard automaticReconnectTask != nil else { return }
         Logger.info("[AutoReconnect] The tunnel is live again; reapplying the held location now", category: .session)
         automaticReconnectWaiter.signalTunnelLive()
+    }
+
+    /// The tunnel came back through a new location helper that replaced an earlier
+    /// PathChanger's (live 2026-11-03: orphaned helpers lost the local network). The held
+    /// location the old helper listed is restored as held, then marked lost: stopping that
+    /// helper ended it on the phone, and the recovery reapplies it over the live tunnel.
+    private func reapplyInheritedHeldLocation(_ inherited: ManagedLocationInheritedSession, for device: Device) async {
+        guard await restoreManagedHelperSession(inherited.session, helperID: inherited.helperID, for: device) else {
+            return
+        }
+        Logger.info("[AppState] Restored the location a replaced helper held; reapplying it", category: .session)
+        handleLocationSessionLoss(.endpointReplaced, reason: "The location helper that held it was replaced")
+        if automaticReconnectTask != nil {
+            automaticReconnectWaiter.signalTunnelLive()
+        }
     }
 
     private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {

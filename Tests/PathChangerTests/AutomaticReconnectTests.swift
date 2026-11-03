@@ -105,6 +105,29 @@ private final class EmptyManagedSessionSource: ManagedLocationSessionSource {
     func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
 }
 
+/// Like the bridge after it replaced a foreign helper: hands out the held session that
+/// helper listed, once.
+private final class InheritingManagedSessionSource: ManagedLocationSessionSource {
+    var inherited: ManagedLocationInheritedSession?
+    var adoptedHelperID: UUID? { nil }
+    var adoptedHelperSessions: [ManagedLocationHelperSession] { [] }
+    var hasRecordedHeldSessions: Bool { false }
+    var isHelperRunning: Bool { true }
+    func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus {
+        .connected
+    }
+    func start() async throws {}
+    func refreshAdoptedHelperSessions() async throws {}
+    func shutdownHelper() async throws {}
+    func clearLocationOverDeviceConnection(_ deviceId: String, transport: LocationTransport, sessionGeneration: UInt64?) async throws {}
+    func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool { true }
+    func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? {
+        guard let inherited, inherited.session.matches(deviceID: deviceID) else { return nil }
+        self.inherited = nil
+        return inherited
+    }
+}
+
 private final class RecordingTunnelQuitController: TunnelQuitControlling {
     private(set) var resumedDevices: [String] = []
     func stopTunnelForQuit() async -> TunnelQuitStopResult { .stopped }
@@ -579,6 +602,42 @@ final class AutomaticReconnectTests: XCTestCase {
         fixture.state.device.onTunnelActiveChanged?(true)
 
         try await waitUntil("a burst before the 60 s fallback") { fixture.deviceManager.refreshCount >= 1 }
+    }
+
+    /// Live 2026-11-03: a relaunched app adopted an orphaned helper that macOS denied the
+    /// local network. The bridge replaces such a helper before connecting and keeps the
+    /// held session it listed; once the tunnel is live over the new helper, that location
+    /// is restored as held, marked lost (stopping the old helper ended it on the phone),
+    /// and reapplied before it reads active again.
+    func testTheTunnelComingBackThroughAReplacedHelperReappliesTheLocationItHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let helperID = UUID()
+        source.inherited = ManagedLocationInheritedSession(helperID: helperID, session: ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(deviceID),
+            requestID: UUID().uuidString, sessionGeneration: 4, physicalTransport: "Network",
+            actualChannel: "usbmuxDirect", endpointClass: "direct",
+            coordinate: ManagedLocationHelperCoordinate(latitude: held.latitude, longitude: held.longitude),
+            acknowledgedAt: 1_789_000_000
+        ))
+        let fixture = makeFixture(managedSource: source)
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("the reapply") { await fixture.injector.pendingApplicationCount() == 1 }
+        XCTAssertFalse(fixture.state.locationSessionCoordinator.state.application.isActive,
+                       "not active before the reapply is acknowledged")
+        XCTAssertEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, held)
+        let identity = try await readyIdentity(fixture.state)
+        XCTAssertEqual(identity.generation, 5)
+        await fixture.injector.releaseNextApplication(session: identity)
+        try await waitUntil("held again") { fixture.state.locationSessionCoordinator.state.application.isActive }
+        XCTAssertEqual(fixture.state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, held)
+        XCTAssertNil(source.inherited, "taken once")
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 1, "a later tunnel edge reapplies nothing more")
     }
 
     func testTheTunnelComingBackWithNothingAwaitedStartsNothing() async throws {

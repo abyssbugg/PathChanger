@@ -37,6 +37,21 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// when the helper confirmed it (or no helper, hence no connection, exists). Never
     /// starts the helper.
     func disconnectDevice(_ deviceId: String, transport: LocationTransport) async -> Bool
+
+    /// The held session a replaced helper listed for `deviceID` (its connection is gone,
+    /// so the phone no longer holds it), handed out once so the coordinate can be
+    /// reapplied over the new helper. Nil when there is none.
+    func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession?
+}
+
+extension ManagedLocationSessionSource {
+    func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
+}
+
+/// A held session read from the record of a foreign helper the app replaced.
+struct ManagedLocationInheritedSession: Equatable {
+    let helperID: UUID
+    let session: ManagedLocationHelperSession
 }
 
 struct ManagedLocationHelperPaths {
@@ -627,6 +642,7 @@ final class ManagedLocationHelperController {
         case launchFailed(String)
         case startupTimedOut
         case shutdownTimedOut
+        case foreignHelperStillRunning
 
         var errorDescription: String? {
             switch self {
@@ -646,6 +662,8 @@ final class ManagedLocationHelperController {
                 return "Location helper did not become ready before the startup deadline"
             case .shutdownTimedOut:
                 return "Location helper did not shut down before the deadline"
+            case .foreignHelperStillRunning:
+                return "The location helper an earlier PathChanger started is still running"
             }
         }
     }
@@ -662,6 +680,8 @@ final class ManagedLocationHelperController {
     private var lastStderrCap: Date?
     private var launchedProcess: Process?
     private var activeConnection: ManagedLocationHelperConnection?
+    /// The parent PID of a process, or nil when it cannot be read (gone). Injected in tests.
+    private let parentProcessID: (Int32) -> Int32?
 
     init(
         paths: ManagedLocationHelperPaths,
@@ -670,7 +690,8 @@ final class ManagedLocationHelperController {
         fileManager: FileManager = .default,
         stderrLogURL: URL? = nil,
         stderrLogMaxBytes: UInt64 = ManagedLocationHelperStderrLog.maxBytes,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        parentProcessID: @escaping (Int32) -> Int32? = ManagedLocationHelperController.liveParentProcessID
     ) {
         self.paths = paths
         self.pythonPath = pythonPath
@@ -679,6 +700,79 @@ final class ManagedLocationHelperController {
         self.stderrLogURL = stderrLogURL
         self.stderrLogMaxBytes = stderrLogMaxBytes
         self.now = now
+        self.parentProcessID = parentProcessID
+    }
+
+    /// The kernel's parent PID of `pid` (sysctl KERN_PROC_PID), or nil when it is gone.
+    nonisolated static func liveParentProcessID(_ pid: Int32) -> Int32? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0,
+              size > 0,
+              info.kp_proc.p_pid == pid else {
+            return nil
+        }
+        return info.kp_eproc.e_ppid
+    }
+
+    /// True when the recorded helper is not this app run's own child: launched by an
+    /// earlier PathChanger (orphaned, parent PID 1) or by another one still running.
+    /// macOS attributes a process's local network access to the app that launched it,
+    /// so an orphan is denied it (live 2026-11-03: EHOSTUNREACH on every mDNS send).
+    func isForeign(_ record: ManagedLocationHelperRecord) -> Bool {
+        if let launchedProcess, launchedProcess.processIdentifier == record.pid { return false }
+        return parentProcessID(record.pid) != getpid()
+    }
+
+    /// The record of the helper this controller launched or adopted, if any.
+    var activeRecord: ManagedLocationHelperRecord? { activeConnection?.record }
+
+    /// The adopted helper is foreign (see `isForeign`).
+    var activeConnectionIsForeign: Bool {
+        activeConnection.map { isForeign($0.record) } ?? false
+    }
+
+    /// Stop the adopted foreign helper and launch this app run's own. Asks it to quit over
+    /// its socket; if it cannot be asked, SIGTERM (then SIGKILL) goes only to the PID its
+    /// validated record names, while its command line still serves this helper socket.
+    func replaceForeignHelper() async throws -> ManagedLocationHelperConnection {
+        if let foreign = activeConnection, isForeign(foreign.record) {
+            do {
+                try await shutdown()
+            } catch {
+                Logger.error(
+                    "[PersistentBridge] The earlier helper did not quit when asked (\(error.localizedDescription)); terminating its recorded process",
+                    category: .device
+                )
+                await terminate(foreign.record)
+            }
+            activeConnection = nil
+            launchedProcess = nil
+        }
+        let connection = try await connectOrLaunch()
+        guard !isForeign(connection.record) else { throw ControllerError.foreignHelperStillRunning }
+        return connection
+    }
+
+    private func terminate(_ adopted: ManagedLocationHelperRecord) async {
+        // The record on disk must still name the helper this app adopted and validated.
+        if let current = try? currentRecord(),
+           current.helperID != adopted.helperID || current.pid != adopted.pid {
+            return
+        }
+        let pid = adopted.pid
+        // Every managed helper is launched with this socket path; a reused PID is not.
+        let outcome = await TunnelProcessTerminator.stop(
+            pid: pid,
+            requiredCommandPattern: "--socket \(paths.socketURL.path)",
+            isAlive: { TunnelProcessTerminator.isAlive(pid: pid) }
+        )
+        Logger.info("[PersistentBridge] Earlier helper PID \(pid): \(outcome)", category: .device)
+        if !TunnelProcessTerminator.isAlive(pid: pid) {
+            try? removeStaleArtifacts()
+        }
     }
 
     /// Cap the running helper's stderr log in place, at most once per
@@ -1210,6 +1304,22 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
     }
 
+    /// What to do with the adopted helper before opening a device connection through it.
+    enum ForeignHelperDecision: Equatable {
+        case keep
+        /// Foreign (an earlier PathChanger's) and holding no live connection: macOS may
+        /// deny it the local network, so a new helper under this app opens the connection.
+        case replace
+    }
+
+    nonisolated static func foreignHelperDecision(
+        isForeign: Bool,
+        status: HelperConnectionStatus
+    ) -> ForeignHelperDecision {
+        // An orphan with a live connection keeps it (usbmux lanes survive a relaunch).
+        isForeign && status != .connected ? .replace : .keep
+    }
+
     /// Maps a failed `connect_device` reply to the error the app acts on. The helper's
     /// typed `local_network_blocked` code wins over its "not visible" reason.
     static func connectFailure(error: String?, reason: String?, code: String? = nil) -> PersistentBridgeError {
@@ -1265,6 +1375,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var processGeneration: UInt64 = 0
     private var helperController: ManagedLocationHelperController?
     private var helperConnection: ManagedLocationHelperConnection?
+    /// Held sessions a replaced foreign helper listed (see `takeInheritedHeldSession`).
+    private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession])?
+    /// A foreign-helper replacement in flight; concurrent connects wait for it.
+    private var helperReplacement: Task<Void, Error>?
 
     private var python3Path: String { PythonPathResolver.path }
     private var bridgeScriptPath: String?
@@ -1718,6 +1832,109 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     ) async throws -> HelperDeviceConnection {
         try ArgumentSanitizer.validateDeviceUDID(deviceId)
         try await startIfNeeded()
+        try await replaceForeignHelperIfDisconnected(deviceId, transport: transport)
+        do {
+            return try await sendConnectDevice(deviceId, transport: transport)
+        } catch PersistentBridgeError.localNetworkBlocked where helperController?.activeConnectionIsForeign == true {
+            // An orphan kept for its live connection lost it and is denied the network.
+            try await replaceForeignHelper(because: "macOS blocks its local network access")
+            return try await sendConnectDevice(deviceId, transport: transport)
+        }
+    }
+
+    /// Never open a device connection through a helper an earlier PathChanger launched
+    /// unless it still holds a live one (live 2026-11-03: the orphan was denied the local
+    /// network and lost its RemotePairing tunnel 0.85 s after its app exited). Its held
+    /// sessions are read first, so the coordinate can be reapplied.
+    func replaceForeignHelperIfDisconnected(_ deviceId: String, transport: LocationTransport) async throws {
+        if let helperReplacement {
+            try await helperReplacement.value
+            return
+        }
+        guard let helperController, helperController.activeConnectionIsForeign else { return }
+        let status = await deviceConnectionStatus(deviceId, transport: transport)
+        guard Self.foreignHelperDecision(isForeign: helperController.activeConnectionIsForeign,
+                                         status: status) == .replace else { return }
+        try await replaceForeignHelper(because: "holds no device connection (\(status))")
+    }
+
+    private func replaceForeignHelper(because reason: String) async throws {
+        if let helperReplacement {
+            try await helperReplacement.value
+            return
+        }
+        let replacement = Task { @MainActor in try await self.performForeignHelperReplacement(because: reason) }
+        helperReplacement = replacement
+        defer { helperReplacement = nil }
+        try await replacement.value
+    }
+
+    private func performForeignHelperReplacement(because reason: String) async throws {
+        // The controller's record, not the bridge's: a failed probe of a dead socket
+        // already reset the bridge's view of the helper.
+        guard let helperController, let adopted = helperController.activeRecord,
+              helperController.isForeign(adopted) else { return }
+        let current = try? helperController.currentRecord()
+        let record = current?.helperID == adopted.helperID ? current ?? adopted : adopted
+        Logger.info(
+            "[PersistentBridge] The location helper (PID \(record.pid)) was started by an earlier PathChanger and "
+                + LogRedaction.redactingDeviceIdentifiers(reason) + "; starting a new one under this app",
+            category: .device
+        )
+        do {
+            let fresh = try await helperController.replaceForeignHelper()
+            helperConnection = fresh
+            adoptedHelperID = fresh.record.helperID
+            adoptedHelperSessions = fresh.record.activeSessions
+            currentSession = nil
+            usesTunnelTransport = false
+            cachedTunnelPID = nil
+            requestGate = PersistentBridgeRequestGate()
+            readinessGate = PersistentBridgeReadinessGate()
+            let inheritedGeneration = record.activeSessions.map(\.sessionGeneration).max() ?? 0
+            processGeneration = max(processGeneration &+ 1, inheritedGeneration &+ 1)
+            if !record.activeSessions.isEmpty {
+                inheritedHeldSessions = (record.helperID, record.activeSessions)
+            }
+            isRunning = true
+            Logger.info("[PersistentBridge] Managed helper started (replacing an earlier one)", category: .device)
+        } catch {
+            helperConnection = nil
+            isRunning = false
+            adoptedHelperID = nil
+            adoptedHelperSessions = []
+            currentSession = nil
+            lastError = error
+            Logger.error(
+                "[PersistentBridge] Replacing the earlier helper failed: \(error.localizedDescription)",
+                category: .device
+            )
+            throw PersistentBridgeError.processStartFailed(error.localizedDescription)
+        }
+    }
+
+    func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? {
+        guard let inherited = inheritedHeldSessions,
+              let index = inherited.sessions.firstIndex(where: { $0.matches(deviceID: deviceID) }) else {
+            return nil
+        }
+        var remaining = inherited.sessions
+        let session = remaining.remove(at: index)
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining)
+        return ManagedLocationInheritedSession(helperID: inherited.helperID, session: session)
+    }
+
+    /// A location this app applied or cleared supersedes what a replaced helper held.
+    private func discardInheritedHeldSessions(for deviceID: String) {
+        guard let inherited = inheritedHeldSessions else { return }
+        let remaining = inherited.sessions.filter { !$0.matches(deviceID: deviceID) }
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining)
+    }
+
+    private func sendConnectDevice(
+        _ deviceId: String,
+        transport: LocationTransport
+    ) async throws -> HelperDeviceConnection {
         var request = BridgeRequest(cmd: "connect_device")
         request.udid = deviceId
         request.connection_type = transport.helperWireValue
@@ -2030,6 +2247,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         coordinate: LocationCoordinate,
         deviceID: String
     ) throws {
+        discardInheritedHeldSessions(for: deviceID)
         guard let helperID = adoptedHelperID else {
             throw PersistentBridgeError.invalidResponse("Managed helper identity is unavailable")
         }
@@ -2058,6 +2276,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     }
 
     private func confirmDurableClear(for deviceID: String) throws {
+        discardInheritedHeldSessions(for: deviceID)
         guard adoptedHelperID != nil else {
             Logger.error("[PersistentBridge] Durable-clear check failed: helper identity unavailable", category: .device)
             throw PersistentBridgeError.invalidResponse("Managed helper identity is unavailable")
