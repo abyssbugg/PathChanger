@@ -54,10 +54,13 @@ private enum Fixture {
             return BoundedProcessResult(termination: .exited(0), output: "Python 3.13.14\n")
         case SystemDiagnostics.capabilityProbeArguments:
             return BoundedProcessResult(termination: .exited(0), output: capabilityJSON(allCapabilities))
-        case SystemDiagnostics.usbmuxListArguments:
+        case SystemDiagnostics.usbmuxListUSBArguments:
+            // `usbmux list --simple`: UDIDs only, as pymobiledevice3 11.49.1 prints them.
+            return BoundedProcessResult(termination: .exited(0), output: "[]\n")
+        case SystemDiagnostics.usbmuxListNetworkArguments:
             return BoundedProcessResult(
                 termination: .exited(0),
-                output: "[{\"ConnectionType\": \"Network\", \"Identifier\": \"00008110-001A2B3C4D5E6F70\"}]\n"
+                output: "[\n    \"00008110-001A2B3C4D5E6F70\"\n]\n"
             )
         default:
             // Anything else would be a command Diagnostics must not run; answer as a
@@ -138,7 +141,8 @@ final class SystemDiagnosticsTests: XCTestCase {
         XCTAssertEqual(runner.commands.map(\.arguments), [
             SystemDiagnostics.pythonVersionArguments,
             SystemDiagnostics.capabilityProbeArguments,
-            SystemDiagnostics.usbmuxListArguments,
+            SystemDiagnostics.usbmuxListUSBArguments,
+            SystemDiagnostics.usbmuxListNetworkArguments,
         ])
     }
 
@@ -189,13 +193,15 @@ final class SystemDiagnosticsTests: XCTestCase {
 
     func testUsbmuxListFailureFailsItsCheck() async {
         let runner = RecordingDiagnosticsRunner { arguments in
-            if arguments == SystemDiagnostics.usbmuxListArguments {
+            if arguments == SystemDiagnostics.usbmuxListNetworkArguments {
                 return BoundedProcessResult(termination: .exited(2), output: "Traceback ...\n")
             }
             return Fixture.healthyResponse(arguments)
         }
         let results = await diagnostics(runner: runner).run(connectedSnapshot())
-        XCTAssertEqual(result("usbmux", in: results)?.status, .failure)
+        let usbmux = result("usbmux", in: results)
+        XCTAssertEqual(usbmux?.status, .failure)
+        XCTAssertTrue(usbmux?.message.contains("usbmuxd") ?? false, usbmux?.message ?? "")
     }
 
     // MARK: - Capability probe
@@ -297,15 +303,49 @@ final class SystemDiagnosticsTests: XCTestCase {
 
     // MARK: - usbmux
 
+    /// Review 2026-11-03 issue 5: `usbmux list` without `--simple` opens a lockdown
+    /// session on every listed phone, and one unreachable network device failed the whole
+    /// check. Only usbmuxd's own list is read.
+    func testTheUsbmuxCheckNeverOpensALockdownSession() async {
+        let runner = RecordingDiagnosticsRunner(respond: Fixture.healthyResponse)
+        _ = await diagnostics(runner: runner).run(connectedSnapshot())
+        let usbmuxCommands = runner.commands.filter { $0.arguments.contains("usbmux") }
+        XCTAssertFalse(usbmuxCommands.isEmpty)
+        for command in usbmuxCommands {
+            XCTAssertTrue(command.arguments.contains("--simple"), "\(command.arguments) connects to lockdownd")
+        }
+    }
+
     func testAnEmptyUsbmuxListIsAWarningNotAFailure() async {
         let runner = RecordingDiagnosticsRunner { arguments in
-            if arguments == SystemDiagnostics.usbmuxListArguments {
+            if arguments == SystemDiagnostics.usbmuxListUSBArguments
+                || arguments == SystemDiagnostics.usbmuxListNetworkArguments {
                 return BoundedProcessResult(termination: .exited(0), output: "[]\n")
             }
             return Fixture.healthyResponse(arguments)
         }
         let results = await diagnostics(runner: runner).run(connectedSnapshot())
         XCTAssertEqual(result("usbmux", in: results)?.status, .warning)
+    }
+
+    func testAPhoneListedOverUSBAndNetworkSaysBoth() async {
+        let runner = RecordingDiagnosticsRunner { arguments in
+            if arguments == SystemDiagnostics.usbmuxListUSBArguments {
+                return BoundedProcessResult(termination: .exited(0), output: "[\"00008110-001A2B3C4D5E6F70\"]\n")
+            }
+            return Fixture.healthyResponse(arguments)
+        }
+        let results = await diagnostics(runner: runner).run(connectedSnapshot())
+        let usbmux = result("usbmux", in: results)
+        XCTAssertEqual(usbmux?.status, .success)
+        XCTAssertTrue(usbmux?.message.contains("Network and USB") ?? false, usbmux?.message ?? "")
+    }
+
+    func testTheSimpleListParserReadsUDIDsOnly() {
+        XCTAssertEqual(SystemDiagnostics.usbmuxIdentifiers("[\n    \"00008110-001A2B3C4D5E6F70\"\n]\n"),
+                       ["00008110-001A2B3C4D5E6F70"])
+        XCTAssertEqual(SystemDiagnostics.usbmuxIdentifiers("[]"), [])
+        XCTAssertNil(SystemDiagnostics.usbmuxIdentifiers("Traceback (most recent call last)"))
     }
 
     func testUsbmuxReportsHowItListsTheSelectedPhone() async {

@@ -6,8 +6,9 @@
 //  a location, never start or stop a tunnel or the location helper, and never open a
 //  device connection. Device state comes from what the app already holds; the only
 //  device question asked is the helper's Developer Disk Image status over a connection
-//  that is already open. Commands run through a bounded runner and a check passes only
-//  when its command exited 0.
+//  that is already open. usbmuxd is asked only for its own device list (`usbmux list
+//  --simple`, which opens no lockdown session on the phones it lists). Commands run
+//  through a bounded runner and a check passes only when its command exited 0.
 //
 
 import Foundation
@@ -80,7 +81,11 @@ struct SystemDiagnostics {
     nonisolated static var capabilityProbeArguments: [String] {
         ["-c", PythonPathResolver.pymobiledevice3CapabilityProbeScript]
     }
-    nonisolated static let usbmuxListArguments = ["-m", "pymobiledevice3", "usbmux", "list"]
+    /// usbmuxd's device list, one run per connection type. `--simple` lists UDIDs without
+    /// connecting to lockdownd (pymobiledevice3 11.49.1); the plain form opened a lockdown
+    /// session on every listed phone (review 2026-11-03 issue 5).
+    nonisolated static let usbmuxListUSBArguments = ["-m", "pymobiledevice3", "usbmux", "list", "--simple", "--usb"]
+    nonisolated static let usbmuxListNetworkArguments = ["-m", "pymobiledevice3", "usbmux", "list", "--simple", "--network"]
 
     let runner: any DiagnosticsCommandRunning
     let diskImageStatus: DiskImageStatusQuery
@@ -285,22 +290,26 @@ struct SystemDiagnostics {
 
     private func checkUsbmux(_ snapshot: DiagnosticsSnapshot) async -> DiagnosticResult {
         let name = "usbmux"
-        let result = await runner.run(executable: snapshot.pythonPath, arguments: Self.usbmuxListArguments)
-        guard result.succeeded else {
-            return DiagnosticResult(
-                name: name,
-                status: .failure,
-                message: "Listing devices \(result.failureDescription ?? "failed").",
-                recoveryAction: nil
-            )
-        }
-        guard let listed = Self.usbmuxConnectionTypes(result.output) else {
-            return DiagnosticResult(
-                name: name,
-                status: .warning,
-                message: "The device list could not be read",
-                recoveryAction: nil
-            )
+        var listed: [String: Set<String>] = [:]
+        for (arguments, label) in [(Self.usbmuxListUSBArguments, "USB"), (Self.usbmuxListNetworkArguments, "Network")] {
+            let result = await runner.run(executable: snapshot.pythonPath, arguments: arguments)
+            guard result.succeeded else {
+                return DiagnosticResult(
+                    name: name,
+                    status: .failure,
+                    message: "Asking usbmuxd for its \(label) device list \(result.failureDescription ?? "failed").",
+                    recoveryAction: nil
+                )
+            }
+            guard let identifiers = Self.usbmuxIdentifiers(result.output) else {
+                return DiagnosticResult(
+                    name: name,
+                    status: .warning,
+                    message: "The \(label) device list could not be read",
+                    recoveryAction: nil
+                )
+            }
+            for id in identifiers { listed[id, default: []].insert(label) }
         }
         if let id = snapshot.selectedDevice?.id, let types = listed[id], !types.isEmpty {
             return DiagnosticResult(
@@ -375,22 +384,15 @@ struct SystemDiagnostics {
         return nil
     }
 
-    /// Device identifier → the connection types usbmuxd lists it over ("USB", "Network").
+    /// The device identifiers in `usbmux list --simple` output (a JSON array of strings).
     /// Nil when the output holds no readable JSON array.
-    nonisolated static func usbmuxConnectionTypes(_ output: String) -> [String: Set<String>]? {
+    nonisolated static func usbmuxIdentifiers(_ output: String) -> [String]? {
         guard let start = output.firstIndex(of: "["),
               let end = output.lastIndex(of: "]"),
               start <= end,
-              let items = try? JSONSerialization.jsonObject(with: Data(output[start...end].utf8)) as? [[String: Any]] else {
+              let items = try? JSONSerialization.jsonObject(with: Data(output[start...end].utf8)) as? [Any] else {
             return nil
         }
-        var listed: [String: Set<String>] = [:]
-        for item in items {
-            guard let id = item["UniqueDeviceID"] as? String ?? item["Identifier"] as? String else { continue }
-            let type = (item["ConnectionType"] as? String ?? "").lowercased()
-            let label = type.contains("usb") ? "USB" : (type.contains("network") || type.contains("wifi")) ? "Network" : "unknown"
-            listed[id, default: []].insert(label)
-        }
-        return listed
+        return items.compactMap { $0 as? String }
     }
 }
