@@ -34,6 +34,7 @@ Security:
 
 import argparse
 import asyncio
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -129,6 +130,26 @@ class LanesTimedOutError(TimeoutError):
     """No lane opened within CONNECT_TIMEOUT_SECONDS; names the lane that was in flight."""
 
 
+# How long the Local Network check may take: one mDNS query per interface, then upstream's
+# 0.3 s settle for the refusals to arrive.
+LOCAL_NETWORK_PROBE_TIMEOUT_SECONDS = 2.0
+
+# What macOS answers an mDNS send from a process the Local Network privacy setting denies
+# (live 2026-11-02/03: EHOSTUNREACH on every interface while the phone advertised).
+_LOCAL_NETWORK_DENIAL_ERRNOS = frozenset({errno.EHOSTUNREACH, errno.EPERM})
+
+
+def _is_local_network_denial(error: BaseException) -> bool:
+    return isinstance(error, OSError) and error.errno in _LOCAL_NETWORK_DENIAL_ERRNOS
+
+
+# Wi-Fi lane failures that mean Bonjour showed nothing (no advert, or the browse failed).
+_WIFI_SAW_NOTHING = (
+    RemotePairingDeviceNotFoundError, RemotePairingBrowseError, RemotePairingRecordStaleError,
+    Mobdev2DeviceNotFoundError, Mobdev2BrowseError,
+)
+
+
 # pymobiledevice3 raises these when usbmux does not list the device right now. An
 # idle Wi-Fi phone drops out of usbmux for seconds to minutes (live 2026-11-01), so
 # when every lane says this, the phone is not visible yet - not broken.
@@ -196,10 +217,15 @@ def _keeps_waiting(lane: str, error: BaseException, earlier=()) -> bool:
 
 
 class DeviceLanesUnavailable(RuntimeError):
-    """Every connection lane failed; carries each lane's own error, in order."""
+    """Every connection lane failed; carries each lane's own error, in order.
 
-    def __init__(self, failures):
+    `local_network_blocked`: the Wi-Fi lanes saw nothing because macOS refused every mDNS
+    query this process sent (Local Network privacy), not because the phone is away.
+    """
+
+    def __init__(self, failures, local_network_blocked: bool = False):
         self.failures = list(failures)
+        self.local_network_blocked = local_network_blocked
         # A lane that could not run (missing API) or could not match the phone (no
         # usable pair record) saw nothing either way, so it neither proves nor
         # disproves that the phone is visible.
@@ -290,6 +316,10 @@ class DeviceConnection:
         self._remote_pair_records = None
         self._peer_alt_irk_key = None
         self._userspace_tunnel_module = None
+        # pymobiledevice3.bonjour's multicast check (optional): whether any mDNS query can
+        # leave this host, for the Local Network block report.
+        self._multicast_probe = None
+        self._multicast_blocked = None
         self._image_mounter_service = None
         self._ddi_auto_mount = None
         self._ddi_prefetch = None
@@ -335,6 +365,12 @@ class DeviceConnection:
                 PEER_ALT_IRK_KEY = None
                 get_remote_pairing_tunnel_services = None
                 iter_remote_pair_records_by_identifier = None
+            # Optional too: without them a Local Network block reads as "not visible".
+            try:
+                from pymobiledevice3.bonjour import is_multicast_blocked, probe_multicast
+            except ImportError:
+                is_multicast_blocked = None
+                probe_multicast = None
             # Optional too: without them only the DDI commands are unavailable.
             try:
                 from pymobiledevice3.services.mobile_image_mounter import (
@@ -346,6 +382,8 @@ class DeviceConnection:
                 auto_mount = None
                 AlreadyMountedError = None
 
+            self._multicast_probe = probe_multicast
+            self._multicast_blocked = is_multicast_blocked
             self._image_mounter_service = MobileImageMounterService
             self._ddi_auto_mount = auto_mount
             self._ddi_prefetch = _prefetch_ddi_assets
@@ -480,10 +518,37 @@ class DeviceConnection:
                 failures.append((lane, error))
         # The remote pairing and mobdev2 lanes reach the phone over Wi-Fi (Bonjour): a
         # request that names USB never crosses to Wi-Fi.
+        blocked = False
         if connection_type in (None, "Network"):
             if await self._open_wifi_lanes(udid, cache_key, failures, progress):
                 return
-        raise DeviceLanesUnavailable(failures) from failures[-1][1]
+            blocked = await self._local_network_blocked(failures)
+        raise DeviceLanesUnavailable(failures, local_network_blocked=blocked) from failures[-1][1]
+
+    async def _local_network_blocked(self, failures) -> bool:
+        """True when both Wi-Fi lanes saw nothing because macOS refused this process's
+        mDNS queries (Local Network privacy; live 2026-11-02/03 an orphaned helper got
+        EHOSTUNREACH on every interface while the phone advertised).
+
+        A Bonjour browse refused with EHOSTUNREACH/EPERM says so itself. Otherwise one
+        mDNS query goes out on every interface: blocked when every send failed and the
+        refusals include EHOSTUNREACH/EPERM (other failures, such as no interface up, are
+        not a privacy block). A probe that fails or is missing claims nothing.
+        """
+        wifi = [error for lane, error in failures if lane in _WIFI_LANES]
+        if not wifi or not all(isinstance(error, _WIFI_SAW_NOTHING) for error in wifi):
+            return False
+        if any(_is_local_network_denial(error.__cause__) for error in wifi
+               if isinstance(error, (RemotePairingBrowseError, Mobdev2BrowseError))):
+            return True
+        probe, verdict = self._multicast_probe, self._multicast_blocked
+        if probe is None or verdict is None:
+            return False
+        try:
+            sent, errors = await asyncio.wait_for(probe(), LOCAL_NETWORK_PROBE_TIMEOUT_SECONDS)
+            return bool(verdict(sent, errors)) and any(_is_local_network_denial(error) for error in errors)
+        except Exception:
+            return False
 
     async def _open_wifi_lanes(
         self, udid: str, cache_key: str, failures: list, progress: dict,
@@ -569,8 +634,12 @@ class DeviceConnection:
         except Exception as error:
             failure = {"success": False, "connected": False, "replaced": replaced,
                        "error": f"{type(error).__name__}: {error}"}
-            if isinstance(error, DeviceLanesUnavailable) and error.device_not_visible:
-                failure["reason"] = "device_not_visible"
+            if isinstance(error, DeviceLanesUnavailable):
+                if error.device_not_visible:
+                    failure["reason"] = "device_not_visible"
+                if error.local_network_blocked:
+                    # Typed for the app: waiting for the phone cannot help.
+                    failure["code"] = "local_network_blocked"
             return failure
         return {"success": True, "connected": True, "replaced": replaced,
                 "actual_channel": channel, "endpoint_class": endpoint_class}

@@ -406,6 +406,39 @@ final class TunneldManagerTests: XCTestCase {
         )
     }
 
+    /// The helper's typed Local Network block wins over "not visible": waiting cannot
+    /// help while macOS refuses every mDNS query.
+    func testHelperLocalNetworkBlockCodeMapsToItsOwnError() {
+        XCTAssertEqual(
+            PersistentLocationBridge.connectFailure(
+                error: "lanes failed", reason: "device_not_visible", code: "local_network_blocked"
+            ),
+            .localNetworkBlocked("lanes failed")
+        )
+        XCTAssertEqual(
+            PersistentLocationBridge.connectFailure(error: "lanes failed", reason: "device_not_visible", code: nil),
+            .deviceNotVisible("lanes failed")
+        )
+    }
+
+    func testWiFiStartBlockedByLocalNetworkPrivacySaysSoPlainlyWithoutWaiting() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 5, interval: 0.02)
+        connector.connectError = PersistentLocationBridge.PersistentBridgeError.localNetworkBlocked(
+            "DeviceLanesUnavailable: DVT lanes unavailable (remote pairing: RemotePairingDeviceNotFoundError: x)"
+        )
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        XCTAssertEqual(connector.connectCalls.count, 1, "waiting cannot help while macOS blocks the network")
+        XCTAssertFalse(manager.isWaitingForDevice)
+        XCTAssertEqual(
+            manager.lastError,
+            "macOS is blocking PathChanger from the local network. Allow PathChanger in System Settings > Privacy & Security > Local Network."
+        )
+    }
+
     func testStartTunnelWithoutADeviceFailsHonestly() async throws {
         let connector = try installFakeConnector(mode: .wifi)
 

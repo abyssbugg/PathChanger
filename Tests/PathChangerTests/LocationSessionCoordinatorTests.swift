@@ -9,6 +9,32 @@ final class LocationSessionCoordinatorTests: XCTestCase {
 
   // MARK: - Persistent-Bridge Error Mapping on Reject
 
+  func test_reject_withLocalNetworkBlocked_marksConnectionFailed() throws {
+    // macOS refusing the helper's mDNS queries leaves it unable to reach the phone over
+    // Wi-Fi: connection loss, never "applied" or a one-off application failure.
+    let identity = LocationSessionIdentity(
+      stableDeviceID: "device-123",
+      transport: .wifi,
+      endpointClass: .direct,
+      generation: 1
+    )
+    coordinator.connectionReady(identity)
+    coordinator.select(LocationCoordinate(latitude: 36.30, longitude: -86.62), mode: .teleport)
+    let request = try coordinator.beginApplication()
+
+    _ = coordinator.reject(
+      requestID: request.id,
+      error: PersistentLocationBridge.PersistentBridgeError.localNetworkBlocked("lanes failed")
+    )
+
+    guard case .failed = coordinator.state.connection else {
+      return XCTFail("Expected connection .failed while macOS blocks the local network")
+    }
+    guard case .uncertain = coordinator.state.application else {
+      return XCTFail("Expected application .uncertain while macOS blocks the local network")
+    }
+  }
+
   func test_reject_withDeviceNotVisible_marksConnectionFailed() throws {
     // A Move after an idle Wi-Fi drop reconnects first; the helper then reports the
     // phone as not visible. That is connection loss, never a one-off application

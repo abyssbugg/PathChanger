@@ -2993,6 +2993,132 @@ asyncio.run(verify())
         XCTAssertEqual(status, 0, errorOutput)
     }
 
+    /// Live 2026-11-02/03: an orphaned helper's mDNS sends all failed with EHOSTUNREACH
+    /// ("bonjour discovery is blocked ... Local Network") and both Wi-Fi lanes reported
+    /// "found nothing", so the app waited for a phone that was there. When both Wi-Fi
+    /// lanes saw nothing, the helper asks whether any mDNS query can leave this host; when
+    /// none can and the refusals are EHOSTUNREACH/EPERM, `connect_device` says so with the
+    /// typed code `local_network_blocked` next to the usual text.
+    func testPythonHelperReportsATypedLocalNetworkBlock() throws {
+        let code = mobdev2LaneFixture() + """
+
+        import errno
+        GOOD = {"peer_alt_irk": b"k" * 16, "private_key": b"x" * 32}
+        problems = []
+        def check(name, ok, detail):
+            if not ok:
+                problems.append(f"{name}: {detail}")
+        probes = []
+        def probe_returning(sent, errors, raises=None):
+            async def probe():
+                probes.append(1)
+                if raises is not None:
+                    raise raises
+                return sent, errors
+            return probe
+        def blocked(sent, errors):  # upstream's rule: every send failed
+            return bool(sent) and len(errors) >= sent
+        denied = [OSError(errno.EHOSTUNREACH, "No route to host")] * 4
+
+        def reset():
+            rp_records.clear(); rp_adverts.clear(); rp_services.clear(); rp_calls.clear()
+            providers.clear(); browse_calls.clear(); mobdev2_visible.clear(); probes.clear()
+            rp_state["browse_error"] = None
+
+        async def attempt(probe, connection_type="Network"):
+            c = make_connection()
+            c._multicast_probe = probe
+            c._multicast_blocked = blocked
+            try:
+                return await connect(c, connection_type=connection_type)
+            finally:
+                await c.close_all()
+
+        async def verify():
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt(probe_returning(4, denied))
+            check("blocked is typed", result.get("code") == "local_network_blocked", result)
+            check("the lanes' text is kept", "remote pairing: RemotePairingDeviceNotFoundError" in result.get("error", ""),
+                  result)
+            check("one probe", len(probes) == 1, probes)
+
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt(probe_returning(4, [OSError(errno.EPERM, "Operation not permitted")] * 4))
+            check("EPERM is a block too", result.get("code") == "local_network_blocked", result)
+
+            # Every send failed, but not with a denial (no interface up): not a privacy block.
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt(probe_returning(4, [OSError(errno.EADDRNOTAVAIL, "Can't assign")] * 4))
+            check("other errors are no block", result.get("code") is None, result)
+            check("still waiting", result.get("reason") == "device_not_visible", result)
+
+            # Some sends left the host: Bonjour works, the phone is just not there.
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt(probe_returning(4, denied[:2]))
+            check("a partial failure is no block", result.get("code") is None, result)
+
+            # The probe itself fails, or the runtime has no probe: no claim.
+            for name, probe in (("probe raises", probe_returning(0, [], raises=OSError(49, "x"))), ("no probe", None)):
+                reset()
+                rp_records["dev"] = GOOD
+                result = await attempt(probe)
+                check(name, result.get("code") is None and result.get("reason") == "device_not_visible", result)
+
+            # A browse refused with EHOSTUNREACH is the same block.
+            reset()
+            rp_records["dev"] = GOOD
+            rp_state["browse_error"] = OSError(errno.EHOSTUNREACH, "No route to host")
+            result = await attempt(probe_returning(4, []))
+            rp_state["browse_error"] = None
+            check("a refused browse is a block", result.get("code") == "local_network_blocked", result)
+
+            # A Wi-Fi lane connected: nothing to probe.
+            reset()
+            rp_records["dev"] = GOOD
+            mobdev2_visible.add("dev")
+            result = await attempt(probe_returning(4, denied))
+            check("connected", result.get("success") is True, result)
+            check("no probe when connected", not probes, probes)
+
+            # A USB request never browses Bonjour: no probe, no code.
+            reset()
+            rp_records["dev"] = GOOD
+            result = await attempt(probe_returning(4, denied), connection_type="USB")
+            check("USB: no probe", not probes and result.get("code") is None, result)
+
+            if problems:
+                raise AssertionError("\\n".join(problems))
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// The local network probe is upstream's (`pymobiledevice3.bonjour`); the managed
+    /// runtime must provide it and the helper must wire exactly those functions.
+    func testManagedRuntimeProvidesTheLocalNetworkProbe() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import importlib.util
+        import pymobiledevice3.bonjour as bonjour
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        c = bridge.DeviceConnection()
+        assert c._lazy_import()
+        assert c._multicast_probe is bonjour.probe_multicast, c._multicast_probe
+        assert c._multicast_blocked is bonjour.is_multicast_blocked, c._multicast_blocked
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
     /// The remote pairing lane depends on pymobiledevice3 APIs that may move under the
     /// rolling-latest policy; the managed runtime must have them and the helper must
     /// wire exactly those objects.

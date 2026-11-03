@@ -605,6 +605,12 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     /// The same wait for an automatic reconnect attempt. Internal for tests.
     var automaticDeviceVisibilityWait: DeviceVisibilityWait = .automatic
 
+    /// The helper reported that macOS refuses its mDNS queries (Local Network privacy):
+    /// the phone may be right there, but no Wi‑Fi lane can see it until PathChanger is
+    /// allowed (live 2026-11-02/03).
+    nonisolated static let localNetworkBlockedMessage =
+        "macOS is blocking PathChanger from the local network. Allow PathChanger in System Settings > Privacy & Security > Local Network."
+
     nonisolated static let wifiDeviceNotReachableMessage =
         "iPhone is not reachable over Wi‑Fi. Unlock it, keep it on the same Wi‑Fi network as this Mac, then press Start again."
 
@@ -1514,6 +1520,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
                 }
                 try? await Task.sleep(nanoseconds: UInt64(wait.interval * 1_000_000_000))
                 guard isCurrent() else { return true }
+            } catch PersistentLocationBridge.PersistentBridgeError.localNetworkBlocked(let detail) {
+                // Waiting for the phone cannot help while macOS blocks the network.
+                guard isCurrent() else { return true }
+                lastError = Self.localNetworkBlockedMessage
+                Logger.error(
+                    "[Tunnel] macOS blocks the location helper's local network access: "
+                        + LogRedaction.redactingDeviceIdentifiers(detail),
+                    category: .device
+                )
+                return false
             } catch {
                 guard isCurrent() else { return true }
                 lastError = "Could not connect to the device: \(error.localizedDescription)"

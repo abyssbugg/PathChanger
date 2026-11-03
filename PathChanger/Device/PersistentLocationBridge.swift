@@ -1179,6 +1179,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         /// usbmux does not list the phone right now (an idle or locked Wi-Fi phone
         /// drops out); waiting can succeed. Carries the helper's per-lane detail.
         case deviceNotVisible(String)
+        /// macOS refused every mDNS query the helper sent (Local Network privacy), so its
+        /// Wi-Fi lanes could not see the phone; waiting cannot help. The helper's detail.
+        case localNetworkBlocked(String)
         case pythonNotFound
 
         var errorDescription: String? {
@@ -1199,17 +1202,24 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 // Transport-neutral; the detail keeps the provider markers
                 // (DeviceNotFoundError) the connection-loss classifier matches.
                 return "The iPhone is not visible to this Mac right now (\(detail))"
+            case .localNetworkBlocked(let detail):
+                return "macOS is blocking PathChanger from the local network (\(detail))"
             case .pythonNotFound:
                 return "Python3 not found in PATH"
             }
         }
     }
 
-    /// Maps a failed `connect_device` reply to the error the app acts on.
-    static func connectFailure(error: String?, reason: String?) -> PersistentBridgeError {
+    /// Maps a failed `connect_device` reply to the error the app acts on. The helper's
+    /// typed `local_network_blocked` code wins over its "not visible" reason.
+    static func connectFailure(error: String?, reason: String?, code: String? = nil) -> PersistentBridgeError {
         let detail = error ?? "Device connection failed"
+        if code == localNetworkBlockedCode { return .localNetworkBlocked(detail) }
         return reason == "device_not_visible" ? .deviceNotVisible(detail) : .bridgeError(detail)
     }
+
+    /// The helper's `connect_device` code for a Local Network block (scripts/location_bridge.py).
+    nonisolated static let localNetworkBlockedCode = "local_network_blocked"
 
     // MARK: - Properties
 
@@ -1722,7 +1732,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 category: .device,
                 repeatKey: "PersistentBridge.connect_device"
             )
-            throw Self.connectFailure(error: response.error, reason: response.reason)
+            throw Self.connectFailure(error: response.error, reason: response.reason, code: response.code)
         }
         Logger.endRepeats(key: "PersistentBridge.connect_device", category: .device)
         guard let helperPID = helperConnection?.record.pid else {
