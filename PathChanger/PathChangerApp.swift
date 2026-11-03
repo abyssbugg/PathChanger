@@ -2136,10 +2136,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.isSimulating = true
 
         // The stop index advances only on the acknowledged arrival at that stop, and only
-        // while the mode's stops are the ones the run began with (any edit started
-        // progress over). It advances also after a mode change: the phone reached the
-        // stop, and each mode keeps its own stops and progress (owner rule 2026-11-03).
-        if let arrival = pending.stopArrival, route.stops(for: pending.mode) == arrival.routeSnapshot {
+        // while the mode's stops are the ones the run began with, or those with stops
+        // appended (an append keeps progress, so a stop clicked while the hop was in
+        // flight keeps the arrival; any other edit started progress over). It advances
+        // also after a mode change: the phone reached the stop, and each mode keeps its
+        // own stops and progress (owner rule 2026-11-03).
+        if let arrival = pending.stopArrival {
+            let stops = route.stops(for: pending.mode)
+            guard stops == arrival.routeSnapshot
+                || RouteStateManager.keepsStopProgress(pending.mode, from: arrival.routeSnapshot, to: stops) else { return }
             setStopCursor(arrival.cursor, for: pending.mode)
             stopSequences[pending.mode]?.arrived = true
             Logger.info(StopRunLog.reached(stop: arrival.stopIndex, of: arrival.totalStops), category: .session)

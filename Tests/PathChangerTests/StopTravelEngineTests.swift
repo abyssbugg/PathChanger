@@ -1164,6 +1164,30 @@ extension StopTravelEngineTests {
         }
     }
 
+    /// A stop appended while a single hop is in flight keeps that hop's arrival (review
+    /// 2026-11-03 issue 2: the arrival was dropped, so the next Move placed the same stop).
+    func testAStopAppendedWhileAHopIsInFlightKeepsTheArrival() async {
+        for mode: AppMode in [.jump, .route] {
+            let (state, fake) = makeFakeState(mode: mode, stops: [s0, s1], settings: options(mode, arrival: .jump, progression: .onePerMove))
+            let first = Task { await state.startSimulation() }
+            await fake.waitUntilApplicationPending()
+            state.stageLocation(s2, for: mode)
+            XCTAssertEqual(state.currentRoute, [s0, s1, s2], "\(mode)")
+            await fake.releaseNextApplication(session: StopRunHarness.session)
+            await first.value
+            XCTAssertEqual(state.currentLocation, s0, "\(mode)")
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, "the phone reached stop 1 (\(mode))")
+
+            let second = Task { await state.startSimulation() }
+            await fake.waitUntilApplicationPending()
+            guard case .apply(let request)? = await fake.calls().last else { XCTFail("no apply (\(mode))"); continue }
+            XCTAssertEqual(request.coordinate, s1, "the next Move goes to stop 2 (\(mode))")
+            await fake.releaseNextApplication(session: StopRunHarness.session)
+            await second.value
+            XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, "\(mode)")
+        }
+    }
+
     func testEachStopModeKeepsItsOwnProgress() async {
         let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove))
         let state = harness.state!
