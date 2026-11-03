@@ -343,8 +343,9 @@ enum StopTravelCardText {
 
     // MARK: Move gating
 
-    /// Jump's Move is possible while the planner has a next hop for these stops: a
-    /// finished One way run cannot continue, but Loop and Back and forth can.
+    /// Jump's Move is possible while the planner has a next hop for these stops, which is
+    /// whenever there is a valid stop: a finished One way run starts over at stop 1
+    /// (PRODUCT_REQUIREMENTS §3.6.1), and Loop and Back and forth return home by design.
     static func jumpCanMove(stops: [LocationCoordinate], cursor: StopCursor, settings: StopTravelSettings) -> Bool {
         StopTravelPlanner.firstLeg(stops: stops.filter(\.isValid), origin: nil, cursor: cursor, settings: settings) != nil
     }
