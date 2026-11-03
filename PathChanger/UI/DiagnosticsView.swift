@@ -45,6 +45,9 @@ struct DiagnosticsView: View {
 
     @State private var results: [DiagnosticResult] = []
     @State private var isRunning = false
+    /// Bumped by Run Diagnostics; the run is the `.task(id:)` for it, which SwiftUI
+    /// cancels when the sheet closes (review 2026-11-03 issue 6).
+    @State private var diagnosticsRun = 0
     @State private var isExportingLogs = false
     @State private var exportedLogURL: URL?
     @State private var showExportSuccess = false
@@ -70,7 +73,8 @@ struct DiagnosticsView: View {
                 .disabled(isExportingLogs)
 
                 Button {
-                    Task { await runDiagnostics() }
+                    // `.task(id:)` below runs it, so closing the sheet cancels the run.
+                    diagnosticsRun += 1
                 } label: {
                     Label(isRunning ? "Running..." : "Run Diagnostics", systemImage: "play.fill")
                 }
@@ -154,6 +158,10 @@ struct DiagnosticsView: View {
         }
         .padding()
         .frame(minWidth: 500, minHeight: 400)
+        .task(id: diagnosticsRun) {
+            guard diagnosticsRun > 0 else { return }
+            await runDiagnostics()
+        }
         .alert("Logs Exported", isPresented: $showExportSuccess) {
             Button("Show in Finder") {
                 if let url = exportedLogURL {
@@ -189,14 +197,17 @@ struct DiagnosticsView: View {
     }
 
     /// Read-only: see `SystemDiagnostics`. Nothing here sends a location or starts or
-    /// stops a tunnel or the location helper.
+    /// stops a tunnel or the location helper. Cancelled with its `.task` (sheet closed):
+    /// the command in flight is stopped and no partial results are shown.
     @MainActor
     func runDiagnostics() async {
         isRunning = true
+        defer { isRunning = false }
         results = []
         let snapshot = DiagnosticsSnapshot.live(appState: appState)
-        results = await SystemDiagnostics.live().run(snapshot)
-        isRunning = false
+        let finished = await SystemDiagnostics.live().run(snapshot)
+        guard !Task.isCancelled else { return }
+        results = finished
     }
 }
 

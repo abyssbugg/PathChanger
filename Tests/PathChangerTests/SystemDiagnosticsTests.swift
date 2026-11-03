@@ -38,6 +38,29 @@ private final class RecordingDiagnosticsRunner: DiagnosticsCommandRunning, @unch
     }
 }
 
+/// Holds every command until its task is cancelled, then answers as the bounded runner does.
+private final class CancellableDiagnosticsRunner: DiagnosticsCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var started = 0
+    private var cancelled = 0
+
+    var startedCount: Int { lock.lock(); defer { lock.unlock() }; return started }
+    var cancelledCount: Int { lock.lock(); defer { lock.unlock() }; return cancelled }
+
+    func run(executable: String, arguments: [String]) async -> BoundedProcessResult {
+        lock.lock()
+        started += 1
+        lock.unlock()
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        lock.lock()
+        cancelled += 1
+        lock.unlock()
+        return BoundedProcessResult(termination: .cancelled, output: "")
+    }
+}
+
 /// Command answers shared by the tests (nonisolated: the runner calls them off the main actor).
 private enum Fixture {
     static let allCapabilities = PythonPathResolver.requiredPymobiledevice3Capabilities.sorted()
@@ -299,6 +322,28 @@ final class SystemDiagnosticsTests: XCTestCase {
         let connection = result("Device connection", in: results)
         XCTAssertEqual(connection?.status, .failure)
         XCTAssertTrue(connection?.message.contains("Could not connect to the device") ?? false)
+    }
+
+    // MARK: - Cancellation
+
+    /// Review 2026-11-03 issue 6: closing the Diagnostics sheet must stop its run. A
+    /// cancelled run cancels the command in flight and starts no further command.
+    func testACancelledRunCancelsItsCommandAndStartsNoOther() async throws {
+        let runner = CancellableDiagnosticsRunner()
+        let diagnostics = SystemDiagnostics(runner: runner, diskImageStatus: { _, _ in .mounted })
+        let snapshot = connectedSnapshot()
+        let run = Task { await diagnostics.run(snapshot) }
+        let deadline = Date().addingTimeInterval(5)
+        while runner.startedCount < 1, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertEqual(runner.startedCount, 1)
+
+        run.cancel()
+        _ = await run.value
+
+        XCTAssertEqual(runner.cancelledCount, 1, "the cancellation reached the command in flight")
+        XCTAssertEqual(runner.startedCount, 1, "no command started after the cancellation")
     }
 
     // MARK: - usbmux

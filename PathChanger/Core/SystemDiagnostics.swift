@@ -105,16 +105,24 @@ struct SystemDiagnostics {
         )
     }
 
+    /// Runs the checks in order. A cancelled run (the Diagnostics sheet closed) cancels the
+    /// command in flight and starts no further check (review 2026-11-03 issue 6).
     func run(_ snapshot: DiagnosticsSnapshot) async -> [DiagnosticResult] {
+        let checks: [@MainActor () async -> DiagnosticResult] = [
+            { await checkPython(snapshot) },
+            { await checkCapabilities(snapshot) },
+            { checkHelper(snapshot) },
+            { checkConnection(snapshot) },
+            { await checkDiskImage(snapshot) },
+            { await checkUsbmux(snapshot) },
+            { checkSelectedDevice(snapshot) },
+            { checkTargetLocation(snapshot) },
+        ]
         var results: [DiagnosticResult] = []
-        results.append(await checkPython(snapshot))
-        results.append(await checkCapabilities(snapshot))
-        results.append(checkHelper(snapshot))
-        results.append(checkConnection(snapshot))
-        results.append(await checkDiskImage(snapshot))
-        results.append(await checkUsbmux(snapshot))
-        results.append(checkSelectedDevice(snapshot))
-        results.append(checkTargetLocation(snapshot))
+        for check in checks {
+            guard !Task.isCancelled else { break }
+            results.append(await check())
+        }
         return results
     }
 
