@@ -561,7 +561,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// the run hits the router's cache). Without a router (tests, previews) travelled
     /// legs stay drawn as loading and nothing reaches Apple Maps.
     let routePreview: RoutePreviewModel
-    /// The acknowledged points of the current or last travelled stop run, for the map.
+    /// The acknowledged points one stop mode travelled through since its progress last
+    /// reset, for the map.
     let travelTrail: TravelTrail
 
     /// What the map's route preview of `mode` depends on; nil when it draws nothing.
@@ -1407,8 +1408,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
             producers.forEach { $0.cancel() }
             applications.forEach { $0.cancel() }
             pendingApplications.removeAll()
-            // Clear erases the map's trail; no later receipt of this run can reach it.
-            travelTrail.reset()
             _ = locationSessionCoordinator.cancelPendingApplication()
             simulation.isSimulating = false
             simulation.isPaused = false
@@ -2131,7 +2130,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         simulation.targetLocation = receipt.coordinate
         // The map's trail of a travelled run: acknowledged points only.
         if let run = stopRun, run.settings.arrival == .travel {
-            travelTrail.record(receipt.coordinate, run: run.id)
+            travelTrail.record(receipt.coordinate, mode: run.mode)
         }
         // A paused run stays paused when the point in flight lands.
         if stopRun == nil { simulation.isPaused = false }
@@ -2943,6 +2942,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private func resetStopProgress() {
         route.resetStopProgress()
         stopSequences = [:]
+        // The trail shows how the progress got there; it goes with it.
+        travelTrail.reset()
     }
 
     // MARK: Joystick Mode

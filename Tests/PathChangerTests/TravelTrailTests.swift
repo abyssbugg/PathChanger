@@ -70,16 +70,19 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(TravelTrail.downsampled([point(0)]), [point(0)])
     }
 
-    func testANewRunStartsANewTrail() {
+    func testTheTrailBelongsToAModeAndAnotherModeStartsANewOne() {
         let trail = TravelTrail()
-        let first = UUID()
-        trail.record(s0, run: first)
-        trail.record(s1, run: first)
-        XCTAssertEqual(trail.points, [s0, s1])
-        trail.record(s2, run: UUID())
-        XCTAssertEqual(trail.points, [s2])
+        trail.record(s0, mode: .route)
+        trail.record(s1, mode: .route)
+        trail.record(s2, mode: .route)
+        XCTAssertEqual(trail.points, [s0, s1, s2], "later runs of the same mode extend the trail")
+        XCTAssertEqual(trail.mode, .route)
+        trail.record(s0, mode: .twospot)
+        XCTAssertEqual(trail.points, [s0], "another mode's travel starts its own trail")
+        XCTAssertEqual(trail.mode, .twospot)
         trail.reset()
         XCTAssertTrue(trail.points.isEmpty)
+        XCTAssertNil(trail.mode)
     }
 
     // MARK: - AppState
@@ -114,6 +117,27 @@ final class TravelTrailTests: XCTestCase {
         let applied = await injector.applied
         XCTAssertGreaterThan(applied.count, 5)
         XCTAssertEqual(state.travelTrail.points, applied, "the trail is the acknowledged points, in order")
+    }
+
+    func testTheTrailKeepsEveryMoveOfTheSequence() async {
+        // Review 2026-11-03 issue 3: the trail restarted with every run, so with one stop
+        // per Move (or a Move after Stop) the map showed only the last Move.
+        let (state, injector) = makeState(mode: .route, stops: [s0, s1, s2], arrival: .travel)
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .onePerMove, repeatMode: .oneWay),
+            for: .route
+        )
+        await state.startSimulation()
+        await state.startSimulation()
+        let afterSecondMove = state.travelTrail.points
+        XCTAssertTrue(afterSecondMove.contains(s1))
+        await state.startSimulation()
+
+        XCTAssertEqual(state.currentLocation, s2)
+        XCTAssertEqual(Array(state.travelTrail.points.prefix(afterSecondMove.count)), afterSecondMove, "the earlier Move stays drawn")
+        XCTAssertEqual(state.travelTrail.points.last, s2)
+        let applied = await injector.applied
+        XCTAssertEqual(state.travelTrail.points, Array(applied.suffix(state.travelTrail.points.count)))
     }
 
     func testAJumpRunDrawsNoTrail() async {

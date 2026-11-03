@@ -2,9 +2,11 @@
 //  TravelTrail.swift
 //  PathChanger
 //
-//  The acknowledged positions of the current (or last) travelled stop run, for the map
-//  (owner ask 2026-11-03). Fed from acknowledged receipts only (PRODUCT_REQUIREMENTS 4);
-//  erased by Clear and by editing the stops.
+//  The acknowledged positions a stop mode travelled through, for the map (owner ask
+//  2026-11-03). Fed from acknowledged receipts only (PRODUCT_REQUIREMENTS 4). It belongs
+//  to one mode and lasts as long as that mode's stop progress: every Move of the
+//  sequence extends it; a stop edit (not an append), Reset Route or a confirmed Clear
+//  erases it, and another mode's travel starts a new one.
 //
 
 import Foundation
@@ -15,20 +17,22 @@ final class TravelTrail: ObservableObject {
     static let capacity = 2_000
 
     @Published private(set) var points: [LocationCoordinate] = []
-    private var runID: UUID?
+    /// The stop mode whose travel drew `points`; nil when there is no trail.
+    private(set) var mode: AppMode?
 
-    /// Adds an acknowledged point of `run`; a point of a new run starts a new trail.
-    func record(_ coordinate: LocationCoordinate, run: UUID) {
+    /// Adds an acknowledged point `mode` travelled through; a point of another mode
+    /// starts a new trail.
+    func record(_ coordinate: LocationCoordinate, mode: AppMode) {
         guard coordinate.isValid else { return }
-        if runID != run {
-            runID = run
+        if self.mode != mode {
+            self.mode = mode
             points = []
         }
         points = Self.appending(coordinate, to: points, capacity: Self.capacity)
     }
 
     func reset() {
-        runID = nil
+        mode = nil
         if !points.isEmpty { points = [] }
     }
 
