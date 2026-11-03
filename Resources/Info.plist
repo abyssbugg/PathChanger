@@ -39,6 +39,15 @@
 	<string>PathChanger needs to run a privileged command to start and stop the device tunnel.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>PathChanger uses your location to show your current position on the map.</string>
+	<!-- Local Network privacy for the in-app NWBrowser (RemotePairingAdvertBrowser.swift),
+	     which browses only while a reconnect is armed. List only services the Swift app
+	     browses itself; mobdev2 discovery runs in the pymobiledevice3 subprocess. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PathChanger finds your iPhone on this Wi-Fi network to reconnect to it.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_remotepairing._tcp</string>
+	</array>
 
 	<!-- Sparkle Auto-Update Configuration -->
 	<key>SUFeedURL</key>

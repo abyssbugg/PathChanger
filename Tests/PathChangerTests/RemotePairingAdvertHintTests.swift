@@ -173,6 +173,28 @@ final class RemotePairingAdvertHintLimiterTests: XCTestCase {
     }
 }
 
+// MARK: - Local Network privacy (review 2026-11-03 issue 12)
+
+/// The in-app `NWBrowser` needs the Bonjour type declared and a Local Network usage
+/// description, or macOS may deny or never ask. Reads the host app's built Info.plist.
+final class LocalNetworkPrivacyInfoPlistTests: XCTestCase {
+    private func appInfo() throws -> [String: Any] {
+        try XCTSkipUnless(Bundle.main.bundleIdentifier == "com.pathchanger.app",
+                          "needs the app as the test host (SwiftPM runs without it)")
+        return try XCTUnwrap(Bundle.main.infoDictionary)
+    }
+
+    func testTheAppDeclaresTheBonjourServiceItBrowses() throws {
+        let services = try XCTUnwrap(try appInfo()["NSBonjourServices"] as? [String])
+        XCTAssertEqual(services, [NetworkRemotePairingAdvertBrowser.serviceType])
+    }
+
+    func testTheAppExplainsWhyItUsesTheLocalNetwork() throws {
+        let description = try XCTUnwrap(try appInfo()["NSLocalNetworkUsageDescription"] as? String)
+        XCTAssertFalse(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+}
+
 // MARK: - The tunnel reconnect takes the hint
 
 @MainActor
