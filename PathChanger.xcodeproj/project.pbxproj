@@ -22,6 +22,7 @@
 		181B4E7C5A7F22D78DD7FABA /* SimulationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F78233AAF9375A49216897B /* SimulationEngine.swift */; };
 		18D48D82E255444271ADA4C9 /* SimulationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D5A8AB1601CDD0207FDCB6 /* SimulationView.swift */; };
 		1D5E4406FDF318C852EBE636 /* StopTravelEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E85E41F59133B4FD2A1492 /* StopTravelEngineTests.swift */; };
+		1EF3D7843749486E5438AE2F /* RemotePairingAdvertHintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A365AADEDF563C8744C0E23 /* RemotePairingAdvertHintTests.swift */; };
 		21FBD8F38DF74B2079C16C02 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B045D6AFD74CFC2E34BA0A /* Constants.swift */; };
 		247D7CBBE1EE4EDC695592FF /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F125981934200A08DECF308 /* AppPreferences.swift */; };
 		272CFF4CAE1A6441D61BA8BA /* OrganicSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F44AF4CC4D729839869F5073 /* OrganicSettingsSheet.swift */; };
@@ -45,6 +46,7 @@
 		4D683DB86A1A0865820688D2 /* StopTravelCardText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10BA144F0EFD9E5B0FF46BAC /* StopTravelCardText.swift */; };
 		4EA6C1C954021A0083AEA67B /* TelemetryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6415B5AA220D4AE2A519C8E6 /* TelemetryService.swift */; };
 		55041FA7AD52D3783CAE29BF /* PersistentLocationBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3389753A94510B1DDF9E16E8 /* PersistentLocationBridgeTests.swift */; };
+		576A61022BCD606AF2784E00 /* RemotePairingAdvertBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80C8F7579784DF9A4B2C7D5D /* RemotePairingAdvertBrowser.swift */; };
 		5815CA4F07AEB0A9A5C65011 /* ReliabilityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B18BFA22E645A1549A4008B1 /* ReliabilityManager.swift */; };
 		591053F690BE396E3A1FF03E /* ModePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7286B2A2DA4826318DA00FD4 /* ModePersistenceTests.swift */; };
 		5B601ACA4C2E60C824DC46CB /* MultiDeviceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0EFCD26D1D5976DC6DE6E6E /* MultiDeviceCoordinatorTests.swift */; };
@@ -183,6 +185,7 @@
 		10F58022AF3CC771A8D33AEB /* PersistentLocationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentLocationBridge.swift; sourceTree = "<group>"; };
 		12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckServerTests.swift; sourceTree = "<group>"; };
 		184C0DF1B232730BA1AA15CD /* TelemetryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryServiceTests.swift; sourceTree = "<group>"; };
+		1A365AADEDF563C8744C0E23 /* RemotePairingAdvertHintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePairingAdvertHintTests.swift; sourceTree = "<group>"; };
 		1C32C189609146072E337C41 /* LocationConnectionArguments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationConnectionArguments.swift; sourceTree = "<group>"; };
 		1CF6F112EA75CACD56F3214B /* DevLocationBridgeReceiptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevLocationBridgeReceiptTests.swift; sourceTree = "<group>"; };
 		245D047994AAE1E18686F840 /* InspectorPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorPanel.swift; sourceTree = "<group>"; };
@@ -247,6 +250,7 @@
 		7B57378F3B42D355473160D0 /* MovementPhysicsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovementPhysicsTests.swift; sourceTree = "<group>"; };
 		7E015328189185E781E18464 /* IOSVersionHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSVersionHelper.swift; sourceTree = "<group>"; };
 		7E9BB8ECD67AEDC96F1C5055 /* DeviceStateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStateManager.swift; sourceTree = "<group>"; };
+		80C8F7579784DF9A4B2C7D5D /* RemotePairingAdvertBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePairingAdvertBrowser.swift; sourceTree = "<group>"; };
 		8443F1D12DBFA4C3BD75F5B8 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		860C56B6805DD0F4C924F0BA /* PathChanger.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PathChanger.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		87EA633BFD77CDC6413AEA2C /* TunnelStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelStateMachine.swift; sourceTree = "<group>"; };
@@ -391,6 +395,7 @@
 				5A8BBD54386908598B430C2B /* PythonPathResolver.swift */,
 				F671CD7F74DEDCEFE96FAA41 /* RateLimiter.swift */,
 				B18BFA22E645A1549A4008B1 /* ReliabilityManager.swift */,
+				80C8F7579784DF9A4B2C7D5D /* RemotePairingAdvertBrowser.swift */,
 				6415B5AA220D4AE2A519C8E6 /* TelemetryService.swift */,
 				06303B8433AE84457D0DF09E /* UpdaterController.swift */,
 				70A1A030546DC41593D91CD1 /* StateManagers */,
@@ -556,6 +561,7 @@
 				5747F7072B9EE61A792EA756 /* PythonPathResolverTests.swift */,
 				986F6319346E583A5E4DEC2B /* RateLimiterTests.swift */,
 				3B51AA0210F42FDAE4C4CBEC /* ReliabilityManagerTests.swift */,
+				1A365AADEDF563C8744C0E23 /* RemotePairingAdvertHintTests.swift */,
 				DD708C0DE7F87CACFCB525C5 /* RoadRouterTests.swift */,
 				94011219CD024F1686B7D39F /* RouteInterpolatorTests.swift */,
 				706E59786AA5878B70A8A986 /* RoutePreviewTests.swift */,
@@ -772,6 +778,7 @@
 				B9696539DA6A46F883FF016F /* PythonPathResolverTests.swift in Sources */,
 				B1927611EF3C0A9CCF88B61D /* RateLimiterTests.swift in Sources */,
 				F808E8BD8D34A96730D274C1 /* ReliabilityManagerTests.swift in Sources */,
+				1EF3D7843749486E5438AE2F /* RemotePairingAdvertHintTests.swift in Sources */,
 				036BF32A51969D7C0575EA73 /* RoadRouterTests.swift in Sources */,
 				3E20FE9BA65A334EF17B8324 /* RouteInterpolatorTests.swift in Sources */,
 				F825E34599E116E4C048EF1B /* RoutePreviewTests.swift in Sources */,
@@ -853,6 +860,7 @@
 				06DEAAB1E91AFDC4B11F2319 /* PythonPathResolver.swift in Sources */,
 				0C4CA0CE5028573FB2720B85 /* RateLimiter.swift in Sources */,
 				5815CA4F07AEB0A9A5C65011 /* ReliabilityManager.swift in Sources */,
+				576A61022BCD606AF2784E00 /* RemotePairingAdvertBrowser.swift in Sources */,
 				BF9E5D30F9EE49409B1779E7 /* RoadRouter.swift in Sources */,
 				06EA9356314A667700CF2B3B /* RouteInterpolator.swift in Sources */,
 				28DD5E4A6EAFAE80C8D9B178 /* RouteLibrary.swift in Sources */,

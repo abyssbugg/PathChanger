@@ -238,7 +238,8 @@ enum TunnelAutoReconnectPolicy {
         var tunnel: TunnelState
         /// The remembered device, kept when discovery deselects it.
         var deviceID: String?
-        /// The device appeared in usbmux (USB or Network) or mobdev2 Bonjour since the last try.
+        /// The device appeared in usbmux (USB or Network) or mobdev2 Bonjour since the last
+        /// try, or a RemotePairing advert appeared (a hint only: its name is opaque).
         var phoneBecameVisible: Bool
         /// Since the loss, then since the last attempt ended.
         var secondsSinceLastTry: TimeInterval
@@ -325,7 +326,24 @@ final class TunnelAutoReconnector: ObservableObject {
     private var previousState: TunnelState?
     private var visibleDeviceIDs: Set<String> = []
     private var wasRememberedDeviceVisible = false
-    private var phoneBecameVisible = false
+    /// Why the next attempt may come early, if anything did since the last try.
+    private enum VisibilityHint {
+        /// usbmux or mobdev2 lists the remembered device again.
+        case phoneVisible
+        /// A `_remotepairing._tcp` advert appeared or changed. Its name cannot be tied to
+        /// a UDID without the pairing record's altIRK, so it only says the phone may be back.
+        case remotePairingAdvert
+
+        var logText: String {
+            switch self {
+            case .phoneVisible: return "the phone is visible again"
+            case .remotePairingAdvert: return "a RemotePairing advert appeared"
+            }
+        }
+    }
+
+    private var visibilityHint: VisibilityHint?
+    private var phoneBecameVisible: Bool { visibilityHint != nil }
     private var lastTry = Date.distantPast
     private var failedAttempts = 0
     private var task: Task<Void, Never>?
@@ -351,7 +369,18 @@ final class TunnelAutoReconnector: ObservableObject {
         let visible = tunnel.reconnectDeviceId.map(deviceIDs.contains) ?? false
         defer { wasRememberedDeviceVisible = visible }
         guard task != nil, visible, !wasRememberedDeviceVisible else { return }
-        phoneBecameVisible = true
+        visibilityHint = .phoneVisible
+        waiter.signalReachable()
+    }
+
+    /// A RemotePairing advert appeared or changed (live 2026-11-03: it came back while
+    /// usbmuxd listed nothing and the mobdev2 advert stayed the same, so only the retry
+    /// timer tried). Only while reconnecting, and never sooner than `visibilitySpacing`
+    /// after the last try, however often adverts arrive. It is not visibility: nothing
+    /// here or in the device list treats it as the phone being reachable.
+    func noteRemotePairingAdvert() {
+        guard task != nil else { return }
+        if visibilityHint == nil { visibilityHint = .remotePairingAdvert }
         waiter.signalReachable()
     }
 
@@ -426,7 +455,7 @@ final class TunnelAutoReconnector: ObservableObject {
         let id = runID
         failedAttempts = 0
         lastTry = environment.now()
-        phoneBecameVisible = false
+        visibilityHint = nil
         wasRememberedDeviceVisible = tunnel.reconnectDeviceId.map(visibleDeviceIDs.contains) ?? false
         waiter.discardPendingSignal()
         isReconnecting = true
@@ -462,8 +491,8 @@ final class TunnelAutoReconnector: ObservableObject {
             case .wait(let seconds):
                 guard await waiter.wait(timeout: seconds, sleeper: environment.sleeper) != .cancelled else { return }
             case .attempt(let deviceID):
-                let trigger = phoneBecameVisible ? "the phone is visible again" : "retry timer"
-                phoneBecameVisible = false
+                let trigger = visibilityHint?.logText ?? "retry timer"
+                visibilityHint = nil
                 waiter.discardPendingSignal()
                 Logger.info(
                     "[TunnelReconnect] Attempt \(failedAttempts + 1) (\(trigger)) for "
@@ -489,7 +518,7 @@ final class TunnelAutoReconnector: ObservableObject {
         task = nil
         isReconnecting = false
         lastAttemptError = nil
-        phoneBecameVisible = false
+        visibilityHint = nil
         waiter.discardPendingSignal()
     }
 }

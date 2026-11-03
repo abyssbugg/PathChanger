@@ -871,6 +871,13 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// whether or not a location is held. Clear does not stop it; Stop Tunnel does.
     private let tunnelAutoReconnect: TunnelAutoReconnectEnvironment
     let tunnelAutoReconnector: TunnelAutoReconnector
+    /// Browses for RemotePairing adverts only while a tunnel or location reconnect is
+    /// armed (no constant LAN browsing); an advert is a hint for both, never visibility.
+    /// Nil wherever background services are off, unless a test injects one.
+    private let remotePairingAdvertBrowser: (any RemotePairingAdvertBrowsing)?
+    private var isBrowsingRemotePairingAdverts = false
+    /// Set by Quit: the browser never starts again.
+    private var isRemotePairingBrowsingShutDown = false
     /// Reconnect is in flight: the button reads "Reconnecting…" and further clicks do nothing.
     @Published private(set) var isReconnecting = false
     private var cancellables = Set<AnyCancellable>()
@@ -911,6 +918,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         placeNameResolver: PlaceNameResolver? = nil,
         automaticReconnect: AutomaticReconnectEnvironment? = nil,
         tunnelAutoReconnect: TunnelAutoReconnectEnvironment? = nil,
+        remotePairingAdvertBrowser: (any RemotePairingAdvertBrowsing)? = nil,
         routeDelay: @escaping @MainActor @Sendable (TimeInterval) async -> Void = { seconds in
             guard seconds > 0 else { return }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -941,6 +949,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let resolvedTunnelReconnect = tunnelAutoReconnect ?? .live(isEnabled: effectiveBackgroundServices)
         self.tunnelAutoReconnect = resolvedTunnelReconnect
         self.tunnelAutoReconnector = TunnelAutoReconnector(environment: resolvedTunnelReconnect)
+        self.remotePairingAdvertBrowser = remotePairingAdvertBrowser
+            ?? (effectiveBackgroundServices ? NetworkRemotePairingAdvertBrowser() : nil)
         self.errorHandler = sharedErrorHandler
         self.locationSessionCoordinator = sessionCoordinator
         self.device = DeviceStateManager(
@@ -1104,6 +1114,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
                       usb.contains(awaited) || wifi.contains(awaited) || bonjour.contains(awaited) else { return }
                 self.automaticReconnectWaiter.signalReachable()
             }
+            .store(in: &cancellables)
+
+        // Browse for RemotePairing adverts only while a reconnect is armed. The delivered
+        // values are used: @Published sends before the property reads the new value.
+        Publishers.CombineLatest(tunnelAutoReconnector.$isReconnecting, $isAwaitingAutomaticReconnect)
+            .map { tunnel, location in tunnel || location }
+            .removeDuplicates()
+            .sink { [weak self] armed in self?.updateRemotePairingBrowsing(armed: armed) }
             .store(in: &cancellables)
 
         // Check if onboarding is needed
@@ -3362,6 +3380,38 @@ class AppState: ObservableObject, LocationTerminationHandling {
             || device.networkAdvertisedDeviceIds.contains(deviceID)
     }
 
+    // MARK: RemotePairing advert hint (live 2026-11-03)
+
+    private func updateRemotePairingBrowsing(armed: Bool) {
+        guard let browser = remotePairingAdvertBrowser else { return }
+        let shouldBrowse = armed && !isRemotePairingBrowsingShutDown
+        guard shouldBrowse != isBrowsingRemotePairingAdverts else { return }
+        isBrowsingRemotePairingAdverts = shouldBrowse
+        if shouldBrowse {
+            browser.start { [weak self] in self?.remotePairingAdvertAppeared() }
+        } else {
+            browser.stop()
+        }
+    }
+
+    /// The phone may be back: both reconnects look again now instead of on their timers.
+    /// Their own spacing bounds the attempts. The device list and its reachability words
+    /// are untouched: an opaque advert is not the phone.
+    private func remotePairingAdvertAppeared() {
+        // A callback already queued when browsing stopped.
+        guard isBrowsingRemotePairingAdverts else { return }
+        Logger.info("[RemotePairingBrowse] A RemotePairing advert appeared; the phone may be back", category: .device)
+        tunnelAutoReconnector.noteRemotePairingAdvert()
+        if automaticReconnectTask != nil {
+            automaticReconnectWaiter.signalReachable()
+        }
+    }
+
+    private func shutDownRemotePairingBrowsing() {
+        isRemotePairingBrowsingShutDown = true
+        updateRemotePairingBrowsing(armed: false)
+    }
+
     /// Wait for the phone (or the fallback timer), respect the spacing, run one burst;
     /// repeat with backoff until the reapply is acknowledged or the wait is cancelled.
     private func runAutomaticReconnect(
@@ -3470,6 +3520,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     private func stopAutomaticReconnectForQuit() async {
         // Quit stops the tunnel next; nothing may reopen it meanwhile.
+        shutDownRemotePairingBrowsing()
         tunnelAutoReconnector.cancel()
         guard let task = automaticReconnectTask else { return }
         cancelAutomaticReconnect(reason: "Quit")
