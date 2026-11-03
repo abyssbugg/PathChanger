@@ -153,16 +153,20 @@ final class TravelTrailTests: XCTestCase {
         // Review 2026-11-03 issue 7: the reset used Jump's append rule. Adding Two-Spot's
         // second spot resets Two-Spot's progress, so it must reset Two-Spot's trail.
         let state = AppState(startBackgroundServices: false, locationInjector: TrailAckInjector(), routeDelay: { _ in })
-        state.loadRoute(from: [s0])
+        state.activeMode = .twospot
+        state.stageLocation(s0, for: .twospot)
         state.travelTrail.record(s1, mode: .twospot)
         state.travelTrail.record(s2, mode: .twospot)
-        state.loadRoute(from: [s0, s1])
+        state.stageLocation(s1, for: .twospot)
         XCTAssertTrue(state.travelTrail.points.isEmpty, "Two-Spot's run changed, so its trail goes")
 
-        state.loadRoute(from: [s0, s1])
+        state.activeMode = .route
+        state.clearRoute()
+        state.stageLocation(s0, for: .route)
+        state.stageLocation(s1, for: .route)
         state.travelTrail.record(s1, mode: .route)
         state.travelTrail.record(s2, mode: .route)
-        state.loadRoute(from: [s0, s1, s2])
+        state.stageLocation(s2, for: .route)
         XCTAssertEqual(state.travelTrail.points, [s1, s2], "appending keeps Multi-Spot's progress and its trail")
     }
 

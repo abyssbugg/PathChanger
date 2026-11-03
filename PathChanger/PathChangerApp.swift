@@ -616,10 +616,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// by the next Move, review 2026-11-03 issue 6), else the route.
     /// Read-only.
     func displayStops(for mode: AppMode) -> [LocationCoordinate] {
-        guard mode != .jump else { return currentRoute }
+        guard mode != .jump else { return route.stops(for: mode) }
         if let run = stopRun, run.mode == mode { return run.stops }
         if let sequence = stopSequences[mode], sequence.arrived { return sequence.stops }
-        return currentRoute
+        return route.stops(for: mode)
     }
 
     /// A stop run of `mode` is in progress (its live panel shows where it stands).
@@ -636,7 +636,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if let sequence = stopSequences[mode], sequence.arrived { return .success(sequence.stops) }
         return StopTravelPlanner.runStops(
             mode: mode,
-            route: currentRoute,
+            route: route.stops(for: mode),
             held: currentLocation ?? stagedStartAfterClear,
             target: targetLocation
         )

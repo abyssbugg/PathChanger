@@ -1024,7 +1024,8 @@ final class StopTravelEngineTests: XCTestCase {
             ),
             "Done · holding stop 2 of 2"
         )
-        XCTAssertEqual(state.displayStops(for: .jump), state.currentRoute, "Jump indexes its hops")
+        state.activeMode = .jump
+        XCTAssertEqual(state.displayStops(for: .jump), state.currentRoute, "Jump indexes its own hops")
     }
 
     func testJoystickSpeedNeverChangesAStopRun() async {
