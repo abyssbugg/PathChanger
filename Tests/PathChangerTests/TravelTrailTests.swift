@@ -123,18 +123,29 @@ final class TravelTrailTests: XCTestCase {
 
     /// Review 2026-11-03 (fixes) issue 1: a point reached by something other than this
     /// trail's travel (a Teleport, a Joystick drive, a Jump arrival) must not be bridged
-    /// by a straight line the phone never drove.
-    func testAPointNotTravelledFromTheTrailsEndStartsANewSegment() {
+    /// by a straight line the phone never drove. The new line starts at the point the
+    /// travel left from (review 2026-11-03: its first step was not drawn).
+    func testAPointNotTravelledFromTheTrailsEndStartsANewSegmentAtTheHeldPoint() {
         let elsewhere = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
         let trail = TravelTrail()
         trail.record(s0, mode: .route, after: nil)
         trail.record(s1, mode: .route, after: s0)
         XCTAssertEqual(trail.segments(for: .route), [[s0, s1]], "travel from the trail's end extends it")
         trail.record(s2, mode: .route, after: elsewhere)
-        XCTAssertEqual(trail.segments(for: .route), [[s0, s1], [s2]], "travel from elsewhere starts its own segment")
+        XCTAssertEqual(trail.segments(for: .route), [[s0, s1], [elsewhere, s2]],
+                       "travel from elsewhere starts its own segment, from where it left")
         trail.record(s0, mode: .route, after: s2)
-        XCTAssertEqual(trail.segments(for: .route), [[s0, s1], [s2, s0]])
-        XCTAssertEqual(trail.points(for: .route), [s0, s1, s2, s0], "points are every segment, in order")
+        XCTAssertEqual(trail.segments(for: .route), [[s0, s1], [elsewhere, s2, s0]])
+        XCTAssertEqual(trail.points(for: .route), [s0, s1, elsewhere, s2, s0], "points are every segment, in order")
+    }
+
+    func testTheFirstSegmentStartsAtTheHeldPointItLeftFrom() {
+        let trail = TravelTrail()
+        trail.record(s1, mode: .twospot, after: s0)
+        XCTAssertEqual(trail.segments(for: .twospot), [[s0, s1]], "the step from the held point is drawn")
+        let fresh = TravelTrail()
+        fresh.record(s1, mode: .twospot, after: nil)
+        XCTAssertEqual(fresh.segments(for: .twospot), [[s1]], "with nothing held, the line starts at the first step")
     }
 
     func testTheCapCountsEverySegmentAndKeepsTheNewestPoint() {
@@ -246,7 +257,8 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(segments.first?.last, s1, "the first line ends where that Move stopped")
         XCTAssertEqual(segments.last?.last, s2)
         XCTAssertFalse(segments.last?.contains(s1) ?? true, "no line joins stop 2 to the travel that left from elsewhere")
-        XCTAssertFalse(state.travelTrail.points(for: .route).contains(elsewhere), "the Teleport itself is not travel")
+        XCTAssertEqual(segments.last?.first, elsewhere, "the new line starts where the travel left from")
+        XCTAssertFalse(segments.first?.contains(elsewhere) ?? true, "the Teleport itself is not travel")
     }
 
     func testAStopEditResetsTheTrailByItsOwnModesRule() {
@@ -345,6 +357,7 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.currentLocation, s0)
         let twoSpot = state.travelTrail.points(for: .twospot)
         XCTAssertFalse(twoSpot.isEmpty, "Two-Spot draws its own trail")
+        XCTAssertEqual(twoSpot.first, s2, "it starts where its travel left from")
         XCTAssertEqual(state.travelTrail.points(for: .route), multiSpot, "Multi-Spot's trail stays")
 
         state.activeMode = .route

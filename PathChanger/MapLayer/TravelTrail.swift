@@ -10,8 +10,9 @@
 //  erases every mode's, and travel in one mode never touches another's.
 //
 //  A trail is a list of lines: travel that leaves from somewhere other than the trail's
-//  end (after a Teleport, a Joystick drive or a Jump arrival) starts a new line, so the
-//  map never joins two travels with a line the phone did not drive.
+//  end (after a Teleport, a Joystick drive or a Jump arrival) starts a new line at the
+//  point it left from, so the map never joins two travels with a line the phone did not
+//  drive and still draws the first step.
 //
 
 import Foundation
@@ -28,12 +29,15 @@ final class TravelTrail: ObservableObject {
 
     /// Adds an acknowledged point `mode` travelled through, reached from `held` (the
     /// location held before it). It extends `mode`'s trail only when `held` is that
-    /// trail's end; otherwise it starts a new segment. Other modes' trails are untouched.
+    /// trail's end; otherwise it starts a new segment at `held`, so the step the phone
+    /// took from there is drawn too. Other modes' trails are untouched.
     func record(_ coordinate: LocationCoordinate, mode: AppMode, after held: LocationCoordinate?) {
         guard coordinate.isValid else { return }
         let segments = segmentsByMode[mode] ?? []
         let startsSegment = held == nil || held != segments.last?.last
-        let updated = Self.appending(coordinate, to: segments, startsSegment: startsSegment, capacity: Self.capacity)
+        let updated = Self.appending(
+            coordinate, to: segments, startsSegment: startsSegment, departure: held, capacity: Self.capacity
+        )
         if updated != segments { segmentsByMode[mode] = updated }
     }
 
@@ -58,18 +62,24 @@ final class TravelTrail: ObservableObject {
     }
 
     /// `segments` with `coordinate` added: as a new segment when `startsSegment` (or
-    /// there is none), else to the last one (not when it repeats its last point). Past
+    /// there is none), beginning at `departure` when that is a different valid point the
+    /// step left from, else to the last one (not when it repeats its last point). Past
     /// `capacity` points in all, every segment is halved, then the oldest segments are
     /// dropped until it fits; the newest point always stays.
     nonisolated static func appending(
         _ coordinate: LocationCoordinate,
         to segments: [[LocationCoordinate]],
         startsSegment: Bool,
+        departure: LocationCoordinate? = nil,
         capacity: Int
     ) -> [[LocationCoordinate]] {
         var result = segments
         if startsSegment || result.isEmpty {
-            result.append([coordinate])
+            if let departure, departure.isValid, departure != coordinate {
+                result.append([departure, coordinate])
+            } else {
+                result.append([coordinate])
+            }
         } else {
             guard result[result.count - 1].last != coordinate else { return segments }
             result[result.count - 1].append(coordinate)

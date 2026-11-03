@@ -2168,7 +2168,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // The map's trail of a travelled run: acknowledged points only, including the
         // run's last step when it lands after Stop (it is what the phone holds). Travel
         // that leaves from somewhere the trail does not end (a Teleport, a Joystick drive
-        // or a Jump arrival moved the phone meanwhile) starts a new line.
+        // or a Jump arrival moved the phone meanwhile) starts a new line at the held point.
         if pending.drawsTrail {
             travelTrail.record(receipt.coordinate, mode: pending.mode, after: heldBefore)
         }
