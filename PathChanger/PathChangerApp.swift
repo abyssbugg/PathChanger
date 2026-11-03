@@ -571,7 +571,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// the run hits the router's cache). Without a router (tests, previews) travelled
     /// legs stay drawn as loading and nothing reaches Apple Maps.
     let routePreview: RoutePreviewModel
-    /// The acknowledged points one stop mode travelled through since its progress last
+    /// The acknowledged points each stop mode travelled through since its progress last
     /// reset, for the map.
     let travelTrail: TravelTrail
 
@@ -1057,11 +1057,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
                         self.stopSequences[mode]?.stops = newRoute.filter(\.isValid)
                     }
                 }
-                // The trail shows how its mode's kept progress got there; it goes when
-                // that mode's progress resets. Only the shown mode's stops changed.
-                if let trailMode = self.travelTrail.mode, trailMode == mode,
-                   !RouteStateManager.keepsStopProgress(trailMode, from: old, to: newRoute) {
-                    self.travelTrail.reset()
+                // Each mode's trail shows how its kept progress got there; it goes when
+                // that mode's progress resets. Only the shown mode's stops changed, so
+                // only its trail can go.
+                if !RouteStateManager.keepsStopProgress(mode, from: old, to: newRoute) {
+                    self.travelTrail.reset(mode)
                 }
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
                     self.endStopRun("the stops changed")
@@ -2364,7 +2364,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.resetStopProgress(for: mode)
         stopSequences[mode] = nil
         // The trail goes with its own mode's progress only (as for a stop edit).
-        if travelTrail.mode == mode { travelTrail.reset() }
+        travelTrail.reset(mode)
     }
 
     /// A route is playing or paused mid-route: its stops must not change under it.
@@ -3006,7 +3006,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private func resetStopProgress() {
         route.resetStopProgress()
         stopSequences = [:]
-        // The trail shows how the progress got there; it goes with it.
+        // Each mode's trail shows how its progress got there; they all go with it.
         travelTrail.reset()
     }
 

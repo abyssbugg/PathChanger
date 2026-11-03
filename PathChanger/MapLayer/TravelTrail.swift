@@ -2,54 +2,59 @@
 //  TravelTrail.swift
 //  PathChanger
 //
-//  The acknowledged positions a stop mode travelled through, for the map (owner ask
-//  2026-11-03). Fed from acknowledged receipts only (PRODUCT_REQUIREMENTS 4). It belongs
-//  to one mode and lasts as long as that mode's stop progress: every Move of the
-//  sequence extends it; a stop edit (not an append), Reset Route or a confirmed Clear
-//  erases it, and another mode's travel starts a new one.
+//  The acknowledged positions each stop mode travelled through, for the map (owner ask
+//  2026-11-03). Fed from acknowledged receipts only (PRODUCT_REQUIREMENTS 4). Jump,
+//  Two-Spot and Multi-Spot each keep their own trail (owner decision 2026-11-03), which
+//  lasts as long as that mode's stop progress: every Move of the sequence extends it; that
+//  mode's stop edit (not an append), Reset Route or a load erases it, a confirmed Clear
+//  erases every mode's, and travel in one mode never touches another's.
 //
-//  It is a list of lines: travel that leaves from somewhere other than the trail's end
-//  (after a Teleport, a Joystick drive or a Jump arrival) starts a new line, so the map
-//  never joins two travels with a line the phone did not drive.
+//  A trail is a list of lines: travel that leaves from somewhere other than the trail's
+//  end (after a Teleport, a Joystick drive or a Jump arrival) starts a new line, so the
+//  map never joins two travels with a line the phone did not drive.
 //
 
 import Foundation
 
 @MainActor
 final class TravelTrail: ObservableObject {
-    /// Most points kept across every segment; past it each segment is halved (keeping
-    /// its first and newest point) and, if that is not enough, the oldest segments go.
+    /// Most points one mode's trail keeps across its segments; past it each segment is
+    /// halved (keeping its first and newest point) and, if that is not enough, the oldest
+    /// segments go.
     static let capacity = 2_000
 
-    @Published private(set) var segments: [[LocationCoordinate]] = []
-    /// The stop mode whose travel drew `segments`; nil when there is no trail.
-    private(set) var mode: AppMode?
-
-    /// Every point of every segment, in order.
-    var points: [LocationCoordinate] { segments.flatMap { $0 } }
+    /// Each stop mode's segments; a mode with no trail has no entry.
+    @Published private(set) var segmentsByMode: [AppMode: [[LocationCoordinate]]] = [:]
 
     /// Adds an acknowledged point `mode` travelled through, reached from `held` (the
-    /// location held before it). It extends the trail only when `held` is the trail's
-    /// end; otherwise it starts a new segment. A point of another mode starts a new trail.
+    /// location held before it). It extends `mode`'s trail only when `held` is that
+    /// trail's end; otherwise it starts a new segment. Other modes' trails are untouched.
     func record(_ coordinate: LocationCoordinate, mode: AppMode, after held: LocationCoordinate?) {
         guard coordinate.isValid else { return }
-        if self.mode != mode {
-            self.mode = mode
-            segments = []
-        }
+        let segments = segmentsByMode[mode] ?? []
         let startsSegment = held == nil || held != segments.last?.last
         let updated = Self.appending(coordinate, to: segments, startsSegment: startsSegment, capacity: Self.capacity)
-        if updated != segments { segments = updated }
+        if updated != segments { segmentsByMode[mode] = updated }
     }
 
-    /// The trail as `mode` draws it: only the mode that travelled it shows it.
+    /// The trail the map draws while `mode` is shown: that mode's own travel only.
     func segments(for mode: AppMode) -> [[LocationCoordinate]] {
-        self.mode == mode ? segments : []
+        segmentsByMode[mode] ?? []
     }
 
+    /// Every point of `mode`'s trail, in order.
+    func points(for mode: AppMode) -> [LocationCoordinate] {
+        segments(for: mode).flatMap { $0 }
+    }
+
+    /// `mode`'s progress reset: its trail goes, the others stay.
+    func reset(_ mode: AppMode) {
+        if segmentsByMode[mode] != nil { segmentsByMode[mode] = nil }
+    }
+
+    /// Every mode's progress reset (a confirmed Clear).
     func reset() {
-        mode = nil
-        if !segments.isEmpty { segments = [] }
+        if !segmentsByMode.isEmpty { segmentsByMode = [:] }
     }
 
     /// `segments` with `coordinate` added: as a new segment when `startsSegment` (or

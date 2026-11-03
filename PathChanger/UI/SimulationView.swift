@@ -137,8 +137,8 @@ struct SimulationView: View {
                         MapPolyline(coordinates: leg.points.map(\.clLocationCoordinate2D))
                             .stroke(RoutePreviewStroke.color(leg.style), style: RoutePreviewStroke.style(leg.style))
                     }
-                    // Only the mode that travelled the trail draws it, one line per
-                    // segment (travel never joined by a line the phone did not drive).
+                    // The shown mode's own trail only, one line per segment (travel
+                    // never joined by a line the phone did not drive).
                     let trailSegments = appState.travelTrail.segments(for: mode).filter { $0.count >= 2 }
                     ForEach(Array(trailSegments.enumerated()), id: \.offset) { _, segment in
                         MapPolyline(coordinates: segment.map(\.clLocationCoordinate2D))

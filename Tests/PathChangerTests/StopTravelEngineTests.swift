@@ -1422,7 +1422,7 @@ extension StopTravelEngineTests {
                 _ = await move(harness)
                 _ = await move(harness)
                 XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 2, label)
-                XCTAssertFalse(state.travelTrail.points.isEmpty, "the second Move travelled (\(label))")
+                XCTAssertFalse(state.travelTrail.points(for: mode).isEmpty, "the second Move travelled (\(label))")
 
                 switch load {
                 case "extending load": state.loadRoute(from: [s0, s1, s2, s3])
@@ -1437,7 +1437,7 @@ extension StopTravelEngineTests {
                     XCTAssertEqual(state.currentRoute, [s0, s1, s2, s3], label)
                 }
                 XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "progress starts over (\(label))")
-                XCTAssertTrue(state.travelTrail.points.isEmpty, "and the trail with it (\(label))")
+                XCTAssertTrue(state.travelTrail.points(for: mode).isEmpty, "and the trail with it (\(label))")
                 let next = await move(harness)
                 XCTAssertLessThan(Geo.distance(from: next.first ?? s2, to: s1), 10, "from the held stop (\(label))")
                 XCTAssertEqual(next.last, s0, "to stop 1 (\(label))")
