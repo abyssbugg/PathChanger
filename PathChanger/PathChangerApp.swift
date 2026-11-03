@@ -2143,12 +2143,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
         Logger.endRepeats(key: "AppState.apply.queued", category: .session)
         guard let pending = pendingApplications.removeValue(forKey: receipt.requestID) else { return }
         stagedStartAfterClear = nil
+        let heldBefore = simulation.currentLocation
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
         // The map's trail of a travelled run: acknowledged points only, including the
-        // run's last step when it lands after Stop (it is what the phone holds).
+        // run's last step when it lands after Stop (it is what the phone holds). Travel
+        // that leaves from somewhere the trail does not end (a Teleport, a Joystick drive
+        // or a Jump arrival moved the phone meanwhile) starts a new line.
         if pending.drawsTrail {
-            travelTrail.record(receipt.coordinate, mode: pending.mode)
+            travelTrail.record(receipt.coordinate, mode: pending.mode, after: heldBefore)
         }
         // A paused run stays paused when the point in flight lands.
         if stopRun == nil { simulation.isPaused = false }

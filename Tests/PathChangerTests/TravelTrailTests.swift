@@ -45,20 +45,23 @@ final class TravelTrailTests: XCTestCase {
     // MARK: - Pure
 
     func testAppendingSkipsARepeatedPoint() {
-        let trail = TravelTrail.appending(s1, to: TravelTrail.appending(s0, to: [], capacity: 10), capacity: 10)
-        XCTAssertEqual(TravelTrail.appending(s1, to: trail, capacity: 10), [s0, s1])
+        let one = TravelTrail.appending(s0, to: [], startsSegment: true, capacity: 10)
+        let trail = TravelTrail.appending(s1, to: one, startsSegment: false, capacity: 10)
+        XCTAssertEqual(TravelTrail.appending(s1, to: trail, startsSegment: false, capacity: 10), [[s0, s1]])
     }
 
     func testTheTrailNeverExceedsItsCapAndKeepsItsEnds() {
-        var trail: [LocationCoordinate] = []
+        var trail: [[LocationCoordinate]] = []
         for index in 0..<5_000 {
-            trail = TravelTrail.appending(point(index), to: trail, capacity: 2_000)
-            XCTAssertLessThanOrEqual(trail.count, 2_000)
+            trail = TravelTrail.appending(point(index), to: trail, startsSegment: false, capacity: 2_000)
+            XCTAssertEqual(trail.count, 1)
+            XCTAssertLessThanOrEqual(trail[0].count, 2_000)
         }
-        XCTAssertEqual(trail.first, point(0), "the start of the run stays")
-        XCTAssertEqual(trail.last, point(4_999), "the newest acknowledged point stays")
-        XCTAssertGreaterThan(trail.count, 900, "downsampling halves, it does not empty")
-        let latitudes = trail.map(\.latitude)
+        let line = trail[0]
+        XCTAssertEqual(line.first, point(0), "the start of the run stays")
+        XCTAssertEqual(line.last, point(4_999), "the newest acknowledged point stays")
+        XCTAssertGreaterThan(line.count, 900, "downsampling halves, it does not empty")
+        let latitudes = line.map(\.latitude)
         XCTAssertEqual(latitudes, latitudes.sorted(), "order is kept")
     }
 
@@ -72,12 +75,12 @@ final class TravelTrailTests: XCTestCase {
 
     func testTheTrailBelongsToAModeAndAnotherModeStartsANewOne() {
         let trail = TravelTrail()
-        trail.record(s0, mode: .route)
-        trail.record(s1, mode: .route)
-        trail.record(s2, mode: .route)
+        trail.record(s0, mode: .route, after: nil)
+        trail.record(s1, mode: .route, after: s0)
+        trail.record(s2, mode: .route, after: s1)
         XCTAssertEqual(trail.points, [s0, s1, s2], "later runs of the same mode extend the trail")
         XCTAssertEqual(trail.mode, .route)
-        trail.record(s0, mode: .twospot)
+        trail.record(s0, mode: .twospot, after: s2)
         XCTAssertEqual(trail.points, [s0], "another mode's travel starts its own trail")
         XCTAssertEqual(trail.mode, .twospot)
         trail.reset()
@@ -87,11 +90,43 @@ final class TravelTrailTests: XCTestCase {
 
     func testTheTrailIsDrawnOnlyForItsMode() {
         let trail = TravelTrail()
-        trail.record(s0, mode: .route)
-        trail.record(s1, mode: .route)
-        XCTAssertEqual(trail.points(for: .route), [s0, s1])
-        XCTAssertTrue(trail.points(for: .jump).isEmpty, "another stop mode does not draw it")
-        XCTAssertTrue(trail.points(for: .twospot).isEmpty)
+        trail.record(s0, mode: .route, after: nil)
+        trail.record(s1, mode: .route, after: s0)
+        XCTAssertEqual(trail.segments(for: .route), [[s0, s1]])
+        XCTAssertTrue(trail.segments(for: .jump).isEmpty, "another stop mode does not draw it")
+        XCTAssertTrue(trail.segments(for: .twospot).isEmpty)
+    }
+
+    /// Review 2026-11-03 (fixes) issue 1: a point reached by something other than this
+    /// trail's travel (a Teleport, a Joystick drive, a Jump arrival) must not be bridged
+    /// by a straight line the phone never drove.
+    func testAPointNotTravelledFromTheTrailsEndStartsANewSegment() {
+        let elsewhere = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        let trail = TravelTrail()
+        trail.record(s0, mode: .route, after: nil)
+        trail.record(s1, mode: .route, after: s0)
+        XCTAssertEqual(trail.segments, [[s0, s1]], "travel from the trail's end extends it")
+        trail.record(s2, mode: .route, after: elsewhere)
+        XCTAssertEqual(trail.segments, [[s0, s1], [s2]], "travel from elsewhere starts its own segment")
+        trail.record(s0, mode: .route, after: s2)
+        XCTAssertEqual(trail.segments, [[s0, s1], [s2, s0]])
+        XCTAssertEqual(trail.points, [s0, s1, s2, s0], "points are every segment, in order")
+    }
+
+    func testTheCapCountsEverySegmentAndKeepsTheNewestPoint() {
+        let trail = TravelTrail()
+        var held: LocationCoordinate?
+        for index in 0..<(TravelTrail.capacity * 2) {
+            // A new segment every 10 points.
+            let after = index % 10 == 0 ? nil : held
+            trail.record(point(index), mode: .route, after: after)
+            held = point(index)
+            XCTAssertLessThanOrEqual(trail.segments.reduce(0) { $0 + $1.count }, TravelTrail.capacity)
+        }
+        XCTAssertEqual(trail.points.last, point(TravelTrail.capacity * 2 - 1), "the newest point stays")
+        let latitudes = trail.points.map(\.latitude)
+        XCTAssertEqual(latitudes, latitudes.sorted(), "order is kept")
+        XCTAssertFalse(trail.segments.contains { $0.isEmpty })
     }
 
     // MARK: - AppState
@@ -147,6 +182,38 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.travelTrail.points.last, s2)
         let applied = await injector.applied
         XCTAssertEqual(state.travelTrail.points, Array(applied.suffix(state.travelTrail.points.count)))
+        XCTAssertEqual(state.travelTrail.segments.count, 1, "back-to-back travelled Moves are one line")
+    }
+
+    /// Review 2026-11-03 (fixes) issue 1: a Teleport between two travelled Moves left the
+    /// trail joining the old end to the new travel with a line the phone never drove.
+    func testATeleportBetweenTravelledMovesSplitsTheTrail() async {
+        let elsewhere = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        let (state, _) = makeState(mode: .route, stops: [s0, s1, s2], arrival: .travel)
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .onePerMove, repeatMode: .oneWay),
+            for: .route
+        )
+        await state.startSimulation()
+        await state.startSimulation()
+        XCTAssertEqual(state.currentLocation, s1)
+        XCTAssertEqual(state.travelTrail.points.last, s1)
+
+        state.activeMode = .teleport
+        state.stageLocation(elsewhere, for: .teleport)
+        await state.startSimulation()
+        XCTAssertEqual(state.currentLocation, elsewhere)
+
+        state.activeMode = .route
+        await state.startSimulation()
+        XCTAssertEqual(state.currentLocation, s2)
+
+        let segments = state.travelTrail.segments
+        XCTAssertEqual(segments.count, 2, "the Teleport splits the trail")
+        XCTAssertEqual(segments.first?.last, s1, "the first line ends where that Move stopped")
+        XCTAssertEqual(segments.last?.last, s2)
+        XCTAssertFalse(segments.last?.contains(s1) ?? true, "no line joins stop 2 to the travel that left from elsewhere")
+        XCTAssertFalse(state.travelTrail.points.contains(elsewhere), "the Teleport itself is not travel")
     }
 
     func testAStopEditResetsTheTrailByItsOwnModesRule() {
@@ -155,8 +222,8 @@ final class TravelTrailTests: XCTestCase {
         let state = AppState(startBackgroundServices: false, locationInjector: TrailAckInjector(), routeDelay: { _ in })
         state.activeMode = .twospot
         state.stageLocation(s0, for: .twospot)
-        state.travelTrail.record(s1, mode: .twospot)
-        state.travelTrail.record(s2, mode: .twospot)
+        state.travelTrail.record(s1, mode: .twospot, after: nil)
+        state.travelTrail.record(s2, mode: .twospot, after: s1)
         state.stageLocation(s1, for: .twospot)
         XCTAssertTrue(state.travelTrail.points.isEmpty, "Two-Spot's run changed, so its trail goes")
 
@@ -164,8 +231,8 @@ final class TravelTrailTests: XCTestCase {
         state.clearRoute()
         state.stageLocation(s0, for: .route)
         state.stageLocation(s1, for: .route)
-        state.travelTrail.record(s1, mode: .route)
-        state.travelTrail.record(s2, mode: .route)
+        state.travelTrail.record(s1, mode: .route, after: nil)
+        state.travelTrail.record(s2, mode: .route, after: s1)
         state.stageLocation(s2, for: .route)
         XCTAssertEqual(state.travelTrail.points, [s1, s2], "appending keeps Multi-Spot's progress and its trail")
     }
