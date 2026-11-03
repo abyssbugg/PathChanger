@@ -43,6 +43,30 @@ struct RemotePairingAdvertTracker {
     }
 }
 
+/// How often an advert alone may wake a reconnect (review 2026-11-03 issue 9). The browser
+/// cannot be filtered to the remembered phone (no altIRK in the app), so any Apple device
+/// joining or leaving the LAN is news. The first advert after a reconnect arms wakes it at
+/// once; further adverts within `window` of that wake are ignored, and the reconnect keeps
+/// its own timers. Real visibility (usbmux, mobdev2) never passes through this.
+struct RemotePairingAdvertHintLimiter {
+    static let window: TimeInterval = 30
+
+    private var lastAdmitted: Date?
+
+    /// True when an advert at `now` may wake the reconnect; it then starts a new window.
+    /// A clock that went back keeps the window closed.
+    mutating func admit(at now: Date) -> Bool {
+        if let lastAdmitted, now.timeIntervalSince(lastAdmitted) < Self.window { return false }
+        lastAdmitted = now
+        return true
+    }
+
+    /// A reconnect armed again: its first advert wakes it at once.
+    mutating func reset() {
+        lastAdmitted = nil
+    }
+}
+
 @MainActor
 final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
     static let serviceType = "_remotepairing._tcp"

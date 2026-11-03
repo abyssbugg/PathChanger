@@ -344,6 +344,8 @@ final class TunnelAutoReconnector: ObservableObject {
 
     private var visibilityHint: VisibilityHint?
     private var phoneBecameVisible: Bool { visibilityHint != nil }
+    /// Advert-only hints per reconnect: the first wakes at once, then one per window.
+    private var advertHints = RemotePairingAdvertHintLimiter()
     private var lastTry = Date.distantPast
     private var failedAttempts = 0
     private var task: Task<Void, Never>?
@@ -376,10 +378,13 @@ final class TunnelAutoReconnector: ObservableObject {
     /// A RemotePairing advert appeared or changed (live 2026-11-03: it came back while
     /// usbmuxd listed nothing and the mobdev2 advert stayed the same, so only the retry
     /// timer tried). Only while reconnecting, and never sooner than `visibilitySpacing`
-    /// after the last try, however often adverts arrive. It is not visibility: nothing
-    /// here or in the device list treats it as the phone being reachable.
+    /// after the last try, however often adverts arrive. Only the first advert per
+    /// `RemotePairingAdvertHintLimiter.window` counts: the browser sees every Apple device
+    /// on the LAN, so churn must not keep bypassing the retry backoff. It is not
+    /// visibility: nothing here or in the device list treats it as the phone being reachable.
     func noteRemotePairingAdvert() {
         guard task != nil else { return }
+        guard advertHints.admit(at: environment.now()) else { return }
         if visibilityHint == nil { visibilityHint = .remotePairingAdvert }
         waiter.signalReachable()
     }
@@ -456,6 +461,7 @@ final class TunnelAutoReconnector: ObservableObject {
         failedAttempts = 0
         lastTry = environment.now()
         visibilityHint = nil
+        advertHints.reset()
         wasRememberedDeviceVisible = tunnel.reconnectDeviceId.map(visibleDeviceIDs.contains) ?? false
         waiter.discardPendingSignal()
         isReconnecting = true

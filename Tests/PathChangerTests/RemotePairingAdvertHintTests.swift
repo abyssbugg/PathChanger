@@ -132,6 +132,35 @@ final class RemotePairingAdvertTrackerTests: XCTestCase {
     }
 }
 
+// MARK: - How often an advert alone may wake a reconnect
+
+final class RemotePairingAdvertHintLimiterTests: XCTestCase {
+    private let start = Date(timeIntervalSinceReferenceDate: 7_000_000)
+
+    func testTheFirstAdvertWakesAndLaterOnesInsideTheWindowDoNot() {
+        var limiter = RemotePairingAdvertHintLimiter()
+        let window = RemotePairingAdvertHintLimiter.window
+        XCTAssertTrue(limiter.admit(at: start))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(1)))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(window - 0.1)))
+        XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(window)))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(window + 1)), "the window restarts at each wake")
+    }
+
+    func testAResetLetsTheNextAdvertWakeAtOnce() {
+        var limiter = RemotePairingAdvertHintLimiter()
+        XCTAssertTrue(limiter.admit(at: start))
+        limiter.reset()
+        XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(1)))
+    }
+
+    func testAClockThatWentBackDoesNotOpenTheWindow() {
+        var limiter = RemotePairingAdvertHintLimiter()
+        XCTAssertTrue(limiter.admit(at: start))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(-60)))
+    }
+}
+
 // MARK: - The tunnel reconnect takes the hint
 
 @MainActor
@@ -200,7 +229,51 @@ final class TunnelReconnectAdvertHintTests: XCTestCase {
         XCTAssertEqual(tunnel.automaticStarts.count, 1, "one attempt per spacing, however many adverts")
         XCTAssertTrue(reconnector.isReconnecting)
         let requests = await sleeper.recordedRequests()
-        XCTAssertEqual(requests.last, TunnelAutoReconnectPolicy.visibilitySpacing)
+        XCTAssertEqual(requests.last, TunnelAutoReconnectPolicy.retryDelay(afterFailedAttempts: 1),
+                       "adverts inside the window keep the normal backoff")
+    }
+
+    /// Review 2026-11-03 issue 9: the browser is unfiltered, so other Apple devices joining
+    /// and leaving the LAN must not keep bypassing the retry backoff.
+    func testSustainedAdvertChurnMakesABoundedNumberOfAttempts() async throws {
+        let tunnel = FakeReconnectTunnel() // every attempt fails
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        loseTunnel(tunnel)
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        // A few adverts every 10 s for five minutes. The retry timers are never released,
+        // so every attempt here came from an advert.
+        let duration: TimeInterval = 300
+        for _ in 0..<Int(duration / 10) {
+            clock.now += 10
+            for _ in 0..<3 { reconnector.noteRemotePairingAdvert() }
+            await settle()
+        }
+
+        let bound = Int(duration / RemotePairingAdvertHintLimiter.window) + 1
+        XCTAssertLessThanOrEqual(tunnel.automaticStarts.count, bound, "at most one advert wake per window")
+        XCTAssertGreaterThanOrEqual(tunnel.automaticStarts.count, 2, "an advert after the window still wakes it")
+        XCTAssertTrue(reconnector.isReconnecting)
+    }
+
+    func testThePhoneBecomingVisibleStillWakesInsideTheAdvertWindow() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        loseTunnel(tunnel)
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        clock.now += 3
+        reconnector.noteRemotePairingAdvert()
+        try await waitUntil("the advert attempt") { tunnel.automaticStarts.count == 1 }
+        try await waitUntil("the retry wait") { await sleeper.recordedRequests().count == 2 }
+
+        clock.now += 3
+        reconnector.noteRemotePairingAdvert()
+        await settle()
+        XCTAssertEqual(tunnel.automaticStarts.count, 1, "a second advert inside the window wakes nothing")
+
+        reconnector.noteVisibleDevices([udid])
+        try await waitUntil("the visibility attempt") { tunnel.automaticStarts.count == 2 }
     }
 
     func testAnAdvertWhileNothingReconnectsIsNotKept() async throws {
@@ -424,12 +497,22 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.state.device.wifiDirectDeviceIds.isEmpty)
         XCTAssertFalse(fixture.state.locationSessionCoordinator.state.application.isActive)
 
-        // More adverts at once: the next burst still waits out the 20 s spacing.
+        // More adverts inside the window wake nothing (review 2026-11-03 issue 9): the
+        // wait keeps its fallback timer.
         for _ in 0..<3 { fixture.browser.advertAppeared() }
-        try await waitUntil("the spacing wait") { await fixture.locationSleeper.recordedRequests().count == 3 }
-        let requests = await fixture.locationSleeper.recordedRequests()
-        XCTAssertEqual(requests, [60, 60, 20])
         await settle()
-        XCTAssertEqual(fixture.deviceManager.refreshCount, 1, "no second burst inside the spacing")
+        let requestsInWindow = await fixture.locationSleeper.recordedRequests()
+        XCTAssertEqual(requestsInWindow, [60, 60])
+        XCTAssertEqual(fixture.deviceManager.refreshCount, 1, "no second burst inside the window")
+
+        // After the window an advert wakes it again; the 20 s spacing has passed too.
+        fixture.clock.now += RemotePairingAdvertHintLimiter.window
+        fixture.browser.advertAppeared()
+        try await waitUntil("the wait after the second burst") {
+            await fixture.locationSleeper.recordedRequests().count == 3
+        }
+        XCTAssertEqual(fixture.deviceManager.refreshCount, 2)
+        let requests = await fixture.locationSleeper.recordedRequests()
+        XCTAssertEqual(requests, [60, 60, 120])
     }
 }

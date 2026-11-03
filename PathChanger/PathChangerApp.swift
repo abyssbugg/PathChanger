@@ -889,6 +889,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Nil wherever background services are off, unless a test injects one.
     private let remotePairingAdvertBrowser: (any RemotePairingAdvertBrowsing)?
     private var isBrowsingRemotePairingAdverts = false
+    /// Advert-only wakes of the location wait: the first after arming, then one per window.
+    private var locationAdvertHints = RemotePairingAdvertHintLimiter()
     /// Set by Quit: the browser never starts again.
     private var isRemotePairingBrowsingShutDown = false
     /// Reconnect is in flight: the button reads "Reconnecting…" and further clicks do nothing.
@@ -3408,6 +3410,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
         device.awaitedReconnectDeviceID = deviceID
         automaticReconnectWaiter.discardPendingSignal()
+        locationAdvertHints.reset()
         if isAwaitedDeviceVisible(deviceID) {
             automaticReconnectWaiter.signalReachable()
         }
@@ -3449,14 +3452,16 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     /// The phone may be back: both reconnects look again now instead of on their timers.
-    /// Their own spacing bounds the attempts. The device list and its reachability words
-    /// are untouched: an opaque advert is not the phone.
+    /// Their own spacing bounds the attempts, and each takes at most one advert per
+    /// `RemotePairingAdvertHintLimiter.window` (any Apple device on the LAN advertises).
+    /// The device list and its reachability words are untouched: an opaque advert is not
+    /// the phone.
     private func remotePairingAdvertAppeared() {
         // A callback already queued when browsing stopped.
         guard isBrowsingRemotePairingAdverts else { return }
         Logger.info("[RemotePairingBrowse] A RemotePairing advert appeared; the phone may be back", category: .device)
         tunnelAutoReconnector.noteRemotePairingAdvert()
-        if automaticReconnectTask != nil {
+        if automaticReconnectTask != nil, locationAdvertHints.admit(at: automaticReconnect.now()) {
             automaticReconnectWaiter.signalReachable()
         }
     }
