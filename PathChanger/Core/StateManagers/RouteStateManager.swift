@@ -63,9 +63,9 @@ final class RouteStateManager: ObservableObject {
 
     /// Current route coordinates
     @Published var currentRoute: [LocationCoordinate] = [] {
-        // Any change to the stops starts every stop mode's progress over
-        // (owner rule 2026-11-03: add, remove, move, reverse, import).
-        didSet { if currentRoute != oldValue { resetStopProgress() } }
+        // A change to the stops starts the stop modes' progress over, except appending
+        // stops (owner rule 2026-11-03; `keepsStopProgress`).
+        didSet { if currentRoute != oldValue { applyStopEdit(from: oldValue, to: currentRoute) } }
     }
 
     /// Playback progress (0.0 to 1.0)
@@ -207,6 +207,28 @@ final class RouteStateManager: ObservableObject {
         jumpIndex = 0
         jumpReversed = false
         if !routeStopCursors.isEmpty { routeStopCursors = [:] }
+    }
+
+    /// Whether `mode`'s stop progress survives the stops changing from `old` to `new`.
+    /// Only appending stops keeps it (owner rule 2026-11-03: the next Move continues to
+    /// the next unreached stop, which may be the new one); a remove, move, insert,
+    /// reverse or import starts over. Two-Spot runs its first two stops, so it keeps
+    /// progress only when those were already set: with one spot it began at the held
+    /// location, and a second spot changes the run's stops.
+    static func keepsStopProgress(_ mode: AppMode, from old: [LocationCoordinate], to new: [LocationCoordinate]) -> Bool {
+        guard !old.isEmpty, new.count > old.count, Array(new.prefix(old.count)) == old else { return false }
+        return mode == .twospot ? old.filter(\.isValid).count >= 2 : true
+    }
+
+    /// The stops changed: reset each mode whose progress the change does not keep.
+    private func applyStopEdit(from old: [LocationCoordinate], to new: [LocationCoordinate]) {
+        if !Self.keepsStopProgress(.jump, from: old, to: new) {
+            jumpIndex = 0
+            jumpReversed = false
+        }
+        for mode in routeStopCursors.keys where !Self.keepsStopProgress(mode, from: old, to: new) {
+            routeStopCursors[mode] = nil
+        }
     }
 
     /// Set the simulation state manager reference

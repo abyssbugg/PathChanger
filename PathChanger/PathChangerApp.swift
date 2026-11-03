@@ -1005,9 +1005,22 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.$currentRoute
             .sink { [weak self] newRoute in
                 guard let self, newRoute != self.route.currentRoute else { return }
-                // The route's `currentRoute` didSet resets every mode's stop index.
-                self.stopSequences = [:]
-                self.travelTrail.reset()
+                // The route's `currentRoute` didSet resets each stop index the edit does
+                // not keep; the remembered stops follow the same rule. Appending keeps a
+                // sequence, which then runs through the new stops too (Two-Spot's two
+                // stops are unchanged).
+                let old = self.route.currentRoute
+                for mode in Array(self.stopSequences.keys) {
+                    if !RouteStateManager.keepsStopProgress(mode, from: old, to: newRoute) {
+                        self.stopSequences[mode] = nil
+                    } else if mode != .twospot {
+                        self.stopSequences[mode]?.stops = newRoute.filter(\.isValid)
+                    }
+                }
+                // The trail shows how the kept progress got there; it goes with a reset.
+                if !RouteStateManager.keepsStopProgress(.jump, from: old, to: newRoute) {
+                    self.travelTrail.reset()
+                }
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
                     self.endStopRun("the stops changed")
                 }

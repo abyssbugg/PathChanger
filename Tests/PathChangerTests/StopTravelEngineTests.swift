@@ -1180,7 +1180,10 @@ extension StopTravelEngineTests {
 
     func testEditingTheStopsOrResetRouteResetsProgressInEveryStopMode() async {
         for mode in Self.stopModes {
-            for edit in ["add", "remove", "move", "reverse", "import", "Reset Route"] {
+            // Appending keeps progress (testAppendingAStopKeepsProgress); in Two-Spot a
+            // further click replaces the destination, which is an edit.
+            let edits = (mode == .twospot ? ["add"] : []) + ["remove", "move", "reverse", "import", "Reset Route"]
+            for edit in edits {
                 let label = "\(mode) \(edit)"
                 let harness = await StopRunHarness.make(mode: mode, stops: runStops(for: mode), settings: options(mode, progression: .onePerMove))
                 let state = harness.state!
@@ -1206,6 +1209,47 @@ extension StopTravelEngineTests {
                 XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 1, label)
             }
         }
+    }
+
+    func testAppendingAStopKeepsProgressAndTheNextMovesReachIt() async {
+        let s3 = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        for mode: AppMode in [.jump, .route] {
+            for finished in [false, true] {
+                let label = "\(mode) \(finished ? "finished" : "mid-run")"
+                let harness = await StopRunHarness.make(mode: mode, stops: [s0, s1, s2], settings: options(mode, progression: .onePerMove))
+                let state = harness.state!
+                for _ in 0..<(finished ? 3 : 2) { _ = await move(harness) }
+                let reached = finished ? 3 : 2
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, reached, label)
+
+                state.stageLocation(s3, for: mode)
+                XCTAssertEqual(state.currentRoute, [s0, s1, s2, s3], label)
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, reached, "appending keeps progress (\(label))")
+
+                var next = await move(harness)
+                if !finished {
+                    XCTAssertFalse(next.contains(s0), "never back to stop 1 (\(label))")
+                    XCTAssertEqual(next.last, s2, label)
+                    next = await move(harness)
+                }
+                XCTAssertFalse(next.contains(s0), "never back to stop 1 (\(label))")
+                XCTAssertEqual(next.last, s3, "the appended stop is reached (\(label))")
+                XCTAssertEqual(state.displayStopCursor(for: mode).nextIndex, 4, label)
+                assertHeld(state, at: s3)
+            }
+        }
+    }
+
+    func testOnlyAPureAppendKeepsStopProgress() {
+        let s3 = LocationCoordinate(latitude: 35.68000, longitude: 139.76110)
+        XCTAssertTrue(RouteStateManager.keepsStopProgress(.jump, from: [s0, s1], to: [s0, s1, s2]))
+        XCTAssertTrue(RouteStateManager.keepsStopProgress(.route, from: [s0, s1], to: [s0, s1, s2, s3]))
+        XCTAssertTrue(RouteStateManager.keepsStopProgress(.twospot, from: [s0, s1], to: [s0, s1, s2]), "Two-Spot's two stops are unchanged")
+        XCTAssertFalse(RouteStateManager.keepsStopProgress(.twospot, from: [s0], to: [s0, s1]), "Two-Spot with one spot began at the held location")
+        XCTAssertFalse(RouteStateManager.keepsStopProgress(.route, from: [s0, s1, s2], to: [s0, s1]), "remove")
+        XCTAssertFalse(RouteStateManager.keepsStopProgress(.route, from: [s0, s1], to: [s1, s0, s2]), "move")
+        XCTAssertFalse(RouteStateManager.keepsStopProgress(.route, from: [s0, s1], to: [s0, s2, s1]), "insert")
+        XCTAssertFalse(RouteStateManager.keepsStopProgress(.jump, from: [], to: [s0]), "nothing to keep")
     }
 
     func testAConfirmedClearResetsProgressAndThenPlacesStopOne() async {
