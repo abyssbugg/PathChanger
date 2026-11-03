@@ -837,6 +837,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     @Published private var locationClearTask: Task<Void, Never>?
     @Published private var unresolvedClearSession: LocationSessionIdentity?
     private var locationOperationGeneration: UInt64 = 0
+    /// Advanced by every action that supersedes the held location: every Clear (any
+    /// outcome), Stop Tunnel, Stop while reconnecting and every explicit apply or Move.
+    /// A location a replaced helper held is restored only while this is unchanged since
+    /// the bridge first saw that helper's record (review 2026-11-03 reconnect-audit-fixes
+    /// issue 1).
+    private var locationSupersedeGeneration: UInt64 = 0
     private var simulationTask: Task<Void, Never>? {
         didSet {
             isMovementEngineRunning = simulationTask != nil
@@ -1160,10 +1166,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
             self?.handleLocationSessionLoss(event)
         }
 
-        // A replaced helper's held sessions carry the Clear counter they were inherited
-        // at, so one inherited before a Clear is never restored (review 2026-11-03 issue 1).
-        self.managedLocationSessionSource.setInheritedSessionClearEpochSource { [weak self] in
-            self?.locationOperationGeneration ?? 0
+        // A replaced helper's held sessions carry AppState's counters from when the bridge
+        // first saw that helper's record, so a session a Clear, Stop or explicit apply
+        // superseded is never restored (review 2026-11-03 issue 1).
+        self.managedLocationSessionSource.setInheritanceStampSource { [weak self] in
+            guard let self else { return .initial }
+            return ManagedLocationInheritanceStamp(
+                clearEpoch: self.locationOperationGeneration,
+                supersedeGeneration: self.locationSupersedeGeneration
+            )
         }
 
         // The awaited phone is visible again over any live source. A paired placeholder
@@ -1431,6 +1442,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             return
         }
         locationOperationGeneration &+= 1
+        // Every Clear, whatever its outcome, supersedes a location a replaced helper held.
+        locationSupersedeGeneration &+= 1
         // Pressing Clear is how the user stops a wait for the lost phone (the GUI offers it
         // while waiting); the outcome is reported in those words below.
         let wasAwaitingReconnect = isAwaitingAutomaticReconnect
@@ -1863,7 +1876,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
         // An explicit apply (Move, Reapply location) supersedes a location a replaced
         // helper held, also when it fails or its own connect replaced that helper
-        // (review 2026-11-03 issue 1).
+        // (review 2026-11-03 issue 1), and also one a replacement still in flight keeps.
+        locationSupersedeGeneration &+= 1
         managedLocationSessionSource.discardInheritedHeldSessions()
         defer { managedLocationSessionSource.discardInheritedHeldSessions() }
         let operationGeneration = locationOperationGeneration
@@ -3270,7 +3284,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
             // tunnel's own restart is not a Stop: it is the user asking to reconnect.
             if tunnelReconnectTask == nil {
                 isAutomaticReconnectLatchedByUser = true
-                // The location a replaced helper held ends with the Stop, too.
+                // The location a replaced helper held ends with the Stop, too, also one a
+                // replacement still in flight keeps.
+                locationSupersedeGeneration &+= 1
                 managedLocationSessionSource.discardInheritedHeldSessions()
             }
             cancelAutomaticReconnect(reason: "Tunnel stopped")
@@ -3432,6 +3448,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     func stopTunnelReconnect() {
         Logger.info("[TunnelReconnect] Stop pressed while reconnecting", category: .device)
         isAutomaticReconnectLatchedByUser = true
+        locationSupersedeGeneration &+= 1
         managedLocationSessionSource.discardInheritedHeldSessions()
         cancelAutomaticReconnect(reason: "Stop pressed while the tunnel reconnected")
         locationRecoveryTask?.cancel()
@@ -3546,7 +3563,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// PathChanger's (live 2026-11-03: orphaned helpers lost the local network). The held
     /// location the old helper listed is restored as held, then marked lost: stopping that
     /// helper ended it on the phone, and the recovery reapplies it over the live tunnel.
-    /// Only while no Clear ran since it was inherited (its stamp is that Clear counter).
+    /// Only while no Clear, Stop or explicit apply ran since the bridge first read that
+    /// helper's record (its stamp carries both counters from then).
     private func reapplyInheritedHeldLocation(for device: Device) async {
         // The restore's own guards, before taking it: a refusal here keeps it for the
         // next tunnel edge (another phone selected, or a Move or Stop since the edge).
@@ -3558,6 +3576,17 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let clearEpoch = peeked.clearEpoch ?? locationOperationGeneration
         guard clearEpoch == locationOperationGeneration else {
             Logger.info("[AppState] Not restoring the location a replaced helper held: a Clear came after it", category: .session)
+            managedLocationSessionSource.discardInheritedHeldSessions()
+            return
+        }
+        // Any Clear, Stop or explicit apply since the bridge first read that helper's
+        // record superseded it, including one pressed while the replacement was in flight
+        // (review 2026-11-03 reconnect-audit-fixes issue 1).
+        guard peeked.supersedeGeneration == locationSupersedeGeneration else {
+            Logger.info(
+                "[AppState] Not restoring the location a replaced helper held: a Clear, Stop or Move came after it",
+                category: .session
+            )
             managedLocationSessionSource.discardInheritedHeldSessions()
             return
         }

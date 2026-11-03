@@ -112,7 +112,7 @@ private final class InheritingManagedSessionSource: ManagedLocationSessionSource
     /// False: behaves like a bridge that never heard of a Clear (only the stamp is left).
     var honoursDiscard = true
     private(set) var discardCount = 0
-    private var clearEpochSource: (@MainActor () -> UInt64)?
+    private var stampSource: (@MainActor () -> ManagedLocationInheritanceStamp)?
     var adoptedHelperID: UUID? { nil }
     var adoptedHelperSessions: [ManagedLocationHelperSession] { [] }
     var hasRecordedHeldSessions: Bool { false }
@@ -138,13 +138,30 @@ private final class InheritingManagedSessionSource: ManagedLocationSessionSource
         discardCount += 1
         if honoursDiscard { inherited = nil }
     }
-    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {
-        clearEpochSource = source
+    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp) {
+        stampSource = source
     }
     /// The bridge replacing the helper now: keeps its session with the current stamp.
     func inherit(_ session: ManagedLocationHelperSession, helperID: UUID = UUID()) {
+        let stamp = stampSource?() ?? .initial
         inherited = ManagedLocationInheritedSession(helperID: helperID, session: session,
-                                                    clearEpoch: clearEpochSource?())
+                                                    clearEpoch: stamp.clearEpoch,
+                                                    supersedeGeneration: stamp.supersedeGeneration)
+    }
+    /// The bridge's contract for a replacement that spans user actions: AppState's
+    /// counters are read when the bridge first sees the orphan's record (adoption, or the
+    /// start of the replacement), before any await.
+    private var pendingStamp: ManagedLocationInheritanceStamp?
+    func beginReplacement() {
+        pendingStamp = stampSource?() ?? .initial
+    }
+    /// ...and the replacement finishes later, keeping the session with that early stamp.
+    func finishReplacement(_ session: ManagedLocationHelperSession, helperID: UUID = UUID()) {
+        let stamp = pendingStamp ?? .initial
+        pendingStamp = nil
+        inherited = ManagedLocationInheritedSession(helperID: helperID, session: session,
+                                                    clearEpoch: stamp.clearEpoch,
+                                                    supersedeGeneration: stamp.supersedeGeneration)
     }
 }
 
@@ -784,6 +801,117 @@ final class AutomaticReconnectTests: XCTestCase {
         XCTAssertEqual(applied, [newer], "only the Move's own attempt; the older X is never sent")
         XCTAssertEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, newer)
         XCTAssertNil(source.inherited, "the Move dropped it")
+    }
+
+    // MARK: A replacement that finishes after the action it should lose to
+    // (review 2026-11-03 reconnect-audit-fixes issue 1)
+
+    /// Clear pressed while a tunnel connect is replacing the orphan; the replacement
+    /// finishes afterwards. Start (Reconnect tunnel here) and a tunnel-live edge must send
+    /// nothing.
+    func testAReplacementWhoseAwaitSpansAClearNeverSendsTheClearedLocation() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        source.beginReplacement()
+
+        await fixture.state.clearLocation()
+        source.finishReplacement(replacedHelperSession(at: held))
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0, "the cleared location is never sent")
+        XCTAssertNotEqual(fixture.state.locationSessionCoordinator.state.desiredLocation, held)
+    }
+
+    /// Clear while the phone is away ("not sent: no connection") never touches the orphan,
+    /// which still lists X. A later connect replaces it; Start must not send X.
+    func testAClearNotSentFollowedByALaterReplacementAndStartSendsNothing() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        // The bridge adopted the orphan (and read its record) before the Clear.
+        source.beginReplacement()
+        await fixture.state.clearLocation()
+        await settle()
+
+        source.finishReplacement(replacedHelperSession(at: held))
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0)
+    }
+
+    /// Stop while the tunnel reconnects, during that reconnect's replacement of the orphan.
+    /// Stop advanced no counter, so the replacement's stamp passed after Start.
+    func testStopWhileReconnectingDuringAReplacementThenStartSendsNothing() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        source.beginReplacement()
+
+        fixture.state.stopTunnelReconnect()
+        source.finishReplacement(replacedHelperSession(at: held))
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0, "Stop superseded the location the orphan held")
+    }
+
+    /// Stop Tunnel during an in-flight replacement, then Start.
+    func testStopTunnelDuringAReplacementThenStartSendsNothing() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source, tunnelReconnect: FakeReconnectTunnel())
+        source.beginReplacement()
+
+        fixture.state.device.onLocationSessionLoss?(.tunnelStoppedByUser)
+        source.finishReplacement(replacedHelperSession(at: held))
+        await fixture.state.reconnectTunnel()
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0)
+    }
+
+    /// A Move to Y fails while its own connect is still replacing the orphan that held X;
+    /// the replacement finishes after the Move ended. X must never follow.
+    func testAReplacementThatFinishesAfterAFailedMoveNeverSendsTheOlderLocation() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source)
+        let newer = LocationCoordinate(latitude: 48.8566, longitude: 2.3522)
+        fixture.state.activeMode = .teleport
+        fixture.state.stageLocation(newer, for: .teleport)
+        source.beginReplacement()
+
+        let move = Task { await fixture.state.startSimulation() }
+        try await waitUntil("the Move apply") { await fixture.injector.pendingApplicationCount() == 1 }
+        await fixture.injector.failNextApplication(code: "No route to host")
+        await move.value
+        source.finishReplacement(replacedHelperSession(at: held))
+        fixture.state.device.onTunnelActiveChanged?(true)
+        await settle()
+
+        let applied = await appliedCoordinates(fixture.injector)
+        XCTAssertEqual(applied, [newer], "only the Move's own attempt")
+    }
+
+    /// The legitimate case still works: the helper is replaced while X is held, with no
+    /// Clear, Stop or Move since the bridge saw its record.
+    func testAReplacementWithNoClearStopOrMoveSinceStillReappliesItsLocation() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source)
+        source.beginReplacement()
+        source.finishReplacement(replacedHelperSession(at: held))
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("the reapply") { await fixture.injector.pendingApplicationCount() == 1 }
+        let applied = await appliedCoordinates(fixture.injector)
+        XCTAssertEqual(applied, [held])
     }
 
     func testTheTunnelComingBackWithNothingAwaitedStartsNothing() async throws {

@@ -599,7 +599,7 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
             parentProcessID: Self.everyHelperIsOrphaned)
         let bridge = PersistentLocationBridge(helperController: controller)
-        bridge.setInheritedSessionClearEpochSource { 7 }
+        bridge.setInheritanceStampSource { ManagedLocationInheritanceStamp(clearEpoch: 7, supersedeGeneration: 2) }
 
         do {
             try await bridge.start()
@@ -614,13 +614,56 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             let inherited = try XCTUnwrap(bridge.takeInheritedHeldSession(for: deviceID))
             XCTAssertEqual(inherited.helperID, orphan.record.helperID)
             XCTAssertEqual(inherited.session, held)
-            XCTAssertEqual(inherited.clearEpoch, 7, "stamped with the Clear counter at inheritance")
+            XCTAssertEqual(inherited.clearEpoch, 7, "stamped with the Clear counter")
+            XCTAssertEqual(inherited.supersedeGeneration, 2, "and the supersede generation")
             XCTAssertNil(bridge.takeInheritedHeldSession(for: deviceID), "taken once")
 
             // The new helper is this app's own: never replaced again.
             let ownHelper = bridge.adoptedHelperID
             try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
             XCTAssertEqual(bridge.adoptedHelperID, ownHelper)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            throw error
+        }
+    }
+
+    /// Review 2026-11-03 reconnect-audit-fixes issue 1: the stamp was read after the
+    /// replacement's await, so a Clear that never reached the orphan ("not sent: no
+    /// connection") or one pressed while the replacement was in flight stamped the
+    /// pre-Clear location as current. The stamp is AppState's counters from when the
+    /// bridge first saw the orphan's record, before any await.
+    @MainActor
+    func testAnInheritedSessionCarriesTheStampFromBeforeTheReplacementAwaited() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-stamp")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let deviceID = "00008130-0011223344556677"
+        try writeRecord(orphan.record, sessions: [heldSession(for: deviceID)], to: paths)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        var stamp = ManagedLocationInheritanceStamp(clearEpoch: 3, supersedeGeneration: 5)
+        let bridge = PersistentLocationBridge(helperController: controller, foreignHelperReplacementWillAwait: {
+            // A Clear pressed while the replacement is in flight.
+            stamp = ManagedLocationInheritanceStamp(clearEpoch: 5, supersedeGeneration: 8)
+        })
+        bridge.setInheritanceStampSource { stamp }
+        do {
+            try await bridge.start()
+            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID, "the orphan's record is first seen here")
+            // A Clear that never reached the orphan (no connection), then Stop.
+            stamp = ManagedLocationInheritanceStamp(clearEpoch: 4, supersedeGeneration: 7)
+
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+
+            let inherited = try XCTUnwrap(bridge.inheritedHeldSession(for: deviceID))
+            XCTAssertEqual(inherited.clearEpoch, 3, "the Clear counter from before the Clears")
+            XCTAssertEqual(inherited.supersedeGeneration, 5, "the supersede generation from before them")
             try await bridge.shutdownHelper()
         } catch {
             try? await bridge.shutdownHelper()

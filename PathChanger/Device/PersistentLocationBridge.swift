@@ -48,25 +48,40 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// Stop Tunnel and an explicit Move supersede what that helper held, whether or not
     /// they reached the phone (review 2026-11-03 reconnect-audit issue 1).
     func discardInheritedHeldSessions()
-    /// The counter AppState advances on every Clear, read when a replaced helper's held
-    /// sessions are inherited and stamped on them (`ManagedLocationInheritedSession.clearEpoch`).
-    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64)
+    /// AppState's counters, read when the bridge first sees a foreign helper's record and
+    /// stamped on the held sessions it later inherits from that helper.
+    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp)
 }
 
 extension ManagedLocationSessionSource {
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func discardInheritedHeldSessions() {}
-    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {}
+    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp) {}
+}
+
+/// AppState's counters at one moment: its Clear counter, and the supersede generation
+/// that every Clear, Stop Tunnel, Stop while reconnecting and explicit apply or Move
+/// advances (review 2026-11-03 reconnect-audit-fixes issue 1).
+struct ManagedLocationInheritanceStamp: Equatable {
+    var clearEpoch: UInt64
+    var supersedeGeneration: UInt64
+
+    /// Before any AppState existed: both counters start at zero, and no user action can
+    /// have superseded anything yet.
+    static let initial = ManagedLocationInheritanceStamp(clearEpoch: 0, supersedeGeneration: 0)
 }
 
 /// A held session read from the record of a foreign helper the app replaced.
 struct ManagedLocationInheritedSession: Equatable {
     let helperID: UUID
     let session: ManagedLocationHelperSession
-    /// AppState's Clear counter when the session was inherited; nil when no source was
-    /// set. A Clear since then makes the session stale.
+    /// AppState's Clear counter when the bridge first saw the replaced helper's record;
+    /// nil when no source was set. A Clear since then makes the session stale.
     var clearEpoch: UInt64? = nil
+    /// AppState's supersede generation at that same moment. Any Clear, Stop or explicit
+    /// apply since then makes the session stale.
+    var supersedeGeneration: UInt64 = 0
 }
 
 struct ManagedLocationHelperPaths {
@@ -1391,9 +1406,17 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private var helperController: ManagedLocationHelperController?
     private var helperConnection: ManagedLocationHelperConnection?
     /// Held sessions a replaced foreign helper listed (see `takeInheritedHeldSession`),
-    /// with AppState's Clear counter when they were inherited.
-    private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession], clearEpoch: UInt64?)?
-    private var inheritedSessionClearEpochSource: (@MainActor () -> UInt64)?
+    /// with AppState's counters from when the bridge first saw that helper's record.
+    private var inheritedHeldSessions: (helperID: UUID, sessions: [ManagedLocationHelperSession], stamp: ManagedLocationInheritanceStamp)?
+    private var inheritanceStampSource: (@MainActor () -> ManagedLocationInheritanceStamp)?
+    /// AppState's counters read just before this bridge first read a foreign helper's
+    /// record (its adoption): the held sessions that record lists are as old as this. Kept
+    /// for that helper ID across re-adoptions, so a Clear, Stop or Move after the first
+    /// read always makes them stale (review 2026-11-03 reconnect-audit-fixes issue 1).
+    private var foreignHelperInheritanceStamp: (helperID: UUID, stamp: ManagedLocationInheritanceStamp)?
+    /// Test seam: runs just before the replacement awaits the old helper's exit and the
+    /// new helper's launch.
+    private var foreignHelperReplacementWillAwait: (@MainActor () async -> Void)?
     /// A foreign-helper replacement in flight; concurrent connects wait for it.
     private var helperReplacement: Task<Void, Error>?
     /// The keep-or-replace probe of an adopted foreign helper (tests inject it; nil asks
@@ -1439,10 +1462,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     init(
         helperController: ManagedLocationHelperController,
-        foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)? = nil
+        foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)? = nil,
+        foreignHelperReplacementWillAwait: (@MainActor () async -> Void)? = nil
     ) {
         self.helperController = helperController
         self.foreignHelperStatusProbe = foreignHelperStatusProbe
+        self.foreignHelperReplacementWillAwait = foreignHelperReplacementWillAwait
         findPaths()
     }
 
@@ -1492,11 +1517,17 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         let controller = try resolveHelperController()
 
         Logger.info("[PersistentBridge] Starting or adopting managed helper", category: .device)
+        // Read before the record is: what an adopted foreign helper lists is no newer.
+        let stampBeforeRecordRead = inheritanceStampSource?() ?? .initial
         do {
             let connection = try await controller.connectOrLaunch()
             helperConnection = connection
             adoptedHelperID = connection.record.helperID
             adoptedHelperSessions = connection.record.activeSessions
+            if controller.isForeign(connection.record),
+               foreignHelperInheritanceStamp?.helperID != connection.record.helperID {
+                foreignHelperInheritanceStamp = (connection.record.helperID, stampBeforeRecordRead)
+            }
             let adoptedGeneration = connection.record.activeSessions
                 .map(\.sessionGeneration)
                 .max() ?? 0
@@ -1915,6 +1946,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         // already reset the bridge's view of the helper.
         guard let helperController, let adopted = helperController.activeRecord,
               helperController.isForeign(adopted) else { return }
+        // The stamp from before the bridge first read this helper's record, never one read
+        // after an await: a Clear, Stop or Move pressed since then (it may not have reached
+        // this helper, or ran while this replacement was in flight) supersedes what it lists.
+        let stamp = foreignHelperInheritanceStamp?.helperID == adopted.helperID
+            ? foreignHelperInheritanceStamp?.stamp ?? .initial
+            : inheritanceStampSource?() ?? .initial
         let current = try? helperController.currentRecord()
         let record = current?.helperID == adopted.helperID ? current ?? adopted : adopted
         Logger.info(
@@ -1923,6 +1960,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             category: .device
         )
         do {
+            if let foreignHelperReplacementWillAwait { await foreignHelperReplacementWillAwait() }
             let fresh = try await helperController.replaceForeignHelper()
             helperConnection = fresh
             adoptedHelperID = fresh.record.helperID
@@ -1935,8 +1973,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             let inheritedGeneration = record.activeSessions.map(\.sessionGeneration).max() ?? 0
             processGeneration = max(processGeneration &+ 1, inheritedGeneration &+ 1)
             if !record.activeSessions.isEmpty {
-                inheritedHeldSessions = (record.helperID, record.activeSessions, inheritedSessionClearEpochSource?())
+                inheritedHeldSessions = (record.helperID, record.activeSessions, stamp)
             }
+            foreignHelperInheritanceStamp = nil
             isRunning = true
             Logger.info("[PersistentBridge] Managed helper started (replacing an earlier one)", category: .device)
         } catch {
@@ -1961,11 +2000,12 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
         var remaining = inherited.sessions
         let session = remaining.remove(at: index)
-        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.clearEpoch)
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.stamp)
         return ManagedLocationInheritedSession(
             helperID: inherited.helperID,
             session: session,
-            clearEpoch: inherited.clearEpoch
+            clearEpoch: inherited.stamp.clearEpoch,
+            supersedeGeneration: inherited.stamp.supersedeGeneration
         )
     }
 
@@ -1981,19 +2021,20 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         return ManagedLocationInheritedSession(
             helperID: inherited.helperID,
             session: session,
-            clearEpoch: inherited.clearEpoch
+            clearEpoch: inherited.stamp.clearEpoch,
+            supersedeGeneration: inherited.stamp.supersedeGeneration
         )
     }
 
-    func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {
-        inheritedSessionClearEpochSource = source
+    func setInheritanceStampSource(_ source: @escaping @MainActor () -> ManagedLocationInheritanceStamp) {
+        inheritanceStampSource = source
     }
 
     /// A location this app applied or cleared supersedes what a replaced helper held.
     private func discardInheritedHeldSessions(for deviceID: String) {
         guard let inherited = inheritedHeldSessions else { return }
         let remaining = inherited.sessions.filter { !$0.matches(deviceID: deviceID) }
-        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.clearEpoch)
+        inheritedHeldSessions = remaining.isEmpty ? nil : (inherited.helperID, remaining, inherited.stamp)
     }
 
     private func sendConnectDevice(
