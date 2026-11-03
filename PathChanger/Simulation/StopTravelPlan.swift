@@ -169,11 +169,15 @@ enum StopTravelStep: Equatable, Sendable {
 
 enum StopTravelPlanError: Error, Equatable, Sendable {
     case tooManyPoints
+    /// The leg from the held location to the next stop (1-based `stop`) is over the
+    /// point cap: a fresh run starts from the held location (owner rule 2026-11-03).
+    case tooFarFromHeld(stop: Int, meters: Double)
     case message(String)
 
     var message: String {
         switch self {
         case .tooManyPoints: return StopTravelPlanner.tooManyPointsMessage
+        case .tooFarFromHeld(let stop, let meters): return StopTravelPlanner.tooFarFromHeldMessage(stop: stop, meters: meters)
         case .message(let text): return text
         }
     }
@@ -182,6 +186,14 @@ enum StopTravelPlanError: Error, Equatable, Sendable {
 enum StopTravelPlanner {
     static let tooManyPointsMessage =
         "This route has too many points for the chosen speed and update frequency. Raise the speed, lower Update frequency in Settings, or use fewer or closer stops."
+
+    /// Says which stop is too far from the held location and what to do instead.
+    static func tooFarFromHeldMessage(stop: Int, meters: Double) -> String {
+        let distance = meters < 1_000
+            ? "\(Int(meters)) m"
+            : String(format: meters < 10_000 ? "%.1f km" : "%.0f km", meters / 1_000)
+        return "Stop \(stop) is \(distance) from the held location: too far to travel at this speed. Choose Jump in Getting there, or Clear first."
+    }
 
     // MARK: Stops
 
@@ -379,6 +391,11 @@ enum StopTravelPlanner {
         while let current = leg, checked <= stops.count {
             if let from = current.from,
                pointCount([from, current.to], stepMeters: stepMeters) > RouteInterpolator.maxRoutePoints {
+                // The first leg leaves from the held location (owner rule 2026-11-03):
+                // say which stop is too far and what to do, not "too many points".
+                if checked == 0, let origin, from == origin {
+                    return .tooFarFromHeld(stop: current.stopIndex + 1, meters: Geo.distance(from: origin, to: current.to))
+                }
                 return .tooManyPoints
             }
             checked += 1

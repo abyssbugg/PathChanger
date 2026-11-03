@@ -348,6 +348,33 @@ final class StopTravelPlanTests: XCTestCase {
         )
     }
 
+    /// A run starts from the held location (owner rule 2026-11-03): when that first leg
+    /// is over the cap, the message names the stop, its distance and what to do (review
+    /// 2026-11-03 issue 4).
+    func testAHeldLocationTooFarFromTheNextStopIsRefusedByNameAndDistance() {
+        // ~44.5 km south of stop 1, ~44.5 km plus a few hundred metres from stop 2.
+        let held = LocationCoordinate(latitude: a.latitude - 0.4, longitude: a.longitude)
+        for (cursor, stop) in [(StopCursor(), 1), (StopCursor(nextIndex: 1), 2)] {
+            let refusal = StopTravelPlanner.straightLineRefusal(
+                stops: [a, b, c], origin: held, cursor: cursor, settings: .defaults(for: .route), metersPerSecond: 1.6, updateHz: 5
+            )
+            let meters = Geo.distance(from: held, to: [a, b, c][stop - 1])
+            XCTAssertEqual(refusal, .tooFarFromHeld(stop: stop, meters: meters), "stop \(stop)")
+        }
+        XCTAssertEqual(
+            StopTravelPlanError.tooFarFromHeld(stop: 1, meters: 41_300).message,
+            "Stop 1 is 41 km from the held location: too far to travel at this speed. Choose Jump in Getting there, or Clear first."
+        )
+        XCTAssertEqual(StopTravelPlanner.tooFarFromHeldMessage(stop: 3, meters: 2_450).prefix(29), "Stop 3 is 2.5 km from the hel")
+        XCTAssertEqual(StopTravelPlanner.tooFarFromHeldMessage(stop: 2, meters: 640.4).prefix(28), "Stop 2 is 640 m from the hel")
+        // A stop-to-stop leg over the cap keeps the plain message.
+        let far = LocationCoordinate(latitude: a.latitude + 0.4, longitude: a.longitude)
+        XCTAssertEqual(
+            StopTravelPlanner.straightLineRefusal(stops: [a, far], origin: a, cursor: StopCursor(), settings: .defaults(for: .route), metersPerSecond: 1.6, updateHz: 5),
+            .tooManyPoints
+        )
+    }
+
     func testTheCapIsPerLegNotPerRoute() {
         // Four ~11 km legs need ~139,000 points in total but ~35,000 each.
         let stops = (0...4).map { LocationCoordinate(latitude: a.latitude + Double($0) * 0.1, longitude: a.longitude) }

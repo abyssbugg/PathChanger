@@ -1188,6 +1188,30 @@ extension StopTravelEngineTests {
         }
     }
 
+    /// A fresh sequence leaves from the held location (owner rule 2026-11-03); when stop 1
+    /// is too far to travel to, the Move says which stop, how far and what to do.
+    func testAFreshSequenceTooFarFromTheHeldLocationSaysWhy() async {
+        let harness = await StopRunHarness.make(
+            mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove), metersPerSecond: 1.6
+        )
+        let state = harness.state!
+        // ~44 km away: over 100,000 points at walking speed (0.32 m per update).
+        let far = LocationCoordinate(latitude: s0.latitude - 0.4, longitude: s0.longitude)
+        state.activeMode = .teleport
+        state.stageLocation(far, for: .teleport)
+        await state.startSimulation()
+        assertHeld(state, at: far)
+
+        state.activeMode = .route
+        let next = await move(harness)
+        XCTAssertEqual(next, [], "nothing is sent")
+        let message = StopTravelPlanError.tooFarFromHeld(stop: 1, meters: Geo.distance(from: far, to: s0)).message
+        XCTAssertTrue(message.hasPrefix("Stop 1 is 44 km from the held location"), message)
+        XCTAssertEqual(state.statusMessage, message)
+        XCTAssertEqual(state.lastError, message)
+        assertHeld(state, at: far)
+    }
+
     func testEachStopModeKeepsItsOwnProgress() async {
         let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove))
         let state = harness.state!
