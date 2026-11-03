@@ -42,6 +42,8 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// so the phone no longer holds it), handed out once so the coordinate can be
     /// reapplied over the new helper. Nil when there is none.
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession?
+    /// The same session without handing it out (nil when there is none).
+    func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession?
     /// Drop every held session inherited from a replaced helper, for every device. Clear,
     /// Stop Tunnel and an explicit Move supersede what that helper held, whether or not
     /// they reached the phone (review 2026-11-03 reconnect-audit issue 1).
@@ -53,6 +55,7 @@ protocol ManagedLocationSessionSource: AnyObject {
 
 extension ManagedLocationSessionSource {
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
+    func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func discardInheritedHeldSessions() {}
     func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {}
 }
@@ -1944,6 +1947,18 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     func discardInheritedHeldSessions() {
         inheritedHeldSessions = nil
+    }
+
+    func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? {
+        guard let inherited = inheritedHeldSessions,
+              let session = inherited.sessions.first(where: { $0.matches(deviceID: deviceID) }) else {
+            return nil
+        }
+        return ManagedLocationInheritedSession(
+            helperID: inherited.helperID,
+            session: session,
+            clearEpoch: inherited.clearEpoch
+        )
     }
 
     func setInheritedSessionClearEpochSource(_ source: @escaping @MainActor () -> UInt64) {

@@ -3528,10 +3528,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// 04:00:30 and the location only at 04:00:42).
     private func tunnelBecameLive() {
         // A Clear or Stop the user pressed holds automatic reapplies back, this one too.
+        // Only looked at here: it is taken once the restore's guards pass (review
+        // 2026-11-03 issue 3: a refused restore used to drop it without a word).
         if let device = selectedDevice, !ownsLocationOperation, !isAutomaticReconnectLatchedByUser,
-           let inherited = managedLocationSessionSource.takeInheritedHeldSession(for: device.id) {
+           managedLocationSessionSource.inheritedHeldSession(for: device.id) != nil {
             Task { @MainActor [weak self] in
-                await self?.reapplyInheritedHeldLocation(inherited, for: device)
+                await self?.reapplyInheritedHeldLocation(for: device)
             }
             return
         }
@@ -3545,13 +3547,23 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// location the old helper listed is restored as held, then marked lost: stopping that
     /// helper ended it on the phone, and the recovery reapplies it over the live tunnel.
     /// Only while no Clear ran since it was inherited (its stamp is that Clear counter).
-    private func reapplyInheritedHeldLocation(_ inherited: ManagedLocationInheritedSession, for device: Device) async {
-        let clearEpoch = inherited.clearEpoch ?? locationOperationGeneration
+    private func reapplyInheritedHeldLocation(for device: Device) async {
+        // The restore's own guards, before taking it: a refusal here keeps it for the
+        // next tunnel edge (another phone selected, or a Move or Stop since the edge).
+        guard selectedDevice?.id == device.id, !ownsLocationOperation, !isAutomaticReconnectLatchedByUser,
+              let peeked = managedLocationSessionSource.inheritedHeldSession(for: device.id) else {
+            Logger.info("[AppState] Not restoring the location a replaced helper held yet; keeping it", category: .session)
+            return
+        }
+        let clearEpoch = peeked.clearEpoch ?? locationOperationGeneration
         guard clearEpoch == locationOperationGeneration else {
             Logger.info("[AppState] Not restoring the location a replaced helper held: a Clear came after it", category: .session)
             managedLocationSessionSource.discardInheritedHeldSessions()
             return
         }
+        // No await since the peek: this is the same session. A refusal after the
+        // restore's own awaits means a Clear or Move superseded it.
+        guard let inherited = managedLocationSessionSource.takeInheritedHeldSession(for: device.id) else { return }
         guard await restoreManagedHelperSession(
             inherited.session,
             helperID: inherited.helperID,

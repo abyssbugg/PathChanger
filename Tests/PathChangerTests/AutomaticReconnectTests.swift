@@ -130,6 +130,10 @@ private final class InheritingManagedSessionSource: ManagedLocationSessionSource
         self.inherited = nil
         return inherited
     }
+    func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? {
+        guard let inherited, inherited.session.matches(deviceID: deviceID) else { return nil }
+        return inherited
+    }
     func discardInheritedHeldSessions() {
         discardCount += 1
         if honoursDiscard { inherited = nil }
@@ -677,6 +681,33 @@ final class AutomaticReconnectTests: XCTestCase {
 
     private func appliedCoordinates(_ injector: FakeLocationInjector) async -> [LocationCoordinate] {
         await injector.calls().compactMap { if case .apply(let request) = $0 { return request.coordinate }; return nil }
+    }
+
+    /// Review 2026-11-03 issue 3: the inherited session was taken before the restore's
+    /// guards ran, so a refusal (here another phone selected before the restore ran)
+    /// dropped it without a word. It stays until a restore can actually use it.
+    func testARefusedRestoreKeepsTheLocationAReplacedHelperHeld() async throws {
+        let source = InheritingManagedSessionSource()
+        let fixture = makeFixture(managedSource: source)
+        source.inherit(replacedHelperSession(at: held))
+        let other = Device(id: "00008120-001B000E3E82002F", displayName: "Other iPhone", connectionType: .wifi,
+                           productType: "iPhone16,1", productVersion: "27.2", deviceName: "Other iPhone")
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+        fixture.state.device.selectedDevice = other
+        await settle()
+        let refusedApplies = await applyCount(fixture.injector)
+        XCTAssertEqual(refusedApplies, 0)
+        XCTAssertNotNil(source.inherited, "kept: the restore was refused")
+
+        fixture.state.device.selectedDevice = phone
+        await settle()
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("the reapply") { await fixture.injector.pendingApplicationCount() == 1 }
+        let applied = await appliedCoordinates(fixture.injector)
+        XCTAssertEqual(applied, [held])
+        XCTAssertNil(source.inherited, "taken once the restore could use it")
     }
 
     /// Clear while the phone is away never reaches the helper ("connection ended" / "not

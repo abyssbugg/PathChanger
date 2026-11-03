@@ -610,6 +610,7 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             XCTAssertNotEqual(bridge.adoptedHelperID, orphan.record.helperID, "a new helper under this app")
             XCTAssertTrue(bridge.isRunning)
             XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: orphan.record.pid), "the orphan was stopped")
+            XCTAssertEqual(bridge.inheritedHeldSession(for: deviceID)?.session, held, "looking does not take it")
             let inherited = try XCTUnwrap(bridge.takeInheritedHeldSession(for: deviceID))
             XCTAssertEqual(inherited.helperID, orphan.record.helperID)
             XCTAssertEqual(inherited.session, held)
