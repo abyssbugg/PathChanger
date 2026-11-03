@@ -14,6 +14,8 @@ Commands:
     - connect_device: Open (or reuse) the device connection and prove DVT answers
     - connection_status: Bounded liveness probe of the device connection
     - disconnect_device: Close the device connection (ends a held location)
+    - ddi_status / ddi_mount: Developer Disk Image status / auto-mount over the held
+      device connection (never opens one)
     - set_location / clear_location: Simulate or stop simulating a location
     - ping: Helper health check (touches no device)
     - quit: Graceful shutdown
@@ -52,6 +54,12 @@ CONNECT_TIMEOUT_SECONDS = 30.0
 DEVICE_OPERATION_TIMEOUT_SECONDS = 10.0
 # A healthy DVT listing answers in ~40 ms; 3 s bounds the loss-detection window.
 PROBE_TIMEOUT_SECONDS = 3.0
+
+# The Developer Disk Image commands run over the held device connection. A status check
+# is one image-mounter round trip; an auto-mount may download and personalize the image
+# (live 2026-10-31: ~30 s including the cryptex download), so it gets a longer bound.
+DDI_STATUS_TIMEOUT_SECONDS = DEVICE_OPERATION_TIMEOUT_SECONDS
+DDI_MOUNT_TIMEOUT_SECONDS = 120.0
 
 # How long the mobdev2 lane browses Bonjour for the phone's lockdown (live
 # 2026-11-01: found in 1.7 s). The whole open stays inside CONNECT_TIMEOUT_SECONDS.
@@ -228,6 +236,37 @@ async def _close_quietly(resource) -> None:
         pass
 
 
+def _prefetch_ddi_assets(provider) -> None:
+    """Fetch (or find cached) the image `auto_mount` would use for this device.
+
+    Runs in a worker thread: pymobiledevice3 downloads the Cryptex1 bundle / the
+    PersonalizedDMG synchronously inside its async auto_mount, which would stop this
+    helper's event loop (every other client, the liveness probe included) for the whole
+    download. Both fetches cache under the pymobiledevice3 home folder, so auto_mount
+    then reads the cache. The choice mirrors auto_mount_personalized. Below iOS 17 (a
+    classic image) nothing is fetched here. If the installed pymobiledevice3 moved these
+    helpers, nothing is fetched and auto_mount behaves as before.
+    """
+    try:
+        from pymobiledevice3.services import mobile_image_mounter as mounter
+        from pymobiledevice3.services.cryptexd import fetch_cryptex_ddi
+        from packaging.version import Version
+        uses_personalized = mounter.uses_personalized_image
+        uses_cryptex = mounter.uses_cryptex_image
+        fetch_personalized = mounter.fetch_personalized_ddi
+        cryptex_minimum = mounter.CRYPTEX_IMAGE_MIN_VERSION
+        rsd_type = mounter.RemoteServiceDiscoveryService
+    except (ImportError, AttributeError):
+        return
+    if not uses_personalized(provider):
+        return
+    if uses_cryptex(provider):
+        fetch_cryptex_ddi()
+    elif isinstance(provider, rsd_type) or Version(provider.product_version) < cryptex_minimum:
+        # Otherwise auto_mount refuses plain lockdown on iOS 27+ before fetching anything.
+        fetch_personalized()
+
+
 class DeviceConnection:
     """Manages cached connection to a device's DVT service."""
     
@@ -244,6 +283,11 @@ class DeviceConnection:
         self._remote_pair_records = None
         self._peer_alt_irk_key = None
         self._userspace_tunnel_module = None
+        self._image_mounter_service = None
+        self._ddi_auto_mount = None
+        self._ddi_prefetch = None
+        self._already_mounted_error = None
+        self._ddi_mount_locks: dict = {}
         self._open_locks: dict = {}
         # Called with the device id whenever its connection is closed, so the helper
         # record never lists a held location on a connection that no longer exists.
@@ -280,7 +324,21 @@ class DeviceConnection:
                 PEER_ALT_IRK_KEY = None
                 get_remote_pairing_tunnel_services = None
                 iter_remote_pair_records_by_identifier = None
+            # Optional too: without them only the DDI commands are unavailable.
+            try:
+                from pymobiledevice3.services.mobile_image_mounter import (
+                    MobileImageMounterService, auto_mount,
+                )
+                from pymobiledevice3.exceptions import AlreadyMountedError
+            except ImportError:
+                MobileImageMounterService = None
+                auto_mount = None
+                AlreadyMountedError = None
 
+            self._image_mounter_service = MobileImageMounterService
+            self._ddi_auto_mount = auto_mount
+            self._ddi_prefetch = _prefetch_ddi_assets
+            self._already_mounted_error = AlreadyMountedError
             self._mobdev2_lockdowns = get_mobdev2_lockdowns
             self._remote_pairing_services = get_remote_pairing_tunnel_services
             self._remote_pair_records = iter_remote_pair_records_by_identifier
@@ -491,6 +549,81 @@ class DeviceConnection:
             await self._invalidate(cache_key)
         return {"success": True, "connected": False}
 
+    def _held_provider(self, udid: str, connection_type: Optional[str]):
+        """The service provider of the device's open connection (the RSD on RSD lanes,
+        the lockdown on usbmux direct), or None. Never opens a connection."""
+        cached = self._service_cache.get(self._cache_key(udid, connection_type))
+        return None if cached is None else cached.get("provider")
+
+    _DDI_NOT_CONNECTED = {"success": False, "error": "not connected"}
+    _DDI_UNSUPPORTED = (
+        "Developer Disk Image commands need pymobiledevice3.services.mobile_image_mounter."
+        "MobileImageMounterService and auto_mount; the installed pymobiledevice3 lacks the image mounter API"
+    )
+
+    async def ddi_status(self, udid: str, connection_type: Optional[str] = None) -> dict:
+        """Whether a Developer Disk Image is mounted, asked over the held connection.
+
+        Live 2026-11-03: usbmuxd listed nothing and the phone refused the image mounter
+        over its mobdev2 lockdown, while over the remote pairing lane's RSD the image
+        mounter answered. "Mounted" means the image mounter lists any image, as
+        `mounter list` prints and the app's status check reads it. A failure here is a
+        DDI-gate failure only: the device connection stays open.
+        """
+        if not self._lazy_import():
+            return {"success": False, "error": "pymobiledevice3 not installed"}
+        provider = self._held_provider(udid, connection_type)
+        if provider is None:
+            return dict(self._DDI_NOT_CONNECTED)
+        if self._image_mounter_service is None:
+            return {"success": False, "error": self._DDI_UNSUPPORTED}
+        try:
+            mounted = await asyncio.wait_for(
+                self._list_ddi_images(provider), DDI_STATUS_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            return {"success": False,
+                    "error": f"DDI status timed out after {DDI_STATUS_TIMEOUT_SECONDS:g}s"}
+        except Exception as error:
+            return {"success": False, "error": f"{type(error).__name__}: {error}"}
+        return {"success": True, "mounted": mounted}
+
+    async def _list_ddi_images(self, provider) -> bool:
+        async with self._image_mounter_service(lockdown=provider) as mounter:
+            return len(await mounter.list_images()) > 0
+
+    async def ddi_mount(self, udid: str, connection_type: Optional[str] = None) -> dict:
+        """Auto-mount the Developer Disk Image over the held connection, as
+        `mounter auto-mount` does (the same library call). An image already mounted is
+        what was asked for. Bounded by DDI_MOUNT_TIMEOUT_SECONDS; one mount per device at
+        a time. A failure leaves the device connection open.
+        """
+        if not self._lazy_import():
+            return {"success": False, "error": "pymobiledevice3 not installed"}
+        provider = self._held_provider(udid, connection_type)
+        if provider is None:
+            return dict(self._DDI_NOT_CONNECTED)
+        if self._image_mounter_service is None or self._ddi_auto_mount is None:
+            return {"success": False, "error": self._DDI_UNSUPPORTED}
+        lock = self._ddi_mount_locks.setdefault(self._cache_key(udid, connection_type), asyncio.Lock())
+        timeout = DDI_MOUNT_TIMEOUT_SECONDS
+        try:
+            await asyncio.wait_for(self._mount_ddi_locked(lock, provider), timeout)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": f"DDI mount timed out after {timeout:g}s"}
+        except Exception as error:
+            already = self._already_mounted_error
+            if already is None or not isinstance(error, already):
+                return {"success": False, "error": f"{type(error).__name__}: {error}"}
+        return {"success": True, "mounted": True}
+
+    async def _mount_ddi_locked(self, lock: asyncio.Lock, provider) -> None:
+        async with lock:
+            if self._ddi_prefetch is not None:
+                # Upstream downloads the image synchronously inside auto_mount; doing it
+                # first in a worker thread keeps this helper answering other commands.
+                await asyncio.to_thread(self._ddi_prefetch, provider)
+            await self._ddi_auto_mount(provider)
+
     async def _open_userspace_tunnel_cli_exact(
         self, udid: str, cache_key: str,
     ) -> Tuple[any, any, str, str]:
@@ -510,6 +643,7 @@ class DeviceConnection:
             endpoint_class = "remoteServiceDiscovery"
             self._service_cache[cache_key] = {
                 "stack": stack,
+                "provider": rsd,
                 "dvt": dvt,
                 "location": location,
                 "channel": channel,
@@ -545,6 +679,7 @@ class DeviceConnection:
             endpoint_class = "direct"
             self._service_cache[cache_key] = {
                 "stack": stack,
+                "provider": provider,
                 "dvt": dvt,
                 "location": location,
                 "channel": channel,
@@ -585,6 +720,7 @@ class DeviceConnection:
             endpoint_class = "remoteServiceDiscovery"
             self._service_cache[cache_key] = {
                 "stack": stack,
+                "provider": provider,
                 "dvt": dvt,
                 "location": location,
                 "channel": channel,
@@ -723,6 +859,7 @@ class DeviceConnection:
             endpoint_class = "remoteServiceDiscovery"
             self._service_cache[cache_key] = {
                 "stack": stack,
+                "provider": rsd,
                 "dvt": dvt,
                 "location": location,
                 "channel": channel,
@@ -921,6 +1058,7 @@ class DeviceConnection:
             endpoint_class = "remoteServiceDiscovery"
             self._service_cache[cache_key] = {
                 "stack": stack,
+                "provider": rsd,
                 "dvt": dvt,
                 "location": location,
                 "channel": channel,
@@ -1047,6 +1185,7 @@ def validate_request(request: dict) -> Tuple[bool, str]:
     if cmd not in (
         "set_location", "clear_location", "ping", "quit",
         "connect_device", "connection_status", "disconnect_device",
+        "ddi_status", "ddi_mount",
     ):
         return False, f"Unknown command: {cmd}"
 
@@ -1071,7 +1210,10 @@ def validate_request(request: dict) -> Tuple[bool, str]:
         if not udid or not isinstance(udid, str):
             return False, "Missing or invalid 'udid' field"
     
-    if cmd in ("clear_location", "connect_device", "connection_status", "disconnect_device"):
+    if cmd in (
+        "clear_location", "connect_device", "connection_status", "disconnect_device",
+        "ddi_status", "ddi_mount",
+    ):
         udid = request.get("udid")
         if not udid or not isinstance(udid, str):
             return False, "Missing or invalid 'udid' field"
@@ -1103,7 +1245,7 @@ async def process_command(connection: DeviceConnection, request: dict) -> dict:
             connection_type=request.get("connection_type"),
         )
 
-    if cmd in ("connect_device", "connection_status", "disconnect_device"):
+    if cmd in ("connect_device", "connection_status", "disconnect_device", "ddi_status", "ddi_mount"):
         handler = getattr(connection, cmd)
         return await handler(
             udid=request["udid"],

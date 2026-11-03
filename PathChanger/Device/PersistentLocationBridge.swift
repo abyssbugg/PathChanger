@@ -1097,6 +1097,8 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
     var connected: Bool?
     var reason: String?
     var replaced: Bool?
+    /// Developer Disk Image commands (ddi_status / ddi_mount).
+    var mounted: Bool?
 
     /// The Python helper emits `actual_channel` on socket responses
     /// (scripts/location_bridge.py set_location/clear_location success
@@ -1115,6 +1117,7 @@ struct PersistentBridgeWireResponse: Codable, Sendable {
         case connected
         case reason
         case replaced
+        case mounted
     }
 
     var invalidatesManagedHelperState: Bool {
@@ -1692,6 +1695,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     private static let statusResponseTimeoutSeconds = 8
     /// The helper bounds a location command on an open connection at 10 s.
     private static let locationResponseTimeoutSeconds = 12
+    /// The helper bounds a Developer Disk Image status check at 10 s and an auto-mount
+    /// (download and personalization included) at 120 s.
+    private static let diskImageStatusResponseTimeoutSeconds = 13
+    private static let diskImageMountResponseTimeoutSeconds = 130
 
     /// Open (or reuse) the helper's connection to the device. Idempotent: the helper
     /// reuses an open connection, so this is also the preflight before every Move.
@@ -1786,6 +1793,86 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         } catch {
             return .notConnected(error.localizedDescription)
         }
+    }
+
+    /// The helper's reply to `ddi_status`, in the preparer's terms. Any failure (no held
+    /// connection, or the helper could not ask) leaves the decision to the command path.
+    nonisolated static func diskImageStatus(from response: PersistentBridgeWireResponse) -> HelperDiskImageStatus {
+        guard response.success else {
+            return .unavailable(response.error ?? "Developer Disk Image status failed")
+        }
+        switch response.mounted {
+        case true?: return .mounted
+        case false?: return .notMounted
+        case nil: return .unavailable("Developer Disk Image status reply had no mount status")
+        }
+    }
+
+    /// The helper's reply to `ddi_mount`. Only "not connected" lets the command path try;
+    /// a mount the helper attempted and lost is a preparation failure.
+    nonisolated static func diskImageMountResult(from response: PersistentBridgeWireResponse) -> HelperDiskImageMountResult {
+        if response.success, response.mounted == true { return .mounted }
+        if !response.success, response.error == "not connected" { return .unavailable("not connected") }
+        return .failed(response.error ?? "Developer Disk Image mount reply did not report a mounted image")
+    }
+
+    /// Ask the helper, over the device connection it holds, whether a Developer Disk Image
+    /// is mounted. Never starts the helper and never opens a connection.
+    func ddiStatus(deviceId: String, transport: LocationTransport) async -> HelperDiskImageStatus {
+        guard isRunning else { return .unavailable("location helper is not running") }
+        guard (try? ArgumentSanitizer.validateDeviceUDID(deviceId)) != nil else {
+            return .unavailable("invalid device identifier")
+        }
+        var request = BridgeRequest(cmd: "ddi_status")
+        request.udid = deviceId
+        request.connection_type = transport.helperWireValue
+        do {
+            let response = try await sendControlCommand(
+                request,
+                timeoutSeconds: Self.diskImageStatusResponseTimeoutSeconds
+            )
+            let status = Self.diskImageStatus(from: response)
+            if case .unavailable(let detail) = status, detail != "not connected" {
+                Logger.error(
+                    "[PersistentBridge] ddi_status failed: " + LogRedaction.redactingDeviceIdentifiers(detail),
+                    category: .device,
+                    repeatKey: "PersistentBridge.ddi_status"
+                )
+            }
+            return status
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    /// Auto-mount the Developer Disk Image over the helper's device connection. Never
+    /// starts the helper. A helper that does not answer in time is a failed mount (it may
+    /// still be mounting), never a reason to start a second mount over the command path.
+    func ddiMount(deviceId: String, transport: LocationTransport) async -> HelperDiskImageMountResult {
+        guard isRunning else { return .unavailable("location helper is not running") }
+        guard (try? ArgumentSanitizer.validateDeviceUDID(deviceId)) != nil else {
+            return .unavailable("invalid device identifier")
+        }
+        var request = BridgeRequest(cmd: "ddi_mount")
+        request.udid = deviceId
+        request.connection_type = transport.helperWireValue
+        let result: HelperDiskImageMountResult
+        do {
+            let response = try await sendControlCommand(
+                request,
+                timeoutSeconds: Self.diskImageMountResponseTimeoutSeconds
+            )
+            result = Self.diskImageMountResult(from: response)
+        } catch {
+            result = .failed(error.localizedDescription)
+        }
+        if case .failed(let detail) = result {
+            Logger.error(
+                "[PersistentBridge] ddi_mount failed: " + LogRedaction.redactingDeviceIdentifiers(detail),
+                category: .device
+            )
+        }
+        return result
     }
 
     /// The health probe found the connection dead or stalled: reopen it under the

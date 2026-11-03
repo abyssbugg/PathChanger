@@ -10,6 +10,32 @@
 
 import Foundation
 
+/// What the location helper reported about the Developer Disk Image, asked over the
+/// device connection it holds.
+enum HelperDiskImageStatus: Equatable, Sendable {
+    case mounted
+    case notMounted
+    /// No helper, no held connection for the device, or the helper could not ask: the
+    /// command path (usbmux, then mobdev2) decides.
+    case unavailable(String)
+}
+
+/// The outcome of a helper auto-mount over its device connection.
+enum HelperDiskImageMountResult: Equatable, Sendable {
+    case mounted
+    /// The helper asked the phone and the mount failed: a preparation failure.
+    case failed(String)
+    /// The helper is not running or no longer holds the connection: the mount command
+    /// path may still mount.
+    case unavailable(String)
+}
+
+/// The helper's DDI commands for one UDID; injected so tests need no real bridge.
+struct HelperDiskImageChannel: Sendable {
+    let status: @Sendable (String) async -> HelperDiskImageStatus
+    let mount: @Sendable (String) async -> HelperDiskImageMountResult
+}
+
 /// Ensures the personalized Developer Disk Image is mounted on the device.
 ///
 /// DDI mount status is device readiness, not connection state: a mount failure
@@ -17,6 +43,12 @@ import Foundation
 /// The subprocess runner is injectable so tests run without devices; the
 /// production runner executes the managed-runtime python through the hardened
 /// `DeviceManager.runPython` path (`ProcessEnvironment.configured()`).
+///
+/// The location helper is asked first, over the connection it already holds (live
+/// 2026-11-03: with the phone held over the helper's remote pairing lane, usbmuxd listed
+/// nothing and the phone refused the image mounter over mobdev2, so the command path
+/// failed every Move; over the helper's RSD the image mounter answered). When the helper
+/// holds no connection for the device, the command path runs as before.
 actor DeveloperDiskImagePreparer {
     enum PreparationError: Error, LocalizedError {
         case mountFailed(String)
@@ -34,14 +66,17 @@ actor DeveloperDiskImagePreparer {
 
     private let runner: ([String]) async throws -> String
     private let allowsNetworkFallback: @Sendable () async -> Bool
+    private let helper: HelperDiskImageChannel?
     private var mountedUDIDs: Set<String> = []
 
     init(
         runner: @escaping ([String]) async throws -> String,
-        allowsNetworkFallback: @escaping @Sendable () async -> Bool = { true }
+        allowsNetworkFallback: @escaping @Sendable () async -> Bool = { true },
+        helper: HelperDiskImageChannel? = nil
     ) {
         self.runner = runner
         self.allowsNetworkFallback = allowsNetworkFallback
+        self.helper = helper
     }
 
     /// Production runner: managed-runtime python through the hardened
@@ -49,6 +84,8 @@ actor DeveloperDiskImagePreparer {
     /// `DeviceManager` has no shared singleton; the composition root passes
     /// the same instance AppState already owns. The mobdev2 retry is read from the
     /// current connection mode at each usbmux miss: USB-only never crosses to Wi-Fi.
+    /// The helper channel is the shared location helper, asked with the same transport
+    /// hint its connection was opened with; it never starts the helper.
     static func live(deviceManager: DeviceManager) -> DeveloperDiskImagePreparer {
         DeveloperDiskImagePreparer(
             runner: { command in
@@ -56,12 +93,38 @@ actor DeveloperDiskImagePreparer {
             },
             allowsNetworkFallback: { @MainActor in
                 deviceManager.connectionMode != .usb
-            }
+            },
+            helper: HelperDiskImageChannel(
+                status: { @MainActor udid in
+                    await PersistentLocationBridge.shared.ddiStatus(
+                        deviceId: udid, transport: deviceManager.helperConnectTransport(for: udid))
+                },
+                mount: { @MainActor udid in
+                    await PersistentLocationBridge.shared.ddiMount(
+                        deviceId: udid, transport: deviceManager.helperConnectTransport(for: udid))
+                }
+            )
         )
     }
 
     func isDeveloperDiskImageMounted(udid: String) async throws -> Bool {
-        if mountedUDIDs.contains(udid) { return true }
+        try await mountStatus(udid: udid).mounted
+    }
+
+    /// The mount status, and whether the helper answered it (then the helper mounts too).
+    private func mountStatus(udid: String) async throws -> (mounted: Bool, viaHelper: Bool) {
+        if mountedUDIDs.contains(udid) { return (true, false) }
+        if let helper {
+            switch await helper.status(udid) {
+            case .mounted:
+                mountedUDIDs.insert(udid)
+                return (true, true)
+            case .notMounted:
+                return (false, true)
+            case .unavailable:
+                break
+            }
+        }
         let output = try await runResolvingDevice(
             DevicePreparationPlanner.ddiMountStatusCommand(udid: udid),
             mobdev2Fallback: DevicePreparationPlanner.ddiMountStatusMobdev2Command(udid: udid)
@@ -74,11 +137,23 @@ actor DeveloperDiskImagePreparer {
         // check costs ~1.2 s and ran before every hop, point and joystick tick (live
         // 2026-11-01). `forget` drops it when the connection is lost (a reboot unmounts).
         if !entries.isEmpty { mountedUDIDs.insert(udid) }
-        return !entries.isEmpty
+        return (!entries.isEmpty, false)
     }
 
     func ensureMounted(udid: String) async throws {
-        if try await isDeveloperDiskImageMounted(udid: udid) { return }
+        let status = try await mountStatus(udid: udid)
+        if status.mounted { return }
+        if status.viaHelper, let helper {
+            switch await helper.mount(udid) {
+            case .mounted:
+                mountedUDIDs.insert(udid)
+                return
+            case .failed(let message):
+                throw PreparationError.mountFailed(String(message.suffix(300)))
+            case .unavailable:
+                break  // The helper lost the connection since its status: try the command path.
+            }
+        }
         let output = try await runResolvingDevice(
             DevicePreparationPlanner.ddiMountCommand(udid: udid),
             mobdev2Fallback: DevicePreparationPlanner.ddiMountMobdev2Command(udid: udid)

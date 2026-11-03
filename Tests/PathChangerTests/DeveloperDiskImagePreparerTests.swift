@@ -340,6 +340,128 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
         }
         XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountStatusCommand(udid: udid)])
     }
+
+    // MARK: - Helper first (live 2026-11-03: the helper held the phone over its remote
+    // pairing lane, usbmuxd listed nothing and the phone refused the image mounter over
+    // mobdev2, so every Move failed at this gate; over the helper's RSD it answered).
+
+    func testHelperSaysMountedSoNoCommandRuns() async throws {
+        let helper = FakeDiskImageHelper(status: .mounted)
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [])
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)"], "a mounted image is cached like before")
+    }
+
+    func testHelperSaysNotMountedSoTheHelperMounts() async throws {
+        let helper = FakeDiskImageHelper(status: .notMounted, mount: .mounted)
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [])
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)", "mount \(udid)"])
+    }
+
+    func testHelperMountFailureIsAPreparationFailure() async {
+        let helper = FakeDiskImageHelper(status: .notMounted, mount: .failed("RuntimeError: TSS refused"))
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "" },
+            helper: helper.channel
+        )
+        do {
+            try await preparer.ensureMounted(udid: udid)
+            XCTFail("expected mountFailed")
+        } catch DeveloperDiskImagePreparer.PreparationError.mountFailed(let output) {
+            XCTAssertTrue(output.contains("TSS refused"), output)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(commands, [], "a mount the helper tried is not repeated over the CLI")
+        // Not cached: the next Move asks again.
+        try? await preparer.ensureMounted(udid: udid)
+        let calls = await helper.calls
+        XCTAssertEqual(calls.filter { $0.hasPrefix("status") }.count, 2)
+    }
+
+    func testHelperNotConnectedFallsBackToTheCommandPath() async throws {
+        let helper = FakeDiskImageHelper(status: .unavailable("not connected"))
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in
+                commands.append(command)
+                return command.contains("list") ? "[]" : "DeveloperDiskImage mounted successfully"
+            },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [
+            DevicePreparationPlanner.ddiMountStatusCommand(udid: udid),
+            DevicePreparationPlanner.ddiMountCommand(udid: udid),
+        ])
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)"], "no helper mount without a helper status")
+    }
+
+    func testHelperConnectionGoneBeforeTheMountFallsBackToTheMountCommand() async throws {
+        let helper = FakeDiskImageHelper(status: .notMounted, mount: .unavailable("not connected"))
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "DeveloperDiskImage mounted successfully" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountCommand(udid: udid)])
+    }
+
+    func testForgetAsksTheHelperAgain() async throws {
+        let helper = FakeDiskImageHelper(status: .mounted)
+        let preparer = DeveloperDiskImagePreparer(runner: { _ in "" }, helper: helper.channel)
+        try await preparer.ensureMounted(udid: udid)
+        await preparer.forget(udid: udid)
+        try await preparer.ensureMounted(udid: udid)
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)", "status \(udid)"])
+    }
+}
+
+private actor FakeDiskImageHelper {
+    private(set) var calls: [String] = []
+    private let statusReply: HelperDiskImageStatus
+    private let mountReply: HelperDiskImageMountResult
+
+    init(status: HelperDiskImageStatus, mount: HelperDiskImageMountResult = .failed("unexpected mount")) {
+        statusReply = status
+        mountReply = mount
+    }
+
+    func status(_ udid: String) -> HelperDiskImageStatus {
+        calls.append("status \(udid)")
+        return statusReply
+    }
+
+    func mount(_ udid: String) -> HelperDiskImageMountResult {
+        calls.append("mount \(udid)")
+        return mountReply
+    }
+
+    nonisolated var channel: HelperDiskImageChannel {
+        HelperDiskImageChannel(
+            status: { await self.status($0) },
+            mount: { await self.mount($0) }
+        )
+    }
 }
 
 private actor FallbackSwitch {

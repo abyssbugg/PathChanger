@@ -1169,6 +1169,68 @@ final class PersistentLocationBridgeTests: XCTestCase {
         XCTAssertEqual(acknowledgement.sessionGeneration, 4)
     }
 
+    // MARK: Developer Disk Image over the helper's connection (live 2026-11-03)
+
+    private func wireResponse(_ json: String) throws -> PersistentBridgeWireResponse {
+        try JSONDecoder().decode(PersistentBridgeWireResponse.self, from: Data(json.utf8))
+    }
+
+    func testHelperDiskImageStatusRepliesMapToStatus() throws {
+        XCTAssertEqual(PersistentLocationBridge.diskImageStatus(
+            from: try wireResponse(#"{"success": true, "mounted": true, "helper_id": "h"}"#)), .mounted)
+        XCTAssertEqual(PersistentLocationBridge.diskImageStatus(
+            from: try wireResponse(#"{"success": true, "mounted": false}"#)), .notMounted)
+        // No held connection, or the helper could not ask: the CLI path decides.
+        XCTAssertEqual(PersistentLocationBridge.diskImageStatus(
+            from: try wireResponse(#"{"success": false, "error": "not connected"}"#)),
+            .unavailable("not connected"))
+        XCTAssertEqual(PersistentLocationBridge.diskImageStatus(
+            from: try wireResponse(#"{"success": false, "error": "ConnectionTerminatedError: gone"}"#)),
+            .unavailable("ConnectionTerminatedError: gone"))
+        guard case .unavailable = PersistentLocationBridge.diskImageStatus(
+            from: try wireResponse(#"{"success": true}"#)) else {
+            return XCTFail("a reply without a mount status is not a status")
+        }
+    }
+
+    func testHelperDiskImageMountRepliesMapToResult() throws {
+        XCTAssertEqual(PersistentLocationBridge.diskImageMountResult(
+            from: try wireResponse(#"{"success": true, "mounted": true}"#)), .mounted)
+        // The connection went away: the CLI path may still mount.
+        XCTAssertEqual(PersistentLocationBridge.diskImageMountResult(
+            from: try wireResponse(#"{"success": false, "error": "not connected"}"#)),
+            .unavailable("not connected"))
+        // The helper asked the phone and the mount failed: a preparation failure.
+        XCTAssertEqual(PersistentLocationBridge.diskImageMountResult(
+            from: try wireResponse(#"{"success": false, "error": "RuntimeError: TSS refused"}"#)),
+            .failed("RuntimeError: TSS refused"))
+        guard case .failed = PersistentLocationBridge.diskImageMountResult(
+            from: try wireResponse(#"{"success": true}"#)) else {
+            return XCTFail("a reply that does not say mounted is not a mount")
+        }
+    }
+
+    @MainActor
+    func testDiskImageCommandsNeverStartTheHelper() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_ddi-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bridge = PersistentLocationBridge(
+            helperController: ManagedLocationHelperController(
+                paths: ManagedLocationHelperPaths(baseDirectory: root),
+                pythonPath: root.appendingPathComponent("missing-python").path,
+                bridgePath: root.appendingPathComponent("missing-bridge.py").path
+            )
+        )
+        let udid = "00008130-001234567890ABCD"
+        let status = await bridge.ddiStatus(deviceId: udid, transport: .wifi)
+        let mount = await bridge.ddiMount(deviceId: udid, transport: .wifi)
+        XCTAssertEqual(status, .unavailable("location helper is not running"))
+        XCTAssertEqual(mount, .unavailable("location helper is not running"))
+        XCTAssertFalse(bridge.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "nothing was prepared or started")
+    }
+
     /// Python/Swift parity: every channel string scripts/location_bridge.py can
     /// acknowledge must be a supported Swift channel with the endpoint class the helper
     /// pairs it with.
@@ -2929,6 +2991,263 @@ asyncio.run(verify())
                 request["connection_type"] = connection_type
             return await bridge.process_command(c, request)
         """
+    }
+
+    /// Live 2026-11-03: the helper held the phone over its remote pairing lane while
+    /// usbmuxd listed nothing, and the phone refused the image mounter over the mobdev2
+    /// lockdown, so every Move failed at the Developer Disk Image gate before anything was
+    /// sent. Over that same RSD the image mounter answered. `ddi_status` / `ddi_mount` run
+    /// over the provider DVT runs over (every lane), never open a connection, and a DDI
+    /// failure never closes the device connection.
+    func testPythonHelperDiskImageCommandsUseTheHeldConnection() throws {
+        let code = mobdev2LaneFixture() + """
+
+        import threading
+        MAIN_THREAD = threading.get_ident()
+        class AlreadyMountedError(PyMobileDevice3Exception): pass
+        ddi = {"images": [], "list_error": None, "mount_error": None, "mount_delay": 0.0}
+        mounter_providers, mount_providers, prefetches, dvt_providers = [], [], [], []
+        class Mounter:
+            def __init__(self, lockdown):
+                self.lockdown = lockdown
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def list_images(self):
+                mounter_providers.append(self.lockdown)
+                if ddi["list_error"] is not None:
+                    raise ddi["list_error"]
+                return list(ddi["images"])
+        async def auto_mount(lockdown):
+            mount_providers.append(lockdown)
+            if ddi["mount_delay"]:
+                await asyncio.sleep(ddi["mount_delay"])
+            if ddi["mount_error"] is not None:
+                raise ddi["mount_error"]
+            ddi["images"] = [{"DiskImageType": "Personalized", "IsMounted": True}]
+        def prefetch(lockdown):
+            prefetches.append((lockdown, threading.get_ident() != MAIN_THREAD))
+
+        def with_ddi(c):
+            c._image_mounter_service = Mounter
+            c._ddi_auto_mount = auto_mount
+            c._ddi_prefetch = prefetch
+            c._already_mounted_error = AlreadyMountedError
+            def dvt(provider):
+                dvt_providers.append(provider)
+                return Context()
+            c._dvt_module = dvt
+            return c
+
+        def reset_ddi():
+            ddi.update(images=[], list_error=None, mount_error=None, mount_delay=0.0)
+            for calls in (mounter_providers, mount_providers, prefetches, dvt_providers):
+                calls.clear()
+
+        async def ddi_command(c, cmd, udid="dev"):
+            return await bridge.process_command(c, {"cmd": cmd, "udid": udid,
+                "connection_type": "Network"})
+
+        async def verify():
+            for cmd in ("ddi_status", "ddi_mount"):
+                assert bridge.validate_request({"cmd": cmd, "udid": "d",
+                    "request_id": "r", "session_generation": 0}) == (True, ""), cmd
+                assert bridge.validate_request({"cmd": cmd,
+                    "request_id": "r", "session_generation": 0})[0] is False, cmd
+                assert bridge.validate_request({"cmd": cmd, "udid": 7,
+                    "request_id": "r", "session_generation": 0})[0] is False, cmd
+
+            # No held connection: "not connected", and nothing is opened or asked.
+            reset_ddi()
+            usbmux_visible.add("dev")
+            c = with_ddi(make_connection())
+            for cmd in ("ddi_status", "ddi_mount"):
+                assert await ddi_command(c, cmd) == {"success": False, "error": "not connected"}, cmd
+            assert not seen and not dvt_providers, "a DDI command must never open a connection"
+            assert not mounter_providers and not mount_providers and not prefetches
+
+            # Every lane: the image mounter runs over the provider DVT runs over.
+            async def lane_userspace(c):
+                usbmux_visible.add("dev")
+            async def lane_remote_pairing(c):
+                usbmux_visible.discard("dev")
+                rp_records["dev"] = {"peer_alt_irk": b"irk"}
+                rp_adverts["dev"] = ["192.168.0.177"]
+            async def lane_mobdev2(c):
+                usbmux_visible.discard("dev")
+                rp_records.pop("dev", None)
+                mobdev2_visible.add("dev")
+            for setup, channel in ((lane_userspace, "userspaceRSD"),
+                                   (lane_remote_pairing, "remotePairingRSD"),
+                                   (lane_mobdev2, "mobdev2RSD")):
+                reset_ddi()
+                c = with_ddi(make_connection())
+                await setup(c)
+                connected = await connect(c)
+                assert connected["actual_channel"] == channel, (channel, connected)
+                held = dvt_providers[-1]
+                status = await ddi_command(c, "ddi_status")
+                assert status == {"success": True, "mounted": False}, (channel, status)
+                assert mounter_providers == [held], (channel, mounter_providers, held)
+                mounted = await ddi_command(c, "ddi_mount")
+                assert mounted == {"success": True, "mounted": True}, (channel, mounted)
+                assert mount_providers == [held], channel
+                assert prefetches == [(held, True)], ("assets are fetched off the event loop", prefetches)
+                status = await ddi_command(c, "ddi_status")
+                assert status == {"success": True, "mounted": True}, (channel, status)
+                assert len(dvt_providers) == 1, (channel, "no second connection was opened")
+                await c.close_all()
+
+            # The usbmux-direct lane holds a lockdown; the mounter runs over that lockdown.
+            reset_ddi()
+            usbmux_visible.add("dev")
+            class NoUserspace:
+                def __init__(self, **kwargs): pass
+                async def aopen(self): raise InvalidServiceError("needs a tunnel")
+                async def aclose(self): pass
+            c = with_ddi(make_connection())
+            c._userspace_tunnel_factory = NoUserspace
+            connected = await connect(c)
+            assert connected["actual_channel"] == "usbmuxDirect", connected
+            held = dvt_providers[-1]
+            assert getattr(held, "source", None) == "usbmux", held
+            ddi["images"] = [{"DiskImageType": "Personalized"}]
+            assert await ddi_command(c, "ddi_status") == {"success": True, "mounted": True}
+            assert mounter_providers == [held], mounter_providers
+            await c.close_all()
+
+            # The preferred-RSD lane holds its RSD.
+            reset_ddi()
+            usbmux_visible.add("dev")
+            class UserspaceRsdTunnel: pass
+            class PreferredHandle(Preferred):
+                def __init__(self, serial):
+                    super().__init__(serial)
+                    self._handle = UserspaceRsdTunnel()
+            async def no_lockdown(**kwargs): raise InvalidServiceError("needs a tunnel")
+            c = with_ddi(make_connection())
+            c._userspace_tunnel_factory = NoUserspace
+            c._lockdown_usb = no_lockdown
+            c._preferred_tunnel_factory = PreferredHandle
+            connected = await connect(c)
+            assert connected["success"] is True and connected["actual_channel"] == "userspaceRSD", connected
+            held = dvt_providers[-1]
+            await ddi_command(c, "ddi_status")
+            assert mounter_providers == [held], mounter_providers
+            await c.close_all()
+
+            # Already mounted is what was asked for; a failed status or mount is a typed
+            # error and leaves the device connection open (a DDI failure is not a loss).
+            reset_ddi()
+            usbmux_visible.add("dev")
+            c = with_ddi(make_connection())
+            await connect(c)
+            aclosed = state["aclosed"]
+            ddi["mount_error"] = AlreadyMountedError("already mounted")
+            assert await ddi_command(c, "ddi_mount") == {"success": True, "mounted": True}
+            ddi["mount_error"] = RuntimeError("TSS refused")
+            failed = await ddi_command(c, "ddi_mount")
+            assert failed["success"] is False and "RuntimeError: TSS refused" in failed["error"], failed
+            assert "mounted" not in failed, failed
+            ddi["mount_error"] = None
+            ddi["list_error"] = ConnectionTerminatedError("Connection was terminated abruptly")
+            failed = await ddi_command(c, "ddi_status")
+            assert failed["success"] is False and "ConnectionTerminatedError" in failed["error"], failed
+            ddi["list_error"] = None
+            # Bounded: a mount that outlives its budget is reported as timed out.
+            original_timeout = bridge.DDI_MOUNT_TIMEOUT_SECONDS
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = 0.05
+            ddi["mount_delay"] = 1.0
+            failed = await ddi_command(c, "ddi_mount")
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = original_timeout
+            ddi["mount_delay"] = 0.0
+            assert failed["success"] is False and "timed out" in failed["error"], failed
+            assert state["aclosed"] == aclosed, "a DDI failure must not close the device connection"
+            status = await bridge.process_command(c, {"cmd": "connection_status", "udid": "dev"})
+            assert status["connected"] is True, status
+
+            # Concurrent mounts for one device run one at a time.
+            reset_ddi()
+            ddi["mount_delay"] = 0.05
+            running = {"now": 0, "peak": 0}
+            async def counted_mount(lockdown):
+                running["now"] += 1
+                running["peak"] = max(running["peak"], running["now"])
+                try:
+                    if ddi["images"]:
+                        raise AlreadyMountedError("already mounted")
+                    await auto_mount(lockdown)
+                finally:
+                    running["now"] -= 1
+            c._ddi_auto_mount = counted_mount
+            results = await asyncio.gather(ddi_command(c, "ddi_mount"), ddi_command(c, "ddi_mount"))
+            assert results == [{"success": True, "mounted": True}] * 2, results
+            assert running["peak"] == 1, running
+
+            # A runtime without the image mounter API says so and asks nothing.
+            c._image_mounter_service = None
+            c._ddi_auto_mount = None
+            for cmd in ("ddi_status", "ddi_mount"):
+                result = await ddi_command(c, cmd)
+                assert result["success"] is False and "image mounter" in result["error"], result
+            await c.close_all()
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// The helper's DDI commands depend on pymobiledevice3 APIs that may move under the
+    /// rolling-latest policy; the managed runtime must have them and the helper must wire
+    /// exactly those objects.
+    func testManagedRuntimeProvidesDiskImageAPI() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("scripts/location_bridge.py").path
+        let code = """
+        import importlib.util, inspect
+        import pymobiledevice3.services.mobile_image_mounter as mim
+        import pymobiledevice3.services.cryptexd as cryptexd
+        from pymobiledevice3.exceptions import AlreadyMountedError
+        assert mim.MobileImageMounterService.RSD_SERVICE_NAME == "com.apple.mobile.mobile_image_mounter.shim.remote"
+        assert inspect.iscoroutinefunction(mim.MobileImageMounterService.list_images)
+        assert inspect.iscoroutinefunction(mim.auto_mount)
+        # The prefetch fetches what auto_mount would fetch synchronously on the loop.
+        for name in ("uses_personalized_image", "uses_cryptex_image", "fetch_personalized_ddi",
+                     "CRYPTEX_IMAGE_MIN_VERSION", "RemoteServiceDiscoveryService"):
+            assert hasattr(mim, name), name
+        assert callable(cryptexd.fetch_cryptex_ddi)
+        assert "fetch_cryptex_ddi" in cryptexd.load_cryptex1_assets.__code__.co_names
+        assert "load_cryptex1_assets" in cryptexd.CryptexdService.auto_install_ddi.__code__.co_names
+        assert "fetch_personalized_ddi" in mim.auto_mount_personalized.__code__.co_names
+        spec = importlib.util.spec_from_file_location("bridge", r"\(script)")
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+        c = bridge.DeviceConnection()
+        assert c._lazy_import()
+        assert c._image_mounter_service is mim.MobileImageMounterService
+        assert c._ddi_auto_mount is mim.auto_mount
+        assert c._already_mounted_error is AlreadyMountedError
+        assert c._ddi_prefetch is bridge._prefetch_ddi_assets
+        assert bridge.DDI_MOUNT_TIMEOUT_SECONDS >= 60
+        # The prefetch fetches only what auto_mount would (no network: fetches recorded).
+        fetched = []
+        mim.fetch_personalized_ddi = lambda: fetched.append("personalized")
+        cryptexd.fetch_cryptex_ddi = lambda: fetched.append("cryptex")
+        class Lockdown:
+            def __init__(self, version): self.product_version = version
+        real_uses_cryptex = mim.uses_cryptex_image
+        for version, expected in (("16.7", []), ("18.0", ["personalized"]), ("27.2", [])):
+            fetched.clear()
+            bridge._prefetch_ddi_assets(Lockdown(version))
+            assert fetched == expected, (version, fetched)
+        mim.uses_cryptex_image = lambda provider: True
+        fetched.clear()
+        bridge._prefetch_ddi_assets(Lockdown("27.2"))
+        assert fetched == ["cryptex"], fetched
+        mim.uses_cryptex_image = real_uses_cryptex
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
     }
 
     private func runManagedPython(_ code: String) throws -> (Int32, String) {
