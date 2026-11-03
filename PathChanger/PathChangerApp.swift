@@ -785,6 +785,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private var joystickStartTask: Task<Void, Never>?
     /// A Teleport or single Jump hop started by Move is still applying.
     private var isOneShotMoveInFlight = false
+    /// A Move is waiting on a Developer Disk Image check or mount that was not cached.
+    private var isPreparingDeviceForLocation = false
     /// A route or stop run is running (from Move until it ends). The Move button
     /// shows Stop for this whole time, not only after the first acknowledged point.
     @Published private(set) var isMovementEngineRunning = false
@@ -960,6 +962,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         device.onDeviceSelected = { [weak self] selected in
             guard let self else { return }
             simulationEngine.setDevice(selected)
+            self.stopTunnelReconnectIfAnotherPhoneIsSelected(selected)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if await self.restorePublishedManagedLocationSession(for: selected) {
@@ -1059,9 +1062,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         // Start replaced a stalled helper connection: a location held on it ended.
         TunneldManager.shared.onHelperConnectionReplaced = { [weak self] deviceId in
-            guard let self, self.selectedDevice?.id == deviceId,
-                  self.locationSessionCoordinator.state.lastAcknowledgedReceipt != nil else { return }
-            self.handleLocationSessionLoss(.endpointReplaced)
+            self?.helperConnectionReplaced(deviceId: deviceId)
         }
 
         if !usesScriptedInjector {
@@ -1601,6 +1602,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // A one-shot Move (Teleport, one Jump hop) still applying: a second click raced
         // it, replaced its pending request and hit the bridge's request gate.
         guard !isOneShotMoveInFlight else {
+            if isPreparingDeviceForLocation {
+                statusMessage = Self.stillPreparingDeviceForLocationText
+                Logger.info("[Move] Not started (\(activeMode)): the iPhone is still being prepared for location", category: .session)
+                return
+            }
             Logger.info("[Move] Not started (\(activeMode)): a one-shot Move is still applying", category: .session)
             return
         }
@@ -1613,6 +1619,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // It also lifts Stop's or Clear's hold on automatic reconnect and replaces a wait
         // still running (its burst is awaited, so the two never drive the coordinator).
         isAutomaticReconnectLatchedByUser = false
+        // And Stop Tunnel's latch on the tunnel reconnect (review 2026-11-03 issue 7). Not
+        // under test hosts and previews, where the tunnel is the shared live manager.
+        if tunnelAutoReconnect.isEnabled {
+            tunnelAutoReconnect.tunnel.liftStopLatch()
+        }
         await stopAutomaticReconnect(reason: "Move pressed")
         // That await can last as long as a helper command already sent (up to its own
         // timeout): the phone, a Clear or the device may have changed meanwhile.
@@ -1709,6 +1720,24 @@ class AppState: ObservableObject, LocationTerminationHandling {
             if let ddiPreparer {
                 guard let preparationUDID = selectedDevice?.id else {
                     throw DeviceError.deviceNotFound
+                }
+                // A check that is not cached can take minutes (a first helper mount
+                // downloads and personalizes the image): say so instead of sitting silent
+                // (review 2026-11-03 issue 4). A cached image says nothing.
+                let showsPreparation = !(await ddiPreparer.isKnownMounted(udid: preparationUDID))
+                if showsPreparation {
+                    isPreparingDeviceForLocation = true
+                    statusMessage = Self.preparingDeviceForLocationText
+                    Logger.info("[Preparation] Preparing the iPhone for location: checking the Developer Disk Image (\(mode))", category: .device)
+                }
+                defer {
+                    if showsPreparation {
+                        isPreparingDeviceForLocation = false
+                        if statusMessage == Self.preparingDeviceForLocationText
+                            || statusMessage == Self.stillPreparingDeviceForLocationText {
+                            statusMessage = nil
+                        }
+                    }
                 }
                 do {
                     try await ddiPreparer.ensureMounted(udid: preparationUDID)
@@ -3121,6 +3150,60 @@ class AppState: ObservableObject, LocationTerminationHandling {
     var isTunnelAutoReconnecting: Bool {
         tunnelAutoReconnector.isReconnecting
     }
+
+    /// The last automatic tunnel attempt's failure while reconnecting, for the notice.
+    var tunnelReconnectLastAttemptError: String? {
+        tunnelAutoReconnector.lastAttemptError
+    }
+
+    /// A Start replaced a stalled helper connection, which ended a location held on it.
+    /// While a recovery burst owns the session it is not a new loss (review 2026-11-03
+    /// issue 6): the burst is already reconnecting and reapplies over the replacing
+    /// connection, and reporting it dropped the burst's pending request, so a reapply the
+    /// phone applied was rejected. A burst that already ended has cleared its task first,
+    /// so a replacement after its reapply is still reported.
+    func helperConnectionReplaced(deviceId: String) {
+        guard selectedDevice?.id == deviceId,
+              locationSessionCoordinator.state.lastAcknowledgedReceipt != nil else { return }
+        guard locationRecoveryTask == nil else {
+            Logger.info("[Recovery] The helper connection was replaced during a recovery burst; the burst reapplies over it", category: .session)
+            return
+        }
+        handleLocationSessionLoss(.endpointReplaced)
+    }
+
+    /// Stop on the tunnel pill or in Settings while the tunnel reconnects by itself
+    /// (review 2026-11-03 issue 1): Stop Tunnel, which latches the tunnel reconnect, and the
+    /// same hold on the location reconnect a Stop of a live tunnel sets, whose burst would
+    /// otherwise reopen the helper connection behind the Stop. Start, Move or Reconnect
+    /// lifts both.
+    func stopTunnelReconnect() {
+        Logger.info("[TunnelReconnect] Stop pressed while reconnecting", category: .device)
+        isAutomaticReconnectLatchedByUser = true
+        cancelAutomaticReconnect(reason: "Stop pressed while the tunnel reconnected")
+        locationRecoveryTask?.cancel()
+        locationRecoveryTask = nil
+        tunnelAutoReconnect.tunnel.stopTunnel()
+        statusMessage = "Stopped reconnecting. Press Start to connect again."
+    }
+
+    /// The user selected another phone while the tunnel reconnects to the lost one: stop
+    /// that reconnect instead of reopening a phone nobody selected (review 2026-11-03
+    /// issue 9). Only a UDID is compared: an endpoint alias may be the same phone.
+    private func stopTunnelReconnectIfAnotherPhoneIsSelected(_ selected: Device) {
+        guard tunnelAutoReconnector.isReconnecting,
+              ArgumentSanitizer.isValidDeviceUDID(selected.id),
+              let reconnecting = tunnelAutoReconnect.tunnel.reconnectDeviceId,
+              reconnecting != selected.id else { return }
+        Logger.info("[TunnelReconnect] Another phone was selected; stopping the reconnect to the lost one", category: .device)
+        tunnelAutoReconnect.tunnel.stopTunnel()
+        statusMessage = "Stopped reconnecting to the previous iPhone because you selected \(selected.displayName). Press Start to connect to it."
+    }
+
+    static let preparingDeviceForLocationText =
+        "Preparing the iPhone for location (this can take up to two minutes the first time)…"
+    static let stillPreparingDeviceForLocationText =
+        "Still preparing the iPhone for location (this can take up to two minutes the first time). Your Move runs when it is ready."
 
     /// Plain words for the GUI while PathChanger waits for (or is reconnecting to) the phone.
     var automaticReconnectNotice: String? {

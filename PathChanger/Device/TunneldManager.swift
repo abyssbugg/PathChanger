@@ -688,8 +688,13 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     @Published var preferredMode: TunnelMode = .auto {
         didSet {
             UserDefaults.standard.set(preferredMode.rawValue, forKey: "tunnelMode")
+            // A switch to Background Daemon ends an automatic reconnect at once.
+            reconnectControlSubject.send()
         }
     }
+
+    /// Mode changes, Stop Tunnel and the Stop latch lifting, for `TunnelAutoReconnector`.
+    private let reconnectControlSubject = PassthroughSubject<Void, Never>()
 
     /// Active tunnel mode (actual running mode)
     @Published var activeMode: TunnelMode?
@@ -1114,6 +1119,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     func stopTunnel() {
         isDaemonAdoptionSuppressedByStop = true
         stopTunnel(disconnectHelper: true)
+        // From idle the state machine ignores the Stop: the reconnect learns of it here.
+        reconnectControlSubject.send()
     }
 
     private func stopTunnel(disconnectHelper: Bool) {
@@ -1362,6 +1369,19 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     var isStoppedByUser: Bool { isDaemonAdoptionSuppressedByStop }
 
     var reconnectDeviceId: String? { lastStartDeviceId ?? currentHelperConnection?.deviceId }
+
+    var reconnectControlChanges: AnyPublisher<Void, Never> {
+        reconnectControlSubject.eraseToAnyPublisher()
+    }
+
+    /// Move is an explicit user action: it lifts Stop Tunnel's latch like Start does, so a
+    /// later loss reconnects the tunnel as well as the location (review 2026-11-03 issue 7).
+    func liftStopLatch() {
+        guard isDaemonAdoptionSuppressedByStop else { return }
+        isDaemonAdoptionSuppressedByStop = false
+        Logger.info("[Tunnel] Move lifted the Stop latch", category: .device)
+        reconnectControlSubject.send()
+    }
 
     /// An automatic attempt (TunnelAutoReconnector): only in helper modes, never after Stop,
     /// only from idle or error, with the short visibility wait. It opens the helper's

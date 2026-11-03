@@ -18,6 +18,11 @@ enum HelperDiskImageStatus: Equatable, Sendable {
     /// No helper, no held connection for the device, or the helper could not ask: the
     /// command path (usbmux, then mobdev2) decides.
     case unavailable(String)
+
+    /// The helper's words for "it holds no connection for this device" and "it is not
+    /// running". Only these mean that opening the helper's connection could let it answer.
+    static let notConnectedDetail = "not connected"
+    static let helperNotRunningDetail = "location helper is not running"
 }
 
 /// The outcome of a helper auto-mount over its device connection.
@@ -34,6 +39,19 @@ enum HelperDiskImageMountResult: Equatable, Sendable {
 struct HelperDiskImageChannel: Sendable {
     let status: @Sendable (String) async -> HelperDiskImageStatus
     let mount: @Sendable (String) async -> HelperDiskImageMountResult
+    /// Opens the helper's unprivileged device connection (the path Start and every Move
+    /// use); true when it is open. Nil, or false in Background Daemon mode: never opened.
+    let connect: (@Sendable (String) async -> Bool)?
+
+    init(
+        status: @escaping @Sendable (String) async -> HelperDiskImageStatus,
+        mount: @escaping @Sendable (String) async -> HelperDiskImageMountResult,
+        connect: (@Sendable (String) async -> Bool)? = nil
+    ) {
+        self.status = status
+        self.mount = mount
+        self.connect = connect
+    }
 }
 
 /// Ensures the personalized Developer Disk Image is mounted on the device.
@@ -85,7 +103,9 @@ actor DeveloperDiskImagePreparer {
     /// the same instance AppState already owns. The mobdev2 retry is read from the
     /// current connection mode at each usbmux miss: USB-only never crosses to Wi-Fi.
     /// The helper channel is the shared location helper, asked with the same transport
-    /// hint its connection was opened with; it never starts the helper.
+    /// hint its connection was opened with. Its status and mount never start the helper;
+    /// its connect opens the helper's unprivileged connection like Move does, only in the
+    /// helper modes (never in Background Daemon mode).
     static func live(deviceManager: DeviceManager) -> DeveloperDiskImagePreparer {
         DeveloperDiskImagePreparer(
             runner: { command in
@@ -102,6 +122,11 @@ actor DeveloperDiskImagePreparer {
                 mount: { @MainActor udid in
                     await PersistentLocationBridge.shared.ddiMount(
                         deviceId: udid, transport: deviceManager.helperConnectTransport(for: udid))
+                },
+                connect: { @MainActor udid in
+                    guard TunneldManager.shared.preferredMode.usesHelperConnection else { return false }
+                    return await PersistentLocationBridge.shared.openDeviceConnectionForDiskImage(
+                        udid, transport: deviceManager.helperConnectTransport(for: udid))
                 }
             )
         )
@@ -115,7 +140,7 @@ actor DeveloperDiskImagePreparer {
     private func mountStatus(udid: String) async throws -> (mounted: Bool, viaHelper: Bool) {
         if mountedUDIDs.contains(udid) { return (true, false) }
         if let helper {
-            switch await helper.status(udid) {
+            switch await helperStatus(udid: udid, helper: helper) {
             case .mounted:
                 mountedUDIDs.insert(udid)
                 return (true, true)
@@ -138,6 +163,30 @@ actor DeveloperDiskImagePreparer {
         // 2026-11-01). `forget` drops it when the connection is lost (a reboot unmounts).
         if !entries.isEmpty { mountedUDIDs.insert(udid) }
         return (!entries.isEmpty, false)
+    }
+
+    /// The helper's answer. The gate runs before anything opened the helper's connection
+    /// in Move after a loss and in the recovery burst (review 2026-11-03 issue 3): when the
+    /// helper holds no connection (or is not running), open it through the same path Start
+    /// and every Move use, then ask again. Only a failed open, or a helper that still
+    /// cannot answer, leaves the decision to the command path.
+    private func helperStatus(udid: String, helper: HelperDiskImageChannel) async -> HelperDiskImageStatus {
+        let first = await helper.status(udid)
+        guard case .unavailable(let detail) = first,
+              detail == HelperDiskImageStatus.notConnectedDetail
+                || detail == HelperDiskImageStatus.helperNotRunningDetail,
+              let connect = helper.connect else { return first }
+        Logger.info("[Preparation] The helper holds no device connection yet; opening it before the Developer Disk Image check", category: .device)
+        guard await connect(udid) else {
+            Logger.info("[Preparation] The helper could not open the device connection; the command path checks the Developer Disk Image", category: .device)
+            return first
+        }
+        return await helper.status(udid)
+    }
+
+    /// Whether the image is known mounted (no check would run).
+    func isKnownMounted(udid: String) -> Bool {
+        mountedUDIDs.contains(udid)
     }
 
     func ensureMounted(udid: String) async throws {

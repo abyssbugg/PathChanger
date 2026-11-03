@@ -284,7 +284,8 @@ final class AutomaticReconnectTests: XCTestCase {
     private func makeFixture(
         usesHelper: Bool = true,
         managedSource: (any ManagedLocationSessionSource)? = nil,
-        ddiRunner: (([String]) async throws -> String)? = nil
+        ddiRunner: (([String]) async throws -> String)? = nil,
+        tunnelReconnect: FakeReconnectTunnel? = nil
     ) -> Fixture {
         let injector = FakeLocationInjector()
         let deviceManager = QuietReconnectDeviceManager(startBackgroundServices: false)
@@ -307,7 +308,11 @@ final class AutomaticReconnectTests: XCTestCase {
                 sleeper: sleeper,
                 now: { clock.now },
                 burstStrategy: oneAttempt
-            )
+            ),
+            tunnelAutoReconnect: tunnelReconnect.map { fake in
+                TunnelAutoReconnectEnvironment(isEnabled: true, tunnel: fake,
+                                               sleeper: ControlledReconnectSleeper(), now: { clock.now })
+            }
         )
         state.device.availableDevices = [phone]
         state.device.wifiDirectDeviceIds = [deviceID]
@@ -571,6 +576,134 @@ final class AutomaticReconnectTests: XCTestCase {
         fixture.state.device.wifiDirectDeviceIds = []
         fixture.state.device.onLocationSessionLoss?(.tunnelHealthLost)
         XCTAssertTrue(fixture.state.isAwaitingAutomaticReconnect)
+    }
+
+    // Review 2026-11-03 issue 7: Move lifted the location latch only; after Stop -> Move the
+    // tunnel reconnector still read the tunnel's Stop latch and never reopened the tunnel.
+    func testMoveLiftsTheTunnelStopLatchToo() async throws {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.isStoppedByUser = true // Stop Tunnel earlier
+        let fixture = makeFixture(tunnelReconnect: tunnel)
+        try seedHeldLocation(fixture)
+
+        fixture.state.activeMode = .teleport
+        fixture.state.stageLocation(held, for: .teleport)
+        let move = Task { await fixture.state.startSimulation() }
+        try await waitUntil("the Move apply") { await fixture.injector.pendingApplicationCount() == 1 }
+        XCTAssertEqual(tunnel.latchLifts, 1)
+        XCTAssertFalse(tunnel.isStoppedByUser, "a later loss reconnects the tunnel too")
+        await fixture.injector.releaseNextApplication(session: try await readyIdentity(fixture.state))
+        await move.value
+    }
+
+    // Review 2026-11-03 issue 1: the pill and Settings could not stop the reconnect.
+    func testStopWhileTheTunnelReconnectsStopsTheTunnelAndLatchesTheLocationReconnect() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let fixture = makeFixture(tunnelReconnect: tunnel)
+        try seedHeldLocation(fixture)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        fixture.state.device.wifiDirectDeviceIds = [] // the recovery burst fails fast
+        fixture.state.device.onLocationSessionLoss?(.tunnelHealthLost)
+        XCTAssertTrue(fixture.state.isTunnelAutoReconnecting)
+        try await waitUntil("waiting for the phone") { fixture.state.isAwaitingAutomaticReconnect }
+
+        fixture.state.stopTunnelReconnect()
+
+        XCTAssertEqual(tunnel.stopCalls, 1)
+        XCTAssertFalse(fixture.state.isTunnelAutoReconnecting)
+        XCTAssertFalse(fixture.state.isAwaitingAutomaticReconnect,
+                       "the location reconnect would reopen the helper connection behind the Stop")
+        fixture.state.device.wifiDirectDeviceIds = [deviceID]
+        await settle()
+        let applies = await applyCount(fixture.injector)
+        XCTAssertEqual(applies, 0)
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    // Review 2026-11-03 issue 9: the reconnector reopened the remembered phone after the
+    // user had selected another one.
+    func testSelectingAnotherPhoneWhileReconnectingStopsTheTunnelReconnect() async throws {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.reconnectDeviceId = deviceID
+        let fixture = makeFixture(tunnelReconnect: tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        XCTAssertTrue(fixture.state.isTunnelAutoReconnecting)
+
+        // The same phone (discovery re-selecting it) leaves the reconnect alone.
+        fixture.state.selectDevice(phone)
+        XCTAssertEqual(tunnel.stopCalls, 0)
+
+        let other = Device(id: "00008120-001B000E3E82002F", displayName: "Second iPhone", connectionType: .usb,
+                           productType: "iPhone16,2", productVersion: "18.0", deviceName: "Second iPhone")
+        fixture.state.device.availableDevices = [phone, other]
+        fixture.state.selectDevice(other)
+
+        XCTAssertEqual(tunnel.stopCalls, 1)
+        XCTAssertFalse(fixture.state.isTunnelAutoReconnecting)
+        let message = try XCTUnwrap(fixture.state.statusMessage)
+        XCTAssertTrue(message.contains("Stopped reconnecting"), message)
+        XCTAssertTrue(message.contains("Second iPhone"), message)
+    }
+
+    // Review 2026-11-03 issue 6: an automatic tunnel attempt that replaced a stalled helper
+    // connection reported a new loss in the middle of the recovery burst's reapply, which
+    // dropped the burst's pending request and failed a reapply the phone had applied.
+    func testAConnectionReplacedDuringARecoveryBurstDoesNotFailTheBurst() async throws {
+        let fixture = makeFixture()
+        try seedHeldLocation(fixture)
+        fixture.state.locationSessionCoordinator.connectionLost(reason: "Tunnel health lost")
+        fixture.state.startLocationRecovery(strategy: oneAttempt) { [deviceID] _, previous in
+            LocationSessionIdentity(stableDeviceID: deviceID, transport: .wifi, endpointClass: .direct,
+                                    generation: (previous?.generation ?? 1) + 1)
+        }
+        try await waitUntil("the burst's reapply") { await fixture.injector.pendingApplicationCount() == 1 }
+
+        fixture.state.helperConnectionReplaced(deviceId: deviceID)
+
+        await fixture.injector.releaseNextApplication(session: try await readyIdentity(fixture.state))
+        try await waitUntil("the burst applied") {
+            fixture.state.locationSessionCoordinator.state.application.isActive
+        }
+    }
+
+    func testAConnectionReplacedOutsideABurstIsStillALoss() throws {
+        let fixture = makeFixture()
+        try seedHeldLocation(fixture)
+        XCTAssertTrue(fixture.state.locationSessionCoordinator.state.application.isActive)
+        fixture.state.device.wifiDirectDeviceIds = [] // the recovery burst fails fast
+
+        fixture.state.helperConnectionReplaced(deviceId: deviceID)
+
+        XCTAssertFalse(fixture.state.locationSessionCoordinator.state.application.isActive)
+    }
+
+    // Review 2026-11-03 issue 4: a helper mount can hold Move for minutes and further
+    // clicks were dropped with only a log line.
+    func testMoveSaysItIsPreparingTheIPhoneAndAFurtherClickSaysItIsStillPreparing() async throws {
+        let gate = ReconnectTestGate()
+        let fixture = makeFixture(ddiRunner: { _ in
+            await gate.wait()
+            return #"[{"DiskImageType": "Personalized"}]"#
+        })
+        try seedHeldLocation(fixture)
+        fixture.state.activeMode = .teleport
+        fixture.state.stageLocation(held, for: .teleport)
+
+        let move = Task { await fixture.state.startSimulation() }
+        try await waitUntil("the preparing status") {
+            fixture.state.statusMessage == AppState.preparingDeviceForLocationText
+        }
+        await fixture.state.startSimulation()
+        XCTAssertEqual(fixture.state.statusMessage, AppState.stillPreparingDeviceForLocationText)
+
+        await gate.open()
+        try await waitUntil("the Move apply") { await fixture.injector.pendingApplicationCount() == 1 }
+        XCTAssertNotEqual(fixture.state.statusMessage, AppState.stillPreparingDeviceForLocationText)
+        XCTAssertNotEqual(fixture.state.statusMessage, AppState.preparingDeviceForLocationText)
+        await fixture.injector.releaseNextApplication(session: try await readyIdentity(fixture.state))
+        await move.value
     }
 
     func testDaemonModeNeverReconnectsAutomatically() async throws {
@@ -1096,28 +1229,57 @@ final class AutomaticReconnectDeviceStateTests: XCTestCase {
 @MainActor
 final class FakeReconnectTunnel: TunnelReconnectControlling {
     @Published var state: TunnelState = .idle
-    var preferredMode: TunnelMode = .wifi
+    var preferredMode: TunnelMode = .wifi {
+        didSet { controlChanges.send() }
+    }
     var isStoppedByUser = false
     var reconnectDeviceId: String? = "00008130-0011223344556677"
+    var lastError: String?
     /// What an automatic start ends in.
     var automaticStartResult: TunnelState = .error("not visible")
+    /// The error an automatic start that fails leaves behind.
+    var automaticStartError: String?
     var reconnectGate: ReconnectTestGate?
     private(set) var automaticStarts: [String] = []
     private(set) var reconnectCalls: [String?] = []
+    private(set) var stopCalls = 0
+    private(set) var latchLifts = 0
+    private let controlChanges = PassthroughSubject<Void, Never>()
 
     var lifecycleState: TunnelState { state }
     var lifecycleStatePublisher: AnyPublisher<TunnelState, Never> { $state.eraseToAnyPublisher() }
+    var reconnectControlChanges: AnyPublisher<Void, Never> { controlChanges.eraseToAnyPublisher() }
 
     func startTunnelAutomatically(deviceId: String) async {
         automaticStarts.append(deviceId)
+        lastError = nil
         state = .starting
         await Task.yield()
+        if case .error = automaticStartResult { lastError = automaticStartError }
         state = automaticStartResult
     }
 
     func reconnectTunnel(deviceId: String?) async {
         reconnectCalls.append(deviceId)
         await reconnectGate?.wait()
+    }
+
+    /// Like `TunneldManager.stopTunnel()`: latches, and from idle the state machine
+    /// ignores the Stop (no transition).
+    func stopTunnel() {
+        stopCalls += 1
+        isStoppedByUser = true
+        if state != .idle {
+            state = .stopping
+            state = .idle
+        }
+        controlChanges.send()
+    }
+
+    func liftStopLatch() {
+        latchLifts += 1
+        isStoppedByUser = false
+        controlChanges.send()
     }
 }
 
@@ -1349,6 +1511,87 @@ final class TunnelAutoReconnectorTests: XCTestCase {
         XCTAssertFalse(reconnector.isReconnecting)
         try await waitUntil("the wait cancelled") { await sleeper.pendingCount() == 0 }
         XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    // Review 2026-11-03 issue 8: a switch to Background Daemon or a Stop the state machine
+    // ignores did not wake the loop, so "Reconnecting…" stayed up for the rest of the wait.
+
+    func testSwitchingToDaemonModeEndsReconnectingAtOnce() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        tunnel.preferredMode = .daemon
+
+        XCTAssertFalse(reconnector.isReconnecting, "the label clears at once, not after the 5-30 s wait")
+        try await waitUntil("the wait cancelled") { await sleeper.pendingCount() == 0 }
+        clock.now += 60
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    func testAStopTheStateMachineIgnoresStillEndsReconnectingAtOnce() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        tunnel.state = .idle // a failed attempt can also end idle
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+        XCTAssertTrue(reconnector.isReconnecting)
+
+        tunnel.stopTunnel() // (.idle, .stopRequested) is ignored: no transition
+
+        XCTAssertFalse(reconnector.isReconnecting)
+        clock.now += 60
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+    }
+
+    // Review 2026-11-03 issue 11: Quit's cancel() left the subscription armed; a health
+    // failure during teardown re-armed it and relaunched the helper Quit had stopped.
+
+    func testCancelShutsTheReconnectorDownForGood() async {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, _) = makeReconnector(tunnel)
+        tunnel.state = .running
+
+        reconnector.cancel() // Quit
+
+        tunnel.state = .error("Health check failed")
+        reconnector.noteVisibleDevices([udid])
+        await settle()
+        XCTAssertFalse(reconnector.isReconnecting)
+        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [])
+    }
+
+    // Review 2026-11-03 issue 2: the reconnector keeps the last attempt's error for the notice.
+
+    func testTheLastAttemptsErrorIsKeptUntilTheReconnectEnds() async throws {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.automaticStartError = "ConnectionTerminatedError: refused"
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        XCTAssertNil(reconnector.lastAttemptError, "no attempt yet: the loss is not an attempt's error")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        clock.now += 5
+        await sleeper.releaseOldest()
+        try await waitUntil("the first attempt") { tunnel.automaticStarts.count == 1 }
+        try await waitUntil("its error kept") { reconnector.lastAttemptError == "ConnectionTerminatedError: refused" }
+
+        tunnel.automaticStartResult = .running
+        tunnel.automaticStartError = nil
+        clock.now += 3
+        reconnector.noteVisibleDevices([udid])
+        try await waitUntil("reconnected") { !reconnector.isReconnecting }
+        XCTAssertNil(reconnector.lastAttemptError)
     }
 }
 

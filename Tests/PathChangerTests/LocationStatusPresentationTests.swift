@@ -241,4 +241,66 @@ final class LocationStatusPresentationTests: XCTestCase {
         XCTAssertEqual(TunnelPillPhase.waitingForDevice.label, "Waiting for iPhone…")
     }
 
+    /// Review 2026-11-03 issue 2: the retries never end, so a persistent refusal hidden
+    /// behind "Reconnecting…" stayed invisible for hours (the 2026-11-02 open item).
+    func testTheLastReconnectAttemptsErrorShowsUnderTheReconnectingNotice() {
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, isTunnelReconnecting: true,
+                                 lastReconnectAttemptError: "ConnectionTerminatedError: refused",
+                                 automaticReconnectNotice: nil, tunnelError: "Health check failed"),
+            TunnelNotice(text: "\(TunnelNotice.tunnelReconnectingText)\nLast attempt: ConnectionTerminatedError: refused",
+                         isError: true)
+        )
+        XCTAssertEqual(
+            TunnelNotice.resolve(isWaitingForDevice: false, isTunnelReconnecting: true,
+                                 lastReconnectAttemptError: "refused",
+                                 automaticReconnectNotice: "Reapplying…", tunnelError: nil),
+            TunnelNotice(text: "\(TunnelNotice.tunnelReconnectingText)\nLast attempt: refused\nReapplying…",
+                         isError: true)
+        )
+        XCTAssertTrue(TunnelNotice.tunnelReconnectingText.contains("keeps trying"),
+                      "the notice says it retries until stopped")
+        XCTAssertTrue(TunnelNotice.tunnelReconnectingText.contains("tunnel button"),
+                      "the notice says how to stop it")
+    }
+
+    /// Review 2026-11-03 issue 1: between attempts the pill offered only Start, and was
+    /// disabled once discovery dropped the lost phone; nothing could stop the reconnect.
+    func testWhileReconnectingThePillStopsTheReconnectAndStaysEnabled() {
+        for isStarting in [false, true] {
+            for isWaiting in [false, true] {
+                XCTAssertEqual(
+                    TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: true,
+                                             isWaitingForDevice: isWaiting, isStarting: isStarting,
+                                             isAutoReconnecting: true),
+                    .stopReconnecting, "starting \(isStarting) waiting \(isWaiting)"
+                )
+            }
+        }
+        XCTAssertTrue(TunnelPillAction.isEnabled(hasSelectedDevice: false, isWaitingForDevice: false,
+                                                 isAutoReconnecting: true))
+        // Unchanged outside a reconnect.
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: true, requiresLocationQuitDecision: true,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: true), .confirmStop)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: true, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: false), .stop)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: true, isStarting: true,
+                                                isAutoReconnecting: false), .stop)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: false), .start)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: true,
+                                                isAutoReconnecting: false), .none)
+        XCTAssertFalse(TunnelPillAction.isEnabled(hasSelectedDevice: false, isWaitingForDevice: false,
+                                                  isAutoReconnecting: false))
+        XCTAssertTrue(TunnelPillAction.isEnabled(hasSelectedDevice: false, isWaitingForDevice: true,
+                                                 isAutoReconnecting: false))
+        XCTAssertTrue(TunnelPillAction.isEnabled(hasSelectedDevice: true, isWaitingForDevice: false,
+                                                 isAutoReconnecting: false))
+    }
+
 }

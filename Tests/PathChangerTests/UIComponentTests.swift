@@ -685,8 +685,11 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
 
         XCTAssertTrue(chrome.contains("private var hasSelectedDevice: Bool"))
         // The tunnel pill stays clickable while a Start waits for the phone, so the
-        // wait can always be cancelled even if discovery drops the selection.
-        XCTAssertTrue(chrome.contains(".disabled(!hasSelectedDevice && !tunneldManager.isWaitingForDevice)"))
+        // wait can always be cancelled even if discovery drops the selection; and while
+        // the tunnel reconnects by itself (review 2026-11-03 issue 1). The rule itself is
+        // `TunnelPillAction.isEnabled` (LocationStatusPresentationTests).
+        XCTAssertTrue(chrome.contains(".disabled(!isTunnelPillEnabled)"))
+        XCTAssertTrue(chrome.contains("isWaitingForDevice: tunneldManager.isWaitingForDevice,\n            isAutoReconnecting: appState.isTunnelAutoReconnecting"))
         let transportStart = try XCTUnwrap(chrome.range(of: "HStack(spacing: 2)"))
         let transportSuffix = chrome[transportStart.lowerBound...]
         let transportEnd = try XCTUnwrap(transportSuffix.range(of: ".padding(.leading, 11)"))

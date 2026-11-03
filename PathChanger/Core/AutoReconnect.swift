@@ -203,8 +203,18 @@ protocol TunnelReconnectControlling: AnyObject {
     var isStoppedByUser: Bool { get }
     /// The device the lost tunnel belonged to, kept when discovery deselects it.
     var reconnectDeviceId: String? { get }
+    /// The last Start's failure, if any.
+    var lastError: String? { get }
+    /// Facts the reconnect depends on that are not lifecycle transitions: the preferred
+    /// mode changed, Stop Tunnel was pressed (also when the state machine ignores it), the
+    /// Stop latch was lifted.
+    var reconnectControlChanges: AnyPublisher<Void, Never> { get }
     func startTunnelAutomatically(deviceId: String) async
     func reconnectTunnel(deviceId: String?) async
+    /// Stop Tunnel: latches until an explicit Start, Move or Reconnect.
+    func stopTunnel()
+    /// An explicit user action (Move) lifts Stop Tunnel's latch.
+    func liftStopLatch()
 }
 
 /// Whether and when PathChanger reopens the tunnel itself. Pure: the driver supplies the
@@ -305,6 +315,9 @@ struct TunnelAutoReconnectEnvironment {
 final class TunnelAutoReconnector: ObservableObject {
     /// True from the loss until the tunnel is live again or the reconnect stops.
     @Published private(set) var isReconnecting = false
+    /// The last failed attempt's error, shown under the Reconnecting notice; nil before
+    /// the first attempt and after the reconnect ends.
+    @Published private(set) var lastAttemptError: String?
 
     private let environment: TunnelAutoReconnectEnvironment
     private var tunnel: any TunnelReconnectControlling { environment.tunnel }
@@ -318,6 +331,9 @@ final class TunnelAutoReconnector: ObservableObject {
     private var task: Task<Void, Never>?
     /// Bumped by every start and cancel, so an ended loop never clears a newer one.
     private var runID: UInt64 = 0
+    /// Set by `cancel()` (Quit): nothing re-arms afterwards (review 2026-11-03 issue 11).
+    private var isShutDown = false
+    private var controlSubscription: AnyCancellable?
     private let waiter = AutoReconnectWaiter()
 
     init(environment: TunnelAutoReconnectEnvironment) {
@@ -325,6 +341,8 @@ final class TunnelAutoReconnector: ObservableObject {
         guard environment.isEnabled else { return }
         stateSubscription = environment.tunnel.lifecycleStatePublisher
             .sink { [weak self] state in self?.lifecycleStateChanged(to: state) }
+        controlSubscription = environment.tunnel.reconnectControlChanges
+            .sink { [weak self] in self?.controlChanged() }
     }
 
     /// Every device usbmux (USB or Network) or mobdev2 Bonjour lists right now.
@@ -337,13 +355,33 @@ final class TunnelAutoReconnector: ObservableObject {
         waiter.signalReachable()
     }
 
-    /// Stop reconnecting (Quit). Stop Tunnel ends it through the lifecycle latch instead.
+    /// Stop reconnecting for good (Quit). Stop Tunnel ends it through the lifecycle latch
+    /// instead. A health failure during Quit's teardown must not re-arm it: its attempt
+    /// would relaunch the helper Quit had just stopped.
     func cancel() {
+        isShutDown = true
+        stateSubscription = nil
+        controlSubscription = nil
         guard let task else { return }
         task.cancel()
         runID &+= 1
         finish()
         Logger.info("[TunnelReconnect] Stopped: cancelled", category: .device)
+    }
+
+    /// The mode changed, Stop Tunnel was pressed (also one the state machine ignored, from
+    /// idle), or the latch lifted (review 2026-11-03 issue 8): a reconnect the policy now
+    /// refuses ends at once, so "Reconnecting…" never outlives it by a 5-30 s wait.
+    private func controlChanged() {
+        guard let task else { return }
+        if case .stop(let refusal) = TunnelAutoReconnectPolicy.evaluate(inputs()) {
+            task.cancel()
+            runID &+= 1
+            finish()
+            Logger.info("[TunnelReconnect] Stopped: \(refusal)", category: .device)
+            return
+        }
+        waiter.signalReachable()
     }
 
     // The publisher reports a transition before the lifecycle state reads it (willSet):
@@ -373,7 +411,7 @@ final class TunnelAutoReconnector: ObservableObject {
     }
 
     private func arm() {
-        guard task == nil else { return }
+        guard task == nil, !isShutDown else { return }
         // The facts that do not depend on the state that is still being written.
         let decision = TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .error("")))
         guard case .stop(let refusal) = decision else {
@@ -441,6 +479,7 @@ final class TunnelAutoReconnector: ObservableObject {
                     Logger.info("[TunnelReconnect] Reconnected; the tunnel is live", category: .device)
                     return
                 }
+                lastAttemptError = tunnel.lastError
                 failedAttempts += 1
             }
         }
@@ -449,6 +488,7 @@ final class TunnelAutoReconnector: ObservableObject {
     private func finish() {
         task = nil
         isReconnecting = false
+        lastAttemptError = nil
         phoneBecameVisible = false
         waiter.discardPendingSignal()
     }

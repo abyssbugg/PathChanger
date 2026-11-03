@@ -1808,18 +1808,44 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
     }
 
-    /// The helper's reply to `ddi_mount`. Only "not connected" lets the command path try;
-    /// a mount the helper attempted and lost is a preparation failure.
+    /// The helper's reply to `ddi_mount`. Only "not connected" and `RSDRequiredError` let the
+    /// command path try; any other mount the helper attempted and lost is a preparation
+    /// failure. `auto_mount` over the usbmux-direct lockdown raises `RSDRequiredError` on
+    /// iOS 27+, and the CLI `auto-mount` answers exactly that by retrying over a tunnel
+    /// (review 2026-11-03 issue 10).
     nonisolated static func diskImageMountResult(from response: PersistentBridgeWireResponse) -> HelperDiskImageMountResult {
         if response.success, response.mounted == true { return .mounted }
-        if !response.success, response.error == "not connected" { return .unavailable("not connected") }
+        if !response.success, response.error == HelperDiskImageStatus.notConnectedDetail {
+            return .unavailable(HelperDiskImageStatus.notConnectedDetail)
+        }
+        if !response.success, let error = response.error, error.hasPrefix("RSDRequiredError") {
+            return .unavailable(error)
+        }
         return .failed(response.error ?? "Developer Disk Image mount reply did not report a mounted image")
+    }
+
+    /// Open the helper's device connection so its Developer Disk Image commands can run
+    /// (review 2026-11-03 issue 3). The same unprivileged `connect_device` path as Start and
+    /// every Move; never while Stop Tunnel has blocked this device's location commands.
+    func openDeviceConnectionForDiskImage(_ deviceId: String, transport: LocationTransport) async -> Bool {
+        guard !suspendedDeviceIDs.contains(deviceId) else { return false }
+        do {
+            _ = try await connectDevice(deviceId, transport: transport)
+            return true
+        } catch {
+            Logger.error(
+                "[PersistentBridge] Opening the device connection for the Developer Disk Image check failed: "
+                    + LogRedaction.redactingDeviceIdentifiers(error.localizedDescription),
+                category: .device
+            )
+            return false
+        }
     }
 
     /// Ask the helper, over the device connection it holds, whether a Developer Disk Image
     /// is mounted. Never starts the helper and never opens a connection.
     func ddiStatus(deviceId: String, transport: LocationTransport) async -> HelperDiskImageStatus {
-        guard isRunning else { return .unavailable("location helper is not running") }
+        guard isRunning else { return .unavailable(HelperDiskImageStatus.helperNotRunningDetail) }
         guard (try? ArgumentSanitizer.validateDeviceUDID(deviceId)) != nil else {
             return .unavailable("invalid device identifier")
         }
@@ -1832,7 +1858,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 timeoutSeconds: Self.diskImageStatusResponseTimeoutSeconds
             )
             let status = Self.diskImageStatus(from: response)
-            if case .unavailable(let detail) = status, detail != "not connected" {
+            if case .unavailable(let detail) = status, detail != HelperDiskImageStatus.notConnectedDetail {
                 Logger.error(
                     "[PersistentBridge] ddi_status failed: " + LogRedaction.redactingDeviceIdentifiers(detail),
                     category: .device,
@@ -1849,7 +1875,7 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// starts the helper. A helper that does not answer in time is a failed mount (it may
     /// still be mounting), never a reason to start a second mount over the command path.
     func ddiMount(deviceId: String, transport: LocationTransport) async -> HelperDiskImageMountResult {
-        guard isRunning else { return .unavailable("location helper is not running") }
+        guard isRunning else { return .unavailable(HelperDiskImageStatus.helperNotRunningDetail) }
         guard (try? ArgumentSanitizer.validateDeviceUDID(deviceId)) != nil else {
             return .unavailable("invalid device identifier")
         }

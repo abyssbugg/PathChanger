@@ -1208,6 +1208,11 @@ final class PersistentLocationBridgeTests: XCTestCase {
             from: try wireResponse(#"{"success": true}"#)) else {
             return XCTFail("a reply that does not say mounted is not a mount")
         }
+        // Review 2026-11-03 issue 10: auto_mount over the usbmux-direct lockdown raises
+        // RSDRequiredError on iOS 27+; the CLI auto-mount retries that over a tunnel.
+        XCTAssertEqual(PersistentLocationBridge.diskImageMountResult(
+            from: try wireResponse(#"{"success": false, "error": "RSDRequiredError: tunnel required"}"#)),
+            .unavailable("RSDRequiredError: tunnel required"))
     }
 
     @MainActor
@@ -3189,6 +3194,127 @@ asyncio.run(verify())
             for cmd in ("ddi_status", "ddi_mount"):
                 result = await ddi_command(c, cmd)
                 assert result["success"] is False and "image mounter" in result["error"], result
+            await c.close_all()
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// Review 2026-11-03 issues 5 and 11. The 120 s mount budget used to include the wait
+    /// for the per-device mount lock, so a second `ddi_mount` (Move beside the recovery
+    /// burst) timed out while the first mounted the image. A timed-out mount left its image
+    /// download running in a worker thread, and the next attempt started a second download
+    /// into the same cache at the same time.
+    func testPythonHelperDiskImageMountQueueAndSharedDownload() throws {
+        let code = mobdev2LaneFixture() + """
+
+        import threading, time
+        class AlreadyMountedError(PyMobileDevice3Exception): pass
+        ddi = {"images": [], "mount_delay": 0.0, "mount_error": None}
+        counts = {"mounts": 0, "prefetches": 0, "prefetching": 0, "prefetch_peak": 0}
+        prefetch_gate = {"event": None, "delay": 0.0}
+        prefetch_lock = threading.Lock()
+        class Mounter:
+            def __init__(self, lockdown): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def list_images(self): return list(ddi["images"])
+        async def auto_mount(lockdown):
+            counts["mounts"] += 1
+            if ddi["images"]:
+                raise AlreadyMountedError("already mounted")
+            error = ddi["mount_error"]
+            await asyncio.sleep(ddi["mount_delay"])
+            if error is not None:
+                raise error
+            ddi["images"] = [{"DiskImageType": "Personalized"}]
+        def prefetch(lockdown):
+            with prefetch_lock:
+                counts["prefetches"] += 1
+                counts["prefetching"] += 1
+                counts["prefetch_peak"] = max(counts["prefetch_peak"], counts["prefetching"])
+            try:
+                if prefetch_gate["event"] is not None:
+                    prefetch_gate["event"].wait(5)
+                time.sleep(prefetch_gate["delay"])
+            finally:
+                with prefetch_lock:
+                    counts["prefetching"] -= 1
+
+        def with_ddi(c):
+            c._image_mounter_service = Mounter
+            c._ddi_auto_mount = auto_mount
+            c._ddi_prefetch = prefetch
+            c._already_mounted_error = AlreadyMountedError
+            return c
+
+        def reset():
+            ddi.update(images=[], mount_delay=0.0, mount_error=None)
+            counts.update(mounts=0, prefetches=0, prefetching=0, prefetch_peak=0)
+            prefetch_gate.update(event=None, delay=0.0)
+
+        async def ddi_mount(c):
+            return await bridge.process_command(c, {"cmd": "ddi_mount", "udid": "dev",
+                "connection_type": "Network"})
+
+        async def verify():
+            original_timeout = bridge.DDI_MOUNT_TIMEOUT_SECONDS
+            usbmux_visible.add("dev")
+            c = with_ddi(make_connection())
+            assert (await connect(c))["success"] is True
+
+            # 5: the queued mount's budget starts when it holds the lock, and a waiter
+            # whose lock holder mounted the image returns mounted without a second mount.
+            reset()
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = 1.0
+            prefetch_gate["delay"] = 0.4
+            ddi["mount_delay"] = 0.4
+            results = await asyncio.gather(ddi_mount(c), ddi_mount(c))
+            assert results == [{"success": True, "mounted": True}] * 2, results
+            assert counts["prefetches"] == 1, ("the waiter downloaded again", counts)
+            assert counts["mounts"] == 1, ("the waiter mounted again", counts)
+
+            # 5: a waiter whose lock holder failed mounts on its own budget.
+            reset()
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = 1.0
+            ddi["mount_delay"] = 0.05
+            ddi["mount_error"] = RuntimeError("TSS refused")
+            first = asyncio.ensure_future(ddi_mount(c))
+            await asyncio.sleep(0.01)
+            second = asyncio.ensure_future(ddi_mount(c))
+            await asyncio.sleep(0.02)
+            ddi["mount_error"] = None
+            first, second = await first, await second
+            assert first["success"] is False and "TSS refused" in first["error"], first
+            assert second == {"success": True, "mounted": True}, second
+            assert counts["mounts"] == 2, counts
+
+            # 11: a mount that timed out left its download running; the next mount waits
+            # for that download instead of starting a second one beside it.
+            reset()
+            gate = threading.Event()
+            prefetch_gate["event"] = gate
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = 0.1
+            timed_out = await ddi_mount(c)
+            assert timed_out["success"] is False and "timed out" in timed_out["error"], timed_out
+            assert counts["prefetching"] == 1, ("the first download is still running", counts)
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = 3.0
+            retry = asyncio.ensure_future(ddi_mount(c))
+            await asyncio.sleep(0.1)
+            assert counts["prefetches"] == 1, ("a second download started beside the first", counts)
+            gate.set()
+            assert await retry == {"success": True, "mounted": True}
+            assert counts["prefetch_peak"] == 1, counts
+            assert counts["prefetches"] == 1, counts
+
+            # 11: once the earlier download ended, a later mount downloads again as before.
+            ddi["images"] = []
+            prefetch_gate["event"] = None
+            assert await ddi_mount(c) == {"success": True, "mounted": True}
+            assert counts["prefetches"] == 2, counts
+
+            bridge.DDI_MOUNT_TIMEOUT_SECONDS = original_timeout
             await c.close_all()
         asyncio.run(verify())
         """

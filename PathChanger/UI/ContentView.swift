@@ -20,19 +20,24 @@ struct TunnelNotice: Equatable {
         "Waiting for your iPhone on Wi‑Fi. Unlock it and keep it on this network. Click the tunnel button to cancel."
 
     static let tunnelReconnectingText =
-        "Connection to the iPhone lost. PathChanger reconnects on its own when the phone is back. Keep it unlocked and on this Wi‑Fi, or connect the cable."
+        "Connection to the iPhone lost. PathChanger keeps trying to reconnect, waiting at most 30 seconds between attempts, until the phone is back or you click the tunnel button to stop. Keep it unlocked and on this Wi‑Fi, or connect the cable."
 
     static func resolve(
         isWaitingForDevice: Bool,
         isTunnelReconnecting: Bool,
+        lastReconnectAttemptError: String? = nil,
         automaticReconnectNotice: String?,
         tunnelError: String?
     ) -> TunnelNotice? {
-        // PathChanger reopens the tunnel itself (live 2026-11-03): not an error, and its
-        // own words win over the device wait inside an automatic attempt.
+        // PathChanger reopens the tunnel itself (live 2026-11-03): its own words win over
+        // the device wait inside an automatic attempt. The retries never end, so the last
+        // attempt's failure shows under them (review 2026-11-03 issue 2): a refusal that
+        // lasts hours is visible, not hidden behind "Reconnecting…".
         if isTunnelReconnecting {
-            let text = automaticReconnectNotice.map { "\(tunnelReconnectingText)\n\($0)" } ?? tunnelReconnectingText
-            return TunnelNotice(text: text, isError: false)
+            var lines = [tunnelReconnectingText]
+            if let lastReconnectAttemptError { lines.append("Last attempt: \(lastReconnectAttemptError)") }
+            if let automaticReconnectNotice { lines.append(automaticReconnectNotice) }
+            return TunnelNotice(text: lines.joined(separator: "\n"), isError: lastReconnectAttemptError != nil)
         }
         return resolve(isWaitingForDevice: isWaitingForDevice, automaticReconnectNotice: automaticReconnectNotice,
                        tunnelError: tunnelError)
@@ -52,6 +57,37 @@ struct TunnelNotice: Equatable {
         }
         // After a loss the user did not cause, PathChanger waits for the phone itself.
         return automaticReconnectNotice.map { TunnelNotice(text: $0, isError: false) }
+    }
+}
+
+/// What a click on the tunnel pill does, and whether it can be clicked.
+enum TunnelPillAction: Equatable {
+    case confirmStop
+    case stop
+    case stopReconnecting
+    case start
+    case none
+
+    static func resolve(
+        isRunning: Bool,
+        requiresLocationQuitDecision: Bool,
+        isWaitingForDevice: Bool,
+        isStarting: Bool,
+        isAutoReconnecting: Bool
+    ) -> TunnelPillAction {
+        if isRunning { return requiresLocationQuitDecision ? .confirmStop : .stop }
+        // Between attempts (idle or error) and inside one (starting), the click stops the
+        // automatic reconnect (review 2026-11-03 issue 1).
+        if isAutoReconnecting { return .stopReconnecting }
+        if isWaitingForDevice { return .stop }
+        if !isStarting { return .start }
+        return .none
+    }
+
+    /// The pill stays clickable while reconnecting even after discovery dropped the lost
+    /// phone from the selection: it is the only way to stop the reconnect from the window.
+    static func isEnabled(hasSelectedDevice: Bool, isWaitingForDevice: Bool, isAutoReconnecting: Bool) -> Bool {
+        hasSelectedDevice || isWaitingForDevice || isAutoReconnecting
     }
 }
 
@@ -445,6 +481,7 @@ struct ContentView: View {
         return TunnelNotice.resolve(
             isWaitingForDevice: tunneldManager.isWaitingForDevice,
             isTunnelReconnecting: appState.isTunnelAutoReconnecting && !tunneldManager.isRunning,
+            lastReconnectAttemptError: appState.tunnelReconnectLastAttemptError,
             automaticReconnectNotice: appState.automaticReconnectNotice,
             tunnelError: errorText
         ).map { ($0.text, $0.isError) }

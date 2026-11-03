@@ -194,17 +194,24 @@ struct OrganicTitleBar: View {
 
     private var tunnelButton: some View {
         Button {
-            if tunneldManager.isRunning {
-                if appState.requiresLocationQuitDecision {
-                    confirmTunnelStop = true
-                } else {
-                    tunneldManager.stopTunnel()
-                }
-            } else if tunneldManager.isWaitingForDevice {
-                // The wait can run for minutes; clicking again cancels it.
+            switch TunnelPillAction.resolve(
+                isRunning: tunneldManager.isRunning,
+                requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
+                isWaitingForDevice: tunneldManager.isWaitingForDevice,
+                isStarting: tunneldManager.isStarting,
+                isAutoReconnecting: appState.isTunnelAutoReconnecting
+            ) {
+            case .confirmStop:
+                confirmTunnelStop = true
+            case .stop:
+                // A live tunnel, or a wait that can run for minutes: clicking cancels it.
                 tunneldManager.stopTunnel()
-            } else if !tunneldManager.isStarting {
+            case .stopReconnecting:
+                appState.stopTunnelReconnect()
+            case .start:
                 Task { await appState.startSelectedTunnel() }
+            case .none:
+                break
             }
         } label: {
             HStack(spacing: 8) {
@@ -222,9 +229,11 @@ struct OrganicTitleBar: View {
             .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectedDevice && !tunneldManager.isWaitingForDevice)
-        .opacity(hasSelectedDevice || tunneldManager.isWaitingForDevice ? 1 : 0.55)
-        .help(connectionHelp)
+        .disabled(!isTunnelPillEnabled)
+        .opacity(isTunnelPillEnabled ? 1 : 0.55)
+        .help(appState.isTunnelAutoReconnecting && !tunneldManager.isRunning
+              ? "PathChanger keeps trying to reconnect. Click to stop reconnecting."
+              : connectionHelp)
         .confirmationDialog(
             "Stop the tunnel?",
             isPresented: $confirmTunnelStop
@@ -369,6 +378,14 @@ struct OrganicTitleBar: View {
         case .wifi: return false
         default: return appState.isUSBConnected || !appState.isWiFiTransportAvailable
         }
+    }
+
+    private var isTunnelPillEnabled: Bool {
+        TunnelPillAction.isEnabled(
+            hasSelectedDevice: hasSelectedDevice,
+            isWaitingForDevice: tunneldManager.isWaitingForDevice,
+            isAutoReconnecting: appState.isTunnelAutoReconnecting
+        )
     }
 
     private var tunnelPhase: TunnelPillPhase {

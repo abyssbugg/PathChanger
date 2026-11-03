@@ -681,6 +681,38 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertFalse(manager.isWaitingForDevice)
     }
 
+    // Review 2026-11-03 issues 7 and 8, on the real lifecycle owner.
+
+    func testMoveLiftsTheStopLatchSoAnAutomaticStartRunsAgain() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        let udid = "00008130-000C5144019A001C"
+        manager.stopTunnel()
+        XCTAssertTrue(manager.isStoppedByUser)
+
+        manager.liftStopLatch() // Move
+
+        XCTAssertFalse(manager.isStoppedByUser)
+        await manager.startTunnelAutomatically(deviceId: udid)
+        try await waitUntil { self.manager.state == .running }
+        XCTAssertEqual(connector.connectCalls.map(\.deviceId), [udid])
+    }
+
+    func testAStopFromIdleAndAModeChangeAreAnnouncedToTheReconnect() throws {
+        _ = try installFakeConnector(mode: .wifi)
+        var announcements = 0
+        let subscription = manager.reconnectControlChanges.sink { announcements += 1 }
+        defer { subscription.cancel() }
+        XCTAssertEqual(manager.lifecycleState, .idle)
+
+        manager.stopTunnel() // the state machine ignores (.idle, .stopRequested)
+        XCTAssertEqual(manager.lifecycleState, .idle)
+        XCTAssertEqual(announcements, 1)
+
+        manager.preferredMode = .daemon
+        XCTAssertEqual(announcements, 2)
+        manager.preferredMode = .wifi
+    }
+
     func testAutomaticStartNeverRunsAfterStopOrInDaemonMode() async throws {
         let connector = try installFakeConnector(mode: .wifi)
         let udid = "00008130-000C5144019A001C"

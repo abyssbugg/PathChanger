@@ -425,6 +425,90 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
         XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountCommand(udid: udid)])
     }
 
+    // Review 2026-11-03 issue 3: Move and the recovery burst ran this gate before anything
+    // opened the helper connection, so after a loss the helper answered "not connected" and
+    // the command path (which fails on the remote pairing lane) decided.
+
+    func testMoveAfterALossOpensTheHelperConnectionAndAsksTheHelperNotTheCLI() async throws {
+        let helper = FakeDiskImageHelper(
+            status: .mounted,
+            thenStatus: [.unavailable(HelperDiskImageStatus.notConnectedDetail), .mounted],
+            connect: true
+        )
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "[]" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        await preparer.forget(udid: udid) // the loss
+
+        try await preparer.ensureMounted(udid: udid)
+
+        XCTAssertEqual(commands, [], "the CLI path must not decide while the helper can answer")
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)", "status \(udid)", "connect \(udid)", "status \(udid)"])
+    }
+
+    func testAHelperThatIsNotRunningIsStartedThroughTheConnectPathToo() async throws {
+        let helper = FakeDiskImageHelper(
+            status: .unavailable(HelperDiskImageStatus.helperNotRunningDetail),
+            thenStatus: [.notMounted],
+            mount: .mounted,
+            connect: true
+        )
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "[]" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [])
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)", "connect \(udid)", "status \(udid)", "mount \(udid)"])
+    }
+
+    func testOpeningTheHelperConnectionFailsSoTheCLIDecides() async throws {
+        let helper = FakeDiskImageHelper(status: .unavailable(HelperDiskImageStatus.notConnectedDetail), connect: false)
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in
+                commands.append(command)
+                return command.contains("list") ? "[{}]" : ""
+            },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountStatusCommand(udid: udid)])
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)", "connect \(udid)"], "no second status after a failed open")
+    }
+
+    func testTheHelperStillUnableToAnswerAfterOpeningLetsTheCLIDecide() async throws {
+        let helper = FakeDiskImageHelper(
+            status: .unavailable(HelperDiskImageStatus.notConnectedDetail),
+            thenStatus: [.unavailable("TimeoutError: DDI status timed out after 10s")],
+            connect: true
+        )
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { command in commands.append(command); return "[{}]" },
+            helper: helper.channel
+        )
+        try await preparer.ensureMounted(udid: udid)
+        XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountStatusCommand(udid: udid)])
+    }
+
+    func testAHelperThatAskedAndFailedIsNotReconnected() async throws {
+        // Only "not connected" / "not running" open a connection: any other failure is the
+        // helper's answer about a connection it holds.
+        let helper = FakeDiskImageHelper(status: .unavailable("ConnectionTerminatedError: gone"), connect: true)
+        let preparer = DeveloperDiskImagePreparer(runner: { _ in "[{}]" }, helper: helper.channel)
+        try await preparer.ensureMounted(udid: udid)
+        let calls = await helper.calls
+        XCTAssertEqual(calls, ["status \(udid)"])
+    }
+
     func testForgetAsksTheHelperAgain() async throws {
         let helper = FakeDiskImageHelper(status: .mounted)
         let preparer = DeveloperDiskImagePreparer(runner: { _ in "" }, helper: helper.channel)
@@ -438,17 +522,26 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
 
 private actor FakeDiskImageHelper {
     private(set) var calls: [String] = []
-    private let statusReply: HelperDiskImageStatus
+    /// Answered in order; the last one repeats.
+    private var statusReplies: [HelperDiskImageStatus]
     private let mountReply: HelperDiskImageMountResult
+    /// What opening the helper's device connection returns; nil: the channel cannot open one.
+    private let connectReply: Bool?
 
-    init(status: HelperDiskImageStatus, mount: HelperDiskImageMountResult = .failed("unexpected mount")) {
-        statusReply = status
+    init(
+        status: HelperDiskImageStatus,
+        thenStatus: [HelperDiskImageStatus] = [],
+        mount: HelperDiskImageMountResult = .failed("unexpected mount"),
+        connect: Bool? = nil
+    ) {
+        statusReplies = [status] + thenStatus
         mountReply = mount
+        connectReply = connect
     }
 
     func status(_ udid: String) -> HelperDiskImageStatus {
         calls.append("status \(udid)")
-        return statusReply
+        return statusReplies.count > 1 ? statusReplies.removeFirst() : statusReplies[0]
     }
 
     func mount(_ udid: String) -> HelperDiskImageMountResult {
@@ -456,10 +549,22 @@ private actor FakeDiskImageHelper {
         return mountReply
     }
 
+    func connect(_ udid: String) -> Bool {
+        calls.append("connect \(udid)")
+        return connectReply ?? false
+    }
+
     nonisolated var channel: HelperDiskImageChannel {
-        HelperDiskImageChannel(
+        let connect: (@Sendable (String) async -> Bool)?
+        if connectReply == nil {
+            connect = nil
+        } else {
+            connect = { udid in await self.connect(udid) }
+        }
+        return HelperDiskImageChannel(
             status: { await self.status($0) },
-            mount: { await self.mount($0) }
+            mount: { await self.mount($0) },
+            connect: connect
         )
     }
 }

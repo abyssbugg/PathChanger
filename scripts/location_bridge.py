@@ -288,6 +288,10 @@ class DeviceConnection:
         self._ddi_prefetch = None
         self._already_mounted_error = None
         self._ddi_mount_locks: dict = {}
+        # Per device: mounts that succeeded (a mount queued behind one returns mounted), and
+        # the image download in flight (one at a time, also across a timed-out mount).
+        self._ddi_mount_successes: dict = {}
+        self._ddi_prefetch_tasks: dict = {}
         self._open_locks: dict = {}
         # Called with the device id whenever its connection is closed, so the helper
         # record never lists a held location on a connection that no longer exists.
@@ -599,30 +603,50 @@ class DeviceConnection:
         """
         if not self._lazy_import():
             return {"success": False, "error": "pymobiledevice3 not installed"}
-        provider = self._held_provider(udid, connection_type)
-        if provider is None:
+        if self._held_provider(udid, connection_type) is None:
             return dict(self._DDI_NOT_CONNECTED)
         if self._image_mounter_service is None or self._ddi_auto_mount is None:
             return {"success": False, "error": self._DDI_UNSUPPORTED}
-        lock = self._ddi_mount_locks.setdefault(self._cache_key(udid, connection_type), asyncio.Lock())
-        timeout = DDI_MOUNT_TIMEOUT_SECONDS
-        try:
-            await asyncio.wait_for(self._mount_ddi_locked(lock, provider), timeout)
-        except asyncio.TimeoutError:
-            return {"success": False, "error": f"DDI mount timed out after {timeout:g}s"}
-        except Exception as error:
-            already = self._already_mounted_error
-            if already is None or not isinstance(error, already):
-                return {"success": False, "error": f"{type(error).__name__}: {error}"}
+        key = self._cache_key(udid, connection_type)
+        lock = self._ddi_mount_locks.setdefault(key, asyncio.Lock())
+        mounts_before = self._ddi_mount_successes.get(key, 0)
+        # The budget starts once this mount holds the lock (review 2026-11-03 issue 5): it
+        # used to include the wait behind another mount, so a second mount timed out while
+        # the first mounted the image. The wait is bounded by the holder's own budget.
+        async with lock:
+            if self._ddi_mount_successes.get(key, 0) != mounts_before:
+                # The mount this one queued behind mounted the image: what was asked for.
+                return {"success": True, "mounted": True}
+            provider = self._held_provider(udid, connection_type)
+            if provider is None:
+                return dict(self._DDI_NOT_CONNECTED)
+            timeout = DDI_MOUNT_TIMEOUT_SECONDS
+            try:
+                await asyncio.wait_for(self._mount_ddi(key, provider), timeout)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": f"DDI mount timed out after {timeout:g}s"}
+            except Exception as error:
+                already = self._already_mounted_error
+                if already is None or not isinstance(error, already):
+                    return {"success": False, "error": f"{type(error).__name__}: {error}"}
+            self._ddi_mount_successes[key] = self._ddi_mount_successes.get(key, 0) + 1
         return {"success": True, "mounted": True}
 
-    async def _mount_ddi_locked(self, lock: asyncio.Lock, provider) -> None:
-        async with lock:
-            if self._ddi_prefetch is not None:
-                # Upstream downloads the image synchronously inside auto_mount; doing it
-                # first in a worker thread keeps this helper answering other commands.
-                await asyncio.to_thread(self._ddi_prefetch, provider)
-            await self._ddi_auto_mount(provider)
+    async def _mount_ddi(self, key: str, provider) -> None:
+        if self._ddi_prefetch is not None:
+            # Upstream downloads the image synchronously inside auto_mount; doing it first
+            # in a worker thread keeps this helper answering other commands. A timeout
+            # cancels only this coroutine, never the thread: a download still running from
+            # an earlier attempt is awaited, not started a second time beside it into the
+            # same cache (review 2026-11-03 issue 11).
+            prefetch = self._ddi_prefetch_tasks.get(key)
+            if prefetch is None or prefetch.done():
+                prefetch = asyncio.ensure_future(asyncio.to_thread(self._ddi_prefetch, provider))
+                # Retrieve a failure nobody awaits any more (its waiter timed out).
+                prefetch.add_done_callback(lambda done: done.cancelled() or done.exception())
+                self._ddi_prefetch_tasks[key] = prefetch
+            await asyncio.shield(prefetch)
+        await self._ddi_auto_mount(provider)
 
     async def _open_userspace_tunnel_cli_exact(
         self, udid: str, cache_key: str,

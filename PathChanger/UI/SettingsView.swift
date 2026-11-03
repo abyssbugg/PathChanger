@@ -184,6 +184,14 @@ struct SettingsView: View {
                     } message: {
                         Text("The simulated location is held over this tunnel. Stopping it ends the location on the device.")
                     }
+                } else if appState.isTunnelAutoReconnecting {
+                    // The automatic reconnect never gives up on its own (review 2026-11-03
+                    // issue 1): Stop is offered between attempts and inside one.
+                    Button("Stop Reconnecting") {
+                        appState.stopTunnelReconnect()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
                 } else if tunneldManager.isStarting {
                     Button("Starting...") { }
                         .buttonStyle(.bordered)
