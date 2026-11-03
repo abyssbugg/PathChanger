@@ -118,37 +118,59 @@ struct AutomaticReconnectEnvironment {
     }
 }
 
-/// One wait for "the phone is visible again" or a fallback timeout, cancelable.
-/// A signal that arrives while nobody waits is kept for the next wait.
+/// One wait for "the phone is visible again" (or a RemotePairing advert hint) or a
+/// fallback timeout, cancelable. A signal that arrives while nobody waits is kept for the
+/// next wait; a kept visibility signal outranks a kept advert.
 @MainActor
 final class AutoReconnectWaiter {
     enum Wake: Equatable {
+        /// usbmux or mobdev2 lists the awaited phone again.
         case reachable
+        /// Only a RemotePairing advert appeared: a hint, never visibility (review
+        /// 2026-11-03 issue 11).
+        case remotePairingAdvert
         case timeout
         case cancelled
+
+        /// Why the wait ended, as the reconnect logs it.
+        var logText: String {
+            switch self {
+            case .reachable: return "The phone is visible again"
+            case .remotePairingAdvert: return "A RemotePairing advert appeared (a hint, not visibility)"
+            case .timeout, .cancelled: return "Fallback timer"
+            }
+        }
     }
 
     private var continuation: CheckedContinuation<Wake, Never>?
     private var waitID: UInt64 = 0
-    private var hasPendingSignal = false
+    private var pendingSignal: Wake?
 
     func signalReachable() {
-        if continuation != nil {
-            finish(.reachable, waitID: waitID)
-        } else {
-            hasPendingSignal = true
-        }
+        signal(.reachable)
+    }
+
+    func signalRemotePairingAdvert() {
+        signal(.remotePairingAdvert)
     }
 
     func discardPendingSignal() {
-        hasPendingSignal = false
+        pendingSignal = nil
+    }
+
+    private func signal(_ wake: Wake) {
+        if continuation != nil {
+            finish(wake, waitID: waitID)
+        } else if pendingSignal != .reachable {
+            pendingSignal = wake
+        }
     }
 
     func wait(timeout: TimeInterval, sleeper: any RecoverySleeping) async -> Wake {
         guard !Task.isCancelled else { return .cancelled }
-        if hasPendingSignal {
-            hasPendingSignal = false
-            return .reachable
+        if let pending = pendingSignal {
+            pendingSignal = nil
+            return pending
         }
         waitID &+= 1
         let id = waitID

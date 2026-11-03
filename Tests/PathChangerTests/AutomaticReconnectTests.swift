@@ -258,6 +258,50 @@ final class AutoReconnectWaiterTests: XCTestCase {
         let secondWake = await second.value
         XCTAssertEqual(secondWake, .reachable)
     }
+
+    // Review 2026-11-03 issue 11: an advert wake must not be logged as visibility.
+
+    func testAnAdvertWakesAWaitWithItsOwnReason() async throws {
+        let waiter = AutoReconnectWaiter()
+        let sleeper = ControlledReconnectSleeper()
+        let wait = Task { @MainActor in await waiter.wait(timeout: 60, sleeper: sleeper) }
+        let deadline = Date().addingTimeInterval(2)
+        while await sleeper.pendingCount() < 1, Date() < deadline {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        waiter.signalRemotePairingAdvert()
+
+        let wake = await wait.value
+        XCTAssertEqual(wake, .remotePairingAdvert)
+    }
+
+    func testAPendingAdvertKeepsItsReasonAndVisibilityOutranksIt() async {
+        let waiter = AutoReconnectWaiter()
+        let sleeper = ControlledReconnectSleeper()
+
+        waiter.signalRemotePairingAdvert()
+        let advertOnly = await waiter.wait(timeout: 60, sleeper: sleeper)
+        XCTAssertEqual(advertOnly, .remotePairingAdvert)
+
+        waiter.signalRemotePairingAdvert()
+        waiter.signalReachable()
+        let advertThenVisible = await waiter.wait(timeout: 60, sleeper: sleeper)
+        XCTAssertEqual(advertThenVisible, .reachable)
+
+        waiter.signalReachable()
+        waiter.signalRemotePairingAdvert()
+        let visibleThenAdvert = await waiter.wait(timeout: 60, sleeper: sleeper)
+        XCTAssertEqual(visibleThenAdvert, .reachable, "an advert never downgrades real visibility")
+    }
+
+    func testTheWakeLogTextSaysAnAdvertIsNotVisibility() {
+        XCTAssertEqual(AutoReconnectWaiter.Wake.reachable.logText, "The phone is visible again")
+        XCTAssertEqual(AutoReconnectWaiter.Wake.timeout.logText, "Fallback timer")
+        let advert = AutoReconnectWaiter.Wake.remotePairingAdvert.logText
+        XCTAssertTrue(advert.contains("RemotePairing advert"), advert)
+        XCTAssertFalse(advert.contains("visible again"), advert)
+    }
 }
 
 @MainActor

@@ -3510,7 +3510,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         Logger.info("[RemotePairingBrowse] A RemotePairing advert appeared; the phone may be back", category: .device)
         tunnelAutoReconnector.noteRemotePairingAdvert()
         if automaticReconnectTask != nil, locationAdvertHints.admit(at: automaticReconnect.now()) {
-            automaticReconnectWaiter.signalReachable()
+            automaticReconnectWaiter.signalRemotePairingAdvert()
         }
     }
 
@@ -3568,8 +3568,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             }
 
             Logger.info(
-                "[AutoReconnect] " + (wake == .reachable ? "The phone is visible again" : "Fallback timer")
-                    + "; reconnecting (burst \(failedBursts + 1))",
+                "[AutoReconnect] \(wake.logText); reconnecting (burst \(failedBursts + 1))",
                 category: .session
             )
             automaticReconnectWaiter.discardPendingSignal()
