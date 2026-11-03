@@ -2541,6 +2541,7 @@ asyncio.run(verify())
     func testPythonHelperRemotePairingLaneVerdicts() throws {
         let code = mobdev2LaneFixture() + """
 
+        import time
         GOOD = {"peer_alt_irk": b"k" * 16, "private_key": b"x" * 32}
         problems = []
         def check(name, ok, detail):
@@ -2571,6 +2572,11 @@ asyncio.run(verify())
             result = await attempt()
             check("not found keeps waiting", result.get("reason") == "device_not_visible", result)
             check("not found is named", lane_text(result).startswith("RemotePairingDeviceNotFoundError"), result)
+            # Upstream also returns nothing when an advert matched but every address
+            # refused pair-verify, so the text must not claim there was no advert.
+            check("not found covers a refused pairing",
+                  "found no advert that accepted this Mac's pairing" in lane_text(result)
+                  and "may need a refresh" in lane_text(result), lane_text(result))
             check("mobdev2 runs after", len(browse_calls) == 1, browse_calls)
             check("lane order", result["error"].index("preferred RSD:") < result["error"].index("remote pairing:")
                   < result["error"].index("mobdev2:"), result)
@@ -2658,6 +2664,56 @@ asyncio.run(verify())
             finally:
                 bridge.CONNECT_TIMEOUT_SECONDS = saved
                 state["hold"] = None
+
+            # Review 2026-11-03 issue 4: a phone that accepts TCP but stalls pair-verify
+            # inside upstream's browse must not use the whole open. The lane has its own
+            # bound (above upstream's 8 s browse, well under the 30 s open), keeps waiting
+            # when it runs out, and leaves time for mobdev2 in the same attempt.
+            check("lane bound exceeds the browse",
+                  bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS
+                  < getattr(bridge, "REMOTE_PAIRING_LANE_TIMEOUT_SECONDS", float("inf"))
+                  < bridge.CONNECT_TIMEOUT_SECONDS - bridge.MOBDEV2_BROWSE_TIMEOUT_SECONDS,
+                  (bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS,
+                   getattr(bridge, "REMOTE_PAIRING_LANE_TIMEOUT_SECONDS", None)))
+            saved_lane = getattr(bridge, "REMOTE_PAIRING_LANE_TIMEOUT_SECONDS", None)
+            saved_open = bridge.CONNECT_TIMEOUT_SECONDS
+            bridge.REMOTE_PAIRING_LANE_TIMEOUT_SECONDS = 0.2
+            bridge.CONNECT_TIMEOUT_SECONDS = 5.0
+            try:
+                for mobdev2_answers in (True, False):
+                    reset()
+                    rp_records["dev"] = GOOD
+                    rp_adverts["dev"] = ["192.168.0.177"]
+                    rp_state["browse_hold"], rp_state["browse_entered"] = asyncio.Event(), asyncio.Event()
+                    if mobdev2_answers:
+                        mobdev2_visible.add("dev")
+                    started = time.monotonic()
+                    result = await attempt()
+                    elapsed = time.monotonic() - started
+                    tag = "mobdev2 up" if mobdev2_answers else "mobdev2 down"
+                    check(f"stalled pair-verify is bounded ({tag})", elapsed < 2.0, elapsed)
+                    check(f"stalled pair-verify reached the browse ({tag})", rp_state["browse_entered"].is_set(), "")
+                    check(f"stalled pair-verify restores provider ({tag})",
+                          usermod._create_no_root_tunnel_provider is ORIGINAL_PROVIDER, "")
+                    check(f"stalled pair-verify, mobdev2 browsed ({tag})", len(browse_calls) == 1, browse_calls)
+                    if mobdev2_answers:
+                        check("stalled pair-verify, mobdev2 still wins",
+                              result.get("actual_channel") == "mobdev2RSD", result)
+                    else:
+                        text = lane_text(result)
+                        check("stalled pair-verify class", text.startswith("RemotePairingTimeoutError: "), result)
+                        check("stalled pair-verify is not the whole open",
+                              "LanesTimedOutError" not in result["error"], result)
+                        check("stalled pair-verify keeps waiting", result.get("reason") == "device_not_visible", result)
+                    rp_state["browse_hold"] = None
+            finally:
+                bridge.REMOTE_PAIRING_LANE_TIMEOUT_SECONDS = saved_lane
+                bridge.CONNECT_TIMEOUT_SECONDS = saved_open
+                rp_state["browse_hold"] = None
+            check("the lane timeout keeps waiting by the verdict rules",
+                  hasattr(bridge, "RemotePairingTimeoutError")
+                  and bridge._keeps_waiting("remote pairing", bridge.RemotePairingTimeoutError("t"))
+                  and not bridge._keeps_waiting("preferred RSD", bridge.RemotePairingTimeoutError("t")), "")
 
             if problems:
                 raise AssertionError("\\n".join(problems))

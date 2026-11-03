@@ -244,6 +244,9 @@ final class TunneldManagerTests: XCTestCase {
             "remote pairing: ConnectionTerminatedError: Connection was terminated abruptly.",
             "remote pairing: ConnectionResetError: [Errno 54] Connection reset by peer",
             "remote pairing: TimeoutError: ",
+            // The lane's own bound (above the browse bound): an advert matched and
+            // pair-verify stalled, so the phone is on the network.
+            "remote pairing: RemotePairingTimeoutError: RemotePairing browse and pair-verify did not finish within 12s",
         ] {
             let detail = Self.lanes(
                 Self.usbmuxAbsentLanes[0], Self.usbmuxAbsentLanes[1], Self.usbmuxAbsentLanes[2], remotePairing,
@@ -256,7 +259,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testGaveUpMessageKeepsTheReachabilityAdviceWhenNeitherWiFiLaneReachedThePhone() {
         for remotePairing in [
-            "remote pairing: RemotePairingDeviceNotFoundError: RemotePairing Bonjour found no advert for this phone within 8s",
+            "remote pairing: RemotePairingDeviceNotFoundError: RemotePairing Bonjour found no advert that accepted this Mac's pairing for the phone within 8s (it may be off this network, or its pairing may need a refresh)",
             "remote pairing: RemotePairingBrowseError: OSError: [Errno 65] No route to host",
             "remote pairing: LaneUnsupportedError: remote pairing lane needs pymobiledevice3 APIs",
             "remote pairing: LanesTimedOutError: no lane opened within 30s",
@@ -801,9 +804,13 @@ final class TunneldManagerTests: XCTestCase {
 
     func testWiFiPreparationRunsCommandsInOrder() async throws {
         let udid = "00000000-0000000000000001"
+        let store = try makePairingRecordStore()
         var calls: [[String]] = []
-        let service = DevicePreparationService { arguments, _ in
+        let service = DevicePreparationService(records: store) { arguments, _ in
             calls.append(arguments)
+            if arguments.contains("remotepairing") {
+                try self.writePairingRecord(in: store, udid: udid, withAltIRK: true)
+            }
             return ""
         }
 
@@ -813,10 +820,11 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(service.phase, .ready)
     }
 
-    func testWiFiPreparationStopsAtFirstFailure() async {
+    func testWiFiPreparationStopsAtFirstFailure() async throws {
         let udid = "00000000-0000000000000001"
+        let store = try makePairingRecordStore()
         var calls: [[String]] = []
-        let service = DevicePreparationService { arguments, _ in
+        let service = DevicePreparationService(records: store) { arguments, _ in
             calls.append(arguments)
             throw DeviceError.commandFailed("bootstrap failed")
         }
@@ -848,6 +856,225 @@ final class TunneldManagerTests: XCTestCase {
                 "--pair", "--udid", udid,
             ],
         ])
+    }
+
+    // MARK: - Prepare for Wi‑Fi leaves a RemotePairing record with the phone's altIRK
+    //
+    // Review 2026-11-03 issue 1: `lockdown remotepairing --pair` re-pairs only when
+    // pair-verify fails, so a pre-altIRK record the phone still accepts stayed stale and
+    // the remote pairing lane's "press Prepare for Wi‑Fi" advice looped. Prepare now moves
+    // such a record into the pairing archive before `--pair` (owner approved re-pairing
+    // 2026-11-02) and checks the record afterwards.
+
+    private let pairingUDID = "00008130-000C5144019A001C"
+
+    private func makePairingRecordStore() throws -> RemotePairingRecordStore {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_pairing_\(UUID().uuidString)", isDirectory: true)
+        let records = root.appendingPathComponent("records", isDirectory: true)
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return RemotePairingRecordStore(
+            recordsDirectory: records,
+            archiveDirectory: root.appendingPathComponent("pairing-archive", isDirectory: true),
+            now: { Date(timeIntervalSince1970: 1_793_000_000) }
+        )
+    }
+
+    private nonisolated func pairingRecordData(withAltIRK: Bool, marker: UInt8 = 1) throws -> Data {
+        var record: [String: Any] = [
+            "private_key": Data(repeating: marker, count: 32),
+            "public_key": Data(repeating: marker, count: 32),
+        ]
+        if withAltIRK {
+            record[RemotePairingRecordStore.peerAltIRKKey] = Data(repeating: 7, count: 16)
+        }
+        return try PropertyListSerialization.data(fromPropertyList: record, format: .xml, options: 0)
+    }
+
+    @discardableResult
+    private nonisolated func writePairingRecord(
+        in store: RemotePairingRecordStore, udid: String, withAltIRK: Bool, marker: UInt8 = 1
+    ) throws -> Data {
+        let data = try pairingRecordData(withAltIRK: withAltIRK, marker: marker)
+        try data.write(to: store.recordsDirectory.appendingPathComponent("remote_\(udid).plist"))
+        return data
+    }
+
+    private func recordURL(_ store: RemotePairingRecordStore, _ udid: String) -> URL {
+        store.recordsDirectory.appendingPathComponent("remote_\(udid).plist")
+    }
+
+    private func archivedRecords(_ store: RemotePairingRecordStore) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: store.archiveDirectory.path)) ?? []
+        return names.sorted().map { store.archiveDirectory.appendingPathComponent($0) }
+    }
+
+    func testPrepareArchivesARecordWithoutAltIRKBeforePairingThenSucceeds() async throws {
+        let store = try makePairingRecordStore()
+        let old = try writePairingRecord(in: store, udid: pairingUDID, withAltIRK: false, marker: 1)
+        var recordPresentAtPair: Bool?
+        let service = DevicePreparationService(records: store) { arguments, _ in
+            if arguments.contains("remotepairing") {
+                recordPresentAtPair = FileManager.default.fileExists(
+                    atPath: self.recordURL(store, self.pairingUDID).path)
+                try self.writePairingRecord(in: store, udid: self.pairingUDID, withAltIRK: true, marker: 2)
+            }
+            return ""
+        }
+
+        try await service.prepareWiFi(deviceId: pairingUDID)
+
+        XCTAssertEqual(service.phase, .ready)
+        XCTAssertEqual(recordPresentAtPair, false, "the stale record is moved aside before --pair")
+        let archived = archivedRecords(store)
+        XCTAssertEqual(archived.count, 1)
+        let name = try XCTUnwrap(archived.first?.lastPathComponent)
+        XCTAssertTrue(name.hasPrefix("remote_\(pairingUDID)-") && name.hasSuffix(".plist"), name)
+        XCTAssertTrue(name.contains("2026"), "the archive name carries an ISO 8601 timestamp: \(name)")
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(archived.first)), old, "moved, not rewritten")
+        let attributes = try FileManager.default.attributesOfItem(atPath: XCTUnwrap(archived.first).path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual(try store.state(for: pairingUDID), .withAltIRK)
+    }
+
+    func testPrepareLeavesARecordWithAltIRKUntouched() async throws {
+        let store = try makePairingRecordStore()
+        let current = try writePairingRecord(in: store, udid: pairingUDID, withAltIRK: true)
+        let service = DevicePreparationService(records: store) { _, _ in "" }
+
+        try await service.prepareWiFi(deviceId: pairingUDID)
+
+        XCTAssertEqual(service.phase, .ready)
+        XCTAssertEqual(try Data(contentsOf: recordURL(store, pairingUDID)), current)
+        XCTAssertTrue(archivedRecords(store).isEmpty)
+    }
+
+    func testPrepareWithNoRecordSucceedsWhenPairingWritesOne() async throws {
+        let store = try makePairingRecordStore()
+        let service = DevicePreparationService(records: store) { arguments, _ in
+            if arguments.contains("remotepairing") {
+                try self.writePairingRecord(in: store, udid: self.pairingUDID, withAltIRK: true)
+            }
+            return ""
+        }
+
+        try await service.prepareWiFi(deviceId: pairingUDID)
+
+        XCTAssertEqual(service.phase, .ready)
+        XCTAssertTrue(archivedRecords(store).isEmpty)
+    }
+
+    func testPrepareRestoresTheArchivedRecordWhenPairingFails() async throws {
+        let store = try makePairingRecordStore()
+        let old = try writePairingRecord(in: store, udid: pairingUDID, withAltIRK: false)
+        let service = DevicePreparationService(records: store) { arguments, _ in
+            if arguments.contains("remotepairing") {
+                throw DeviceError.commandFailed("pairing failed")
+            }
+            return ""
+        }
+
+        do {
+            try await service.prepareWiFi(deviceId: pairingUDID)
+            XCTFail("expected preparation to fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("pairing failed"), error.localizedDescription)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: recordURL(store, pairingUDID)), old, "the old record is back")
+        XCTAssertTrue(archivedRecords(store).isEmpty)
+        guard case .failed = service.phase else { return XCTFail("expected failed phase") }
+    }
+
+    func testPrepareReportsIncompletePairingWhenTheNewRecordLacksAltIRK() async throws {
+        let store = try makePairingRecordStore()
+        let old = try writePairingRecord(in: store, udid: pairingUDID, withAltIRK: false, marker: 1)
+        let service = DevicePreparationService(records: store) { arguments, _ in
+            if arguments.contains("remotepairing") {
+                try self.writePairingRecord(in: store, udid: self.pairingUDID, withAltIRK: false, marker: 2)
+            }
+            return ""
+        }
+
+        do {
+            try await service.prepareWiFi(deviceId: pairingUDID)
+            XCTFail("expected preparation to fail")
+        } catch {
+            XCTAssertEqual(error as? DevicePreparationError, .remotePairingIncomplete)
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The Wi‑Fi pairing did not complete. Keep the cable connected and the iPhone unlocked, then press Prepare for Wi‑Fi again."
+            )
+        }
+
+        XCTAssertEqual(service.phase, .failed(DevicePreparationError.remotePairingIncomplete.localizedDescription))
+        XCTAssertEqual(try store.state(for: pairingUDID), .withoutAltIRK, "the new record is left in place")
+        let archived = archivedRecords(store)
+        XCTAssertEqual(archived.count, 1, "the old record stays archived, not silently restored")
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(archived.first)), old)
+    }
+
+    func testPrepareRestoresTheArchivedRecordWhenPairingWritesNoRecord() async throws {
+        let store = try makePairingRecordStore()
+        let old = try writePairingRecord(in: store, udid: pairingUDID, withAltIRK: false)
+        let service = DevicePreparationService(records: store) { _, _ in "" }
+
+        do {
+            try await service.prepareWiFi(deviceId: pairingUDID)
+            XCTFail("expected preparation to fail")
+        } catch {
+            XCTAssertEqual(error as? DevicePreparationError, .remotePairingIncomplete)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: recordURL(store, pairingUDID)), old, "the old record is back")
+        XCTAssertTrue(archivedRecords(store).isEmpty)
+    }
+
+    func testPrepareWithNoRecordReportsIncompletePairingWhenNoneIsWritten() async throws {
+        let store = try makePairingRecordStore()
+        let service = DevicePreparationService(records: store) { _, _ in "" }
+
+        do {
+            try await service.prepareWiFi(deviceId: pairingUDID)
+            XCTFail("expected preparation to fail")
+        } catch {
+            XCTAssertEqual(error as? DevicePreparationError, .remotePairingIncomplete)
+        }
+        XCTAssertEqual(try store.state(for: pairingUDID), .missing)
+    }
+
+    func testPairingRecordStoreRejectsAnInvalidUDIDBeforeBuildingAPath() async throws {
+        let store = try makePairingRecordStore()
+        // A record outside the records folder that a traversal would reach.
+        let outside = store.recordsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("remote_x.plist")
+        try pairingRecordData(withAltIRK: false).write(to: outside)
+
+        for bad in ["../x", "../remote_x", "00008130-000C5144019A001C/../../x", "", "a b"] {
+            XCTAssertThrowsError(try store.recordURL(for: bad), bad)
+            XCTAssertThrowsError(try store.state(for: bad), bad)
+            XCTAssertThrowsError(try store.archiveIfMissingAltIRK(udid: bad), bad)
+        }
+        var ran = false
+        let service = DevicePreparationService(records: store) { _, _ in ran = true; return "" }
+        do {
+            try await service.prepareWiFi(deviceId: "../x")
+            XCTFail("expected an invalid UDID to fail")
+        } catch {}
+        XCTAssertFalse(ran)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+        XCTAssertTrue(archivedRecords(store).isEmpty)
+    }
+
+    func testStandardPairingRecordStoreUsesPymobiledevice3AndPathChangerFolders() {
+        let store = RemotePairingRecordStore.standard()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        XCTAssertEqual(store.recordsDirectory.standardizedFileURL,
+                       home.appendingPathComponent(".pymobiledevice3").standardizedFileURL)
+        XCTAssertTrue(store.archiveDirectory.path.hasSuffix(
+            "Library/Application Support/PathChanger/pairing-archive"), store.archiveDirectory.path)
+        XCTAssertEqual(RemotePairingRecordStore.peerAltIRKKey, "peer_alt_irk")
     }
 
     func testTunnelInfoRequiresUsableRSDPort() {

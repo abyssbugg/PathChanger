@@ -489,7 +489,7 @@ class DeviceManager: ObservableObject {
     // MARK: Device Cache (PERF-003)
     private let deviceCache = DeviceCache()
 
-    lazy var preparationService = DevicePreparationService { [weak self] arguments, timeout in
+    lazy var preparationService = DevicePreparationService(records: .standard()) { [weak self] arguments, timeout in
         guard let self else {
             throw DeviceError.commandFailed("Device manager is unavailable")
         }

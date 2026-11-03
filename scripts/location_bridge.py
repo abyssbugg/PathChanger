@@ -61,6 +61,13 @@ MOBDEV2_BROWSE_TIMEOUT_SECONDS = 8.0
 # 2026-11-02, read-only: found and pair-verified in ~2 s at a rotated address).
 REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS = 8.0
 
+# The bound on the remote pairing lane's whole browse + connect + pair-verify. Upstream
+# bounds the browse and each TCP open (1 s) but not the pair-verify handshake, so a phone
+# that accepts TCP and then stalls would otherwise use the whole CONNECT_TIMEOUT_SECONDS
+# open and mobdev2 would never run in that attempt (review 2026-11-03 issue 4). Above
+# the browse bound, and leaves the mobdev2 lane its 8 s browse inside the 30 s open.
+REMOTE_PAIRING_LANE_TIMEOUT_SECONDS = 12.0
+
 # The mobdev2 lane points pymobiledevice3.remote.userspace_tunnel's module-global
 # create_using_usbmux at its Bonjour lockdown for one tunnel open, and the remote
 # pairing lane points its module-global _create_no_root_tunnel_provider at its
@@ -78,11 +85,20 @@ class Mobdev2BrowseError(OSError):
 
 
 class RemotePairingDeviceNotFoundError(LookupError):
-    """RemotePairing Bonjour found no advert matching the phone's pair record."""
+    """RemotePairing Bonjour found no advert that accepted this Mac's pairing for the
+    phone: no matching advert, or upstream skipped every address of a matching one
+    because pair-verify failed, timed out or the socket errored."""
 
 
 class RemotePairingBrowseError(OSError):
     """The RemotePairing Bonjour browse itself failed (mDNS socket); it observed no phone."""
+
+
+class RemotePairingTimeoutError(TimeoutError):
+    """The remote pairing lane's browse + connect did not finish within
+    REMOTE_PAIRING_LANE_TIMEOUT_SECONDS. That bound exceeds the browse's own, so the
+    stall came after an advert matched (a phone that accepts TCP and then stalls
+    pair-verify): a Wi-Fi transport timeout, so Start keeps waiting."""
 
 
 class RemotePairingRecordStaleError(LookupError):
@@ -791,7 +807,8 @@ class DeviceConnection:
     async def _find_remote_pairing_service(self, udid: str):
         """Return one connected RemotePairing service for `udid`, closing the others.
 
-        Raises RemotePairingDeviceNotFoundError when Bonjour has no matching advert, and
+        Raises RemotePairingDeviceNotFoundError when no advert accepted this Mac's
+        pairing (none matched, or upstream skipped every address of a matching one), and
         RemotePairingBrowseError when the browse itself fails (it observed nothing).
         """
         try:
@@ -813,10 +830,29 @@ class DeviceConnection:
                 raise
         if chosen is None:
             raise RemotePairingDeviceNotFoundError(
-                "RemotePairing Bonjour found no advert matching this phone's pair record "
-                f"within {REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS:g}s"
+                "RemotePairing Bonjour found no advert that accepted this Mac's pairing for the "
+                f"phone within {REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS:g}s (it may be off this "
+                "network, or its pairing may need a refresh)"
             )
         return chosen
+
+    async def _find_remote_pairing_service_bounded(self, udid: str):
+        """_find_remote_pairing_service within REMOTE_PAIRING_LANE_TIMEOUT_SECONDS.
+
+        On timeout the find is cancelled; it closes every service it already holds
+        (see _close_services) before RemotePairingTimeoutError is raised. Services that
+        upstream connected but had not yet returned are upstream's to close.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._find_remote_pairing_service(udid), REMOTE_PAIRING_LANE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # The find wraps every OSError (TimeoutError included) from the browse in
+            # RemotePairingBrowseError, so a TimeoutError here is this bound.
+            raise RemotePairingTimeoutError(
+                "RemotePairing browse and pair-verify did not finish within "
+                f"{REMOTE_PAIRING_LANE_TIMEOUT_SECONDS:g}s"
+            ) from None
 
     async def _open_remote_pairing(self, udid: str, cache_key: str) -> Tuple[any, any, str, str]:
         """Remote pairing lane — usbmuxd-free at any Wi-Fi address (proven live
@@ -845,7 +881,7 @@ class DeviceConnection:
         self._check_remote_pair_record(udid)
         stack = AsyncExitStack()
         try:
-            service = await self._find_remote_pairing_service(udid)
+            service = await self._find_remote_pairing_service_bounded(udid)
             # Backstop owner of the service. Once the tunnel has taken it, upstream also
             # closes it (its exit stack, every failure path); a second close is a no-op.
             stack.push_async_callback(_close_quietly, service)
