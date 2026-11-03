@@ -727,6 +727,90 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    /// Review 2026-11-03 reconnect-audit-fixes issue 3: the keep mark was cleared only by an
+    /// invalidating error, so a kept orphan whose connect failed with anything but
+    /// `local_network_blocked` stayed in use. Any failed connect through it re-arms the probe.
+    @MainActor
+    func testAFailedConnectThroughAKeptOrphanMakesTheNextConnectProbeItAgain() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-connect-fail")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let deviceID = "00008130-0011223344556677"
+        var probes = 0
+        let bridge = PersistentLocationBridge(
+            helperController: controller,
+            foreignHelperStatusProbe: { _, _ in
+                probes += 1
+                return .connected
+            },
+            deviceConnectSender: { _, _ in
+                // A Wi-Fi lane failure the helper does not type as local_network_blocked.
+                throw PersistentLocationBridge.PersistentBridgeError.bridgeError("DeviceLanesUnavailable: remotePairingRSD: TimeoutError")
+            }
+        )
+        do {
+            try await bridge.start()
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+            XCTAssertEqual(probes, 1, "kept for its live connection")
+
+            do {
+                _ = try await bridge.connectDevice(deviceID, transport: .wifi)
+                XCTFail("the connect fails")
+            } catch {}
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+
+            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID)
+            XCTAssertEqual(probes, 2, "the failed connect made the next one probe the orphan again")
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            throw error
+        }
+    }
+
+    /// The same when the status poll finds the kept orphan holding no live connection.
+    @MainActor
+    func testAKeptOrphanTheStatusPollFindsNotConnectedIsProbedAgainOnTheNextConnect() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("orphan-poll-lost")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let orphan = try await earlier.connectOrLaunch()
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript,
+            parentProcessID: Self.everyHelperIsOrphaned)
+        let deviceID = "00008130-0011223344556677"
+        var probes = 0
+        let bridge = PersistentLocationBridge(helperController: controller, foreignHelperStatusProbe: { _, _ in
+            probes += 1
+            return .connected
+        })
+        do {
+            try await bridge.start()
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+            XCTAssertEqual(probes, 1, "kept for its live connection")
+
+            // The orphan itself answers the poll: it holds no connection for this phone.
+            let status = await bridge.deviceConnectionStatus(deviceID, transport: .wifi)
+            XCTAssertNotEqual(status, .connected)
+            try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+
+            XCTAssertEqual(bridge.adoptedHelperID, orphan.record.helperID)
+            XCTAssertEqual(probes, 2, "the poll's not-connected made the next connect probe it again")
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            throw error
+        }
+    }
+
     /// Review 2026-11-03 issue 2: a request still in flight to the orphan fails after the
     /// replacement installed the new helper's connection. That late failure is about the
     /// replaced helper and must not wipe the new helper's state.

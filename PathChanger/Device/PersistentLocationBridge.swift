@@ -1417,14 +1417,19 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// Test seam: runs just before the replacement awaits the old helper's exit and the
     /// new helper's launch.
     private var foreignHelperReplacementWillAwait: (@MainActor () async -> Void)?
+    /// Test seam: answers `connectDevice` instead of the helper's `connect_device`, so a
+    /// connect failure is testable without any device lane.
+    private var deviceConnectSender: ((String, LocationTransport) async throws -> HelperDeviceConnection)?
     /// A foreign-helper replacement in flight; concurrent connects wait for it.
     private var helperReplacement: Task<Void, Error>?
     /// The keep-or-replace probe of an adopted foreign helper (tests inject it; nil asks
     /// the helper with `deviceConnectionStatus`).
     private var foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)?
     /// The adopted foreign helper a probe found holding a live connection: kept, and not
-    /// probed again before each connect (review 2026-11-03 issue 4). If it later loses that
-    /// connection and macOS blocks it, `connectDevice` replaces it on that typed failure.
+    /// probed again before each connect (review 2026-11-03 issue 4). A failed connect
+    /// through it, or a status poll that finds it not connected, forgets the mark, so the
+    /// next connect probes it again and replaces it if it holds nothing (reconnect-audit-
+    /// fixes issue 3); a typed Local Network block replaces it at once.
     private var keptForeignHelperID: UUID?
 
     private var python3Path: String { PythonPathResolver.path }
@@ -1463,11 +1468,13 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     init(
         helperController: ManagedLocationHelperController,
         foreignHelperStatusProbe: ((String, LocationTransport) async -> HelperConnectionStatus)? = nil,
-        foreignHelperReplacementWillAwait: (@MainActor () async -> Void)? = nil
+        foreignHelperReplacementWillAwait: (@MainActor () async -> Void)? = nil,
+        deviceConnectSender: ((String, LocationTransport) async throws -> HelperDeviceConnection)? = nil
     ) {
         self.helperController = helperController
         self.foreignHelperStatusProbe = foreignHelperStatusProbe
         self.foreignHelperReplacementWillAwait = foreignHelperReplacementWillAwait
+        self.deviceConnectSender = deviceConnectSender
         findPaths()
     }
 
@@ -1893,13 +1900,41 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         try ArgumentSanitizer.validateDeviceUDID(deviceId)
         try await startIfNeeded()
         try await replaceForeignHelperIfDisconnected(deviceId, transport: transport)
+        // A kept orphan whose connect fails, for any reason, is probed (and replaced if it
+        // holds nothing) on the next connect (review 2026-11-03 reconnect-audit-fixes issue 3).
+        let foreignHelperID = helperController?.activeConnectionIsForeign == true
+            ? helperController?.activeRecord?.helperID : nil
         do {
-            return try await sendConnectDevice(deviceId, transport: transport)
+            return try await sendConnectDeviceOrSeam(deviceId, transport: transport)
         } catch PersistentBridgeError.localNetworkBlocked where helperController?.activeConnectionIsForeign == true {
             // An orphan kept for its live connection lost it and is denied the network.
             try await replaceForeignHelper(because: "macOS blocks its local network access")
-            return try await sendConnectDevice(deviceId, transport: transport)
+            return try await sendConnectDeviceOrSeam(deviceId, transport: transport)
+        } catch {
+            if let foreignHelperID { forgetKeptForeignHelper(foreignHelperID, because: "its connect failed") }
+            throw error
         }
+    }
+
+    /// The kept orphan `helperID` lost the connection it was kept for: the next connect
+    /// probes it again. A no-op for any other helper.
+    private func forgetKeptForeignHelper(_ helperID: UUID, because reason: String) {
+        guard keptForeignHelperID == helperID else { return }
+        keptForeignHelperID = nil
+        Logger.info(
+            "[PersistentBridge] The earlier PathChanger's helper was kept for its device connection, but \(reason); "
+                + "the next connect checks it again",
+            category: .device
+        )
+    }
+
+    /// `connect_device`, or the test seam that stands in for the helper's reply.
+    private func sendConnectDeviceOrSeam(
+        _ deviceId: String,
+        transport: LocationTransport
+    ) async throws -> HelperDeviceConnection {
+        if let deviceConnectSender { return try await deviceConnectSender(deviceId, transport) }
+        return try await sendConnectDevice(deviceId, transport: transport)
     }
 
     /// Never open a device connection through a helper an earlier PathChanger launched
@@ -2114,18 +2149,28 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         var request = BridgeRequest(cmd: "connection_status")
         request.udid = deviceId
         request.connection_type = transport.helperWireValue
+        // A kept orphan found not connected is probed again on the next connect (review
+        // 2026-11-03 reconnect-audit-fixes issue 3). Named before the await.
+        let foreignHelperID = helperController?.activeConnectionIsForeign == true
+            ? helperController?.activeRecord?.helperID : nil
+        let status: HelperConnectionStatus
         do {
             let response = try await sendControlCommand(
                 request,
                 timeoutSeconds: Self.statusResponseTimeoutSeconds
             )
             if response.success, response.connected == true {
-                return .connected
+                status = .connected
+            } else {
+                status = .notConnected(response.reason ?? response.error ?? "not connected")
             }
-            return .notConnected(response.reason ?? response.error ?? "not connected")
         } catch {
-            return .notConnected(error.localizedDescription)
+            status = .notConnected(error.localizedDescription)
         }
+        if status != .connected, let foreignHelperID {
+            forgetKeptForeignHelper(foreignHelperID, because: "the status poll found it not connected")
+        }
+        return status
     }
 
     /// The helper's reply to `ddi_status`, in the preparer's terms. Any failure (no held
