@@ -24,9 +24,20 @@ protocol RemotePairingAdvertBrowsing: AnyObject {
     /// `onAdvert` runs on the main actor when an advert appears or changes after the
     /// browse began; the adverts already known when it starts are not news. `onFailure`
     /// runs once if the browse fails and ends on its own; a later `start` browses again.
-    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void)
+    func start(onAdvert: @escaping @MainActor (RemotePairingAdvertNews) -> Void, onFailure: @escaping @MainActor () -> Void)
     /// Stops browsing. Neither handler runs afterwards.
     func stop()
+}
+
+/// What a browse update said about the adverts. Advert names stay opaque (never logged).
+struct RemotePairingAdvertNews: Equatable, Sendable {
+    /// A new advert appeared within `RemotePairingAdvertTracker.replacementWindow` of
+    /// another one's withdrawal: what the phone does when it comes back (live 2026-11-03:
+    /// a new instance 3-318 ms after the old one was withdrawn).
+    var isReplacement: Bool
+
+    static let appeared = RemotePairingAdvertNews(isReplacement: false)
+    static let replacement = RemotePairingAdvertNews(isReplacement: true)
 }
 
 /// Starting a browse again after it failed while a reconnect is armed (review 2026-11-03
@@ -38,16 +49,38 @@ enum RemotePairingBrowseRestart {
 
 /// Decides which browse results are news. Pure, so the rule is testable without a network.
 struct RemotePairingAdvertTracker {
+    /// How soon after a withdrawal a new advert counts as its replacement.
+    static let replacementWindow: TimeInterval = 5
+
     private var known: Set<String>?
+    /// When an advert last left, until a replacement uses it.
+    private var lastWithdrawal: Date?
 
     /// `present` is every advert listed now; `changed` the adverts whose interfaces or
     /// TXT record changed in this update. Returns true when an advert appeared that the
     /// previous update did not list, or a listed one changed. The first update is the
     /// baseline; an advert leaving is not news.
     mutating func update(present: Set<String>, changed: Set<String>) -> Bool {
+        news(present: present, changed: changed, at: Date()) != nil
+    }
+
+    /// The same rule, saying whether the news is a replacement: an advert that appeared
+    /// within `replacementWindow` after another left (also in the same update). Each
+    /// withdrawal makes at most one replacement.
+    mutating func news(present: Set<String>, changed: Set<String>, at now: Date) -> RemotePairingAdvertNews? {
         defer { known = present }
-        guard let known else { return false }
-        return !present.subtracting(known).isEmpty || !changed.isDisjoint(with: present)
+        guard let known else { return nil }
+        if !known.subtracting(present).isEmpty { lastWithdrawal = now }
+        let appeared = !present.subtracting(known).isEmpty
+        guard appeared || !changed.isDisjoint(with: present) else { return nil }
+        if appeared, let lastWithdrawal {
+            let elapsed = now.timeIntervalSince(lastWithdrawal)
+            if elapsed >= 0, elapsed <= Self.replacementWindow {
+                self.lastWithdrawal = nil
+                return .replacement
+            }
+        }
+        return .appeared
     }
 }
 
@@ -55,23 +88,37 @@ struct RemotePairingAdvertTracker {
 /// cannot be filtered to the remembered phone (no altIRK in the app), so any Apple device
 /// joining or leaving the LAN is news. The first advert after a reconnect arms wakes it at
 /// once; further adverts within `window` of that wake are ignored, and the reconnect keeps
-/// its own timers. Real visibility (usbmux, mobdev2) never passes through this.
+/// its own timers, except one replacement per window (live 2026-11-03: the phone's fresh
+/// advert came right after its stale one had opened the window, and was ignored). So churn
+/// wakes a reconnect at most twice per window. Real visibility (usbmux, mobdev2) never
+/// passes through this.
 struct RemotePairingAdvertHintLimiter {
     static let window: TimeInterval = 30
 
     private var lastAdmitted: Date?
+    private var replacementAdmittedInWindow = false
 
-    /// True when an advert at `now` may wake the reconnect; it then starts a new window.
-    /// A clock that went back keeps the window closed.
-    mutating func admit(at now: Date) -> Bool {
-        if let lastAdmitted, now.timeIntervalSince(lastAdmitted) < Self.window { return false }
+    /// True when an advert at `now` may wake the reconnect. A plain advert outside the
+    /// window starts a new one; a replacement inside it is admitted once without moving
+    /// it. A clock that went back keeps the window closed.
+    mutating func admit(at now: Date, news: RemotePairingAdvertNews = .appeared) -> Bool {
+        if let lastAdmitted {
+            let elapsed = now.timeIntervalSince(lastAdmitted)
+            if elapsed < Self.window {
+                guard news.isReplacement, elapsed >= 0, !replacementAdmittedInWindow else { return false }
+                replacementAdmittedInWindow = true
+                return true
+            }
+        }
         lastAdmitted = now
+        replacementAdmittedInWindow = false
         return true
     }
 
     /// A reconnect armed again: its first advert wakes it at once.
     mutating func reset() {
         lastAdmitted = nil
+        replacementAdmittedInWindow = false
     }
 }
 
@@ -80,13 +127,13 @@ final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
     static let serviceType = "_remotepairing._tcp"
 
     private var browser: NWBrowser?
-    private var onAdvert: (@MainActor () -> Void)?
+    private var onAdvert: (@MainActor (RemotePairingAdvertNews) -> Void)?
     private var onFailure: (@MainActor () -> Void)?
     private var tracker = RemotePairingAdvertTracker()
     /// Bumped by every start and stop, so a callback queued by an ended browse is ignored.
     private var generation: UInt64 = 0
 
-    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void) {
+    func start(onAdvert: @escaping @MainActor (RemotePairingAdvertNews) -> Void, onFailure: @escaping @MainActor () -> Void) {
         self.onAdvert = onAdvert
         self.onFailure = onFailure
         guard browser == nil else { return }
@@ -129,8 +176,8 @@ final class NetworkRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
 
     private func received(present: Set<String>, changed: Set<String>, generation id: UInt64) {
         guard id == generation, browser != nil else { return }
-        guard tracker.update(present: present, changed: changed) else { return }
-        onAdvert?()
+        guard let news = tracker.news(present: present, changed: changed, at: Date()) else { return }
+        onAdvert?(news)
     }
 
     private func stateChanged(to state: NWBrowser.State, generation id: UInt64) {

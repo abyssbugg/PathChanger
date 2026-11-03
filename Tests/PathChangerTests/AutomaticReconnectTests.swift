@@ -1437,6 +1437,8 @@ final class FakeReconnectTunnel: TunnelReconnectControlling {
     /// The error an automatic start that fails leaves behind.
     var automaticStartError: String?
     var reconnectGate: ReconnectTestGate?
+    /// Holds an automatic start in flight (state `.starting`) until opened.
+    var automaticStartGate: ReconnectTestGate?
     private(set) var automaticStarts: [String] = []
     private(set) var reconnectCalls: [String?] = []
     private(set) var stopCalls = 0
@@ -1452,6 +1454,7 @@ final class FakeReconnectTunnel: TunnelReconnectControlling {
         lastError = nil
         state = .starting
         await Task.yield()
+        await automaticStartGate?.wait()
         if case .error = automaticStartResult { lastError = automaticStartError }
         state = automaticStartResult
     }
@@ -1533,6 +1536,17 @@ final class TunnelAutoReconnectPolicyTests: XCTestCase {
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(since: 29, failures: 9)), .wait(seconds: 1))
     }
 
+    func testAFollowUpDueAttemptsAtOnceButNeverOverlapsOrIgnoresAStop() {
+        var due = inputs(since: 0)
+        due.followUpDue = true
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(due), .attempt(deviceID: id))
+        due.tunnel = .starting
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(due), .busy)
+        due.tunnel = .error("x")
+        due.isStoppedByUser = true
+        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(due), .stop(.stoppedByUser))
+    }
+
     func testThePhoneComingBackTriesAtOnceButNotInATightLoop() {
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(becameVisible: true, since: 2, failures: 5)),
                        .attempt(deviceID: id))
@@ -1594,6 +1608,54 @@ final class TunnelAutoReconnectorTests: XCTestCase {
         XCTAssertEqual(tunnel.state, .running)
         await settle()
         XCTAssertEqual(tunnel.automaticStarts.count, 1)
+    }
+
+    /// Live 2026-11-03 04:00:25-30: the phone came back while an attempt was running; the
+    /// next attempt waited instead of starting as soon as that one ended.
+    func testThePhoneBecomingVisibleDuringAFailedAttemptRunsOneFollowUpAtOnce() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let gate = ReconnectTestGate()
+        tunnel.automaticStartGate = gate
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        reconnector.noteVisibleDevices([])
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        clock.now += 5
+        await sleeper.releaseOldest()
+        try await waitUntil("attempt 1 in flight") { tunnel.automaticStarts.count == 1 }
+        reconnector.noteVisibleDevices([udid])
+        await gate.open()
+
+        try await waitUntil("the follow-up") { tunnel.automaticStarts.count == 2 }
+        try await waitUntil("the backoff after the follow-up") { await sleeper.recordedRequests().count == 2 }
+        await settle()
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [5, TunnelAutoReconnectPolicy.retryDelay(afterFailedAttempts: 2)],
+                       "no wait between the attempt and its follow-up; then the backoff")
+        XCTAssertEqual(tunnel.automaticStarts.count, 2, "one follow-up only")
+    }
+
+    func testAnAttemptWithNothingNewDuringItKeepsTheBackoff() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let gate = ReconnectTestGate()
+        tunnel.automaticStartGate = gate
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        tunnel.state = .running
+        tunnel.state = .error("Health check failed")
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        clock.now += 5
+        await sleeper.releaseOldest()
+        try await waitUntil("attempt 1 in flight") { tunnel.automaticStarts.count == 1 }
+        await gate.open()
+
+        try await waitUntil("the backoff wait") { await sleeper.recordedRequests().count == 2 }
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [5, 10])
+        XCTAssertEqual(tunnel.automaticStarts.count, 1)
+        _ = reconnector
     }
 
     func testAnAbsentPhoneIsRetriedWithBackoffNotInALoop() async throws {

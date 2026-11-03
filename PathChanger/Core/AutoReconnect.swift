@@ -294,6 +294,9 @@ enum TunnelAutoReconnectPolicy {
         /// Since the loss, then since the last attempt ended.
         var secondsSinceLastTry: TimeInterval
         var failedAttempts: Int
+        /// The phone became visible, or an admitted advert arrived, while the last attempt
+        /// ran: one follow-up attempt is due as soon as it ended.
+        var followUpDue: Bool = false
     }
 
     enum Refusal: Equatable {
@@ -332,6 +335,8 @@ enum TunnelAutoReconnectPolicy {
         guard let deviceID = inputs.deviceID, ArgumentSanitizer.isValidDeviceUDID(deviceID) else {
             return .stop(.noDevice)
         }
+        // A sign the phone is back arrived while the last attempt ran: try once more now.
+        if inputs.followUpDue { return .attempt(deviceID: deviceID) }
         let since = max(inputs.secondsSinceLastTry, 0)
         if inputs.phoneBecameVisible {
             return since >= visibilitySpacing ? .attempt(deviceID: deviceID) : .wait(seconds: visibilitySpacing - since)
@@ -398,6 +403,10 @@ final class TunnelAutoReconnector: ObservableObject {
     private var advertHints = RemotePairingAdvertHintLimiter()
     private var lastTry = Date.distantPast
     private var failedAttempts = 0
+    /// An attempt is in flight; a sign of the phone now asks for one follow-up after it
+    /// (live 2026-11-03 04:00:25: the fresh advert came 1 s before an attempt gave up).
+    private var isAttempting = false
+    private var followUpRequested = false
     private var task: Task<Void, Never>?
     /// Bumped by every start and cancel, so an ended loop never clears a newer one.
     private var runID: UInt64 = 0
@@ -422,6 +431,7 @@ final class TunnelAutoReconnector: ObservableObject {
         defer { wasRememberedDeviceVisible = visible }
         guard task != nil, visible, !wasRememberedDeviceVisible else { return }
         visibilityHint = .phoneVisible
+        if isAttempting { followUpRequested = true }
         waiter.signalReachable()
     }
 
@@ -432,10 +442,11 @@ final class TunnelAutoReconnector: ObservableObject {
     /// `RemotePairingAdvertHintLimiter.window` counts: the browser sees every Apple device
     /// on the LAN, so churn must not keep bypassing the retry backoff. It is not
     /// visibility: nothing here or in the device list treats it as the phone being reachable.
-    func noteRemotePairingAdvert() {
+    func noteRemotePairingAdvert(_ news: RemotePairingAdvertNews = .appeared) {
         guard task != nil else { return }
-        guard advertHints.admit(at: environment.now()) else { return }
+        guard advertHints.admit(at: environment.now(), news: news) else { return }
         if visibilityHint == nil { visibilityHint = .remotePairingAdvert }
+        if isAttempting { followUpRequested = true }
         waiter.signalReachable()
     }
 
@@ -511,6 +522,7 @@ final class TunnelAutoReconnector: ObservableObject {
         failedAttempts = 0
         lastTry = environment.now()
         visibilityHint = nil
+        followUpRequested = false
         advertHints.reset()
         wasRememberedDeviceVisible = tunnel.reconnectDeviceId.map(visibleDeviceIDs.contains) ?? false
         waiter.discardPendingSignal()
@@ -530,7 +542,8 @@ final class TunnelAutoReconnector: ObservableObject {
             deviceID: tunnel.reconnectDeviceId,
             phoneBecameVisible: phoneBecameVisible,
             secondsSinceLastTry: environment.now().timeIntervalSince(lastTry),
-            failedAttempts: failedAttempts
+            failedAttempts: failedAttempts,
+            followUpDue: followUpRequested && !isAttempting
         )
     }
 
@@ -547,7 +560,10 @@ final class TunnelAutoReconnector: ObservableObject {
             case .wait(let seconds):
                 guard await waiter.wait(timeout: seconds, sleeper: environment.sleeper) != .cancelled else { return }
             case .attempt(let deviceID):
-                let trigger = visibilityHint?.logText ?? "retry timer"
+                let trigger = followUpRequested
+                    ? "the phone showed up during the last attempt"
+                    : visibilityHint?.logText ?? "retry timer"
+                followUpRequested = false
                 visibilityHint = nil
                 waiter.discardPendingSignal()
                 Logger.info(
@@ -555,7 +571,9 @@ final class TunnelAutoReconnector: ObservableObject {
                         + LogRedaction.redactingDeviceIdentifiers(deviceID),
                     category: .device
                 )
+                isAttempting = true
                 await tunnel.startTunnelAutomatically(deviceId: deviceID)
+                isAttempting = false
                 guard !Task.isCancelled else { return }
                 // State changes during the attempt are not news.
                 waiter.discardPendingSignal()
@@ -572,6 +590,8 @@ final class TunnelAutoReconnector: ObservableObject {
 
     private func finish() {
         task = nil
+        isAttempting = false
+        followUpRequested = false
         isReconnecting = false
         lastAttemptError = nil
         visibilityHint = nil

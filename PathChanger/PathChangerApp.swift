@@ -3535,7 +3535,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         isBrowsingRemotePairingAdverts = shouldBrowse
         if shouldBrowse {
             browser.start(
-                onAdvert: { [weak self] in self?.remotePairingAdvertAppeared() },
+                onAdvert: { [weak self] news in self?.remotePairingAdvertAppeared(news) },
                 onFailure: { [weak self] in self?.remotePairingBrowseFailed() }
             )
         } else {
@@ -3579,12 +3579,17 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// `RemotePairingAdvertHintLimiter.window` (any Apple device on the LAN advertises).
     /// The device list and its reachability words are untouched: an opaque advert is not
     /// the phone.
-    private func remotePairingAdvertAppeared() {
+    private func remotePairingAdvertAppeared(_ news: RemotePairingAdvertNews) {
         // A callback already queued when browsing stopped.
         guard isBrowsingRemotePairingAdverts else { return }
-        Logger.info("[RemotePairingBrowse] A RemotePairing advert appeared; the phone may be back", category: .device)
-        tunnelAutoReconnector.noteRemotePairingAdvert()
-        if automaticReconnectTask != nil, locationAdvertHints.admit(at: automaticReconnect.now()) {
+        Logger.info(
+            news.isReplacement
+                ? "[RemotePairingBrowse] A RemotePairing advert replaced a withdrawn one; the phone may be back"
+                : "[RemotePairingBrowse] A RemotePairing advert appeared; the phone may be back",
+            category: .device
+        )
+        tunnelAutoReconnector.noteRemotePairingAdvert(news)
+        if automaticReconnectTask != nil, locationAdvertHints.admit(at: automaticReconnect.now(), news: news) {
             automaticReconnectWaiter.signalRemotePairingAdvert()
         }
     }

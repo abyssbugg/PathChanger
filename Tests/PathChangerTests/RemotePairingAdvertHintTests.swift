@@ -25,11 +25,11 @@ final class FakeRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
     private(set) var isBrowsing = false
     private(set) var startCount = 0
     private(set) var stopCount = 0
-    private var onAdvert: (@MainActor () -> Void)?
+    private var onAdvert: (@MainActor (RemotePairingAdvertNews) -> Void)?
     private var onFailure: (@MainActor () -> Void)?
-    private var lastHandler: (@MainActor () -> Void)?
+    private var lastHandler: (@MainActor (RemotePairingAdvertNews) -> Void)?
 
-    func start(onAdvert: @escaping @MainActor () -> Void, onFailure: @escaping @MainActor () -> Void) {
+    func start(onAdvert: @escaping @MainActor (RemotePairingAdvertNews) -> Void, onFailure: @escaping @MainActor () -> Void) {
         isBrowsing = true
         startCount += 1
         self.onAdvert = onAdvert
@@ -45,11 +45,16 @@ final class FakeRemotePairingAdvertBrowser: RemotePairingAdvertBrowsing {
     }
 
     func advertAppeared() {
-        onAdvert?()
+        onAdvert?(.appeared)
+    }
+
+    /// The phone withdrew its advert and advertised a new instance.
+    func advertReplaced() {
+        onAdvert?(.replacement)
     }
 
     func deliverLateAdvert() {
-        lastHandler?()
+        lastHandler?(.appeared)
     }
 
     /// Like `NWBrowser` reaching `.failed`: the browse ends on its own and says so once.
@@ -142,6 +147,36 @@ final class RemotePairingAdvertTrackerTests: XCTestCase {
         XCTAssertFalse(tracker.update(present: [], changed: []))
         XCTAssertTrue(tracker.update(present: ["a"], changed: []), "the phone's advert appearing after the start is news")
     }
+
+    /// Live 2026-11-03: the phone withdrew its RemotePairing advert and advertised a new
+    /// instance 3-318 ms later (03:58:14, 04:00:25, 07:21:49). A new advert within
+    /// `replacementWindow` of a withdrawal is a replacement, the phone coming back.
+    func testANewAdvertRightAfterAWithdrawalIsAReplacement() {
+        let start = Date(timeIntervalSinceReferenceDate: 7_000_000)
+        var tracker = RemotePairingAdvertTracker()
+        XCTAssertNil(tracker.news(present: ["stale"], changed: [], at: start))
+        XCTAssertNil(tracker.news(present: [], changed: [], at: start.addingTimeInterval(1)), "a withdrawal is not news")
+        XCTAssertEqual(tracker.news(present: ["fresh"], changed: [], at: start.addingTimeInterval(1.3)), .replacement)
+        XCTAssertEqual(tracker.news(present: ["fresh", "other"], changed: [], at: start.addingTimeInterval(2)), .appeared,
+                       "one replacement per withdrawal")
+
+        var sameBatch = RemotePairingAdvertTracker()
+        _ = sameBatch.news(present: ["stale"], changed: [], at: start)
+        XCTAssertEqual(sameBatch.news(present: ["fresh"], changed: [], at: start), .replacement,
+                       "withdrawn and replaced in one update")
+
+        var late = RemotePairingAdvertTracker()
+        _ = late.news(present: ["stale"], changed: [], at: start)
+        _ = late.news(present: [], changed: [], at: start)
+        XCTAssertEqual(late.news(present: ["fresh"], changed: [],
+                                 at: start.addingTimeInterval(RemotePairingAdvertTracker.replacementWindow + 1)),
+                       .appeared)
+
+        var changedOnly = RemotePairingAdvertTracker()
+        _ = changedOnly.news(present: ["a", "b"], changed: [], at: start)
+        XCTAssertEqual(changedOnly.news(present: ["a"], changed: ["a"], at: start), .appeared,
+                       "a changed advert is news, but not a new instance")
+    }
 }
 
 // MARK: - How often an advert alone may wake a reconnect
@@ -164,6 +199,23 @@ final class RemotePairingAdvertHintLimiterTests: XCTestCase {
         XCTAssertTrue(limiter.admit(at: start))
         limiter.reset()
         XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(1)))
+    }
+
+    /// The phone's fresh advert right after its stale one must not be ignored: one
+    /// replacement per window is admitted inside it. Plain adverts keep the window, so
+    /// other devices' churn stays bounded (at most two wakes per window).
+    func testAReplacementInsideTheWindowIsAdmittedOncePerWindow() {
+        var limiter = RemotePairingAdvertHintLimiter()
+        let window = RemotePairingAdvertHintLimiter.window
+        XCTAssertTrue(limiter.admit(at: start))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(1)))
+        XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(2), news: .replacement))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(3), news: .replacement), "one per window")
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(4)))
+        XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(window)), "the window restarts as before")
+        XCTAssertTrue(limiter.admit(at: start.addingTimeInterval(window + 1), news: .replacement))
+        XCTAssertFalse(limiter.admit(at: start.addingTimeInterval(window - 60), news: .replacement),
+                       "a clock that went back keeps it closed")
     }
 
     func testAClockThatWentBackDoesNotOpenTheWindow() {
@@ -308,6 +360,51 @@ final class TunnelReconnectAdvertHintTests: XCTestCase {
 
         reconnector.noteVisibleDevices([udid])
         try await waitUntil("the visibility attempt") { tunnel.automaticStarts.count == 2 }
+    }
+
+    /// Live 2026-11-03 04:00:25: the phone's fresh advert came 1 s before an attempt gave
+    /// up, inside the window an earlier advert opened, and the next attempt waited. A
+    /// replacement advert during an attempt runs one follow-up attempt at once.
+    func testAReplacementAdvertDuringAnAttemptRunsAFollowUpAtOnce() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let gate = ReconnectTestGate()
+        tunnel.automaticStartGate = gate
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        loseTunnel(tunnel)
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        clock.now += 3
+        reconnector.noteRemotePairingAdvert() // the stale advert: admitted, opens the window
+        try await waitUntil("attempt 1 in flight") { tunnel.automaticStarts.count == 1 }
+        clock.now += 1
+        reconnector.noteRemotePairingAdvert() // another device: inside the window, ignored
+        reconnector.noteRemotePairingAdvert(.replacement) // the phone's fresh advert
+        await gate.open()
+
+        try await waitUntil("the follow-up") { tunnel.automaticStarts.count == 2 }
+        try await waitUntil("the backoff after the follow-up") { await sleeper.recordedRequests().count == 2 }
+        await settle()
+        let requests = await sleeper.recordedRequests()
+        XCTAssertEqual(requests, [5, TunnelAutoReconnectPolicy.retryDelay(afterFailedAttempts: 2)],
+                       "no wait between the attempt and its follow-up; then one follow-up only and the backoff")
+        XCTAssertEqual(tunnel.automaticStarts.count, 2)
+    }
+
+    func testReplacementAdvertChurnStaysBounded() async throws {
+        let tunnel = FakeReconnectTunnel()
+        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
+        loseTunnel(tunnel)
+        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
+
+        let duration: TimeInterval = 300
+        for _ in 0..<Int(duration / 10) {
+            clock.now += 10
+            for _ in 0..<3 { reconnector.noteRemotePairingAdvert(.replacement) }
+            await settle()
+        }
+
+        let bound = 2 * (Int(duration / RemotePairingAdvertHintLimiter.window) + 1)
+        XCTAssertLessThanOrEqual(tunnel.automaticStarts.count, bound, "at most two advert wakes per window")
     }
 
     func testAnAdvertWhileNothingReconnectsIsNotKept() async throws {
@@ -458,6 +555,22 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
 
         try await waitUntil("the attempt") { fixture.tunnel.automaticStarts == [self.deviceID] }
         try await waitUntil("browsing ends once live") { !fixture.browser.isBrowsing }
+    }
+
+    func testTheBrowsersReplacementNewsReachesTheTunnelReconnectInsideTheWindow() async throws {
+        let fixture = makeFixture()
+        loseTunnel(fixture)
+        try await waitUntil("the periodic wait") { await fixture.tunnelSleeper.pendingCount() == 1 }
+        try await waitUntil("browsing") { fixture.browser.isBrowsing }
+
+        fixture.clock.now += 3
+        fixture.browser.advertAppeared()
+        try await waitUntil("attempt 1") { fixture.tunnel.automaticStarts.count == 1 }
+        try await waitUntil("the retry wait") { await fixture.tunnelSleeper.recordedRequests().count == 2 }
+
+        fixture.clock.now += 3
+        fixture.browser.advertReplaced()
+        try await waitUntil("the replacement's attempt") { fixture.tunnel.automaticStarts.count == 2 }
     }
 
     func testStopTunnelStopsTheBrowserAndALateAdvertDoesNothing() async throws {
