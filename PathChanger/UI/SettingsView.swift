@@ -196,6 +196,13 @@ struct SettingsView: View {
                     Button("Starting...") { }
                         .buttonStyle(.bordered)
                         .disabled(true)
+                } else if case .error = tunneldManager.state {
+                    // The tunnel controls own the tunnel (owner decision 2026-11-03):
+                    // reopen it without stopping anything; it sends no location.
+                    Button("Reconnect Tunnel") {
+                        Task { await appState.reconnectTunnel() }
+                    }
+                    .buttonStyle(.borderedProminent)
                 } else {
                     Button("Start Tunnel") {
                         Task {

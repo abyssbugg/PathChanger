@@ -199,7 +199,8 @@ struct OrganicTitleBar: View {
                 requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
                 isWaitingForDevice: tunneldManager.isWaitingForDevice,
                 isStarting: tunneldManager.isStarting,
-                isAutoReconnecting: appState.isTunnelAutoReconnecting
+                isAutoReconnecting: appState.isTunnelAutoReconnecting,
+                isError: isTunnelError
             ) {
             case .confirmStop:
                 confirmTunnelStop = true
@@ -208,6 +209,8 @@ struct OrganicTitleBar: View {
                 tunneldManager.stopTunnel()
             case .stopReconnecting:
                 appState.stopTunnelReconnect()
+            case .reconnect:
+                Task { await appState.reconnectTunnel() }
             case .start:
                 Task { await appState.startSelectedTunnel() }
             case .none:
@@ -378,6 +381,11 @@ struct OrganicTitleBar: View {
         case .wifi: return false
         default: return appState.isUSBConnected || !appState.isWiFiTransportAvailable
         }
+    }
+
+    private var isTunnelError: Bool {
+        if case .error = tunneldManager.state { return true }
+        return false
     }
 
     private var isTunnelPillEnabled: Bool {

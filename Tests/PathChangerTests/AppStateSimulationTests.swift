@@ -1591,14 +1591,20 @@ final class AppStateSimulationTests: XCTestCase {
         mode: AppMode,
         managedSessionSource: (any ManagedLocationSessionSource)? = nil,
         deviceManager: DeviceManager? = nil,
-        tunnelQuitController: (any TunnelQuitControlling)? = nil
+        tunnelQuitController: (any TunnelQuitControlling)? = nil,
+        tunnel: FakeReconnectTunnel? = nil
     ) -> (AppState, LocationSessionIdentity) {
         let state = AppState(
             startBackgroundServices: false,
             locationInjector: injector,
             managedLocationSessionSource: managedSessionSource,
             deviceManager: deviceManager,
-            tunnelQuitController: tunnelQuitController
+            tunnelQuitController: tunnelQuitController,
+            // Off: nothing reopens the tunnel by itself; the tests read what was asked of it.
+            tunnelAutoReconnect: tunnel.map { fake in
+                TunnelAutoReconnectEnvironment(isEnabled: false, tunnel: fake, sleeper: ControlledReconnectSleeper(),
+                                               now: { Date(timeIntervalSinceReferenceDate: 0) })
+            }
         )
         state.selectedDevice = Device(id: "ack-device", displayName: "Ack Device", connectionType: .usb)
         state.isTunneldRunning = true
@@ -2029,22 +2035,34 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertNotNil(state.statusMessage)
     }
 
-    // MARK: - One-Tap Reconnect
+    // MARK: - Reapply location and Reconnect tunnel (owner decision 2026-11-03)
 
-    /// Applies once through the Move path, forces a connection-class rejection so the
-    /// coordinator classifies the connection as failed, then verifies one-tap
-    /// reconnect restores a ready session and reapplies the desired coordinate.
-    func testReconnectNowRestoresReadySessionAndReappliesDesiredLocation() async throws {
-        let fake = FakeLocationInjector()
-        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
+    private func applyCount(_ fake: FakeLocationInjector) async -> Int {
+        await fake.calls().filter { if case .apply = $0 { return true }; return false }.count
+    }
+
+    private func tunnel(_ state: TunnelState) -> FakeReconnectTunnel {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.state = state
+        tunnel.reconnectDeviceId = "ack-device"
+        return tunnel
+    }
+
+    /// Applies once through the Move path, then forces a connection-class rejection so the
+    /// coordinator classifies the connection as failed while the location is held.
+    private func makeHeldStateWithFailedConnection(
+        _ fake: FakeLocationInjector,
+        tunnel: FakeReconnectTunnel,
+        deviceManager: DeviceManager? = nil
+    ) async throws -> (AppState, LocationSessionIdentity) {
         let (state, session) = makeAcknowledgementState(
             injector: fake,
             mode: .teleport,
             managedSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
-            deviceManager: deviceManager
+            deviceManager: deviceManager,
+            tunnel: tunnel
         )
         state.stageLocation(first, for: .teleport)
-
         let application = Task { await state.startSimulation() }
         await fake.waitUntilApplicationPending()
         await fake.releaseNextApplication(session: session)
@@ -2052,91 +2070,125 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(state.currentLocation, first)
 
         let rejected = try state.locationSessionCoordinator.beginApplication()
-        state.locationSessionCoordinator.reject(
-            requestID: rejected.id,
-            error: LocationInjectionError.endpointUnreachable
-        )
+        state.locationSessionCoordinator.reject(requestID: rejected.id, error: LocationInjectionError.endpointUnreachable)
         guard case .failed = state.locationSessionCoordinator.state.connection else {
-            return XCTFail("Expected the connection-class rejection to fail the connection")
+            XCTFail("Expected the connection-class rejection to fail the connection")
+            return (state, session)
         }
         XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
+        return (state, session)
+    }
 
-        let reconnect = Task { await state.reconnectNow() }
+    private func assertTunnelUntouched(_ tunnel: FakeReconnectTunnel, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(tunnel.reconnectCalls, [], "no tunnel reconnect", file: file, line: line)
+        XCTAssertEqual(tunnel.automaticStarts, [], "no tunnel start", file: file, line: line)
+        XCTAssertEqual(tunnel.stopCalls, 0, "no tunnel stop", file: file, line: line)
+        XCTAssertEqual(tunnel.latchLifts, 0, file: file, line: line)
+    }
+
+    /// The location area's Reapply location sends the held location again over the live
+    /// connection through the normal receipt path; it never starts, restarts or stops the
+    /// tunnel (the tunnel pill owns the tunnel).
+    func testReapplyLocationReappliesTheHeldLocationAndNeverTouchesTheTunnel() async throws {
+        let fake = FakeLocationInjector()
+        let live = tunnel(.running)
+        let (state, session) = try await makeHeldStateWithFailedConnection(fake, tunnel: live)
+        XCTAssertEqual(state.locationReapplyAvailability, .available)
+
+        let reapply = Task { await state.reapplyLocation() }
         let reconnected = try await awaitReadyIdentity(in: state)
         await fake.waitUntilApplicationPending()
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive, "active only once acknowledged")
         await fake.releaseNextApplication(session: reconnected)
-        await reconnect.value
+        await reapply.value
 
-        XCTAssertEqual(deviceManager.refreshCallCount, 1)
         guard case .ready(let restored) = state.locationSessionCoordinator.state.connection else {
-            return XCTFail("Expected reconnect to restore a ready session")
+            return XCTFail("Expected Reapply to restore a ready location session")
         }
         XCTAssertEqual(restored.stableDeviceID, session.stableDeviceID)
         XCTAssertEqual(restored.generation, session.generation + 1)
         XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        XCTAssertEqual(state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, first)
         XCTAssertEqual(state.currentLocation, first)
-        let calls = await fake.calls()
-        XCTAssertEqual(calls.filter { if case .apply = $0 { return true }; return false }.count, 2)
+        let applies = await applyCount(fake)
+        XCTAssertEqual(applies, 2)
+        assertTunnelUntouched(live)
     }
 
-    func testReconnectNowWithoutSelectedDeviceChangesNothing() async {
-        let fake = FakeLocationInjector()
-        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
-        let state = AppState(
-            startBackgroundServices: false,
-            locationInjector: fake,
-            managedLocationSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
-            deviceManager: deviceManager
-        )
-        state.locationSessionCoordinator.select(first, mode: .teleport)
+    func testReapplyLocationIsDisabledWhileTheTunnelIsNotLive() async throws {
+        for notLive: TunnelState in [.idle, .error("Health check failed"), .starting, .stopping] {
+            let fake = FakeLocationInjector()
+            let down = tunnel(notLive)
+            let (state, _) = try await makeHeldStateWithFailedConnection(fake, tunnel: down)
+            XCTAssertEqual(state.locationReapplyAvailability,
+                           .unavailable(reason: "Connect first: the tunnel is not live"), "\(notLive)")
 
-        await state.reconnectNow()
+            await state.reapplyLocation()
 
-        XCTAssertEqual(deviceManager.refreshCallCount, 1)
-        guard case .unavailable = state.locationSessionCoordinator.state.connection else {
-            return XCTFail("Expected connection to remain unavailable without a selected device")
+            let applies = await applyCount(fake)
+            XCTAssertEqual(applies, 1, "nothing is sent (\(notLive))")
+            XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+            assertTunnelUntouched(down)
         }
-        XCTAssertEqual(state.locationSessionCoordinator.state.desiredLocation, first)
-        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
-        XCTAssertFalse(state.isSimulating)
+    }
+
+    func testReapplyLocationWithNothingHeldIsDisabledAndSendsNothing() async {
+        let fake = FakeLocationInjector()
+        let live = tunnel(.running)
+        let (state, _) = makeAcknowledgementState(injector: fake, mode: .teleport, tunnel: live)
+        // Selected but never sent: nothing is held (PRODUCT_REQUIREMENTS 5.2).
+        state.locationSessionCoordinator.select(first, mode: .teleport)
+        XCTAssertEqual(state.locationReapplyAvailability,
+                       .unavailable(reason: "Nothing to reapply: no location is held"))
+
+        await state.reapplyLocation()
+
         let calls = await fake.calls()
         XCTAssertTrue(calls.isEmpty)
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        assertTunnelUntouched(live)
     }
 
-    func testReconnectNowTappedTwiceRunsASingleRecovery() async throws {
+    func testReapplyLocationTappedTwiceReappliesOnce() async throws {
         let fake = FakeLocationInjector()
-        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
-        let (state, session) = makeAcknowledgementState(
-            injector: fake,
-            mode: .teleport,
-            managedSessionSource: FakeManagedLocationSessionSource(helperID: nil, sessions: []),
-            deviceManager: deviceManager
-        )
-        state.stageLocation(first, for: .teleport)
+        let live = tunnel(.running)
+        let (state, _) = try await makeHeldStateWithFailedConnection(fake, tunnel: live)
 
-        let application = Task { await state.startSimulation() }
-        await fake.waitUntilApplicationPending()
-        await fake.releaseNextApplication(session: session)
-        await application.value
-
-        let rejected = try state.locationSessionCoordinator.beginApplication()
-        state.locationSessionCoordinator.reject(
-            requestID: rejected.id,
-            error: LocationInjectionError.endpointUnreachable
-        )
-
-        let firstTap = Task { await state.reconnectNow() }
-        let secondTap = Task { await state.reconnectNow() }
+        let firstTap = Task { await state.reapplyLocation() }
+        let secondTap = Task { await state.reapplyLocation() }
         let reconnected = try await awaitReadyIdentity(in: state)
         await fake.waitUntilApplicationPending()
+        XCTAssertEqual(state.locationReapplyAvailability, .unavailable(reason: "Reapplying the location…"))
         await fake.releaseNextApplication(session: reconnected)
         await firstTap.value
         await secondTap.value
 
-        guard case .ready = state.locationSessionCoordinator.state.connection else {
-            return XCTFail("Expected repeated taps to leave one ready session")
+        XCTAssertTrue(state.locationSessionCoordinator.state.application.isActive)
+        let applies = await applyCount(fake)
+        XCTAssertEqual(applies, 2)
+        assertTunnelUntouched(live)
+    }
+
+    /// The tunnel pill's Reconnect tunnel reopens the tunnel (the no-stop path) and never
+    /// sends the location itself; reapplying is the location area's Reapply location.
+    func testReconnectTunnelReopensTheTunnelAndNeverReappliesTheLocation() async throws {
+        let fake = FakeLocationInjector()
+        let deviceManager = ReconnectStubDeviceManager(startBackgroundServices: false)
+        let failed = tunnel(.error("Health check failed"))
+        let (state, _) = try await makeHeldStateWithFailedConnection(fake, tunnel: failed, deviceManager: deviceManager)
+
+        await state.reconnectTunnel()
+        failed.state = .running
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(failed.reconnectCalls.count, 1, "Reconnect goes through the no-stop path")
+        XCTAssertEqual(failed.stopCalls, 0, "it never stops the tunnel")
+        let applies = await applyCount(fake)
+        XCTAssertEqual(applies, 1, "the location is not reapplied by Reconnect tunnel")
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
+        guard case .failed = state.locationSessionCoordinator.state.connection else {
+            return XCTFail("the location session is left to Reapply location")
         }
-        let calls = await fake.calls()
-        XCTAssertEqual(calls.filter { if case .apply = $0 { return true }; return false }.count, 2)
+        XCTAssertEqual(state.locationReapplyAvailability, .available, "now the location area can reapply")
     }
 }

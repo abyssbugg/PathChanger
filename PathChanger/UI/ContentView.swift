@@ -60,11 +60,15 @@ struct TunnelNotice: Equatable {
     }
 }
 
-/// What a click on the tunnel pill does, and whether it can be clicked.
+/// What a click on the tunnel pill does, and whether it can be clicked. The pill (with
+/// Settings) owns the tunnel: Start, Reconnect tunnel, Stop Reconnecting and Stop. The
+/// location area never controls it (owner decision 2026-11-03).
 enum TunnelPillAction: Equatable {
     case confirmStop
     case stop
     case stopReconnecting
+    /// The tunnel failed: reopen it without stopping anything (`AppState.reconnectTunnel`).
+    case reconnect
     case start
     case none
 
@@ -73,21 +77,72 @@ enum TunnelPillAction: Equatable {
         requiresLocationQuitDecision: Bool,
         isWaitingForDevice: Bool,
         isStarting: Bool,
-        isAutoReconnecting: Bool
+        isAutoReconnecting: Bool,
+        isError: Bool = false
     ) -> TunnelPillAction {
         if isRunning { return requiresLocationQuitDecision ? .confirmStop : .stop }
         // Between attempts (idle or error) and inside one (starting), the click stops the
         // automatic reconnect (review 2026-11-03 issue 1).
         if isAutoReconnecting { return .stopReconnecting }
         if isWaitingForDevice { return .stop }
-        if !isStarting { return .start }
-        return .none
+        if isStarting { return .none }
+        return isError ? .reconnect : .start
     }
 
     /// The pill stays clickable while reconnecting even after discovery dropped the lost
     /// phone from the selection: it is the only way to stop the reconnect from the window.
     static func isEnabled(hasSelectedDevice: Bool, isWaitingForDevice: Bool, isAutoReconnecting: Bool) -> Bool {
         hasSelectedDevice || isWaitingForDevice || isAutoReconnecting
+    }
+}
+
+/// Whether the location area's Reapply location can run, and the plain reason when it
+/// cannot (owner decision 2026-11-03: the location area reapplies over the current
+/// connection and never controls the tunnel).
+enum LocationReapplyAvailability: Equatable {
+    case available
+    case unavailable(reason: String)
+
+    static let tunnelNotLiveReason = "Connect first: the tunnel is not live"
+    static let nothingHeldReason = "Nothing to reapply: no location is held"
+    static let clearingReason = "Clearing the location: wait for Clear to finish"
+    static let clearUnresolvedReason = "PathChanger could not confirm the last Clear: press Clear again"
+    static let reapplyingReason = "Reapplying the location…"
+
+    static func resolve(
+        isReapplying: Bool,
+        clearBlock: LocationClearBlock?,
+        isTunnelLive: Bool,
+        hasHeldLocation: Bool
+    ) -> LocationReapplyAvailability {
+        if isReapplying { return .unavailable(reason: reapplyingReason) }
+        switch clearBlock {
+        case .clearInProgress: return .unavailable(reason: clearingReason)
+        case .clearUnresolved: return .unavailable(reason: clearUnresolvedReason)
+        case nil: break
+        }
+        // Without a live connection nothing can reach the phone, held location or not.
+        guard isTunnelLive else { return .unavailable(reason: tunnelNotLiveReason) }
+        guard hasHeldLocation else { return .unavailable(reason: nothingHeldReason) }
+        return .available
+    }
+
+    /// Offered where the held location may not be on the phone: the connection failed,
+    /// or the location is uncertain or lost. A recovery burst (Reconnecting) reapplies by
+    /// itself, and a location held over a ready connection needs nothing.
+    static func isOffered(connection: LocationConnectionPhase, application: LocationApplicationPhase) -> Bool {
+        if case .failed = connection { return true }
+        switch application {
+        case .uncertain, .lost: return true
+        case .idle, .applying, .active, .clearing, .failed: return false
+        }
+    }
+
+    var isAvailable: Bool { self == .available }
+
+    var disabledReason: String? {
+        if case .unavailable(let reason) = self { return reason }
+        return nil
     }
 }
 
@@ -122,7 +177,8 @@ enum TunnelPillPhase: Equatable {
         case .connecting: return "Connecting…"
         case .reconnecting: return "Reconnecting…"
         case .live: return "Tunnel live"
-        case .error: return "Tunnel error"
+        // The notice under the pill says what failed; the pill offers the way back.
+        case .error: return "Reconnect tunnel"
         case .stopped: return "Start tunnel"
         }
     }
@@ -528,8 +584,8 @@ struct ContentView: View {
             statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
                        tone: connectionTone(for: displayedConnectionPhase),
                        localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
-            if case .failed = state.connection {
-                reconnectButton
+            if LocationReapplyAvailability.isOffered(connection: state.connection, application: state.application) {
+                reapplyLocationButton
             }
             statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
                        tone: status.isSpoofing ? Organic.sage600 : applicationTone(for: state.application),
@@ -550,30 +606,34 @@ struct ContentView: View {
         .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
     }
 
-    /// Offered only while the connection chip reads Lost; hands recovery to AppState,
-    /// which refreshes discovery, starts the tunnel if it is not live (never restarts a
-    /// live one) and reapplies the held location. Disabled while one runs.
-    private var reconnectButton: some View {
-        Button {
-            Task { await appState.reconnectNow() }
+    /// The location area's only recovery control: it reapplies the held location over the
+    /// current connection and never starts, restarts or stops the tunnel (the tunnel pill
+    /// does). Disabled with a plain reason when the tunnel is not live or nothing is held.
+    private var reapplyLocationButton: some View {
+        let availability = appState.locationReapplyAvailability
+        let enabled = availability.isAvailable
+        return Button {
+            Task { await appState.reapplyLocation() }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 9, weight: .bold))
-                Text(appState.isReconnecting ? "Reconnecting…" : "Reconnect")
+                Text("Reapply location")
                     .font(Organic.body(10.5, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(appState.isReconnecting ? Organic.neutral600 : Organic.accent700)
+            .foregroundStyle(enabled ? Organic.accent700 : Organic.neutral600)
             .padding(.horizontal, 8)
             .frame(maxHeight: .infinity)
-            .background(appState.isReconnecting ? Organic.neutral200 : Organic.accent100)
+            .background(enabled ? Organic.accent100 : Organic.neutral200)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(appState.isReconnecting)
-        .help("Refresh devices, restore the connection and reapply the location")
-        .accessibilityIdentifier("location.action.reconnect")
+        .disabled(!enabled)
+        .help(availability.disabledReason ?? "Send the held location to the iPhone again over the current connection")
+        .accessibilityLabel("Reapply location")
+        .accessibilityHint(availability.disabledReason ?? "Sends the held location to the iPhone again over the current connection")
+        .accessibilityIdentifier("location.action.reapply")
     }
 
     private var clearLocationButton: some View {

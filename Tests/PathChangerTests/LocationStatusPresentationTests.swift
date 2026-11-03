@@ -234,7 +234,7 @@ final class LocationStatusPresentationTests: XCTestCase {
                                                isError: false, isAutoReconnecting: false), .connecting)
         XCTAssertEqual(TunnelPillPhase.resolve(isWaitingForDevice: false, isStarting: false, isRunning: false,
                                                isError: false, isAutoReconnecting: false), .stopped)
-        XCTAssertEqual(TunnelPillPhase.error.label, "Tunnel error")
+        XCTAssertEqual(TunnelPillPhase.error.label, "Reconnect tunnel")
         XCTAssertEqual(TunnelPillPhase.live.label, "Tunnel live")
         XCTAssertEqual(TunnelPillPhase.stopped.label, "Start tunnel")
         XCTAssertEqual(TunnelPillPhase.connecting.label, "Connecting…")
@@ -303,4 +303,88 @@ final class LocationStatusPresentationTests: XCTestCase {
                                                  isAutoReconnecting: false))
     }
 
+    // MARK: - Reconnect split (owner decision 2026-11-03)
+
+    /// The tunnel pill owns the tunnel: after a tunnel error it reconnects the tunnel
+    /// (the location area no longer does).
+    func testAFailedTunnelOffersReconnectTunnelOnThePill() {
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: true,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: false, isError: true), .reconnect)
+        XCTAssertEqual(TunnelPillPhase.error.label, "Reconnect tunnel")
+        // An automatic reconnect, a wait, a start in flight or a live tunnel keep their action.
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: true, isError: true), .stopReconnecting)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: true, isStarting: true,
+                                                isAutoReconnecting: false, isError: true), .stop)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: true,
+                                                isAutoReconnecting: false, isError: true), .none)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: true, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: false, isError: true), .stop)
+        XCTAssertEqual(TunnelPillAction.resolve(isRunning: false, requiresLocationQuitDecision: false,
+                                                isWaitingForDevice: false, isStarting: false,
+                                                isAutoReconnecting: false, isError: false), .start)
+    }
+
+    /// The location area offers only Reapply location, disabled with a plain reason.
+    func testReapplyLocationSaysWhyItIsDisabled() {
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: nil,
+                                                isTunnelLive: false, hasHeldLocation: true),
+            .unavailable(reason: "Connect first: the tunnel is not live")
+        )
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: nil,
+                                                isTunnelLive: true, hasHeldLocation: false),
+            .unavailable(reason: "Nothing to reapply: no location is held")
+        )
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: nil,
+                                                isTunnelLive: false, hasHeldLocation: false),
+            .unavailable(reason: "Connect first: the tunnel is not live"),
+            "the connection comes first: without it nothing can be reapplied"
+        )
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: .clearInProgress,
+                                                isTunnelLive: true, hasHeldLocation: true),
+            .unavailable(reason: "Clearing the location: wait for Clear to finish")
+        )
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: .clearUnresolved,
+                                                isTunnelLive: true, hasHeldLocation: true),
+            .unavailable(reason: "PathChanger could not confirm the last Clear: press Clear again")
+        )
+        XCTAssertEqual(
+            LocationReapplyAvailability.resolve(isReapplying: true, clearBlock: nil,
+                                                isTunnelLive: true, hasHeldLocation: true),
+            .unavailable(reason: "Reapplying the location…")
+        )
+        let available = LocationReapplyAvailability.resolve(isReapplying: false, clearBlock: nil,
+                                                            isTunnelLive: true, hasHeldLocation: true)
+        XCTAssertEqual(available, .available)
+        XCTAssertTrue(available.isAvailable)
+        XCTAssertNil(available.disabledReason)
+        XCTAssertEqual(LocationReapplyAvailability.unavailable(reason: "x").disabledReason, "x")
+    }
+
+    /// Reapply location is offered where the held location may not be on the phone: a
+    /// failed connection, or an uncertain or lost location. A held location on a ready
+    /// connection needs no reapply.
+    func testReapplyLocationIsOfferedOnlyWhenTheLocationMayNotBeOnThePhone() {
+        let session = LocationSessionIdentity(stableDeviceID: "device", transport: .wifi,
+                                              endpointClass: .direct, generation: 1)
+        XCTAssertTrue(LocationReapplyAvailability.isOffered(connection: .failed("lost"), application: .idle))
+        XCTAssertTrue(LocationReapplyAvailability.isOffered(
+            connection: .ready(identity: session), application: .uncertain(lastReceipt: nil, reason: "loss")))
+        XCTAssertTrue(LocationReapplyAvailability.isOffered(connection: .unavailable, application: .lost("loss")))
+        XCTAssertFalse(LocationReapplyAvailability.isOffered(connection: .ready(identity: session), application: .idle))
+        XCTAssertFalse(LocationReapplyAvailability.isOffered(connection: .unavailable, application: .clearing))
+        XCTAssertFalse(LocationReapplyAvailability.isOffered(
+            connection: .reconnecting(previousGeneration: 1, attempt: 1), application: .idle),
+            "an automatic recovery burst reapplies by itself")
+    }
 }

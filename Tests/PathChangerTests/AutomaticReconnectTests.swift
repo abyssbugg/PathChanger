@@ -439,6 +439,13 @@ final class AutomaticReconnectTests: XCTestCase {
                        deviceManager: deviceManager, tunnel: tunnel)
     }
 
+    /// A tunnel that is live: Reapply location sends only over a live connection.
+    private func liveTunnel() -> FakeReconnectTunnel {
+        let tunnel = FakeReconnectTunnel()
+        tunnel.state = .running
+        return tunnel
+    }
+
     /// The held location: generation 1 acknowledged over Wi-Fi.
     private func seedHeldLocation(_ fixture: Fixture) throws {
         let coordinator = fixture.state.locationSessionCoordinator
@@ -728,8 +735,8 @@ final class AutomaticReconnectTests: XCTestCase {
 
     // MARK: What never reconnects automatically
 
-    func testStopTunnelLatchesUntilReconnectOrMove() async throws {
-        let fixture = makeFixture()
+    func testStopTunnelLatchesUntilReapplyOrMove() async throws {
+        let fixture = makeFixture(tunnelReconnect: liveTunnel())
         try seedHeldLocation(fixture)
 
         fixture.state.device.onLocationSessionLoss?(.tunnelStoppedByUser)
@@ -742,9 +749,9 @@ final class AutomaticReconnectTests: XCTestCase {
         let observed408 = await fixture.sleeper.recordedRequests()
         XCTAssertEqual(observed408, [])
 
-        // Reconnect is explicit: it lifts the latch.
+        // Reapply location is explicit: it lifts the latch.
         fixture.state.device.selectedDevice = phone
-        let reconnect = Task { await fixture.state.reconnectNow() }
+        let reconnect = Task { await fixture.state.reapplyLocation() }
         try await waitUntil("the manual reapply") { await fixture.injector.pendingApplicationCount() == 1 }
         await fixture.injector.releaseNextApplication(session: try await readyIdentity(fixture.state))
         await reconnect.value
@@ -752,7 +759,7 @@ final class AutomaticReconnectTests: XCTestCase {
 
         fixture.state.device.wifiDirectDeviceIds = []
         fixture.state.device.onLocationSessionLoss?(.tunnelHealthLost)
-        XCTAssertTrue(fixture.state.isAwaitingAutomaticReconnect, "after Reconnect a later loss waits again")
+        XCTAssertTrue(fixture.state.isAwaitingAutomaticReconnect, "after Reapply location a later loss waits again")
     }
 
     func testMoveLiftsTheStopLatch() async throws {
@@ -952,14 +959,14 @@ final class AutomaticReconnectTests: XCTestCase {
         XCTAssertEqual(observed483, 0)
     }
 
-    func testReconnectNowSupersedesTheWait() async throws {
-        let fixture = makeFixture()
+    func testReapplyLocationSupersedesTheWait() async throws {
+        let fixture = makeFixture(tunnelReconnect: liveTunnel())
         try seedHeldLocation(fixture)
         losePhone(fixture)
         try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
 
         fixture.state.device.selectedDevice = phone
-        let reconnect = Task { await fixture.state.reconnectNow() }
+        let reconnect = Task { await fixture.state.reapplyLocation() }
         try await waitUntil("the manual reapply") { await fixture.injector.pendingApplicationCount() == 1 }
         XCTAssertFalse(fixture.state.isAwaitingAutomaticReconnect)
         try await waitUntil("the fallback timer cancelled") { await fixture.sleeper.pendingCount() == 0 }
@@ -973,14 +980,14 @@ final class AutomaticReconnectTests: XCTestCase {
         XCTAssertEqual(observed503, 1)
     }
 
-    func testAFailedReconnectNowWaitsAgain() async throws {
-        let fixture = makeFixture()
+    func testAFailedReapplyLocationWaitsAgain() async throws {
+        let fixture = makeFixture(tunnelReconnect: liveTunnel())
         try seedHeldLocation(fixture)
         losePhone(fixture)
         try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
 
         fixture.state.device.selectedDevice = phone
-        let reconnect = Task { await fixture.state.reconnectNow() }
+        let reconnect = Task { await fixture.state.reapplyLocation() }
         try await waitUntil("the manual reapply") { await fixture.injector.pendingApplicationCount() == 1 }
         await fixture.injector.failNextApplication(with: LocationInjectionError.endpointUnreachable)
         await reconnect.value
@@ -1039,9 +1046,10 @@ final class AutomaticReconnectTests: XCTestCase {
     // MARK: Review 2026-11-02 (semantic-review/2026-11-02-135207-review.md)
 
     /// Finding 1: after a confirmed Clear the staged point is desired with no receipt.
-    /// Reconnect reconnects but sends nothing (5.2), and Clear's latch holds.
-    func testReconnectAfterAConfirmedClearDoesNotSendTheStagedPoint() async throws {
-        let fixture = makeFixture()
+    /// Reapply location has nothing to reapply and sends nothing (5.2), and Clear's latch
+    /// holds.
+    func testReapplyAfterAConfirmedClearDoesNotSendTheStagedPoint() async throws {
+        let fixture = makeFixture(tunnelReconnect: liveTunnel())
         try seedHeldLocation(fixture)
         await fixture.state.clearLocation(reconcilingConnection: false)
         XCTAssertEqual(fixture.state.stagedStartAfterClear, held)
@@ -1050,10 +1058,12 @@ final class AutomaticReconnectTests: XCTestCase {
 
         let done = ReconnectTestFlag()
         let reconnect = Task { @MainActor in
-            await fixture.state.reconnectNow()
+            await fixture.state.reapplyLocation()
             done.value = true
         }
-        try await waitUntil("Reconnect finished or sent something") {
+        XCTAssertEqual(fixture.state.locationReapplyAvailability,
+                       .unavailable(reason: "Nothing to reapply: no location is held"))
+        try await waitUntil("Reapply finished or sent something") {
             if done.value { return true }
             return await fixture.injector.pendingApplicationCount() > 0
         }
@@ -1061,10 +1071,7 @@ final class AutomaticReconnectTests: XCTestCase {
         if applies > 0 { await fixture.injector.cancelNextApplication() }
         await reconnect.value
 
-        XCTAssertEqual(applies, 0, "Reconnect after Clear must not spoof the staged point")
-        guard case .ready = fixture.state.locationSessionCoordinator.state.connection else {
-            return XCTFail("Reconnect still reconnects the session")
-        }
+        XCTAssertEqual(applies, 0, "Reapply after Clear must not spoof the staged point")
         XCTAssertEqual(fixture.state.stagedStartAfterClear, held, "the point stays staged")
         XCTAssertTrue(fixture.state.isAutomaticReconnectLatchedByUser,
                       "nothing was reapplied, so Clear's hold on automatic reconnect stays")
@@ -1854,13 +1861,15 @@ final class TunnelAutoReconnectorTests: XCTestCase {
     }
 }
 
-/// Reconnect never stops a live tunnel and a second click while one runs does nothing.
+/// Reconnect tunnel (the tunnel pill and Settings) never stops a live tunnel, and a second
+/// click while one runs does nothing.
 @MainActor
-final class ReconnectNowTunnelTests: XCTestCase {
+final class ReconnectTunnelTests: XCTestCase {
     private let deviceID = "00008130-0011223344556677"
 
-    func testReconnectHandsTheTunnelToReconnectOnceAndSaysReconnecting() async throws {
+    func testReconnectTunnelHandsTheTunnelToReconnectOnce() async throws {
         let tunnel = FakeReconnectTunnel()
+        tunnel.state = .error("Health check failed")
         let gate = ReconnectTestGate()
         tunnel.reconnectGate = gate
         let deviceManager = QuietReconnectDeviceManager(startBackgroundServices: false)
@@ -1879,17 +1888,17 @@ final class ReconnectNowTunnelTests: XCTestCase {
                            productType: "iPhone17,1", productVersion: "27.2", deviceName: "Owner iPhone")
         state.device.availableDevices = [phone]
         state.device.selectedDevice = phone
-        XCTAssertFalse(state.isReconnecting)
+        XCTAssertFalse(state.isReconnectingTunnel)
 
-        let first = Task { await state.reconnectNow() }
+        let first = Task { await state.reconnectTunnel() }
         var deadline = Date().addingTimeInterval(5)
         while tunnel.reconnectCalls.isEmpty, Date() < deadline {
             try await Task.sleep(nanoseconds: 2_000_000)
         }
         XCTAssertEqual(tunnel.reconnectCalls, [deviceID], "Reconnect goes through the no-stop path")
-        XCTAssertTrue(state.isReconnecting, "the button reads Reconnecting… and is disabled")
+        XCTAssertTrue(state.isReconnectingTunnel, "a Reconnect tunnel is in flight")
 
-        let second = Task { await state.reconnectNow() }
+        let second = Task { await state.reconnectTunnel() }
         deadline = Date().addingTimeInterval(0.05)
         while Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
         XCTAssertEqual(tunnel.reconnectCalls.count, 1, "an extra click does nothing")
@@ -1897,7 +1906,7 @@ final class ReconnectNowTunnelTests: XCTestCase {
         await gate.open()
         await first.value
         await second.value
-        XCTAssertFalse(state.isReconnecting)
+        XCTAssertFalse(state.isReconnectingTunnel)
         XCTAssertEqual(tunnel.reconnectCalls.count, 1)
     }
 }

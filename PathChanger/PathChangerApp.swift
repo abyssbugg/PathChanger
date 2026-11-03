@@ -443,7 +443,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// user starts a mode. Ends when any location is applied or a new point is staged.
     @Published private(set) var stagedStartAfterClear: LocationCoordinate?
     static let clearWithoutConnectionText =
-        "The phone is not connected, so it could not be cleared. It may keep the spoofed location until it reconnects or restarts. To clear it, press Reconnect when the phone is back, then Clear."
+        "The phone is not connected, so it could not be cleared. It may keep the spoofed location until it reconnects or restarts. To clear it, wait until the phone is back (press Reconnect tunnel on the tunnel button if the tunnel failed), then press Clear."
     /// A Clear of a session this Mac never held, after the helper confirmed it holds no
     /// connection to the phone: the held session ended with that connection.
     static let clearAfterConnectionEndedText =
@@ -877,11 +877,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private var locationRecoveryTask: Task<Void, Never>?
     private var bridgeEventTask: Task<Void, Never>?
     private var persistentBridgeEventTask: Task<Void, Never>?
-    private var reconnectTask: Task<Void, Never>?
-    /// True once the user explicitly started a tunnel this session (tunnel button or
-    /// error-dialog action). One-tap reconnect may then restart it; launch-time and
-    /// adopted tunnels never gain that permission.
-    private var userStartedTunnelInSession = false
+    private var tunnelReconnectTask: Task<Void, Never>?
     /// Automatic reconnect (PRODUCT_REQUIREMENTS §7.3): waits for a lost phone and runs
     /// one bounded recovery burst when it is visible again (or on a slow fallback timer).
     private let automaticReconnect: AutomaticReconnectEnvironment
@@ -892,8 +888,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// True from the moment PathChanger waits for the lost phone until its held location
     /// is reapplied (or the wait is cancelled), bursts included.
     @Published private(set) var isAwaitingAutomaticReconnect = false
-    /// Stop Tunnel or Clear since the last explicit Start, Move or Reconnect: the user
-    /// ended the connection or the location, so nothing reconnects behind their back.
+    /// Stop Tunnel or Clear since the last explicit Start, Move, Reconnect tunnel or
+    /// Reapply location: the user ended the connection or the location, so nothing
+    /// reconnects behind their back.
     private(set) var isAutomaticReconnectLatchedByUser = false
     /// Reopens the tunnel itself after a loss the user did not cause (live 2026-11-03),
     /// whether or not a location is held. Clear does not stop it; Stop Tunnel does.
@@ -913,8 +910,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     private var locationAdvertHints = RemotePairingAdvertHintLimiter()
     /// Set by Quit: the browser never starts again.
     private var isRemotePairingBrowsingShutDown = false
-    /// Reconnect is in flight: the button reads "Reconnecting…" and further clicks do nothing.
-    @Published private(set) var isReconnecting = false
+    /// Reconnect tunnel is in flight: further clicks wait for it.
+    @Published private(set) var isReconnectingTunnel = false
+    /// Reapply location is in flight: the button says so and further clicks wait for it.
+    private var locationReapplyTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: Computed Properties
@@ -1267,7 +1266,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     /// Start the selected tunnel mode against the selected device, when available.
     func startSelectedTunnel() async {
-        userStartedTunnelInSession = true
         // An explicit Start lifts a Stop's hold on automatic reconnect; a wait that is
         // already running keeps waiting (the phone may come back through this Start).
         isAutomaticReconnectLatchedByUser = false
@@ -1316,66 +1314,90 @@ class AppState: ObservableObject, LocationTerminationHandling {
         return selectedDevice.id
     }
 
-    /// One-tap recovery after the connection phase reports failed: refresh device
-    /// discovery, restart the tunnel when the user started one in this session,
-    /// restore a ready location session for the selected device, and reapply the
-    /// desired coordinate through the normal apply path. Safe to tap repeatedly:
-    /// an in-flight reconnect is awaited rather than duplicated, and a Clear in
-    /// progress is never interrupted.
-    func reconnectNow() async {
-        if let reconnectTask {
-            await reconnectTask.value
+    // MARK: Reconnect tunnel / Reapply location (owner decision 2026-11-03)
+
+    /// Reconnect tunnel, on the tunnel pill and in Settings after the tunnel failed. The
+    /// tunnel controls own the tunnel and the location area no longer does: this reopens
+    /// the tunnel through the no-stop path (a live tunnel is never restarted) and never
+    /// sends a location. Like Start it is an explicit tunnel action, so it lifts a Stop's
+    /// hold on automatic reconnect; whatever reapplies afterwards follows the automatic
+    /// reconnect's own rules. A second click while one runs waits for it.
+    func reconnectTunnel() async {
+        if let tunnelReconnectTask {
+            await tunnelReconnectTask.value
             return
         }
         let reconnect = Task { @MainActor in
             defer {
-                reconnectTask = nil
-                isReconnecting = false
+                tunnelReconnectTask = nil
+                isReconnectingTunnel = false
             }
-            await runReconnectNow()
+            isAutomaticReconnectLatchedByUser = false
+            await device.refreshDevices()
+            await tunnelAutoReconnect.tunnel.reconnectTunnel(deviceId: tunnelTargetDeviceId())
         }
-        reconnectTask = reconnect
-        isReconnecting = true
+        tunnelReconnectTask = reconnect
+        isReconnectingTunnel = true
         await reconnect.value
     }
 
-    private func runReconnectNow() async {
-        guard canBeginLocationOperation else { return }
-        // Reconnect reapplies only a location the phone held (a receipt). After a confirmed
-        // Clear the last spot is staged with no receipt: Reconnect then only reconnects and
-        // leaves it staged (PRODUCT_REQUIREMENTS 5.2), and Clear's hold on automatic
-        // reconnect stays, because nothing it could defend was reapplied.
-        let reappliesHeldLocation = locationSessionCoordinator.state.lastAcknowledgedReceipt != nil
-        // Reconnect is explicit: it lifts a Stop's latch and replaces any automatic wait.
-        // A Reconnect that does not get the location back waits again (as after a burst).
-        if reappliesHeldLocation { isAutomaticReconnectLatchedByUser = false }
-        await stopAutomaticReconnect(reason: "Reconnect pressed")
+    /// Whether the location area's Reapply location can run now, and why not.
+    var locationReapplyAvailability: LocationReapplyAvailability {
+        let state = locationSessionCoordinator.state
+        return LocationReapplyAvailability.resolve(
+            isReapplying: locationReapplyTask != nil,
+            clearBlock: moveBlockedByClear,
+            isTunnelLive: tunnelAutoReconnect.tunnel.lifecycleState == .running,
+            // Only a location the phone held (a receipt) is reapplied. After a confirmed
+            // Clear the last spot is staged with no receipt (PRODUCT_REQUIREMENTS 5.2).
+            hasHeldLocation: state.lastAcknowledgedReceipt != nil && state.desiredLocation != nil
+        )
+    }
+
+    /// Reapply location, in the location area: sends the held (or uncertain) location to
+    /// the phone again over the current connection, through the normal apply path (active
+    /// only once acknowledged). It never starts, restarts or stops the tunnel; without a
+    /// live tunnel or a held location it does nothing (the button says why). A second
+    /// click while one runs waits for it, and a Clear in progress is never interrupted.
+    func reapplyLocation() async {
+        if let locationReapplyTask {
+            await locationReapplyTask.value
+            return
+        }
+        guard locationReapplyAvailability.isAvailable else { return }
+        let reapply = Task { @MainActor in
+            await runReapplyLocation()
+        }
+        locationReapplyTask = reapply
+        objectWillChange.send()
+        await reapply.value
+        locationReapplyTask = nil
+        objectWillChange.send()
+    }
+
+    private func runReapplyLocation() async {
+        // Reapply is explicit: it lifts a Stop's latch and replaces any automatic wait. A
+        // Reapply that does not get the location back waits again (as after a burst).
+        isAutomaticReconnectLatchedByUser = false
+        await stopAutomaticReconnect(reason: "Reapply location pressed")
         defer { armAutomaticReconnectIfEligible(afterFailedBurst: true) }
-        // Manual reconnect supersedes an in-flight automatic recovery; cancelling
-        // first keeps the two paths from driving the coordinator concurrently.
+        // It supersedes an in-flight automatic recovery; cancelling first keeps the two
+        // paths from driving the coordinator concurrently.
         locationRecoveryTask?.cancel()
         await locationRecoveryTask?.value
         locationRecoveryTask = nil
 
-        await device.refreshDevices()
         if let selectedDevice {
             tunnelQuitController.resumeLocationCommands(for: selectedDevice.id)
         }
-
-        // Reconnect never stops a live tunnel (live 2026-11-03: a click on a running tunnel
-        // ended it and the owner needed 2-3 clicks); from idle or error it starts one. In
-        // helper modes that start never elevates, so it no longer needs a Start this session.
-        let tunnel = tunnelAutoReconnect.tunnel
-        if userStartedTunnelInSession
-            || (tunnelAutoReconnect.isEnabled && tunnel.preferredMode.usesHelperConnection) {
-            await tunnel.reconnectTunnel(deviceId: tunnelTargetDeviceId())
-        }
-
         guard prepareLocationSessionIfNeeded() else {
-            statusMessage = "Connect and select an iOS device to reconnect"
+            statusMessage = "Select the iOS device to reapply the location"
             return
         }
-        guard reappliesHeldLocation,
+        // Those awaits can outlast a Clear, a lost tunnel or the held location itself.
+        guard canBeginLocationOperation,
+              tunnelAutoReconnect.tunnel.lifecycleState == .running,
+              locationSessionCoordinator.state.lastAcknowledgedReceipt != nil,
               let desired = locationSessionCoordinator.state.desiredLocation else { return }
         await applyPlannedLocation(desired, mode: .teleport)
     }
@@ -3228,9 +3250,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
         if case .tunnelStoppedByUser = event {
             // Stop Tunnel (or a transport switch) is the user's: nothing reconnects until
-            // an explicit Start, Move or Reconnect. Reconnect's own tunnel restart is not
-            // a Stop: it is the user asking to reconnect.
-            if reconnectTask == nil {
+            // an explicit Start, Move, Reconnect tunnel or Reapply location. Reconnect
+            // tunnel's own restart is not a Stop: it is the user asking to reconnect.
+            if tunnelReconnectTask == nil {
                 isAutomaticReconnectLatchedByUser = true
             }
             cancelAutomaticReconnect(reason: "Tunnel stopped")
@@ -3347,14 +3369,14 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if isAwaitingAutomaticReconnect {
             statusMessage = Self.automaticReconnectWaitingText
         } else {
-            lastError = "Couldn't reconnect to the phone. Make sure it is unlocked and on this Wi‑Fi or connected by USB, then press Reconnect."
+            lastError = "Couldn't reconnect to the phone. Make sure it is unlocked and on this Wi‑Fi or connected by USB, then press Reapply location."
         }
     }
 
     // MARK: Automatic reconnect (PRODUCT_REQUIREMENTS §7.3)
 
     static let automaticReconnectWaitingText =
-        "Connection lost — PathChanger reconnects and reapplies the location when the phone is back on Wi‑Fi or USB. Keep it unlocked, or press Reconnect."
+        "Connection lost — PathChanger reconnects and reapplies the location when the phone is back on Wi‑Fi or USB. Keep it unlocked, or press Reapply location once the tunnel is live."
     static let automaticReconnectingText =
         "Reconnecting to the phone and reapplying the location…"
 
@@ -3388,7 +3410,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// (review 2026-11-03 issue 1): Stop Tunnel, which latches the tunnel reconnect, and the
     /// same hold on the location reconnect a Stop of a live tunnel sets, whose burst would
     /// otherwise reopen the helper connection behind the Stop. Start, Move or Reconnect
-    /// lifts both.
+    /// tunnel lifts both; Reapply location lifts only the location hold.
     func stopTunnelReconnect() {
         Logger.info("[TunnelReconnect] Stop pressed while reconnecting", category: .device)
         isAutomaticReconnectLatchedByUser = true
