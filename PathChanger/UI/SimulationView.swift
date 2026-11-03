@@ -65,6 +65,10 @@ struct SimulationView: View {
         .onChange(of: mode) { _, newMode in
             appState.activeMode = newMode
         }
+        // The planned route refetches only when its stops, directions or options change.
+        .onChange(of: appState.routePreviewKey(for: mode), initial: true) { _, key in
+            appState.routePreview.update(key)
+        }
         .onChange(of: appState.locationPresentation.appliedCoordinate) { _, newLocation in
             appState.placeNameResolver?.update(for: newLocation)
             guard keepCentered, let location = newLocation else { return }
@@ -127,9 +131,16 @@ struct SimulationView: View {
                     }
                 }
 
-                if mode.showsRouteList && polylineCoordinates.count >= 2 {
-                    MapPolyline(coordinates: polylineCoordinates)
-                        .stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round, dash: [1, 5]))
+                if mode.showsRouteList {
+                    // Decorative: the stops and the legend carry the meaning.
+                    ForEach(appState.routePreview.legs) { leg in
+                        MapPolyline(coordinates: leg.points.map(\.clLocationCoordinate2D))
+                            .stroke(RoutePreviewStroke.color(leg.style), style: RoutePreviewStroke.style(leg.style))
+                    }
+                    if appState.travelTrail.points.count >= 2 {
+                        MapPolyline(coordinates: appState.travelTrail.points.map(\.clLocationCoordinate2D))
+                            .stroke(Organic.sage600, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    }
                 }
 
                 if mode.showsRouteList {
@@ -165,8 +176,21 @@ struct SimulationView: View {
     private var mapFooter: some View {
         HStack {
             Spacer()
-            if showCoordinatesOnMap, let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
-                VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: 3) {
+                if mode.showsRouteList,
+                   let legend = RoutePreviewPlanner.legendText(for: appState.routePreview.legs.map(\.style)) {
+                    Text(legend)
+                        .font(Organic.body(10, weight: .semibold))
+                        .foregroundStyle(Organic.neutral700)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Organic.neutral100.opacity(0.75))
+                        .clipShape(Capsule())
+                        .accessibilityLabel("Map key: \(legend)")
+                        .accessibilityIdentifier("map.routeLegend")
+                }
+                if showCoordinatesOnMap, let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
                     if appState.locationPresentation.appliedCoordinate != nil, let resolver = appState.placeNameResolver {
                         PlaceNameLabel(resolver: resolver)
                     }
@@ -278,15 +302,6 @@ struct SimulationView: View {
         return "\(max(10, Int(meters.rounded()))) m"
     }
 
-    private var polylineCoordinates: [CLLocationCoordinate2D] {
-        var points = appState.currentRoute.map(\.clLocationCoordinate2D)
-        if mode == .twospot, appState.currentRoute.count < 2,
-           let start = appState.locationPresentation.appliedCoordinate {
-            points.insert(start.clLocationCoordinate2D, at: 0)
-        }
-        return points
-    }
-
     private func zoom(_ factor: Double) {
         let center = currentRegion.center
         let span = MapZoom.scaled(currentRegion.span, factor: factor)
@@ -330,6 +345,28 @@ struct SimulationView: View {
         case .failure(let error):
             appState.lastError = error.localizedDescription
             appState.statusMessage = error.localizedDescription
+        }
+    }
+}
+
+/// How each planned leg is drawn: solid road, dashed straight-line fallback, the old
+/// faint dotted line while loading, and a thin dashed connector for a jump.
+enum RoutePreviewStroke {
+    static func color(_ style: RoutePreviewLegStyle) -> Color {
+        switch style {
+        case .road: return Organic.accent600
+        case .straight: return Organic.accent500
+        case .loading: return Organic.accent600.opacity(0.6)
+        case .jump: return Organic.neutral600
+        }
+    }
+
+    static func style(_ style: RoutePreviewLegStyle) -> StrokeStyle {
+        switch style {
+        case .road: return StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+        case .straight: return StrokeStyle(lineWidth: 3, lineCap: .butt, lineJoin: .round, dash: [8, 6])
+        case .loading: return StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round, dash: [1, 5])
+        case .jump: return StrokeStyle(lineWidth: 1.5, lineCap: .butt, lineJoin: .round, dash: [4, 6])
         }
     }
 }

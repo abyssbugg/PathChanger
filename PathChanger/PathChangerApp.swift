@@ -553,6 +553,28 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// Names the spoofed location on the map (PRODUCT_REQUIREMENTS 3.5). Nil in tests
     /// and previews, so nothing reaches Apple's geocoder there.
     let placeNameResolver: PlaceNameResolver?
+    /// The planned route the map draws, from the same road router as the run's legs (so
+    /// the run hits the router's cache). Without a router (tests, previews) travelled
+    /// legs stay drawn as loading and nothing reaches Apple Maps.
+    let routePreview: RoutePreviewModel
+    /// The acknowledged points of the current or last travelled stop run, for the map.
+    let travelTrail: TravelTrail
+
+    /// What the map's route preview of `mode` depends on; nil when it draws nothing.
+    /// Uses the stops, options and directions the run of `mode` would use.
+    func routePreviewKey(for mode: AppMode) -> RoutePreviewKey? {
+        RoutePreviewPlanner.key(
+            mode: mode,
+            stops: displayStops(for: mode),
+            held: currentLocation ?? stagedStartAfterClear,
+            settings: stopTravelSettings(for: mode),
+            travel: SimulationSpeed.directionsTravel(
+                autoSpeed: autoSpeed,
+                preset: simulationSpeed,
+                metersPerSecond: effectiveMetersPerSecond
+            )
+        )
+    }
     /// Adapts a road router to the engine's leg seam: the road path, whether it follows
     /// roads, and the note the card shows when it does not.
     nonisolated static func roadLegPathProvider(
@@ -939,6 +961,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             settingsDefaults: stopTravelSettingsDefaults
         )
         self.legPathProvider = roadRouter.map(Self.roadLegPathProvider)
+        self.routePreview = RoutePreviewModel(router: roadRouter)
+        self.travelTrail = TravelTrail()
         self.placeNameResolver = placeNameResolver
         self.simulation = SimulationStateManager(
             locationBridge: sharedBridge,
@@ -957,7 +981,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         route.setSimulationStateManager(simulation)
 
         // Re-publish the managers' changes so views observing AppState still update.
-        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange, sessionCoordinator.objectWillChange, tunnelAutoReconnector.objectWillChange] {
+        for publisher in [device.objectWillChange, route.objectWillChange, simulation.objectWillChange, sessionCoordinator.objectWillChange, tunnelAutoReconnector.objectWillChange, routePreview.objectWillChange, travelTrail.objectWillChange] {
             publisher
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
@@ -973,6 +997,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 guard let self, newRoute != self.route.currentRoute else { return }
                 // The route's `currentRoute` didSet resets every mode's stop index.
                 self.stopSequences = [:]
+                self.travelTrail.reset()
                 if let run = self.stopRun, newRoute != run.routeSnapshot {
                     self.endStopRun("the stops changed")
                 }
@@ -1341,6 +1366,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
             producers.forEach { $0.cancel() }
             applications.forEach { $0.cancel() }
             pendingApplications.removeAll()
+            // Clear erases the map's trail; no later receipt of this run can reach it.
+            travelTrail.reset()
             _ = locationSessionCoordinator.cancelPendingApplication()
             simulation.isSimulating = false
             simulation.isPaused = false
@@ -2061,6 +2088,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
         stagedStartAfterClear = nil
         simulation.currentLocation = receipt.coordinate
         simulation.targetLocation = receipt.coordinate
+        // The map's trail of a travelled run: acknowledged points only.
+        if let run = stopRun, run.settings.arrival == .travel {
+            travelTrail.record(receipt.coordinate, run: run.id)
+        }
         // A paused run stays paused when the point in flight lands.
         if stopRun == nil { simulation.isPaused = false }
         simulation.isSimulating = true
