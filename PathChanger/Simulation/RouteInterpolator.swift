@@ -78,10 +78,7 @@ struct RouteInterpolator {
             for stepIndex in 0..<steps {
                 // Constant distance per step, the last one landing on the waypoint.
                 let fraction = min(Double(stepIndex) * step / distance, 1)
-                allPoints.append(LocationCoordinate(
-                    latitude: start.latitude + (end.latitude - start.latitude) * fraction,
-                    longitude: start.longitude + (end.longitude - start.longitude) * fraction
-                ))
+                allPoints.append(Geo.interpolate(from: start, to: end, fraction: fraction))
             }
         }
         if let last = validWaypoints.last {
@@ -150,10 +147,7 @@ struct RouteInterpolator {
             let segmentEnd = segmentStart + distance
             while Double(nextStep) * step < segmentEnd {
                 let fraction = (Double(nextStep) * step - segmentStart) / distance
-                points.append(LocationCoordinate(
-                    latitude: start.latitude + (end.latitude - start.latitude) * fraction,
-                    longitude: start.longitude + (end.longitude - start.longitude) * fraction
-                ))
+                points.append(Geo.interpolate(from: start, to: end, fraction: fraction))
                 nextStep += 1
             }
             segmentStart = segmentEnd
@@ -198,9 +192,7 @@ struct RouteInterpolator {
 
         for stepIndex in 0..<steps {
             let fraction = Double(stepIndex) / Double(steps)
-            let lat = start.latitude + (end.latitude - start.latitude) * fraction
-            let lon = start.longitude + (end.longitude - start.longitude) * fraction
-            points.append(LocationCoordinate(latitude: lat, longitude: lon))
+            points.append(Geo.interpolate(from: start, to: end, fraction: fraction))
         }
 
         return points

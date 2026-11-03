@@ -142,4 +142,42 @@ final class JoystickMovementTests: XCTestCase {
         XCTAssertLessThan(latestProposal.longitude, origin.longitude)
         XCTAssertEqual(origin, unchangedOrigin)
     }
+
+    // MARK: - Date line
+
+    /// East across 180 used to give a longitude over 180, which is invalid, so the move
+    /// returned the start and the joystick stalled at the line.
+    func testMovingEastAcrossTheDateLineContinuesFromMinus180() {
+        let start = LocationCoordinate(latitude: 10, longitude: 179.9999)
+        let next = JoystickMovement.nextCoordinate(from: start, direction: CGPoint(x: 1, y: 0), speedMetersPerSecond: 30, deltaTime: 1)
+
+        XCTAssertTrue(next.isValid)
+        XCTAssertNotEqual(next, start)
+        XCTAssertLessThan(next.longitude, -179.999)
+        XCTAssertEqual(Geo.distance(from: start, to: next), 30, accuracy: 0.01)
+    }
+
+    func testMovingWestAcrossTheDateLineContinuesFrom180() {
+        let start = LocationCoordinate(latitude: -10, longitude: -179.9999)
+        let next = JoystickMovement.nextCoordinate(from: start, direction: CGPoint(x: -1, y: 0), speedMetersPerSecond: 30, deltaTime: 1)
+
+        XCTAssertTrue(next.isValid)
+        XCTAssertNotEqual(next, start)
+        XCTAssertGreaterThan(next.longitude, 179.999)
+        XCTAssertEqual(Geo.distance(from: start, to: next), 30, accuracy: 0.01)
+    }
+
+    func testRepeatedEastwardTicksKeepMovingThroughTheDateLine() {
+        var position = LocationCoordinate(latitude: 0, longitude: 179.9990)
+        var previousUnwrapped = position.longitude
+        for _ in 0..<20 {
+            let next = JoystickMovement.nextCoordinate(from: position, direction: CGPoint(x: 1, y: 0), speedMetersPerSecond: 10, deltaTime: 1)
+            XCTAssertTrue(next.isValid)
+            let unwrapped = next.longitude < 0 ? next.longitude + 360 : next.longitude
+            XCTAssertGreaterThan(unwrapped, previousUnwrapped)
+            previousUnwrapped = unwrapped
+            position = next
+        }
+        XCTAssertLessThan(position.longitude, 0, "20 × 10 m from 179.999 ends past the line")
+    }
 }

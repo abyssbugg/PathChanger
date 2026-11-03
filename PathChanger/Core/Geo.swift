@@ -87,7 +87,29 @@ enum Geo {
 
         return LocationCoordinate(
             latitude: lat2 * 180 / .pi,
-            longitude: lon2 * 180 / .pi
+            longitude: normalizedLongitude(lon2 * 180 / .pi)
+        )
+    }
+
+    /// The point `fraction` (0...1) of the way from one coordinate to another, latitude
+    /// and longitude interpolated linearly along the shorter way round: a leg across the
+    /// 180° meridian goes over it, not back through 0°. The longitude is normalized into
+    /// -180...180. A leg spanning less than 180° of longitude gives exactly the plain
+    /// linear interpolation.
+    static func interpolate(
+        from start: LocationCoordinate,
+        to end: LocationCoordinate,
+        fraction: Double
+    ) -> LocationCoordinate {
+        var deltaLon = end.longitude - start.longitude
+        if deltaLon > 180 {
+            deltaLon -= 360
+        } else if deltaLon < -180 {
+            deltaLon += 360
+        }
+        return LocationCoordinate(
+            latitude: start.latitude + (end.latitude - start.latitude) * fraction,
+            longitude: normalizedLongitude(start.longitude + deltaLon * fraction)
         )
     }
 
@@ -95,5 +117,12 @@ enum Geo {
     static func normalizedDegrees(_ degrees: Double) -> Double {
         let remainder = degrees.truncatingRemainder(dividingBy: 360)
         return remainder < 0 ? remainder + 360 : remainder
+    }
+
+    /// Normalize a longitude into -180...180. A longitude already in range (180 and -180
+    /// included) is returned unchanged.
+    static func normalizedLongitude(_ longitude: Double) -> Double {
+        guard longitude.isFinite, !(-180...180).contains(longitude) else { return longitude }
+        return normalizedDegrees(longitude + 180) - 180
     }
 }

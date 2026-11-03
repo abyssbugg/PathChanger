@@ -240,6 +240,97 @@ final class RouteInterpolatorTests: XCTestCase {
         XCTAssertTrue(RouteInterpolator.interpolateRoute(waypoints: [start, end], speed: .walking).isEmpty)
     }
 
+    // MARK: - Date line
+
+    private let eastOfLine = LocationCoordinate(latitude: 10.05, longitude: -179.9)
+    private let westOfLine = LocationCoordinate(latitude: 10.0, longitude: 179.9)
+
+    /// A leg across 180 must take the ~22 km way over the line, not ~39,000 km through 0.
+    private func assertCrossesTheDateLine(
+        _ points: [LocationCoordinate],
+        from start: LocationCoordinate,
+        to end: LocationCoordinate,
+        eastbound: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertGreaterThan(points.count, 100, file: file, line: line)
+        XCTAssertEqual(points.first, start, file: file, line: line)
+        XCTAssertEqual(points.last, end, file: file, line: line)
+        var previous: Double?
+        for point in points {
+            XCTAssertTrue(point.isValid, "\(point)", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(abs(point.longitude), 179.9 - 1e-9, "\(point)", file: file, line: line)
+            let unwrapped = point.longitude < 0 ? point.longitude + 360 : point.longitude
+            if let previous {
+                if eastbound {
+                    XCTAssertGreaterThanOrEqual(unwrapped, previous, file: file, line: line)
+                } else {
+                    XCTAssertLessThanOrEqual(unwrapped, previous, file: file, line: line)
+                }
+            }
+            previous = unwrapped
+        }
+        XCTAssertTrue(points.contains { $0.longitude > 0 } && points.contains { $0.longitude < 0 }, file: file, line: line)
+        XCTAssertEqual(Geo.totalDistance(of: points), Geo.distance(from: start, to: end), accuracy: 1, file: file, line: line)
+    }
+
+    func testASteppedLegCrossesTheDateLineEastbound() {
+        let points = RouteInterpolator.interpolateRoute(waypoints: [westOfLine, eastOfLine], stepMeters: 50)
+        assertCrossesTheDateLine(points, from: westOfLine, to: eastOfLine, eastbound: true)
+        XCTAssertEqual(RouteInterpolator.steppedPointCount(waypoints: [westOfLine, eastOfLine], stepMeters: 50), points.count)
+    }
+
+    func testASteppedLegCrossesTheDateLineWestbound() {
+        let points = RouteInterpolator.interpolateRoute(waypoints: [eastOfLine, westOfLine], stepMeters: 50)
+        assertCrossesTheDateLine(points, from: eastOfLine, to: westOfLine, eastbound: false)
+    }
+
+    func testASpeedLegCrossesTheDateLineBothWays() {
+        assertCrossesTheDateLine(
+            RouteInterpolator.interpolateRoute(waypoints: [westOfLine, eastOfLine], speed: .driving),
+            from: westOfLine, to: eastOfLine, eastbound: true
+        )
+        assertCrossesTheDateLine(
+            RouteInterpolator.interpolateRoute(waypoints: [eastOfLine, westOfLine], speed: .driving),
+            from: eastOfLine, to: westOfLine, eastbound: false
+        )
+    }
+
+    func testARoadPathCrossesTheDateLineBothWays() {
+        let onTheLine = LocationCoordinate(latitude: 10.025, longitude: 180) // the leg's midpoint
+        let eastbound = RouteInterpolator.interpolatePath([westOfLine, onTheLine, eastOfLine], stepMeters: 50)
+        assertCrossesTheDateLine(eastbound, from: westOfLine, to: eastOfLine, eastbound: true)
+        let westbound = RouteInterpolator.interpolatePath([eastOfLine, onTheLine, westOfLine], stepMeters: 50)
+        assertCrossesTheDateLine(westbound, from: eastOfLine, to: westOfLine, eastbound: false)
+    }
+
+    func testGeoNormalizesLongitudeIntoMinus180To180() {
+        XCTAssertEqual(Geo.normalizedLongitude(180.25), -179.75, accuracy: 1e-9)
+        XCTAssertEqual(Geo.normalizedLongitude(-180.25), 179.75, accuracy: 1e-9)
+        XCTAssertEqual(abs(Geo.normalizedLongitude(540)), 180, accuracy: 1e-9)
+        XCTAssertEqual(abs(Geo.normalizedLongitude(-540)), 180, accuracy: 1e-9)
+        XCTAssertEqual(Geo.normalizedLongitude(180), 180)
+        XCTAssertEqual(Geo.normalizedLongitude(-180), -180)
+        XCTAssertEqual(Geo.normalizedLongitude(139.65), 139.65)
+        XCTAssertEqual(Geo.normalizedLongitude(-0.5), -0.5)
+    }
+
+    func testGeoMoveNormalizesTheLongitude() {
+        let moved = Geo.move(from: LocationCoordinate(latitude: 0, longitude: 179.99), distanceMeters: 5_000, bearingDegrees: 90)
+        XCTAssertTrue(moved.isValid)
+        XCTAssertLessThan(moved.longitude, -179.9)
+    }
+
+    func testMoveCoordinateWrapsAcrossTheDateLine() {
+        let east = RouteInterpolator.moveCoordinate(from: LocationCoordinate(latitude: 0, longitude: 179.99), distanceMeters: 5_000, bearingDegrees: 90)
+        XCTAssertTrue(east.isValid)
+        XCTAssertEqual(east.longitude, -179.99 + 0.0249, accuracy: 0.001)
+        let west = RouteInterpolator.moveCoordinate(from: LocationCoordinate(latitude: 0, longitude: -179.99), distanceMeters: 5_000, bearingDegrees: 270)
+        XCTAssertTrue(west.isValid)
+        XCTAssertEqual(west.longitude, 179.99 - 0.0249, accuracy: 0.001)
+    }
+
     func testSteppedRouteOverTheCapIsNotCoarsened() {
         // ~44.5 km at 0.32 m needs ~139,000 points. The step must never widen to fit
         // the cap (that moved faster than the shown speed); the route is refused.
