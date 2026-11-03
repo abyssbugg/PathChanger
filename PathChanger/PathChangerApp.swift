@@ -566,7 +566,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     let travelTrail: TravelTrail
 
     /// What the map's route preview of `mode` depends on; nil when it draws nothing.
-    /// Uses the stops, options and directions the run of `mode` would use.
+    /// Uses the stops, options and directions the run of `mode` would use, and between
+    /// Moves the leg the next Move drives from the held location (the Move's own origin;
+    /// while its run moves, the run's steps would change the key at every update).
     func routePreviewKey(for mode: AppMode) -> RoutePreviewKey? {
         RoutePreviewPlanner.key(
             mode: mode,
@@ -577,7 +579,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 autoSpeed: autoSpeed,
                 preset: simulationSpeed,
                 metersPerSecond: effectiveMetersPerSecond
-            )
+            ),
+            origin: isStopRunActive(for: mode) ? nil : currentLocation,
+            cursor: stopCursor(for: mode)
         )
     }
     /// Adapts a road router to the engine's leg seam: the road path, whether it follows

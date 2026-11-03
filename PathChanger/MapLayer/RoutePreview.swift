@@ -18,6 +18,10 @@ struct RoutePreviewKey: Equatable, Sendable {
     let transport: RoadTransport
     let arrival: StopTravelSettings.Arrival
     let repeatMode: StopTravelSettings.RepeatMode
+    /// The leg the next Move drives first: the held location to the next stop not yet
+    /// reached (a finished One way run starts over at stop 1). Nil with nothing held
+    /// (the stop is placed), at that stop, or while the run is moving.
+    var nextMoveLeg: RoutePreviewLegSpec? = nil
 }
 
 /// One drawn leg, before its path is known.
@@ -43,13 +47,18 @@ enum RoutePreviewLegStyle: Equatable, Sendable {
 enum RoutePreviewPlanner {
     /// The preview of `mode`'s run, or nil when there is nothing to draw. Mirrors
     /// `StopTravelPlanner.runStops`: Two-Spot draws its two endpoints, or the held
-    /// location and its one spot; Jump and Multi-Spot draw all their stops.
+    /// location and its one spot; Jump and Multi-Spot draw all their stops. With
+    /// `origin` (the held location the next Move leaves from; nil while nothing is held
+    /// or the run is moving) it adds the leg the planner's `firstLeg` drives from there
+    /// at `cursor`, so Jump with one stop has a preview too.
     static func key(
         mode: AppMode,
         stops: [LocationCoordinate],
         held: LocationCoordinate?,
         settings: StopTravelSettings,
-        travel: SimulationSpeed
+        travel: SimulationSpeed,
+        origin: LocationCoordinate? = nil,
+        cursor: StopCursor = StopCursor()
     ) -> RoutePreviewKey? {
         var valid = stops.filter(\.isValid)
         switch mode {
@@ -64,27 +73,40 @@ enum RoutePreviewPlanner {
         case .teleport, .joystick, .settings:
             return nil
         }
-        guard valid.count >= 2 else { return nil }
+        var nextMoveLeg: RoutePreviewLegSpec?
+        if mode == .jump || valid.count >= 2, let origin, origin.isValid,
+           let leg = StopTravelPlanner.firstLeg(stops: valid, origin: origin, cursor: cursor, settings: settings),
+           let from = leg.from {
+            nextMoveLeg = RoutePreviewLegSpec(from: from, to: leg.to, returnsToStart: false)
+        }
+        guard valid.count >= 2 || nextMoveLeg != nil else { return nil }
         return RoutePreviewKey(
             stops: valid,
             transport: RoadTransport(travel: travel),
             arrival: settings.arrival,
-            repeatMode: settings.repeatMode
+            repeatMode: settings.repeatMode,
+            nextMoveLeg: nextMoveLeg
         )
     }
 
-    /// The legs between consecutive stops, plus the leg back to the first stop when the
-    /// run loops. Back and forth returns along the same legs, so only the forward legs
-    /// are drawn. Same-place legs are skipped.
+    /// The leg the next Move drives (when it is not one of the others), the legs between
+    /// consecutive stops, plus the leg back to the first stop when the run loops. Back
+    /// and forth returns along the same legs, so only the forward legs are drawn.
+    /// Same-place legs are skipped.
     static func legs(for key: RoutePreviewKey) -> [RoutePreviewLegSpec] {
         let stops = key.stops
-        guard stops.count >= 2 else { return [] }
         var legs: [RoutePreviewLegSpec] = []
-        for index in 1..<stops.count where stops[index - 1] != stops[index] {
-            legs.append(RoutePreviewLegSpec(from: stops[index - 1], to: stops[index], returnsToStart: false))
+        if stops.count >= 2 {
+            for index in 1..<stops.count where stops[index - 1] != stops[index] {
+                legs.append(RoutePreviewLegSpec(from: stops[index - 1], to: stops[index], returnsToStart: false))
+            }
+            if key.repeatMode == .loop, let first = stops.first, let last = stops.last, first != last {
+                legs.append(RoutePreviewLegSpec(from: last, to: first, returnsToStart: true))
+            }
         }
-        if key.repeatMode == .loop, let first = stops.first, let last = stops.last, first != last {
-            legs.append(RoutePreviewLegSpec(from: last, to: first, returnsToStart: true))
+        if let next = key.nextMoveLeg, next.from != next.to,
+           !legs.contains(where: { $0.from == next.from && $0.to == next.to }) {
+            legs.insert(next, at: 0)
         }
         return legs
     }

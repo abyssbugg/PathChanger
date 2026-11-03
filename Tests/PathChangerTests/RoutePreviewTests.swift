@@ -46,6 +46,26 @@ private actor PreviewRouter: RoadRouting {
     func requestedLegs() -> [[LocationCoordinate]] { requests.map { [$0.from, $0.to] } }
 }
 
+/// Acknowledges every application at once.
+private actor PreviewAckInjector: LocationInjecting {
+    func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+        LocationInjectionReceipt(
+            requestID: request.id,
+            session: UUID(),
+            coordinate: request.coordinate,
+            transport: request.target.transport,
+            actualChannel: .networkLockdown,
+            endpointClass: .direct,
+            sessionGeneration: request.sessionGeneration ?? 1,
+            completedAt: Date(),
+            outcome: .applied
+        )
+    }
+
+    func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {}
+    func events() async -> AsyncStream<LocationBridgeEvent> { AsyncStream { _ in } }
+}
+
 @MainActor
 final class RoutePreviewTests: XCTestCase {
     private let s0 = LocationCoordinate(latitude: 35.68000, longitude: 139.76000)
@@ -166,6 +186,57 @@ final class RoutePreviewTests: XCTestCase {
     func testSamePlaceLegsAreSkipped() {
         let legs = RoutePreviewPlanner.legs(for: key([s0, s0, s1, s0], repeat: .loop))
         XCTAssertEqual(legs.map { [$0.from, $0.to] }, [[s0, s1], [s1, s0]], "no zero-length legs; the loop leg is not needed when the run ends at stop 1")
+    }
+
+    // MARK: - The leg the next Move drives
+
+    private func nextMoveKey(
+        mode: AppMode = .route,
+        _ stops: [LocationCoordinate],
+        origin: LocationCoordinate?,
+        cursor: Int,
+        repeat repeatMode: StopTravelSettings.RepeatMode = .oneWay
+    ) -> RoutePreviewKey? {
+        RoutePreviewPlanner.key(
+            mode: mode, stops: stops, held: origin, settings: settings(.travel, repeat: repeatMode),
+            travel: .walking, origin: origin, cursor: StopCursor(nextIndex: cursor)
+        )
+    }
+
+    func testThePreviewDrawsTheLegFromTheHeldLocationToTheNextStop() {
+        // Review 2026-11-03 issue 5: the next Move travels held -> next unreached stop.
+        let key = nextMoveKey([s0, s1, s2], origin: s3, cursor: 1)
+        XCTAssertEqual(key?.nextMoveLeg, RoutePreviewLegSpec(from: s3, to: s1, returnsToStart: false))
+        XCTAssertEqual(key.map(RoutePreviewPlanner.legs(for:))?.first, RoutePreviewLegSpec(from: s3, to: s1, returnsToStart: false))
+        XCTAssertEqual(key.map(RoutePreviewPlanner.legs(for:))?.count, 3)
+    }
+
+    func testAFinishedOneWayRunPreviewsTheStartOverLeg() {
+        let key = nextMoveKey([s0, s1, s2], origin: s2, cursor: 3)
+        XCTAssertEqual(key?.nextMoveLeg, RoutePreviewLegSpec(from: s2, to: s0, returnsToStart: false), "last stop -> stop 1")
+        XCTAssertEqual(key.map(RoutePreviewPlanner.legs(for:))?.map { [$0.from, $0.to] }, [[s2, s0], [s0, s1], [s1, s2]])
+    }
+
+    func testNoNextMoveLegWithNothingHeldOrWhenItIsAlreadyDrawn() {
+        XCTAssertNil(nextMoveKey([s0, s1, s2], origin: nil, cursor: 0)?.nextMoveLeg, "nothing held: stop 1 is placed, not travelled")
+        XCTAssertNil(nextMoveKey([s0, s1, s2], origin: s1, cursor: 1)?.nextMoveLeg, "already at the next stop")
+        let atStop = nextMoveKey([s0, s1, s2], origin: s1, cursor: 2)
+        XCTAssertEqual(atStop.map(RoutePreviewPlanner.legs(for:)), RoutePreviewPlanner.legs(for: key([s0, s1, s2])), "a stop -> stop leg is not drawn twice")
+    }
+
+    func testJumpWithOneStopPreviewsTheLegFromTheHeldLocation() {
+        let key = nextMoveKey(mode: .jump, [s1], origin: s0, cursor: 0)
+        XCTAssertEqual(key.map(RoutePreviewPlanner.legs(for:)), [RoutePreviewLegSpec(from: s0, to: s1, returnsToStart: false)])
+        XCTAssertNil(nextMoveKey(mode: .route, [s1], origin: s0, cursor: 0), "Multi-Spot needs two spots to Move")
+    }
+
+    func testTheNextMoveLegChangesTheKey() {
+        XCTAssertNotEqual(nextMoveKey([s0, s1, s2], origin: s3, cursor: 1), nextMoveKey([s0, s1, s2], origin: s3, cursor: 2), "the cursor")
+        XCTAssertNotEqual(
+            nextMoveKey([s0, s1, s2], origin: s3, cursor: 1),
+            nextMoveKey([s0, s1, s2], origin: LocationCoordinate(latitude: 35.683, longitude: 139.762), cursor: 1),
+            "the held location"
+        )
     }
 
     // MARK: - Style
@@ -305,6 +376,60 @@ final class RoutePreviewTests: XCTestCase {
 
         XCTAssertEqual(state.routePreviewKey(for: .route), key([s0, s1], repeat: .loop, transport: .cycling))
         XCTAssertNil(state.routePreviewKey(for: .teleport))
+    }
+
+    func testAppStatePreviewsTheNextMovesLegOnlyBetweenMoves() async {
+        let state = AppState(startBackgroundServices: false, locationInjector: PreviewAckInjector(), routeDelay: { _ in await Task.yield() })
+        state.selectedDevice = Device(id: "preview-device", displayName: "Preview Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .route
+        state.autoSpeed = false
+        state.customSpeedMps = 20
+        state.updateFrequencyHz = 5
+        for stop in [s0, s1, s2] { state.stageLocation(stop, for: .route) }
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .onePerMove, repeatMode: .oneWay),
+            for: .route
+        )
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: "preview-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+        ))
+        XCTAssertNil(state.routePreviewKey(for: .route)?.nextMoveLeg, "nothing held: the first Move places stop 1")
+
+        for _ in 0..<3 { await state.startSimulation() }
+        XCTAssertEqual(state.currentLocation, s2)
+        XCTAssertEqual(
+            state.routePreviewKey(for: .route)?.nextMoveLeg,
+            RoutePreviewLegSpec(from: s2, to: s0, returnsToStart: false),
+            "the finished One way run starts over from the held last stop"
+        )
+    }
+
+    func testAppStateDrawsNoNextMoveLegWhileItsRunIsMoving() async {
+        // The run's own steps would change the key at every update and keep cancelling
+        // the preview's fetches; the run is already driving that leg.
+        let fake = FakeLocationInjector()
+        let session = LocationSessionIdentity(stableDeviceID: "preview-device", transport: .wifi, endpointClass: .unresolved, generation: 1)
+        let state = AppState(startBackgroundServices: false, locationInjector: fake, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "preview-device", displayName: "Preview Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .route
+        state.autoSpeed = false
+        state.customSpeedMps = 20
+        state.updateFrequencyHz = 5
+        for stop in [s0, s1, s2] { state.stageLocation(stop, for: .route) }
+        state.setStopTravelSettings(settings(.travel), for: .route)
+        state.locationSessionCoordinator.connectionReady(session)
+        state.currentLocation = s3
+        XCTAssertEqual(state.routePreviewKey(for: .route)?.nextMoveLeg, RoutePreviewLegSpec(from: s3, to: s0, returnsToStart: false))
+
+        let run = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        XCTAssertTrue(state.isStopRunActive(for: .route))
+        XCTAssertNil(state.routePreviewKey(for: .route)?.nextMoveLeg)
+        await state.stopSimulation()
+        await fake.releaseNextApplication(session: session)
+        await run.value
     }
 
     func testAppStatePreviewUsesTheInjectedRouter() async {
