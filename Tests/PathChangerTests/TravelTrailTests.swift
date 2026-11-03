@@ -237,6 +237,24 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.travelTrail.points, [s1, s2], "appending keeps Multi-Spot's progress and its trail")
     }
 
+    /// Review 2026-11-03 (fixes) issue 3: loading stops into one mode erased the trail of
+    /// another mode, whose progress the load kept.
+    func testLoadingStopsErasesOnlyTheLoadedModesTrail() async {
+        let (state, _) = makeState(mode: .route, stops: [s0, s1, s2], arrival: .travel)
+        await state.startSimulation()
+        let trail = state.travelTrail.points
+        XCTAssertFalse(trail.isEmpty)
+
+        state.activeMode = .jump
+        state.loadRoute(from: [s2, s0])
+        XCTAssertEqual(state.travelTrail.points, trail, "a load into Jump keeps Multi-Spot's trail")
+        XCTAssertEqual(state.travelTrail.segments(for: .route).flatMap { $0 }, trail)
+
+        state.activeMode = .route
+        state.loadRoute(from: [s0, s1, s2])
+        XCTAssertTrue(state.travelTrail.points.isEmpty, "a load into Multi-Spot erases its trail")
+    }
+
     func testTheRunsLastReceiptAfterStopIsDrawn() async {
         // Review 2026-11-03 issue 8: a receipt landing after Stop is committed as held but
         // was not drawn, so the trail ended short of the held dot.

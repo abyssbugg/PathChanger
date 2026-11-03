@@ -2328,7 +2328,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if let run = stopRun, run.mode == mode { endStopRun("the stops were loaded") }
         route.resetStopProgress(for: mode)
         stopSequences[mode] = nil
-        travelTrail.reset()
+        // The trail goes with its own mode's progress only (as for a stop edit).
+        if travelTrail.mode == mode { travelTrail.reset() }
     }
 
     /// A route is playing or paused mid-route: its stops must not change under it.
