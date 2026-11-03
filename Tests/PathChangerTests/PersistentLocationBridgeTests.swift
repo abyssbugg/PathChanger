@@ -2421,8 +2421,11 @@ asyncio.run(verify())
             result = await connect(c)
             assert result["success"] is True and result["actual_channel"] == "remotePairingRSD", result
             assert result["endpoint_class"] == "remoteServiceDiscovery", result
-            assert not browse_calls, "mobdev2 runs only after the remote pairing lane failed"
-            assert rp_calls == [{"udid": "dev", "bonjour_timeout": bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS}], rp_calls
+            assert not any(getattr(p, "source", None) == "mobdev2" for p in providers), \\
+                "mobdev2 is tunnelled over only after the remote pairing lane failed"
+            assert all(l.closed >= 1 for l in lockdowns), \\
+                "a mobdev2 lockdown discovered at the same time is closed"
+            assert rp_calls == [{"udid": "dev", "bonjour_timeout": bridge.REMOTE_PAIRING_BROWSE_SLICE_SECONDS}], rp_calls
             chosen = providers[-1]
             assert chosen.source == "remotepairing" and chosen.hostname == "192.168.0.177", chosen
             assert chosen.closed == 0, "the open connection keeps its service"
@@ -2781,6 +2784,206 @@ asyncio.run(verify())
                   hasattr(bridge, "RemotePairingTimeoutError")
                   and bridge._keeps_waiting("remote pairing", bridge.RemotePairingTimeoutError("t"))
                   and not bridge._keeps_waiting("preferred RSD", bridge.RemotePairingTimeoutError("t")), "")
+
+            if problems:
+                raise AssertionError("\\n".join(problems))
+        asyncio.run(verify())
+        """
+        let (status, errorOutput) = try runManagedPython(code)
+        XCTAssertEqual(status, 0, errorOutput)
+    }
+
+    /// Live 2026-11-03 (03:57-04:00): after a loss the phone withdrew its stale RemotePairing
+    /// advert and advertised a new instance within a second, but an attempt that had
+    /// already tried the stale advert never looked again in its window, and the mobdev2
+    /// browse only started after the remote pairing window ran out (about 16 s a failed
+    /// attempt). The remote pairing lane now asks Bonjour again in short slices, so an
+    /// advert that appears or changes during the window is tried; and the remote pairing
+    /// and mobdev2 discovery run at the same time (a failed attempt takes one window). When
+    /// both find the phone, remote pairing is used (the lane order), and the unused mobdev2
+    /// lockdown is closed.
+    func testPythonHelperWiFiLanesRetryNewAdvertsAndDiscoverConcurrently() throws {
+        let code = mobdev2LaneFixture() + """
+
+        GOOD = {"peer_alt_irk": b"k" * 16, "private_key": b"x" * 32}
+        problems = []
+        def check(name, ok, detail):
+            if not ok:
+                problems.append(f"{name}: {detail}")
+
+        def reset():
+            rp_records.clear(); rp_adverts.clear(); rp_services.clear(); rp_calls.clear()
+            providers.clear(); browse_calls.clear(); mobdev2_visible.clear(); lockdowns.clear()
+
+        # Scaled windows: the remote pairing window and its re-query slice.
+        bridge.REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS = 0.8
+        bridge.REMOTE_PAIRING_BROWSE_SLICE_SECONDS = 0.2
+        live_adverts = []
+
+        # Like upstream: one call browses for its whole window and tries each advert
+        # instance once (an instance that changes address is not tried again in that call).
+        async def realistic_rp(bonjour_timeout=None, udid=None, excluded_identifiers=()):
+            loop = asyncio.get_running_loop()
+            rp_calls.append({"udid": udid, "bonjour_timeout": bonjour_timeout})
+            end = loop.time() + bonjour_timeout
+            tried = set()
+            while loop.time() < end:
+                for advert in list(live_adverts):
+                    if advert["name"] in tried:
+                        continue
+                    tried.add(advert["name"])
+                    if advert["ok"]:
+                        service = RPService(udid, advert["host"])
+                        rp_services.append(service)
+                        return [service]
+                await asyncio.sleep(0.01)
+            return []
+
+        def timed_mobdev2(delay, visible):
+            async def browse(udid=None, timeout=None, only_paired=False):
+                browse_calls.append({"udid": udid, "at": asyncio.get_running_loop().time()})
+                await asyncio.sleep(delay)
+                if visible:
+                    lockdown = Lockdown(udid, "mobdev2")
+                    lockdowns.append(lockdown)
+                    yield "fe80::1%en0", lockdown
+            return browse
+
+        def make(mobdev2_delay=0.0, mobdev2_found=False):
+            c = make_connection()
+            c._remote_pairing_services = realistic_rp
+            c._mobdev2_lockdowns = timed_mobdev2(mobdev2_delay, mobdev2_found)
+            return c
+
+        async def timed_connect(c):
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            result = await connect(c)
+            return result, loop.time() - started, started
+
+        async def later(seconds, action):
+            await asyncio.sleep(seconds)
+            action()
+
+        async def verify():
+            # A stale advert at the start; the phone re-advertises the same instance at a
+            # new address during the window: tried again, connected over remote pairing.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = [{"name": "X", "host": "192.168.0.10", "ok": False}]
+            c = make()
+            def readvertise():
+                live_adverts[:] = [{"name": "X", "host": "192.168.0.11", "ok": True}]
+            mover = asyncio.ensure_future(later(0.3, readvertise))
+            result, elapsed, _ = await timed_connect(c)
+            await mover
+            check("a changed advert is tried again", result.get("actual_channel") == "remotePairingRSD", result)
+            check("within the window", elapsed < 0.8, elapsed)
+            check("the slices", all(call["bonjour_timeout"] <= 0.2 + 1e-9 for call in rp_calls) and len(rp_calls) >= 2,
+                  rp_calls)
+            await c.close_all()
+
+            # A new instance name appearing during the window is tried too.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = [{"name": "X", "host": "192.168.0.10", "ok": False}]
+            c = make()
+            def new_instance():
+                live_adverts[:] = [{"name": "Y", "host": "192.168.0.12", "ok": True}]
+            mover = asyncio.ensure_future(later(0.3, new_instance))
+            result, _, _ = await timed_connect(c)
+            await mover
+            check("a new instance is tried", result.get("actual_channel") == "remotePairingRSD", result)
+            await c.close_all()
+
+            # No remote pairing advert; mobdev2 finds the phone after 0.5 s. Both browse at
+            # once: about one window, not the window plus the mobdev2 browse.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = []
+            c = make(mobdev2_delay=0.5, mobdev2_found=True)
+            result, elapsed, started = await timed_connect(c)
+            check("mobdev2 connects", result.get("actual_channel") == "mobdev2RSD", result)
+            check("concurrent discovery is one window", elapsed < 1.1, elapsed)
+            check("mobdev2 browsed from the start",
+                  len(browse_calls) == 1 and browse_calls[0]["at"] - started < 0.15, browse_calls)
+            await c.close_all()
+
+            # Neither finds the phone: one window, both lanes reported in order, keep waiting.
+            reset()
+            rp_records["dev"] = GOOD
+            c = make(mobdev2_delay=0.6, mobdev2_found=False)
+            result, elapsed, _ = await timed_connect(c)
+            error = result.get("error", "")
+            check("a failed attempt is one window", elapsed < 1.1, elapsed)
+            check("both lanes reported in order",
+                  "remote pairing: RemotePairingDeviceNotFoundError" in error
+                  and "mobdev2: Mobdev2DeviceNotFoundError" in error
+                  and error.index("remote pairing:") < error.index("mobdev2:"), error)
+            check("still not visible", result.get("reason") == "device_not_visible", result)
+            await c.close_all()
+
+            # Both find the phone: remote pairing wins (lane order); the mobdev2 lockdown
+            # is closed and never tunnelled over.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = []
+            c = make(mobdev2_delay=0.0, mobdev2_found=True)
+            def phone_answers():
+                live_adverts[:] = [{"name": "X", "host": "192.168.0.11", "ok": True}]
+            mover = asyncio.ensure_future(later(0.15, phone_answers))
+            result, _, _ = await timed_connect(c)
+            await mover
+            await asyncio.sleep(0.05)
+            check("remote pairing wins", result.get("actual_channel") == "remotePairingRSD", result)
+            check("the unused mobdev2 lockdown is closed",
+                  lockdowns and all(lockdown.closed >= 1 for lockdown in lockdowns), [l.closed for l in lockdowns])
+            check("no tunnel over mobdev2", not any(getattr(p, "source", None) == "mobdev2" for p in providers),
+                  providers)
+            await c.close_all()
+
+            # Remote pairing finds the phone but its tunnel fails: the mobdev2 lockdown found
+            # meanwhile is used.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = [{"name": "X", "host": "192.168.0.11", "ok": True}]
+            c = make(mobdev2_delay=0.0, mobdev2_found=True)
+            class RemotePairingTunnelFails(Userspace):
+                async def aopen(self):
+                    provider, _ = await usermod._create_no_root_tunnel_provider(
+                        self.serial, True, self.remotepairing_fallback)
+                    providers.append(provider)
+                    if getattr(provider, "source", None) == "remotepairing":
+                        raise UserspaceTunnelUnavailableError("CoreDeviceProxy refused")
+                    return object()
+            c._userspace_tunnel_factory = RemotePairingTunnelFails
+            result, _, _ = await timed_connect(c)
+            check("mobdev2 after a failed remote pairing tunnel",
+                  result.get("actual_channel") == "mobdev2RSD", result)
+            check("the remote pairing service is closed", rp_services and all(s.closed >= 1 for s in rp_services),
+                  [s.closed for s in rp_services])
+            check("usermod restored", usermod._create_no_root_tunnel_provider is ORIGINAL_PROVIDER
+                  and usermod.create_using_usbmux is ORIGINAL, "")
+            await c.close_all()
+
+            # Cancelled while remote pairing still browses: the mobdev2 lockdown already
+            # found is closed.
+            reset()
+            rp_records["dev"] = GOOD
+            live_adverts[:] = []
+            c = make(mobdev2_delay=0.0, mobdev2_found=True)
+            task = asyncio.ensure_future(connect(c))
+            await asyncio.sleep(0.3)
+            check("mobdev2 found meanwhile", len(lockdowns) == 1, lockdowns)
+            task.cancel()
+            try:
+                await task
+                problems.append("connect was not cancelled")
+            except asyncio.CancelledError:
+                pass
+            check("the found lockdown is closed on cancel", lockdowns and lockdowns[0].closed >= 1,
+                  [l.closed for l in lockdowns])
+            await c.close_all()
 
             if problems:
                 raise AssertionError("\\n".join(problems))

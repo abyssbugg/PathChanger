@@ -69,6 +69,13 @@ MOBDEV2_BROWSE_TIMEOUT_SECONDS = 8.0
 # 2026-11-02, read-only: found and pair-verified in ~2 s at a rotated address).
 REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS = 8.0
 
+# The remote pairing browse asks Bonjour again every slice of its window. One upstream
+# browse tries each advert instance once, so a phone that withdraws a stale advert and
+# re-advertises (a new instance, or the same one at a new address) during the window was
+# never tried in that attempt (live 2026-11-03 03:58 and 04:00: the new advert came 0.3 s
+# after the withdrawal). Upstream answers a found phone in ~0.1-2 s, well inside a slice.
+REMOTE_PAIRING_BROWSE_SLICE_SECONDS = 2.0
+
 # The bound on the remote pairing lane's whole browse + connect + pair-verify. Upstream
 # bounds the browse and each TCP open (1 s) but not the pair-verify handshake, so a phone
 # that accepts TCP and then stalls would otherwise use the whole CONNECT_TIMEOUT_SECONDS
@@ -412,6 +419,8 @@ class DeviceConnection:
            (live 2026-11-01: usbmux listed no Wi-Fi phone for 3.5 minutes while Bonjour
            still reached its lockdown).
            Lanes 4 and 5 reach the phone over Wi-Fi: skipped when the request names USB.
+           Their Bonjour discoveries run at the same time (one window per failed
+           attempt); lane 4 is still used first when both find the phone.
         """
         if connection_type not in (None, "USB", "Network"):
             raise ValueError("connection_type must be USB or Network")
@@ -462,11 +471,6 @@ class DeviceConnection:
             ("usbmux direct", lambda: self._open_usbmux_direct(udid, cache_key, connection_type)),
             ("preferred RSD", lambda: self._open_preferred_rsd(udid, cache_key)),
         ]
-        # The remote pairing and mobdev2 lanes reach the phone over Wi-Fi (Bonjour): a
-        # request that names USB never crosses to Wi-Fi.
-        if connection_type in (None, "Network"):
-            lanes.append((_REMOTE_PAIRING_LANE, lambda: self._open_remote_pairing(udid, cache_key)))
-            lanes.append((_MOBDEV2_LANE, lambda: self._open_mobdev2(udid, cache_key)))
         for lane, open_lane in lanes:
             progress["lane"] = lane
             try:
@@ -474,7 +478,57 @@ class DeviceConnection:
                 return
             except Exception as error:
                 failures.append((lane, error))
+        # The remote pairing and mobdev2 lanes reach the phone over Wi-Fi (Bonjour): a
+        # request that names USB never crosses to Wi-Fi.
+        if connection_type in (None, "Network"):
+            if await self._open_wifi_lanes(udid, cache_key, failures, progress):
+                return
         raise DeviceLanesUnavailable(failures) from failures[-1][1]
+
+    async def _open_wifi_lanes(
+        self, udid: str, cache_key: str, failures: list, progress: dict,
+    ) -> bool:
+        """The remote pairing lane, then the mobdev2 lane, with both Bonjour discoveries
+        running at the same time (live 2026-11-03: one after the other, a failed attempt
+        took two 8 s windows). The lane order still decides the connection: mobdev2 is
+        used only when remote pairing failed. Only one userspace tunnel may exist per
+        process, so only the discovery overlaps; the tunnels open one at a time.
+
+        True when a lane opened; otherwise each lane's error is appended, in lane order.
+        A mobdev2 lockdown that is never tunnelled over is closed, also on cancellation.
+        """
+        mobdev2 = asyncio.ensure_future(self._discover_mobdev2(udid))
+        handed_over = False
+        try:
+            progress["lane"] = _REMOTE_PAIRING_LANE
+            try:
+                await self._open_remote_pairing(udid, cache_key)
+                return True
+            except Exception as error:
+                failures.append((_REMOTE_PAIRING_LANE, error))
+            progress["lane"] = _MOBDEV2_LANE
+            try:
+                lockdown = await mobdev2
+                handed_over = True
+                await self._open_mobdev2(udid, cache_key, lockdown)
+                return True
+            except Exception as error:
+                failures.append((_MOBDEV2_LANE, error))
+            return False
+        finally:
+            if not handed_over:
+                await self._discard_mobdev2_discovery(mobdev2)
+
+    @staticmethod
+    async def _discard_mobdev2_discovery(discovery) -> None:
+        """Stop a mobdev2 discovery nobody will use and close the lockdown it found."""
+        if not discovery.done():
+            discovery.cancel()
+        try:
+            lockdown = await discovery
+        except BaseException:  # cancelled, or it failed: nothing was handed out
+            return
+        await _close_quietly(lockdown)
 
     async def _prove_dvt(self, cache_key: str, cached: Optional[dict] = None) -> None:
         """Prove the DVT service answers: list `/` over the connection itself."""
@@ -818,9 +872,27 @@ class DeviceConnection:
         names = _class_names(error)
         return _UPSTREAM_BASE_ERROR in names and not (names & _USBMUX_LOOKUP_ERRORS)
 
-    async def _open_mobdev2(self, udid: str, cache_key: str) -> Tuple[any, any, str, str]:
+    async def _discover_mobdev2(self, udid: str):
+        """The mobdev2 lane's discovery: its paired Bonjour lockdown, or the lane's error
+        (the API check runs first, so a missing API browses nothing)."""
+        browse = self._mobdev2_lockdowns
+        module = self._userspace_tunnel_module
+        if browse is None or module is None or not hasattr(module, "create_using_usbmux"):
+            raise LaneUnsupportedError(
+                "mobdev2 lane needs pymobiledevice3.lockdown.get_mobdev2_lockdowns and "
+                "pymobiledevice3.remote.userspace_tunnel.create_using_usbmux; "
+                "the installed pymobiledevice3 lacks one"
+            )
+        return await self._find_mobdev2_lockdown(udid)
+
+    async def _open_mobdev2(
+        self, udid: str, cache_key: str, lockdown=None,
+    ) -> Tuple[any, any, str, str]:
         """The mobdev2 lane — usbmuxd-free (proven live 2026-11-01, read-only): mobdev2 Bonjour
         lockdown -> CoreDeviceProxy userspace tunnel -> RSD -> DVT.
+
+        `lockdown` is the one `_discover_mobdev2` found (discovered here when None); from
+        this call on the lane owns it and closes it on every failure.
 
         UserspaceRsdTunnel takes its lockdown from the module-global
         ``create_using_usbmux`` and has no parameter for another one, so for this one
@@ -833,17 +905,11 @@ class DeviceConnection:
         error in the message. A pymobiledevice3 error from before the provider call
         (its one-tunnel-per-process guard) is upstream's verdict and is re-raised as is.
         """
-        browse = self._mobdev2_lockdowns
+        if lockdown is None:
+            lockdown = await self._discover_mobdev2(udid)
         module = self._userspace_tunnel_module
-        if browse is None or module is None or not hasattr(module, "create_using_usbmux"):
-            raise LaneUnsupportedError(
-                "mobdev2 lane needs pymobiledevice3.lockdown.get_mobdev2_lockdowns and "
-                "pymobiledevice3.remote.userspace_tunnel.create_using_usbmux; "
-                "the installed pymobiledevice3 lacks one"
-            )
         stack = AsyncExitStack()
         try:
-            lockdown = await self._find_mobdev2_lockdown(udid)
             # Backstop owner of the lockdown. Once the tunnel has taken it, upstream
             # also closes it (on the tunnel's own exit stack and on every failure
             # path), so this second close is a harmless no-op then. It is the only
@@ -968,16 +1034,40 @@ class DeviceConnection:
     async def _find_remote_pairing_service(self, udid: str):
         """Return one connected RemotePairing service for `udid`, closing the others.
 
+        Browses for REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS, asking Bonjour again every
+        REMOTE_PAIRING_BROWSE_SLICE_SECONDS: one upstream browse tries each advert
+        instance once, so an advert that appears again or changes address during the
+        window is tried in the next slice. A browse that returns nothing well before its
+        slice ended had nothing to browse for (upstream matched no record) and ends it.
+
         Raises RemotePairingDeviceNotFoundError when no advert accepted this Mac's
         pairing (none matched, or upstream skipped every address of a matching one), and
         RemotePairingBrowseError when the browse itself fails (it observed nothing).
         """
-        try:
-            services = await self._remote_pairing_services(
-                udid=udid, bonjour_timeout=REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS)
-        except OSError as error:
-            raise RemotePairingBrowseError(f"{type(error).__name__}: {error}") from error
-        services = list(services or [])
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS
+        while True:
+            window = min(REMOTE_PAIRING_BROWSE_SLICE_SECONDS, deadline - loop.time())
+            if window <= 0:
+                break
+            started = loop.time()
+            try:
+                services = await self._remote_pairing_services(udid=udid, bonjour_timeout=window)
+            except OSError as error:
+                raise RemotePairingBrowseError(f"{type(error).__name__}: {error}") from error
+            services = list(services or [])
+            if services:
+                return await self._keep_preferred_remote_pairing_service(services)
+            if loop.time() - started < window / 2:
+                break
+        raise RemotePairingDeviceNotFoundError(
+            "RemotePairing Bonjour found no advert that accepted this Mac's pairing for the "
+            f"phone within {REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS:g}s (it may be off this "
+            "network, or its pairing may need a refresh)"
+        )
+
+    async def _keep_preferred_remote_pairing_service(self, services):
+        """The preferred service of a non-empty browse result; every other one is closed."""
         chosen = None
         try:
             chosen = self._preferred_remote_pairing_service(services)
@@ -989,12 +1079,6 @@ class DeviceConnection:
                 if chosen is not None:
                     await self._close_services([chosen])
                 raise
-        if chosen is None:
-            raise RemotePairingDeviceNotFoundError(
-                "RemotePairing Bonjour found no advert that accepted this Mac's pairing for the "
-                f"phone within {REMOTE_PAIRING_BROWSE_TIMEOUT_SECONDS:g}s (it may be off this "
-                "network, or its pairing may need a refresh)"
-            )
         return chosen
 
     async def _find_remote_pairing_service_bounded(self, udid: str):
