@@ -897,7 +897,7 @@ final class AutomaticReconnectTests: XCTestCase {
     }
 
     /// The legitimate case still works: the helper is replaced while X is held, with no
-    /// Clear, Stop or Move since the bridge saw its record.
+    /// Clear, Stop or Move in this launch.
     func testAReplacementWithNoClearStopOrMoveSinceStillReappliesItsLocation() async throws {
         let source = InheritingManagedSessionSource()
         let fixture = makeFixture(managedSource: source)

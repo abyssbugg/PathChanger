@@ -56,9 +56,10 @@ extension ManagedLocationSessionSource {
     func discardInheritedHeldSessions() {}
 }
 
-/// AppState's counters at one moment: its Clear counter, and the supersede generation
-/// that every Clear, Stop Tunnel, Stop while reconnecting and explicit apply or Move
-/// advances (review 2026-11-03 reconnect-audit-fixes issue 1).
+/// AppState's two counters a held session is as old as: its Clear counter, and the
+/// supersede generation that every Clear, Stop Tunnel, Stop while reconnecting and
+/// explicit apply or Move advances. A replaced foreign helper's sessions are always
+/// `.initial` (review 2026-11-03 reconnect-audit rounds 1-2).
 struct ManagedLocationInheritanceStamp: Equatable {
     var clearEpoch: UInt64
     var supersedeGeneration: UInt64
@@ -75,8 +76,8 @@ struct ManagedLocationInheritedSession: Equatable {
     /// AppState's Clear counter the session is as old as: 0, since an earlier launch
     /// recorded it. Any Clear of this launch makes the session stale.
     var clearEpoch: UInt64? = nil
-    /// AppState's supersede generation at that same moment. Any Clear, Stop or explicit
-    /// apply since then makes the session stale.
+    /// AppState's supersede generation the session is as old as: 0 too. Any Clear, Stop
+    /// or explicit apply of this launch makes the session stale.
     var supersedeGeneration: UInt64 = 0
 }
 

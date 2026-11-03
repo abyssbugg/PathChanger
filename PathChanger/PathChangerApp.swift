@@ -3557,8 +3557,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// PathChanger's (live 2026-11-03: orphaned helpers lost the local network). The held
     /// location the old helper listed is restored as held, then marked lost: stopping that
     /// helper ended it on the phone, and the recovery reapplies it over the live tunnel.
-    /// Only while no Clear, Stop or explicit apply ran since the bridge first read that
-    /// helper's record (its stamp carries both counters from then).
+    /// Only while no Clear, Stop or explicit apply ran in this launch: an earlier launch
+    /// recorded what that helper lists, so its stamp is `.initial`.
     private func reapplyInheritedHeldLocation(for device: Device) async {
         // The restore's own guards, before taking it: a refusal here keeps it for the
         // next tunnel edge (another phone selected, or a Move or Stop since the edge).
@@ -3573,9 +3573,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
             managedLocationSessionSource.discardInheritedHeldSessions()
             return
         }
-        // Any Clear, Stop or explicit apply since the bridge first read that helper's
-        // record superseded it, including one pressed while the replacement was in flight
-        // (review 2026-11-03 reconnect-audit-fixes issue 1).
+        // Any Clear, Stop or explicit apply of this launch superseded it, including one
+        // that never reached the helper or ran while the replacement was in flight
+        // (review 2026-11-03 reconnect-audit rounds 1-2).
         guard peeked.supersedeGeneration == locationSupersedeGeneration else {
             Logger.info(
                 "[AppState] Not restoring the location a replaced helper held: a Clear, Stop or Move came after it",

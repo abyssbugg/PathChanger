@@ -633,7 +633,7 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
     /// so they carry the counters from before any user action, whenever the bridge first
     /// adopts that helper (a Clear can come before the first adoption).
     @MainActor
-    func testAForeignHelpersSessionsCarryTheInitialStampEvenWhenFirstAdoptedAfterAClear() async throws {
+    func testAForeignHelpersSessionsAreAlwaysStampedInitial() async throws {
         let (paths, bridgeScript, root) = try orphanFixture("orphan-initial-stamp")
         defer { try? FileManager.default.removeItem(at: root) }
         let earlier = ManagedLocationHelperController(
