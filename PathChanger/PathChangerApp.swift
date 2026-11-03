@@ -606,13 +606,15 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// The stops the card's "At stop" and completion readouts index for `mode`: the
     /// cursor indexes the run's stops, which for Two-Spot with one spot start at the held
     /// location (review 2026-11-02-163337 issue 8). Jump indexes its hops; Two-Spot and
-    /// Multi-Spot use the running run's stops, else the stops the latest run remembered
-    /// (reset with the stop index), else the route.
+    /// Multi-Spot use the running run's stops, else the stops of a sequence that reached
+    /// a stop (the rule `nextMoveStops` uses; a sequence that never did is resolved again
+    /// by the next Move, review 2026-11-03 issue 6), else the route.
     /// Read-only.
     func displayStops(for mode: AppMode) -> [LocationCoordinate] {
         guard mode != .jump else { return currentRoute }
         if let run = stopRun, run.mode == mode { return run.stops }
-        return stopSequences[mode]?.stops ?? currentRoute
+        if let sequence = stopSequences[mode], sequence.arrived { return sequence.stops }
+        return currentRoute
     }
 
     /// A stop run of `mode` is in progress (its live panel shows where it stands).

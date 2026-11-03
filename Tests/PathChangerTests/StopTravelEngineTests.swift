@@ -1212,6 +1212,43 @@ extension StopTravelEngineTests {
         assertHeld(state, at: far)
     }
 
+    /// The card and preview use the same rule as the next Move: a sequence that never
+    /// reached a stop is resolved again (review 2026-11-03 issue 6: a Two-Spot Move that
+    /// failed before its first acknowledgement left its old start in the preview).
+    func testAFailedFirstMoveLeavesNoStaleStartInTheDisplayedStops() async {
+        let h1 = s0
+        let h2 = LocationCoordinate(latitude: 35.68200, longitude: 139.76200)
+        let (state, fake) = makeFakeState(mode: .teleport, stops: [h1], settings: options(.twospot, progression: .onePerMove))
+        let teleport = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: StopRunHarness.session)
+        await teleport.value
+        XCTAssertEqual(state.currentLocation, h1)
+
+        state.activeMode = .twospot
+        state.setStopTravelSettings(options(.twospot, progression: .onePerMove), for: .twospot)
+        state.clearRoute()
+        state.stageLocation(s2, for: .twospot)
+        let failing = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.failNextApplication(code: "no-ack")
+        await failing.value
+        XCTAssertEqual(state.displayStopCursor(for: .twospot), StopCursor(), "nothing was reached")
+
+        state.activeMode = .teleport
+        state.stageLocation(h2, for: .teleport)
+        let second = Task { await state.startSimulation() }
+        await fake.waitUntilApplicationPending()
+        await fake.releaseNextApplication(session: StopRunHarness.session)
+        await second.value
+        XCTAssertEqual(state.currentLocation, h2)
+
+        state.activeMode = .twospot
+        XCTAssertEqual(try? state.nextMoveStops(for: .twospot).get(), [h2, s2], "the next Move leaves from the held location")
+        XCTAssertFalse(state.displayStops(for: .twospot).contains(h1), "no stale start")
+        XCTAssertEqual(state.displayStops(for: .twospot), state.currentRoute)
+    }
+
     func testEachStopModeKeepsItsOwnProgress() async {
         let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: options(.route, progression: .onePerMove))
         let state = harness.state!
