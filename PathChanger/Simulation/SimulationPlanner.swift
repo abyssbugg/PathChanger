@@ -102,9 +102,10 @@ enum SimulationPlanner {
         }
 
         // Never widen the step to fit a long route: that would move faster than shown.
-        if let stepMeters,
-           RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: stepMeters)
-            > RouteInterpolator.maxRoutePoints {
+        let pointCount = stepMeters.map {
+            RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: $0)
+        } ?? RouteInterpolator.speedPointCount(waypoints: waypoints, speed: speed)
+        if pointCount > RouteInterpolator.maxRoutePoints {
             return .failed(StopTravelPlanner.tooManyPointsMessage)
         }
 

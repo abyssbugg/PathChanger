@@ -178,13 +178,66 @@ final class RouteInterpolatorTests: XCTestCase {
     func testSteppedPointCountMatchesTheBuiltRoute() {
         let start = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
         let mid = LocationCoordinate(latitude: 35.6862, longitude: 139.6603)
-        let tooFar = LocationCoordinate(latitude: 37.6862, longitude: 139.6603) // > 100 km leg, skipped
-        let waypoints = [start, mid, mid, tooFar, start]
+        let far = LocationCoordinate(latitude: 37.6862, longitude: 139.6603) // ~222 km legs, counted
+        let waypoints = [start, mid, mid, far, start]
 
-        let points = RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: 0.32)
+        let points = RouteInterpolator.interpolateRoute(waypoints: waypoints, stepMeters: 5)
 
-        XCTAssertGreaterThan(points.count, 2)
-        XCTAssertEqual(RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: 0.32), points.count)
+        XCTAssertGreaterThan(points.count, 80_000)
+        XCTAssertEqual(RouteInterpolator.steppedPointCount(waypoints: waypoints, stepMeters: 5), points.count)
+    }
+
+    /// Legs of 100 km or more used to be skipped (the route jumped to their end).
+    func testALongLegIsInterpolatedNotSkipped() {
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let end = LocationCoordinate(latitude: 36.35, longitude: 139.0) // ~150 km
+        let distance = Geo.distance(from: start, to: end)
+        XCTAssertGreaterThan(distance, 149_000)
+
+        let points = RouteInterpolator.interpolateRoute(waypoints: [start, end], stepMeters: 3)
+
+        XCTAssertEqual(points.count, Int((distance / 3).rounded(.up)) + 1)
+        XCTAssertEqual(RouteInterpolator.steppedPointCount(waypoints: [start, end], stepMeters: 3), points.count)
+        XCTAssertEqual(points.first, start)
+        XCTAssertEqual(points.last, end)
+        XCTAssertEqual(Geo.distance(from: points[0], to: points[1]), 3, accuracy: 0.01)
+    }
+
+    func testALongLegOverTheCapIsCountedAndRefused() {
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let end = LocationCoordinate(latitude: 37.0, longitude: 139.0) // ~222 km at 0.32 m: ~695,000 points
+        XCTAssertGreaterThan(RouteInterpolator.steppedPointCount(waypoints: [start, end], stepMeters: 0.32), RouteInterpolator.maxRoutePoints)
+        XCTAssertTrue(RouteInterpolator.interpolateRoute(waypoints: [start, end], stepMeters: 0.32).isEmpty)
+    }
+
+    func testAShortLegKeepsItsPoints() {
+        let start = LocationCoordinate(latitude: 35.6762, longitude: 139.6503)
+        let end = LocationCoordinate(latitude: 35.6800, longitude: 139.6550)
+        let distance = Geo.distance(from: start, to: end)
+
+        let points = RouteInterpolator.interpolateRoute(waypoints: [start, end], stepMeters: 0.32)
+
+        XCTAssertEqual(points.count, Int((distance / 0.32).rounded(.up)) + 1)
+        let fraction = 10 * 0.32 / distance
+        XCTAssertEqual(points[10].latitude, start.latitude + (end.latitude - start.latitude) * fraction, accuracy: 1e-12)
+        XCTAssertEqual(points[10].longitude, start.longitude + (end.longitude - start.longitude) * fraction, accuracy: 1e-12)
+    }
+
+    func testTheSpeedRouteInterpolatesALongLeg() {
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let end = LocationCoordinate(latitude: 36.35, longitude: 139.0) // ~150 km at 5.56 m per update
+        let points = RouteInterpolator.interpolateRoute(waypoints: [start, end], speed: .fast)
+        XCTAssertGreaterThan(points.count, 20_000)
+        XCTAssertLessThanOrEqual(points.count, RouteInterpolator.maxRoutePoints)
+        XCTAssertEqual(RouteInterpolator.speedPointCount(waypoints: [start, end], speed: .fast), points.count)
+        XCTAssertEqual(points.last, end)
+    }
+
+    func testTheSpeedRouteOverTheCapIsRefused() {
+        let start = LocationCoordinate(latitude: 35.0, longitude: 139.0)
+        let end = LocationCoordinate(latitude: 37.0, longitude: 139.0) // ~222 km at 1.4 m per update
+        XCTAssertGreaterThan(RouteInterpolator.speedPointCount(waypoints: [start, end], speed: .walking), RouteInterpolator.maxRoutePoints)
+        XCTAssertTrue(RouteInterpolator.interpolateRoute(waypoints: [start, end], speed: .walking).isEmpty)
     }
 
     func testSteppedRouteOverTheCapIsNotCoarsened() {

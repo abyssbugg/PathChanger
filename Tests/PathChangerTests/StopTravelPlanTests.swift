@@ -382,6 +382,62 @@ final class StopTravelPlanTests: XCTestCase {
         XCTAssertNil(StopTravelPlanner.straightLineRefusal(stops: stops, origin: nil, cursor: StopCursor(), settings: .defaults(for: .route), metersPerSecond: 1.6, updateHz: 5))
     }
 
+    /// A leg of 100 km or more was left out of the point count and skipped while its
+    /// stop was still appended: 222 km of walking became one teleport and evaded the cap.
+    func testALongStraightLegOverTheCapIsRefusedInsteadOfJumped() {
+        let held = LocationCoordinate(latitude: a.latitude - 2.0, longitude: a.longitude) // ~222 km south
+        let meters = Geo.distance(from: held, to: a)
+        XCTAssertGreaterThan(meters, 220_000)
+        let twoSpot = StopTravelSettings.defaults(for: .twospot)
+
+        XCTAssertEqual(
+            StopTravelPlanner.straightLineRefusal(stops: [a, b], origin: held, cursor: StopCursor(), settings: twoSpot, metersPerSecond: 1.6, updateHz: 5),
+            .tooFarFromHeld(stop: 1, meters: meters)
+        )
+        XCTAssertEqual(
+            StopTravelPlanner.straightLineRefusal(stops: [held, a], origin: nil, cursor: StopCursor(), settings: twoSpot, metersPerSecond: 1.6, updateHz: 5),
+            .tooManyPoints
+        )
+        guard case .failure(let error) = plan([a, b], origin: held, settings: twoSpot) else {
+            return XCTFail("a 222 km walking leg must be refused, not turned into a jump")
+        }
+        XCTAssertEqual(error, .tooManyPoints)
+    }
+
+    func testALongStraightLegWithinTheCapIsTravelledAtTheShownStep() {
+        let held = LocationCoordinate(latitude: a.latitude - 1.35, longitude: a.longitude) // ~150 km south
+        let meters = Geo.distance(from: held, to: a)
+        XCTAssertGreaterThan(meters, 149_000)
+        let stepMeters = 15.0 / 5 // 15 m/s at 5 Hz: ~50,000 points, under the cap
+        let twoSpot = StopTravelSettings.defaults(for: .twospot)
+
+        XCTAssertNil(StopTravelPlanner.straightLineRefusal(stops: [a, b], origin: held, cursor: StopCursor(), settings: twoSpot, metersPerSecond: 15, updateHz: 5))
+        let result = steps(plan([a], origin: held, settings: twoSpot, metersPerSecond: 15, updateHz: 5))
+        guard case .travel(let points, let stop)? = result.first else {
+            return XCTFail("the leg must be travelled, got \(result)")
+        }
+        XCTAssertEqual(stop, 0)
+        XCTAssertEqual(points.count, Int((meters / stepMeters).rounded(.up)))
+        XCTAssertEqual(points.last, a)
+        XCTAssertEqual(Geo.distance(from: held, to: points[0]), stepMeters, accuracy: 0.01)
+        var previous = held
+        for point in points {
+            XCTAssertLessThanOrEqual(Geo.distance(from: previous, to: point), stepMeters + 0.01)
+            previous = point
+        }
+        XCTAssertEqual(
+            StopTravelPlanner.estimatedPointCount(for: StopTravelLeg(from: held, to: a, stopIndex: 0, cursorAfter: StopCursor(nextIndex: 1), endsMove: true), settings: twoSpot, metersPerSecond: 15, updateHz: 5),
+            points.count
+        )
+    }
+
+    func testALongLegStillJumpsWhenGettingThereIsJump() {
+        let held = LocationCoordinate(latitude: a.latitude - 2.0, longitude: a.longitude) // ~222 km
+        let jump = settings(.jump)
+        XCTAssertNil(StopTravelPlanner.straightLineRefusal(stops: [a], origin: held, cursor: StopCursor(), settings: jump, metersPerSecond: 1.6, updateHz: 5))
+        XCTAssertEqual(steps(plan([a], origin: held, settings: jump)), [.jump(to: a, stop: 0, waitBefore: 0)])
+    }
+
     func testAJumpRunIsNeverRefusedForPoints() {
         let far = LocationCoordinate(latitude: a.latitude + 0.4, longitude: a.longitude)
         XCTAssertEqual(reachedStops(steps(plan([a, far], settings: settings(.jump, timing: .realistic)))), [0, 1])

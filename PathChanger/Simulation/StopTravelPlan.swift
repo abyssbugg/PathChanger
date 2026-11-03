@@ -334,7 +334,12 @@ enum StopTravelPlanner {
                     return .failure(.tooManyPoints)
                 }
                 var travelled = Array(interpolate(points, stepMeters: stepMeters).dropFirst())
-                if travelled.isEmpty { travelled = [leg.to] }
+                if travelled.isEmpty {
+                    // Only a same-place leg has nothing to travel. Anything else would turn
+                    // the travelled leg into a jump to its stop: refuse it instead.
+                    guard Geo.totalDistance(of: points) == 0 else { return .failure(.tooManyPoints) }
+                    travelled = [leg.to]
+                }
                 steps.append(.travel(points: travelled, stop: leg.stopIndex))
             case .jump:
                 let wait = settings.jumpTiming == .realistic

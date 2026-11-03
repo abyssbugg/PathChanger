@@ -161,6 +161,22 @@ final class SimulationPlannerTests: XCTestCase {
         XCTAssertEqual(points.last, waypoints.last)
     }
 
+    /// A single leg of 100 km or more used to be left out of the count and skipped.
+    func testALongTwoSpotLegOverTheCapIsRefused() {
+        let far = LocationCoordinate(latitude: tokyo.latitude + 2.0, longitude: tokyo.longitude) // ~222 km
+        for stepMeters in [0.32, nil] as [Double?] {
+            let plan = SimulationPlanner.plan(
+                mode: .twospot,
+                targetLocation: nil,
+                currentLocation: nil,
+                route: [tokyo, far],
+                speed: .walking,
+                stepMeters: stepMeters
+            )
+            XCTAssertEqual(plan, .failed(StopTravelPlanner.tooManyPointsMessage), "step \(String(describing: stepMeters))")
+        }
+    }
+
     func testJoystickPrefersTargetLocation() {
         let plan = SimulationPlanner.plan(
             mode: .joystick,

@@ -11,19 +11,24 @@ import Foundation
 /// Utility for route coordinate generation and interpolation
 struct RouteInterpolator {
 
-    /// Maximum allowed distance for a single move (prevents erratic jumps) - 100km
-    private static let maxDistanceMeters: Double = 100_000
+    /// Maximum distance of one `moveCoordinate` call (one joystick or engine tick), 100 km:
+    /// a sanity bound on a single projection. It never limits route legs: every leg is
+    /// interpolated and counted, and a route over `maxRoutePoints` is refused instead.
+    private static let maxSingleMoveMeters: Double = 100_000
 
     /// Upper bound on generated route points (about 5.5 h of updates at 5 Hz).
     static let maxRoutePoints = 100_000
 
-    /// Generate interpolated points for an entire route
+    /// Generate interpolated points for an entire route at the preset's legacy spacing.
+    /// A route needing more than `maxRoutePoints` points returns `[]`; check
+    /// `speedPointCount(waypoints:speed:)` first to report why.
     static func interpolateRoute(waypoints: [LocationCoordinate], speed: SimulationSpeed) -> [LocationCoordinate] {
         guard waypoints.count > 1 else { return waypoints }
 
         // Filter out invalid coordinates
         let validWaypoints = waypoints.filter { $0.isValid }
         guard validWaypoints.count > 1 else { return [] }
+        guard speedPointCount(waypoints: validWaypoints, speed: speed) <= maxRoutePoints else { return [] }
 
         var allPoints: [LocationCoordinate] = []
 
@@ -65,8 +70,8 @@ struct RouteInterpolator {
             let start = validWaypoints[index]
             let end = validWaypoints[index + 1]
             let distance = haversineDistance(from: start, to: end)
-            guard distance > 0, distance < maxDistanceMeters else {
-                if distance == 0 { allPoints.append(start) }
+            guard distance > 0 else {
+                allPoints.append(start)
                 continue
             }
             let steps = steppedLegPointCount(distance: distance, step: step)
@@ -94,17 +99,33 @@ struct RouteInterpolator {
         var count = 1 // the final waypoint
         for index in 0..<validWaypoints.count - 1 {
             let distance = haversineDistance(from: validWaypoints[index], to: validWaypoints[index + 1])
-            if distance == 0 {
-                count += 1
-            } else if distance > 0, distance < maxDistanceMeters {
-                count += steppedLegPointCount(distance: distance, step: step)
-            }
+            count += distance > 0 ? steppedLegPointCount(distance: distance, step: step) : 1
         }
         return count
     }
 
     private static func steppedStep(_ stepMeters: Double) -> Double {
         max(stepMeters, 0.01)
+    }
+
+    /// The number of points `interpolateRoute(waypoints:speed:)` builds, without building them.
+    static func speedPointCount(waypoints: [LocationCoordinate], speed: SimulationSpeed) -> Int {
+        let validWaypoints = waypoints.filter { $0.isValid }
+        guard validWaypoints.count > 1 else { return validWaypoints.count }
+        var count = 1 // the final waypoint
+        for index in 0..<validWaypoints.count - 1 {
+            let distance = haversineDistance(from: validWaypoints[index], to: validWaypoints[index + 1])
+            count += speedLegPointCount(distance: distance, speed: speed)
+        }
+        return count
+    }
+
+    /// Points `interpolate(from:to:speed:)` builds for a leg of `distance` meters.
+    private static func speedLegPointCount(distance: Double, speed: SimulationSpeed) -> Int {
+        guard distance > 0 else { return 1 }
+        let steps = (distance / speed.metersPerSecond / speed.updateInterval).rounded(.down)
+        guard steps.isFinite, steps <= Double(maxRoutePoints) else { return maxRoutePoints + 1 }
+        return max(1, Int(steps))
     }
 
     /// Points along a polyline (a road path) spaced `stepMeters` of path apart, from its
@@ -158,7 +179,8 @@ struct RouteInterpolator {
         max(1, Int((distance / step).rounded(.up)))
     }
 
-    /// Generate interpolated points between two coordinates
+    /// Generate interpolated points between two coordinates (the end excluded).
+    /// A leg over `maxRoutePoints` points returns `[]` (callers count first).
     static func interpolate(
         from start: LocationCoordinate,
         to end: LocationCoordinate,
@@ -168,15 +190,8 @@ struct RouteInterpolator {
         guard start.isValid, end.isValid else { return [] }
 
         let distance = haversineDistance(from: start, to: end)
-
-        // Guard against extreme distances that could cause performance issues
-        guard distance > 0, distance < maxDistanceMeters else {
-            return distance == 0 ? [start] : []
-        }
-
-        let duration = distance / speed.metersPerSecond
-        let steps = max(1, Int(duration / speed.updateInterval))
-
+        let steps = speedLegPointCount(distance: distance, speed: speed)
+        guard steps <= maxRoutePoints else { return [] }
         guard steps > 1 else { return [start] }
 
         var points: [LocationCoordinate] = []
@@ -207,7 +222,7 @@ struct RouteInterpolator {
     ) -> LocationCoordinate {
         // Validate inputs
         guard from.isValid else { return from }
-        guard distanceMeters >= 0, distanceMeters < maxDistanceMeters else { return from }
+        guard distanceMeters >= 0, distanceMeters < maxSingleMoveMeters else { return from }
 
         let result = Geo.move(
             from: from,
