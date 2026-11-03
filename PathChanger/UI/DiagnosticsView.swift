@@ -498,55 +498,18 @@ struct DiagnosticsView: View {
         }
     }
 
+    /// Runs the managed Python off the main actor with a deadline and the 1 MB output cap.
+    /// Throws unless the process exited with status 0.
     func runPython(args: [String]) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("pathchanger-diagnostics-\(UUID().uuidString).log")
-            guard FileManager.default.createFile(atPath: outputURL.path, contents: nil) else {
-                continuation.resume(throwing: NSError(
-                    domain: "PathChanger",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Unable to create diagnostics output log"]
-                ))
-                return
-            }
-
-            guard let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
-                continuation.resume(throwing: NSError(
-                    domain: "PathChanger",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Unable to create diagnostics output log"]
-                ))
-                return
-            }
-
-            process.executableURL = URL(fileURLWithPath: PythonPathResolver.path)
-            process.arguments = args
-            process.standardOutput = outputHandle
-            process.standardError = outputHandle
-            process.environment = ProcessEnvironment.configured()
-
-            do {
-                try process.run()
-                try? outputHandle.close()
-                process.waitUntilExit()
-
-                let data = (try? Data(contentsOf: outputURL)) ?? Data()
-                try? FileManager.default.removeItem(at: outputURL)
-                let output = String(data: data, encoding: .utf8) ?? ""
-
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(returning: output)
-                }
-            } catch {
-                try? outputHandle.close()
-                try? FileManager.default.removeItem(at: outputURL)
-                continuation.resume(throwing: error)
-            }
+        let result = await BoundedProcessRunner().run(executable: PythonPathResolver.path, arguments: args)
+        guard result.succeeded else {
+            throw NSError(
+                domain: "PathChanger.Diagnostics",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "The command \(result.failureDescription ?? "failed")"]
+            )
         }
+        return result.output
     }
 }
 
