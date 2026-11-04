@@ -1265,6 +1265,76 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    // MARK: Off-main stale-record cleanup (review 2026-11-04 issue 5)
+
+    /// The detached refresh read found the recorded helper dead. It no longer deletes the
+    /// files itself: a main-actor launch may have written a new helper's socket and record
+    /// meanwhile. They are removed on the main actor only while the record still names
+    /// the dead helper.
+    @MainActor
+    func testAStaleRecordIsRemovedOnlyWhileItStillNamesTheDeadHelper() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-stale-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = ManagedLocationHelperPaths(baseDirectory: root)
+        _ = try paths.prepare()
+        let exited = Process()
+        exited.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try exited.run()
+        exited.waitUntilExit()
+        func record(_ id: UUID, pid: Int32) -> ManagedLocationHelperRecord {
+            ManagedLocationHelperRecord(
+                protocolVersion: 1, helperID: id, pid: pid, socketPath: paths.socketURL.path,
+                pythonPath: "/python", pythonSHA256: "p", bridgePath: "/bridge", bridgeSHA256: "b",
+                tokenSHA256: "t", activeSessions: [])
+        }
+        func write(_ value: ManagedLocationHelperRecord) throws {
+            try JSONEncoder().encode(value).write(to: paths.recordURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.recordURL.path)
+            FileManager.default.createFile(atPath: paths.socketURL.path, contents: nil)
+        }
+        let dead = record(UUID(), pid: exited.processIdentifier)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: "/python", bridgePath: "/bridge")
+
+        // A new helper's files replaced the dead one's before the cleanup ran.
+        try write(record(UUID(), pid: getpid()))
+        try controller.removeStaleArtifacts(ifRecordStillNames: dead)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "the new helper's record is kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.socketURL.path), "the new helper's socket is kept")
+
+        // Still the dead helper's files: removed.
+        try write(dead)
+        try controller.removeStaleArtifacts(ifRecordStillNames: dead)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.recordURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.socketURL.path))
+    }
+
+    /// The refresh still cleans up after a helper that died, and reports it not running.
+    @MainActor
+    func testARefreshOfADeadHelperRemovesItsFilesAndReportsItNotRunning() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("stale-refresh")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let launched = try await controller.connectOrLaunch()
+        kill(launched.record.pid, SIGKILL) // this test's own helper; it cannot remove its files
+        for _ in 0..<250 where TunnelProcessTerminator.isAlive(pid: launched.record.pid) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path))
+
+        do {
+            _ = try await controller.refreshConnection()
+            XCTFail("a dead helper cannot be refreshed")
+        } catch ManagedLocationHelperController.ControllerError.helperNotRunning {
+        } catch {
+            XCTFail("expected helperNotRunning, got \(error)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.recordURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.socketURL.path))
+    }
+
     func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
         let record = ManagedLocationHelperRecord(
             protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",

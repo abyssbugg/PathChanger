@@ -1067,9 +1067,19 @@ final class ManagedLocationHelperController {
         let pythonPath = pythonPath
         let bridgePath = bridgePath
         let fileManager = fileManager
-        let (token, record) = try await Task.detached(priority: .userInitiated) {
+        let read = try await Task.detached(priority: .userInitiated) {
             try Self.readAdoptableRecord(paths: paths, pythonPath: pythonPath, bridgePath: bridgePath, fileManager: fileManager)
         }.value
+        let token: String
+        let record: ManagedLocationHelperRecord
+        switch read {
+        case let .adoptable(adoptableToken, adoptableRecord):
+            (token, record) = (adoptableToken, adoptableRecord)
+        case let .stale(dead):
+            // Removed here, not off the main actor, where it raced main-actor launches.
+            try removeStaleArtifacts(ifRecordStillNames: dead)
+            throw ControllerError.helperNotRunning
+        }
         let connection = try await authenticate(
             record: record,
             token: token,
@@ -1245,15 +1255,22 @@ final class ManagedLocationHelperController {
         )
     }
 
+    /// What the off-main refresh read found.
+    private enum AdoptableRead: Sendable {
+        case adoptable(token: String, record: ManagedLocationHelperRecord)
+        /// The recorded helper is dead; its files are removed on the main actor.
+        case stale(ManagedLocationHelperRecord)
+    }
+
     /// The checks `refreshConnection` makes before authenticating, in order: the token,
     /// the expected evidence, a record whose process is alive and whose evidence matches.
-    /// File work only, so it can run off the main thread.
+    /// Reads files only (it deletes nothing), so it can run off the main thread.
     private nonisolated static func readAdoptableRecord(
         paths: ManagedLocationHelperPaths,
         pythonPath: String,
         bridgePath: String,
         fileManager: FileManager
-    ) throws -> (token: String, record: ManagedLocationHelperRecord) {
+    ) throws -> AdoptableRead {
         let token = try paths.prepare(fileManager: fileManager)
         let expectation = try makeExpectation(
             token: token, paths: paths, pythonPath: pythonPath, bridgePath: bridgePath
@@ -1262,12 +1279,9 @@ final class ManagedLocationHelperController {
             throw ControllerError.invalidRecord
         }
         let record = try loadRecord(paths: paths, fileManager: fileManager)
-        guard processIsAlive(record.pid) else {
-            try removeStaleArtifacts(paths: paths, fileManager: fileManager)
-            throw ControllerError.helperNotRunning
-        }
+        guard processIsAlive(record.pid) else { return .stale(record) }
         try record.validateForAdoption(expectation: expectation)
-        return (token, record)
+        return .adoptable(token: token, record: record)
     }
 
     private func makeExpectation(token: String) throws -> ManagedLocationHelperExpectation {
@@ -1330,6 +1344,19 @@ final class ManagedLocationHelperController {
 
     private func removeStaleArtifacts() throws {
         try Self.removeStaleArtifacts(paths: paths, fileManager: fileManager)
+    }
+
+    /// Remove the socket and record of the dead helper `stale` names, on the main actor,
+    /// and only while the record on disk still names it: a launch may have written a new
+    /// helper's files since `stale` was read (review 2026-11-04 issue 5).
+    func removeStaleArtifacts(ifRecordStillNames stale: ManagedLocationHelperRecord) throws {
+        guard let current = try? currentRecord(),
+              current.helperID == stale.helperID,
+              current.pid == stale.pid,
+              !processIsAlive(stale.pid) else {
+            return
+        }
+        try removeStaleArtifacts()
     }
 
     private nonisolated static func removeStaleArtifacts(
