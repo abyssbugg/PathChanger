@@ -1015,3 +1015,23 @@ final class ConnectionChoiceTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Settings presentation (GUI arrangement 2026-11-04)
+
+/// Settings open as a centred panel over the window (they used to slide in as a
+/// full-height panel on the right), sized to the window and never past its edges.
+final class SettingsPresentationTests: XCTestCase {
+    func testSettingsAreCentredOverTheWindow() {
+        XCTAssertEqual(OrganicSettingsSheet.panelAlignment, .center)
+    }
+
+    func testThePanelKeepsAMarginInsideTheWindow() {
+        let roomy = OrganicSettingsSheet.panelMaxSize(in: CGSize(width: 1280, height: 800))
+        XCTAssertEqual(roomy.width, OrganicSettingsSheet.panelWidth)
+        XCTAssertEqual(roomy.height, 800 - 2 * OrganicSettingsSheet.windowMargin)
+        let tall = OrganicSettingsSheet.panelMaxSize(in: CGSize(width: 1600, height: 1400))
+        XCTAssertEqual(tall.height, OrganicSettingsSheet.panelMaxHeight, "a tall window does not stretch the panel")
+        let narrow = OrganicSettingsSheet.panelMaxSize(in: CGSize(width: 560, height: 500))
+        XCTAssertEqual(narrow.width, 560 - 2 * OrganicSettingsSheet.windowMargin, "a narrow window keeps the margin")
+    }
+}
