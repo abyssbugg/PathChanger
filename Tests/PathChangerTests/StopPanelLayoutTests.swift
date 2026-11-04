@@ -348,7 +348,13 @@ final class GUIArrangementSnapshotTests: XCTestCase {
         gates.forEach { $0.releaseAll() }
         for run in runs { await run.value }
         windows.forEach { $0.close() }
-        for suite in suites { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        for suite in Set(suites) {
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+            // removePersistentDomain empties the domain but leaves its plist behind.
+            let plist = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(suite).plist")
+            try? FileManager.default.removeItem(at: plist)
+        }
         gates = []; runs = []; states = []; windows = []; suites = []
         try await super.tearDown()
     }
@@ -433,7 +439,7 @@ final class GUIArrangementSnapshotTests: XCTestCase {
     /// App storage for the hosted window, so the appearance never touches the app's own
     /// preferences.
     private func storage(dark: Bool) -> UserDefaults {
-        let name = "tmp_rovodev.pathchanger.snapshots.\(UUID().uuidString)"
+        let name = "tmp_rovodev.pathchanger.snapshots.\(dark ? "dark" : "light")"
         suites.append(name)
         let defaults = UserDefaults(suiteName: name)!
         defaults.set(dark ? OrganicAppearance.dark.rawValue : OrganicAppearance.light.rawValue, forKey: "PathChanger.Appearance")
