@@ -2101,15 +2101,21 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     /// Start or adopt the managed helper and restore the single session matching
     /// the currently selected device. Failure leaves the existing state unchanged.
+    /// Runs from Refresh Devices: it never replaces a helper another build started
+    /// (that would end the location it holds with no tunnel edge to reapply it; review
+    /// 2026-11-04 issue 4). It says what it found, and Start takes that helper over.
     @discardableResult
     func restoreManagedLocationSessionFromSource() async -> Bool {
         do {
-            try await managedLocationSessionSource.start()
+            try await managedLocationSessionSource.start(replacingHelperFromAnotherBuild: false)
         } catch {
             Logger.error(
                 "[AppState] Managed helper unavailable during session restoration: \(error.localizedDescription)",
                 category: .device
             )
+            if case .helperFromAnotherBuildAwaitingStart? = error as? PersistentLocationBridge.PersistentBridgeError {
+                statusMessage = error.localizedDescription
+            }
             return false
         }
 

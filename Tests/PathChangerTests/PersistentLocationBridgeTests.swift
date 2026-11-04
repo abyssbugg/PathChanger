@@ -1222,6 +1222,49 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         XCTAssertNil(controller.replacedHelperRecordAwaitingLaunch, "the bridge took it")
     }
 
+    // MARK: Refresh Devices and another build's helper (review 2026-11-04 issue 4, decided)
+
+    /// Refresh restores through the helper but must not replace another build's helper:
+    /// it adopts nothing, leaves that helper and its files alone, and says what it found.
+    /// Start (the default) still replaces it.
+    @MainActor
+    func testAStartThatMayNotReplaceLeavesAHelperFromAnotherBuildRunningAndSaysSo() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-refresh")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        try writeRecord(old.record, sessions: [heldSession(for: "00008130-0011223344556677")],
+                        bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+        do {
+            do {
+                try await bridge.start(replacingHelperFromAnotherBuild: false)
+                XCTFail("a start that may not replace adopts nothing")
+            } catch {
+                XCTAssertEqual(error as? PersistentLocationBridge.PersistentBridgeError,
+                               .helperFromAnotherBuildAwaitingStart(holdsLocation: true))
+                XCTAssertEqual(error.localizedDescription,
+                               "A helper from an earlier PathChanger build holds a location; press Start to take over")
+            }
+            XCTAssertFalse(bridge.isRunning)
+            XCTAssertTrue(TunnelProcessTerminator.isAlive(pid: old.record.pid), "left running")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "its record is left alone")
+            XCTAssertTrue(bridge.hasRecordedHeldSessions)
+            XCTAssertNil(bridge.inheritedHeldSession(for: "00008130-0011223344556677"))
+
+            try await bridge.start()
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.record.pid), "Start replaces it")
+            XCTAssertTrue(bridge.isRunning)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            throw error
+        }
+    }
+
     func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
         let record = ManagedLocationHelperRecord(
             protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",

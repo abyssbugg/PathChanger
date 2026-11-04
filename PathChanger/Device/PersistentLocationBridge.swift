@@ -18,6 +18,11 @@ protocol ManagedLocationSessionSource: AnyObject {
     func deviceConnectionStatus(_ deviceId: String, transport: LocationTransport) async -> HelperConnectionStatus
 
     func start() async throws
+    /// `start()`, except that with `replacingHelperFromAnotherBuild` false a running helper
+    /// another build started is left alone and reported
+    /// (`PersistentBridgeError.helperFromAnotherBuildAwaitingStart`): Refresh Devices may
+    /// not end the location it holds; Start, Move, Clear and Quit may.
+    func start(replacingHelperFromAnotherBuild: Bool) async throws
     func refreshAdoptedHelperSessions() async throws
     func shutdownHelper() async throws
 
@@ -56,6 +61,7 @@ protocol ManagedLocationSessionSource: AnyObject {
 }
 
 extension ManagedLocationSessionSource {
+    func start(replacingHelperFromAnotherBuild: Bool) async throws { try await start() }
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func discardInheritedHeldSessions() {}
@@ -716,6 +722,8 @@ final class ManagedLocationHelperController {
         case helperFromAnotherBuildStillRunning(Int32)
         /// The helper's parent is another PathChanger that is still running (the PID).
         case helperInUseByAnotherPathChanger(Int32)
+        /// Another build's helper is running and the caller may not replace it.
+        case helperFromAnotherBuildAwaitingStart(holdsLocation: Bool)
 
         var errorDescription: String? {
             switch self {
@@ -744,6 +752,9 @@ final class ManagedLocationHelperController {
                 return "The location helper another PathChanger build started (PID \(pid)) did not stop"
             case let .helperInUseByAnotherPathChanger(pid):
                 return ManagedLocationHelperController.helperInUseText(ownerPID: pid)
+            case let .helperFromAnotherBuildAwaitingStart(holdsLocation):
+                return PersistentLocationBridge.PersistentBridgeError
+                    .helperFromAnotherBuildAwaitingStart(holdsLocation: holdsLocation).localizedDescription
             }
         }
     }
@@ -916,7 +927,7 @@ final class ManagedLocationHelperController {
         }
     }
 
-    func connectOrLaunch() async throws -> ManagedLocationHelperConnection {
+    func connectOrLaunch(replacingHelperFromAnotherBuild: Bool = true) async throws -> ManagedLocationHelperConnection {
         if let activeConnection {
             if processIsAlive(activeConnection.record.pid) {
                 return activeConnection
@@ -939,6 +950,16 @@ final class ManagedLocationHelperController {
             let record = try loadRecord()
             if processIsAlive(record.pid) {
                 if let differences = record.buildDifferences(from: expectation), !differences.isEmpty {
+                    // Refresh Devices may not end the location it holds: nothing is touched.
+                    guard replacingHelperFromAnotherBuild else {
+                        Logger.info(
+                            "[PersistentBridge] A location helper (PID \(record.pid)) from another PathChanger build "
+                                + "is running; left alone until Start, Move, Clear or Quit",
+                            category: .device
+                        )
+                        throw ControllerError.helperFromAnotherBuildAwaitingStart(
+                            holdsLocation: !record.activeSessions.isEmpty)
+                    }
                     // Never adopted: stopped, and this build's helper is launched below.
                     try await stopHelperFromAnotherBuild(record, differences: differences, token: token)
                     // Kept until a launch succeeds: a failed launch must not lose what it held.
@@ -1555,6 +1576,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         /// and its own helper then did not start: that location has ended on the phone.
         /// Carries why the launch failed.
         case replacedHelperLocationEnded(String)
+        /// A helper another build started is running and this start may not replace it
+        /// (Refresh Devices): nothing was adopted or stopped.
+        case helperFromAnotherBuildAwaitingStart(holdsLocation: Bool)
 
         var errorDescription: String? {
             switch self {
@@ -1584,6 +1608,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 return "The location helper an earlier PathChanger started was stopped, so the location it held has "
                     + "ended, and this build's helper did not start (\(reason)). Press Start to try again; the "
                     + "location is reapplied once the helper runs."
+            case .helperFromAnotherBuildAwaitingStart(let holdsLocation):
+                return holdsLocation
+                    ? "A helper from an earlier PathChanger build holds a location; press Start to take over"
+                    : "A helper from an earlier PathChanger build is running; press Start to take over"
             }
         }
     }
@@ -1756,6 +1784,11 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     /// Start or adopt the authenticated managed location helper.
     func start() async throws {
+        try await start(replacingHelperFromAnotherBuild: true)
+    }
+
+    /// See `ManagedLocationSessionSource.start(replacingHelperFromAnotherBuild:)`.
+    func start(replacingHelperFromAnotherBuild: Bool) async throws {
         guard !isRunning else {
             Logger.debug("[PersistentBridge] Already running", category: .device)
             return
@@ -1773,7 +1806,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
         Logger.info("[PersistentBridge] Starting or adopting managed helper", category: .device)
         do {
-            let connection = try await controller.connectOrLaunch()
+            let connection = try await controller.connectOrLaunch(
+                replacingHelperFromAnotherBuild: replacingHelperFromAnotherBuild)
             helperConnection = connection
             adoptedHelperID = connection.record.helperID
             adoptedHelperSessions = connection.record.activeSessions
@@ -1809,6 +1843,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             )
             if case let ManagedLocationHelperController.ControllerError.helperInUseByAnotherPathChanger(owner) = error {
                 throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
+            }
+            if case let ManagedLocationHelperController.ControllerError
+                .helperFromAnotherBuildAwaitingStart(holdsLocation) = error {
+                throw PersistentBridgeError.helperFromAnotherBuildAwaitingStart(holdsLocation: holdsLocation)
             }
             if inheritSessionsEndedByAFailedLaunch(controller.takeReplacedHelperRecordAwaitingLaunch()) {
                 throw reportEndedLocation(launchFailure: error)

@@ -40,6 +40,13 @@ final class AppStateSimulationTests: XCTestCase {
             isHelperRunning = true
         }
 
+        /// Whether each start may replace another build's helper (Refresh may not).
+        private(set) var startReplacingFlags: [Bool] = []
+        func start(replacingHelperFromAnotherBuild: Bool) async throws {
+            startReplacingFlags.append(replacingHelperFromAnotherBuild)
+            try await start()
+        }
+
         func refreshAdoptedHelperSessions() async throws {
             refreshCallCount += 1
         }
@@ -427,6 +434,32 @@ final class AppStateSimulationTests: XCTestCase {
         XCTAssertEqual(locationInjector.adoptedReceipts.first?.0.requestID, requestID)
         XCTAssertEqual(locationInjector.adoptedReceipts.first?.1, device.id)
         XCTAssertTrue(locationInjector.abandonedReceipts.isEmpty, "an accepted restore is not abandoned")
+    }
+
+    /// Review 2026-11-04 issue 4 (decided): Refresh Devices restores through the helper
+    /// but never replaces another build's helper (that would end the location it holds
+    /// with no tunnel edge to reapply it). Only Start, Move, Clear and Quit may. Refresh
+    /// adopts nothing and says what it found.
+    func testTheRefreshRestoreNeverReplacesAHelperFromAnotherBuildAndSaysWhatItFound() async throws {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.isHelperRunning = false
+        source.startError = PersistentLocationBridge.PersistentBridgeError
+            .helperFromAnotherBuildAwaitingStart(holdsLocation: true)
+        let state = AppState(startBackgroundServices: false, managedLocationSessionSource: source)
+        state.selectDevice(Device(
+            id: "00008130-0011223344556677", displayName: "Test Device", connectionType: .wifi,
+            productType: "iPhone17,1", productVersion: "27.0"
+        ))
+
+        let restored = await state.restoreManagedLocationSessionFromSource()
+
+        XCTAssertFalse(restored)
+        XCTAssertEqual(source.startReplacingFlags, [false], "the restore never replaces another build's helper")
+        XCTAssertEqual(
+            state.statusMessage,
+            "A helper from an earlier PathChanger build holds a location; press Start to take over"
+        )
+        XCTAssertFalse(state.locationSessionCoordinator.state.application.isActive)
     }
 
     func testDeviceFirstStartupRestoresMatchingManagedSession() async throws {
