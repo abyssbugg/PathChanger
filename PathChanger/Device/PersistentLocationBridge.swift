@@ -705,6 +705,8 @@ final class ManagedLocationHelperController {
         case foreignHelperStillRunning
         case unverifiedHelperProcess(Int32)
         case helperFromAnotherBuildStillRunning(Int32)
+        /// The helper's parent is another PathChanger that is still running (the PID).
+        case helperInUseByAnotherPathChanger(Int32)
 
         var errorDescription: String? {
             switch self {
@@ -731,6 +733,8 @@ final class ManagedLocationHelperController {
                     + "app's socket; it was left alone"
             case let .helperFromAnotherBuildStillRunning(pid):
                 return "The location helper another PathChanger build started (PID \(pid)) did not stop"
+            case let .helperInUseByAnotherPathChanger(pid):
+                return ManagedLocationHelperController.helperInUseText(ownerPID: pid)
             }
         }
     }
@@ -791,6 +795,24 @@ final class ManagedLocationHelperController {
     func isForeign(_ record: ManagedLocationHelperRecord) -> Bool {
         if let launchedProcess, launchedProcess.processIdentifier == record.pid { return false }
         return parentProcessID(record.pid) != getpid()
+    }
+
+    nonisolated static func helperInUseText(ownerPID: Int32) -> String {
+        "Another PathChanger (PID \(ownerPID)) is using the location helper. Quit it first."
+    }
+
+    /// The live process other than this app that launched the recorded helper: another
+    /// PathChanger still running, which holds its location through it. Nil for this app
+    /// run's own helper and for an orphan (parent PID 1, or a parent that is gone).
+    private func otherLiveParent(of record: ManagedLocationHelperRecord) -> Int32? {
+        if let launchedProcess, launchedProcess.processIdentifier == record.pid { return nil }
+        guard let parent = parentProcessID(record.pid),
+              parent > 1,
+              parent != getpid(),
+              processIsAlive(parent) else {
+            return nil
+        }
+        return parent
     }
 
     /// The record of the helper this controller launched or adopted, if any.
@@ -1098,6 +1120,18 @@ final class ManagedLocationHelperController {
                 category: .device
             )
             throw ControllerError.unverifiedHelperProcess(pid)
+        }
+        // Replaced only when its PathChanger is gone (an orphan, the live 2026-11-03 case).
+        // Another build still running holds its location through it: stopping it ended
+        // that spoof, and the two instances' reconnects then replaced each other's helpers
+        // (review 2026-11-04 issues 1-2).
+        if let owner = otherLiveParent(of: record) {
+            Logger.error(
+                "[PersistentBridge] The location helper (PID \(pid)) of another PathChanger build belongs to "
+                    + "PathChanger PID \(owner), which is still running; refusing it and signalling nothing",
+                category: .device
+            )
+            throw ControllerError.helperInUseByAnotherPathChanger(owner)
         }
         Logger.info(
             "[PersistentBridge] The running location helper (PID \(pid)) was started by another PathChanger build "
@@ -1494,6 +1528,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         /// Wi-Fi lanes could not see the phone; waiting cannot help. The helper's detail.
         case localNetworkBlocked(String)
         case pythonNotFound
+        /// The location helper belongs to another PathChanger that is still running (its PID).
+        case helperInUseByAnotherPathChanger(Int32)
 
         var errorDescription: String? {
             switch self {
@@ -1517,6 +1553,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 return "macOS is blocking PathChanger from the local network (\(detail))"
             case .pythonNotFound:
                 return "Python3 not found in PATH"
+            case .helperInUseByAnotherPathChanger(let pid):
+                return ManagedLocationHelperController.helperInUseText(ownerPID: pid)
             }
         }
     }
@@ -1737,6 +1775,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 "[PersistentBridge] Managed helper unavailable: \(error.localizedDescription)",
                 category: .device
             )
+            if case let ManagedLocationHelperController.ControllerError.helperInUseByAnotherPathChanger(owner) = error {
+                throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
+            }
             throw PersistentBridgeError.processStartFailed(error.localizedDescription)
         }
     }

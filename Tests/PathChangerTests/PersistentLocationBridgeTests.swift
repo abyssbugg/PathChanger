@@ -1054,6 +1054,116 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    // MARK: Another build's helper whose PathChanger is still running (review 2026-11-04 issue 1)
+
+    /// Launch a helper for `paths` from a shell this test starts, as another PathChanger
+    /// would. With `parentStaysAlive` the shell waits on the helper (its live parent);
+    /// otherwise the shell exits at once and the helper is reparented to PID 1 (an orphan).
+    @MainActor
+    private func launchHelperUnderSeparateParent(
+        paths: ManagedLocationHelperPaths,
+        bridgeScript: String,
+        parentStaysAlive: Bool
+    ) async throws -> (parent: Process, record: ManagedLocationHelperRecord) {
+        _ = try paths.prepare()
+        let parent = Process()
+        parent.executableURL = URL(fileURLWithPath: "/bin/sh")
+        parent.arguments = [
+            "-c",
+            "\"$0\" -B \"$1\" --socket \"$2\" --token-file \"$3\" --record-file \"$4\" "
+                + "</dev/null >/dev/null 2>&1 &" + (parentStaysAlive ? " wait" : ""),
+            PythonPathResolver.managedPythonPath, bridgeScript,
+            paths.socketURL.path, paths.tokenURL.path, paths.recordURL.path,
+        ]
+        parent.environment = ProcessEnvironment.configured()
+        try parent.run()
+        let reader = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        for _ in 0..<250 {
+            if FileManager.default.fileExists(atPath: paths.socketURL.path),
+               let record = try? reader.currentRecord() {
+                return (parent, record)
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if parent.isRunning { parent.terminate() }
+        throw XCTSkip("The helper under a separate parent did not start")
+    }
+
+    /// A second build started while the first holds a spoof must not end that spoof: the
+    /// helper's parent is that live PathChanger, so it is refused and never signalled. The
+    /// refusal holds on every later start too, which ends the mutual replacement loop the
+    /// two instances' automatic reconnects ran (review issue 2).
+    @MainActor
+    func testAHelperFromAnotherBuildWhoseParentIsAliveIsRefusedAndNeverSignalled() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-live-parent")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (parent, old) = try await launchHelperUnderSeparateParent(
+            paths: paths, bridgeScript: bridgeScript, parentStaysAlive: true)
+        defer {
+            if TunnelProcessTerminator.isAlive(pid: old.pid) { kill(old.pid, SIGTERM) }
+            if parent.isRunning { parent.terminate(); parent.waitUntilExit() }
+        }
+        XCTAssertEqual(ManagedLocationHelperController.liveParentProcessID(old.pid), parent.processIdentifier)
+        try writeRecord(old, sessions: [heldSession(for: "00008130-0011223344556677")],
+                        bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+
+        for attempt in 1...2 {
+            do {
+                try await bridge.start()
+                XCTFail("attempt \(attempt): another running PathChanger's helper is refused")
+            } catch {
+                XCTAssertTrue(
+                    error.localizedDescription.contains(
+                        "Another PathChanger (PID \(parent.processIdentifier)) is using the location helper. Quit it first."),
+                    error.localizedDescription)
+            }
+            XCTAssertFalse(bridge.isRunning)
+            XCTAssertTrue(TunnelProcessTerminator.isAlive(pid: old.pid), "attempt \(attempt): never signalled")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "its record is left alone")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.socketURL.path), "its socket is left alone")
+        }
+
+        // Quit through a never-started bridge refuses it as well (logged, quit not blocked).
+        try await bridge.shutdownHelper()
+        XCTAssertTrue(TunnelProcessTerminator.isAlive(pid: old.pid), "Quit never signals it either")
+        XCTAssertTrue(bridge.hasRecordedHeldSessions)
+    }
+
+    /// The live 2026-11-03 case: the other build's PathChanger is gone (the helper's parent
+    /// is PID 1), so its helper is stopped and replaced.
+    @MainActor
+    func testAnOrphanedHelperFromAnotherBuildIsStillReplaced() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-orphan")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (parent, old) = try await launchHelperUnderSeparateParent(
+            paths: paths, bridgeScript: bridgeScript, parentStaysAlive: false)
+        defer {
+            if TunnelProcessTerminator.isAlive(pid: old.pid) { kill(old.pid, SIGTERM) }
+            if parent.isRunning { parent.terminate(); parent.waitUntilExit() }
+        }
+        parent.waitUntilExit()
+        XCTAssertEqual(ManagedLocationHelperController.liveParentProcessID(old.pid), 1, "an orphan")
+        let deviceID = "00008130-0011223344556677"
+        let held = heldSession(for: deviceID)
+        try writeRecord(old, sessions: [held], bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+        do {
+            try await bridge.start()
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.pid), "the orphan was stopped")
+            XCTAssertTrue(bridge.isRunning)
+            XCTAssertNotEqual(bridge.adoptedHelperID, old.helperID)
+            XCTAssertEqual(bridge.inheritedHeldSession(for: deviceID)?.session, held)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            throw error
+        }
+    }
+
     func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
         let record = ManagedLocationHelperRecord(
             protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",
