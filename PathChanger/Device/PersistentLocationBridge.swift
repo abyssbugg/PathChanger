@@ -876,7 +876,18 @@ final class ManagedLocationHelperController {
 
     func connectOrLaunch() async throws -> ManagedLocationHelperConnection {
         if let activeConnection {
-            return activeConnection
+            if processIsAlive(activeConnection.record.pid) {
+                return activeConnection
+            }
+            // The helper this controller held has exited (crashed or was killed): the
+            // bridge dropped its state, and handing back the dead connection made every
+            // later start re-adopt it instead of launching a new helper.
+            Logger.info(
+                "[PersistentBridge] The location helper (PID \(activeConnection.record.pid)) has exited; launching a new one",
+                category: .device
+            )
+            self.activeConnection = nil
+            launchedProcess = nil
         }
 
         let token = try paths.prepare(fileManager: fileManager)
