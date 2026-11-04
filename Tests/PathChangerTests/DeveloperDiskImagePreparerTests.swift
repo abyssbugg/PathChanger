@@ -341,6 +341,81 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
         XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountStatusCommand(udid: udid)])
     }
 
+    // MARK: - "Device is not connected" (live 2026-11-03 01:05 and 23:34: during a Wi-Fi
+    // outage the CLI reported NoDeviceConnectedError by its message only, and the gate
+    // called it "statusUnparseable" instead of the phone not being connected).
+
+    private let notConnectedStderr =
+        "2026-11-03 01:05:01 host.local __main__[53184] ERROR Device is not connected.\n"
+        + "2026-11-03 01:05:01 host.local __main__[53184] INFO Run again with -v for the full traceback "
+        + "(include it when reporting an issue)"
+
+    func testAPhoneThatIsNotConnectedIsReportedAsNotConnectedNotUnparseable() async {
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { [notConnectedStderr] command in commands.append(command); return notConnectedStderr },
+            allowsNetworkFallback: { false }
+        )
+        do {
+            _ = try await preparer.isDeveloperDiskImageMounted(udid: udid)
+            XCTFail("expected the phone to be reported not connected")
+        } catch let error as LocationInjectionError {
+            if case .deviceNotFound = error {} else { XCTFail("expected deviceNotFound, got \(error)") }
+            XCTAssertTrue(error.isConnectionLoss, "the same outcome as other not-reachable errors")
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertEqual(commands, [DevicePreparationPlanner.ddiMountStatusCommand(udid: udid)])
+    }
+
+    func testANotConnectedStatusRetriesOverMobdev2LikeAnyUsbmuxMiss() async throws {
+        var commands: [[String]] = []
+        let preparer = DeveloperDiskImagePreparer(runner: { [notConnectedStderr] command in
+            commands.append(command)
+            return command.contains("--mobdev2") ? "[]" : notConnectedStderr
+        })
+        let mounted = try await preparer.isDeveloperDiskImageMounted(udid: udid)
+        XCTAssertFalse(mounted)
+        XCTAssertEqual(commands, [
+            DevicePreparationPlanner.ddiMountStatusCommand(udid: udid),
+            DevicePreparationPlanner.ddiMountStatusMobdev2Command(udid: udid),
+        ])
+    }
+
+    func testANotConnectedMountOrRetryIsReportedAsNotConnected() async {
+        for allowsFallback in [false, true] {
+            let preparer = DeveloperDiskImagePreparer(
+                runner: { [notConnectedStderr] command in
+                    command.contains("list") && !command.contains("--mobdev2") ? "[]" : notConnectedStderr
+                },
+                allowsNetworkFallback: { allowsFallback }
+            )
+            do {
+                try await preparer.ensureMounted(udid: udid)
+                XCTFail("expected the phone to be reported not connected (fallback \(allowsFallback))")
+            } catch let error as LocationInjectionError {
+                if case .deviceNotFound = error {} else { XCTFail("expected deviceNotFound, got \(error)") }
+            } catch {
+                XCTFail("unexpected error \(error) (fallback \(allowsFallback))")
+            }
+        }
+    }
+
+    func testAThrownNotConnectedIsReportedAsNotConnected() async {
+        let preparer = DeveloperDiskImagePreparer(
+            runner: { [notConnectedStderr] _ in throw DeviceError.commandFailed(notConnectedStderr) },
+            allowsNetworkFallback: { false }
+        )
+        do {
+            _ = try await preparer.isDeveloperDiskImageMounted(udid: udid)
+            XCTFail("expected the phone to be reported not connected")
+        } catch let error as LocationInjectionError {
+            if case .deviceNotFound = error {} else { XCTFail("expected deviceNotFound, got \(error)") }
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
     // MARK: - Helper first (live 2026-11-03: the helper held the phone over its remote
     // pairing lane, usbmuxd listed nothing and the phone refused the image mounter over
     // mobdev2, so every Move failed at this gate; over the helper's RSD it answered).

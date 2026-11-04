@@ -154,6 +154,7 @@ actor DeveloperDiskImagePreparer {
             DevicePreparationPlanner.ddiMountStatusCommand(udid: udid),
             mobdev2Fallback: DevicePreparationPlanner.ddiMountStatusMobdev2Command(udid: udid)
         )
+        if Self.isPhoneNotConnected(output) { throw LocationInjectionError.deviceNotFound }
         guard let data = output.data(using: .utf8),
               let entries = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
             throw PreparationError.statusUnparseable(String(output.prefix(200)))
@@ -207,6 +208,7 @@ actor DeveloperDiskImagePreparer {
             DevicePreparationPlanner.ddiMountCommand(udid: udid),
             mobdev2Fallback: DevicePreparationPlanner.ddiMountMobdev2Command(udid: udid)
         )
+        if Self.isPhoneNotConnected(output) { throw LocationInjectionError.deviceNotFound }
         guard output.contains("mounted successfully") else {
             throw PreparationError.mountFailed(String(output.suffix(300)))
         }
@@ -231,7 +233,10 @@ actor DeveloperDiskImagePreparer {
             output = try await runner(command)
         } catch {
             let text = "\(error) \(error.localizedDescription)"
-            guard Self.isUsbmuxDeviceNotFound(text), await allowsNetworkFallback() else { throw error }
+            guard Self.isUsbmuxDeviceNotFound(text), await allowsNetworkFallback() else {
+                if Self.isPhoneNotConnected(text) { throw LocationInjectionError.deviceNotFound }
+                throw error
+            }
             return try await runner(mobdev2Fallback)
         }
         guard Self.isUsbmuxDeviceNotFound(output), await allowsNetworkFallback() else { return output }
@@ -240,9 +245,23 @@ actor DeveloperDiskImagePreparer {
 
     /// pymobiledevice3 11.49 raises `DeviceNotFoundError("Device not found: usbmux has no
     /// device matching udid …")` for an unknown `--udid`, `NoDeviceConnectedError` when
-    /// usbmux lists nothing (`service_connection.py`, `cli/cli_common.py`).
+    /// usbmux lists nothing (`service_connection.py`, `cli/cli_common.py`). The CLI reports
+    /// the latter by its message only, "Device is not connected." (`__main__._report`,
+    /// `exceptions.NoDeviceConnectedError`).
     private static func isUsbmuxDeviceNotFound(_ text: String) -> Bool {
-        let markers = ["DeviceNotFoundError", "NoDeviceConnectedError", "usbmux has no device matching udid"]
+        let markers = [
+            "DeviceNotFoundError", "NoDeviceConnectedError", "usbmux has no device matching udid",
+            notConnectedMarker,
+        ]
         return markers.contains { text.range(of: $0, options: .caseInsensitive) != nil }
+    }
+
+    private static let notConnectedMarker = "Device is not connected"
+
+    /// The phone is not connected (live 2026-11-03 23:34, a Wi-Fi outage): the same
+    /// outcome as the other not-reachable errors, a connection loss, never "could not
+    /// determine the mount status" or a mount failure.
+    private static func isPhoneNotConnected(_ text: String) -> Bool {
+        text.range(of: notConnectedMarker, options: .caseInsensitive) != nil
     }
 }
