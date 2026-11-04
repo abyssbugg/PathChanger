@@ -149,6 +149,7 @@
 		DEC66ED2198A3C2FBEDD3F68 /* ToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D3DC43F9AE02C06CBDD830 /* ToastView.swift */; };
 		E1FA073C5C26B25717B72D2B /* MapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BA5A1243C1DDA57D70B3B9 /* MapService.swift */; };
 		E2DB9F04E54DA54B0407180F /* MapZoomTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCFFAADD273DE4B9D88C2C23 /* MapZoomTests.swift */; };
+		E637B963EEF63C66389090D5 /* GUIUpdateLoadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B02DB809ADA8BE3D1CB7BB91 /* GUIUpdateLoadTests.swift */; };
 		E67C01B2326C0180DFF788E0 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4F0E3FAA85666E3F272E03C /* OnboardingView.swift */; };
 		E84B20E4859793462207179C /* LocationFavorites.swift in Sources */ = {isa = PBXBuildFile; fileRef = C61225F0E722F0C5FDB308E5 /* LocationFavorites.swift */; };
 		E96F162ADDD20BD9F8551D71 /* BoundedProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7114CE3597659C6FD72F0865 /* BoundedProcessRunner.swift */; };
@@ -280,6 +281,7 @@
 		A2F74877F2384499B6704B3D /* LocationSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSearchService.swift; sourceTree = "<group>"; };
 		A5BA5A1243C1DDA57D70B3B9 /* MapService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapService.swift; sourceTree = "<group>"; };
 		AA30155B576ECF6E6E0E8C75 /* StopPanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StopPanelLayoutTests.swift; sourceTree = "<group>"; };
+		B02DB809ADA8BE3D1CB7BB91 /* GUIUpdateLoadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GUIUpdateLoadTests.swift; sourceTree = "<group>"; };
 		B0EFCD26D1D5976DC6DE6E6E /* MultiDeviceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiDeviceCoordinatorTests.swift; sourceTree = "<group>"; };
 		B18BFA22E645A1549A4008B1 /* ReliabilityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReliabilityManager.swift; sourceTree = "<group>"; };
 		B4085B7E872E34E187DA0407 /* RouteStateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteStateManager.swift; sourceTree = "<group>"; };
@@ -543,6 +545,7 @@
 				E104F985FEDF8D539267FF33 /* DevLocationBridgeSecurityTests.swift */,
 				C87292B0A4C87F93B87D5F59 /* FileDescriptorLeakTests.swift */,
 				02C82018B5370288EB8A97BC /* GPXParserTests.swift */,
+				B02DB809ADA8BE3D1CB7BB91 /* GUIUpdateLoadTests.swift */,
 				12F104D6D4E5F9E263923BA7 /* HealthCheckServerTests.swift */,
 				D716FB6D2AE2EB876A799F20 /* JoystickMovementTests.swift */,
 				9C25BA02F773D381B189E1D1 /* JoystickPolishTests.swift */,
@@ -762,6 +765,7 @@
 				9940F213BE8E4FB755E23A84 /* FakeLocationInjector.swift in Sources */,
 				EEACEE348956865DC775958F /* FileDescriptorLeakTests.swift in Sources */,
 				2E57354929C5A48ABD1586B4 /* GPXParserTests.swift in Sources */,
+				E637B963EEF63C66389090D5 /* GUIUpdateLoadTests.swift in Sources */,
 				77D4BE9125000B20EC4E4A06 /* HealthCheckServerTests.swift in Sources */,
 				02BD873DD4F6EAA3828B4E1A /* JoystickMovementTests.swift in Sources */,
 				EF19F704CAD104A52687FF9C /* JoystickPolishTests.swift in Sources */,

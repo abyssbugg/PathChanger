@@ -1,0 +1,330 @@
+//
+//  GUIUpdateLoadTests.swift
+//  PathChangerTests
+//
+//  How much main-thread work a running route costs the GUI (owner report 2026-11-03:
+//  "there's a lag when I click the GUI buttons"; a live `sample` during a 5 Hz Multi-Spot
+//  run showed the main thread busy in SwiftUI updates most of the time).
+//
+//  The benchmark drives AppState through a real-time Multi-Spot travel run with an
+//  injector that acknowledges each point after a short delay (the helper's round trip),
+//  while the mounted views are laid out once per display frame in an offscreen window.
+//  It counts AppState's change notifications, the renders of a view observing AppState,
+//  LocationStatusPresentation constructions, and the main thread's CPU time. Results are
+//  written to the test host's temporary directory (`pathchanger-gui-bench.txt`).
+//
+
+import XCTest
+import SwiftUI
+import AppKit
+import Combine
+@testable import PathChanger
+
+/// Acknowledges every application after `roundTrip`, as the helper does.
+private actor DelayedAckInjector: LocationInjecting {
+    private let roundTripNanoseconds: UInt64
+    private(set) var applied: [LocationCoordinate] = []
+
+    init(roundTrip: TimeInterval) {
+        roundTripNanoseconds = UInt64(roundTrip * 1_000_000_000)
+    }
+
+    func apply(_ request: LocationApplicationRequest) async throws -> LocationInjectionReceipt {
+        if roundTripNanoseconds > 0 { try await Task.sleep(nanoseconds: roundTripNanoseconds) }
+        applied.append(request.coordinate)
+        return LocationInjectionReceipt(
+            requestID: request.id,
+            session: UUID(),
+            coordinate: request.coordinate,
+            transport: request.target.transport,
+            actualChannel: .networkLockdown,
+            endpointClass: .direct,
+            sessionGeneration: request.sessionGeneration ?? 1,
+            completedAt: Date(),
+            outcome: .applied
+        )
+    }
+
+    func clear(target: LocationInjectionTarget, session: LocationSessionIdentity?) async throws {}
+    func events() async -> AsyncStream<LocationBridgeEvent> { AsyncStream { _ in } }
+}
+
+@MainActor
+private final class RenderCounter {
+    var renders = 0
+}
+
+/// A view that observes AppState like every mounted view does; its body runs once per
+/// AppState-driven render.
+private struct RenderProbe: View {
+    @EnvironmentObject var appState: AppState
+    let counter: RenderCounter
+
+    var body: some View {
+        counter.renders += 1
+        return Color.clear.frame(width: 1, height: 1)
+    }
+}
+
+/// The owner's screen during the measured run: the whole window, plus the map and the
+/// mode card in Multi-Spot (ContentView opens in Teleport with the card closed).
+private struct BenchHost: View {
+    let appState: AppState
+    let counter: RenderCounter
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ContentView()
+                .frame(width: 1180, height: 760)
+            ZStack(alignment: .topLeading) {
+                SimulationView(
+                    mode: .route,
+                    mapStyle: .constant(.standard),
+                    latitudeInput: .constant(""),
+                    longitudeInput: .constant(""),
+                    addressText: .constant("")
+                )
+                ModeContextCard(
+                    mode: .constant(.route),
+                    latitudeInput: .constant(""),
+                    longitudeInput: .constant(""),
+                    address: "Tap the map",
+                    onClose: {},
+                    onMove: {},
+                    onCommitCoords: {}
+                )
+                .padding(ModeContextCard.placementInsets)
+                RenderProbe(counter: counter)
+            }
+            .frame(width: 420, height: 760)
+        }
+        .environmentObject(appState)
+        .environmentObject(TunneldManager.shared)
+    }
+}
+
+struct GUIUpdateLoadSample: CustomStringConvertible {
+    var acknowledgedPoints = 0
+    var appStateSends = 0
+    var probeRenders = 0
+    var presentationBuilds = 0
+    var framesWithWork = 0
+    var frames = 0
+    var mainThreadCPUSeconds = 0.0
+    var frameCPUSeconds = 0.0
+    var wallSeconds = 0.0
+    var idleCPUPerSecond = 0.0
+
+    /// Main-thread CPU the run added over the idle GUI.
+    var addedCPUSeconds: Double { max(0, mainThreadCPUSeconds - idleCPUPerSecond * wallSeconds) }
+
+    func perPoint(_ value: Int) -> Double { Double(value) / Double(max(acknowledgedPoints, 1)) }
+
+    var description: String {
+        String(
+            format: "points %d · AppState sends %d (%.2f/point) · probe renders %d (%.2f/point) · " +
+                "presentation builds %d (%.2f/point) · frames with work %d of %d · " +
+                "main-thread CPU %.3f s of %.3f s wall (%.0f%%) · idle %.0f%% · added by the run %.3f s (%.0f%%) · frame CPU %.3f s",
+            acknowledgedPoints, appStateSends, perPoint(appStateSends), probeRenders, perPoint(probeRenders),
+            presentationBuilds, perPoint(presentationBuilds), framesWithWork, frames,
+            mainThreadCPUSeconds, wallSeconds, 100 * mainThreadCPUSeconds / max(wallSeconds, 0.001),
+            100 * idleCPUPerSecond, addedCPUSeconds, 100 * addedCPUSeconds / max(wallSeconds, 0.001),
+            frameCPUSeconds
+        )
+    }
+}
+
+@MainActor
+final class GUIUpdateLoadTests: XCTestCase {
+    private let s0 = LocationCoordinate(latitude: 35.68000, longitude: 139.76000)
+    private let s1 = LocationCoordinate(latitude: 35.68090, longitude: 139.76000)
+    private let s2 = LocationCoordinate(latitude: 35.68090, longitude: 139.76110)
+
+    private var windows: [NSWindow] = []
+    private var cancellables = Set<AnyCancellable>()
+
+    override func tearDown() async throws {
+        windows.forEach { $0.close() }
+        windows = []
+        cancellables = []
+        try await super.tearDown()
+    }
+
+    private static func threadCPUSeconds() -> Double {
+        Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1_000_000_000
+    }
+
+    private func makeRouteState(injector: any LocationInjecting, realTime: Bool) -> AppState {
+        let state: AppState
+        if realTime {
+            state = AppState(startBackgroundServices: false, locationInjector: injector)
+        } else {
+            state = AppState(startBackgroundServices: false, locationInjector: injector, routeDelay: { _ in await Task.yield() })
+        }
+        state.selectedDevice = Device(id: "bench-device", displayName: "Bench Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .route
+        state.autoSpeed = false
+        state.customSpeedMps = 40
+        state.updateFrequencyHz = 5
+        for stop in [s0, s1, s2] { state.stageLocation(stop, for: .route) }
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .automatic, repeatMode: .oneWay),
+            for: .route
+        )
+        state.locationSessionCoordinator.connectionReady(LocationSessionIdentity(
+            stableDeviceID: "bench-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+        ))
+        return state
+    }
+
+    private func host(_ state: AppState, counter: RenderCounter) -> NSHostingView<BenchHost> {
+        let size = CGSize(width: 1600, height: 760)
+        let hosting = NSHostingView(rootView: BenchHost(appState: state, counter: counter))
+        hosting.sizingOptions = []
+        let window = NSWindow(
+            contentRect: NSRect(origin: NSPoint(x: -20_000, y: -20_000), size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        hosting.frame = NSRect(origin: .zero, size: size)
+        window.contentView = hosting
+        windows.append(window)
+        return hosting
+    }
+
+    private func record(_ sample: GUIUpdateLoadSample, name: String) {
+        let line = "[GUIBench] \(name): \(sample)"
+        print(line)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pathchanger-gui-bench.txt")
+        let data = Data((line + "\n").utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+        let attachment = XCTAttachment(string: line)
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// The mounted GUI during a real-time 5 Hz Multi-Spot run, laid out at 60 frames a
+    /// second.
+    func testAMultiSpotRunBuildsThePresentationOncePerRenderedChange() async throws {
+        let injector = DelayedAckInjector(roundTrip: 0.03)
+        let state = makeRouteState(injector: injector, realTime: true)
+        let counter = RenderCounter()
+        let hosting = host(state, counter: counter)
+        for _ in 0..<5 {
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        // ContentView's first appearance selects Teleport; the measured run is Multi-Spot.
+        state.activeMode = .route
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(counter.renders, 0, "harness: the probe rendered")
+
+        var sample = GUIUpdateLoadSample()
+        // The idle cost of the same frames (the maps draw on the main thread whether or
+        // not anything changes), subtracted from the run's.
+        let idleStart = Self.threadCPUSeconds()
+        let idleWallStart = Date()
+        for _ in 0..<120 {
+            hosting.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        sample.idleCPUPerSecond = (Self.threadCPUSeconds() - idleStart) / Date().timeIntervalSince(idleWallStart)
+
+        state.objectWillChange.sink { sample.appStateSends += 1 }.store(in: &cancellables)
+        let rendersBefore = counter.renders
+        let buildsBefore = LocationStatusPresentation.debugBuildCount
+        let cpuStart = Self.threadCPUSeconds()
+        let wallStart = Date()
+
+        var finished = false
+        let run = Task { @MainActor in
+            await state.startSimulation()
+            finished = true
+        }
+        while !finished {
+            let renders = counter.renders
+            let builds = LocationStatusPresentation.debugBuildCount
+            let frameStart = Self.threadCPUSeconds()
+            hosting.layoutSubtreeIfNeeded()
+            sample.frameCPUSeconds += Self.threadCPUSeconds() - frameStart
+            sample.frames += 1
+            if counter.renders != renders || LocationStatusPresentation.debugBuildCount != builds {
+                sample.framesWithWork += 1
+            }
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        await run.value
+        hosting.layoutSubtreeIfNeeded()
+
+        sample.wallSeconds = Date().timeIntervalSince(wallStart)
+        sample.mainThreadCPUSeconds = Self.threadCPUSeconds() - cpuStart
+        sample.acknowledgedPoints = await injector.applied.count
+        sample.probeRenders = counter.renders - rendersBefore
+        sample.presentationBuilds = LocationStatusPresentation.debugBuildCount - buildsBefore
+        record(sample, name: "hosted 5 Hz Multi-Spot run")
+
+        XCTAssertEqual(state.currentLocation, s2, "harness: the run reached its last stop")
+        XCTAssertGreaterThan(sample.acknowledgedPoints, 15, "harness: the run sent many points")
+        // Each render reads the presentation once (memoized per state change), not once
+        // per view and property that shows it.
+        XCTAssertLessThanOrEqual(
+            sample.presentationBuilds, sample.acknowledgedPoints * 3 + 10,
+            "the presentation was rebuilt on every read: \(sample)"
+        )
+    }
+
+    /// The same run without the GUI and without real time: how many change notifications
+    /// AppState sends per acknowledged point.
+    func testAHeadlessMultiSpotRunCountsAppStateNotifications() async throws {
+        let injector = DelayedAckInjector(roundTrip: 0)
+        let state = makeRouteState(injector: injector, realTime: false)
+        var sample = GUIUpdateLoadSample()
+        state.objectWillChange.sink { sample.appStateSends += 1 }.store(in: &cancellables)
+        let cpuStart = Self.threadCPUSeconds()
+        let wallStart = Date()
+        await state.startSimulation()
+        sample.wallSeconds = Date().timeIntervalSince(wallStart)
+        sample.mainThreadCPUSeconds = Self.threadCPUSeconds() - cpuStart
+        sample.acknowledgedPoints = await injector.applied.count
+        record(sample, name: "headless run")
+
+        XCTAssertEqual(state.currentLocation, s2, "harness: the run reached its last stop")
+        XCTAssertGreaterThan(sample.acknowledgedPoints, 15, "harness: the run sent many points")
+    }
+
+    // MARK: - The location presentation
+    // MARK: - The location presentation
+
+    /// Every view and property that shows the location status read `locationPresentation`,
+    /// and each read built it again (with a new ISO 8601 formatter): about 25 builds per
+    /// render in the benchmark. It is built once per change of what it shows.
+    func testReadingThePresentationBuildsItOncePerChangeOfWhatItShows() {
+        let state = AppState(startBackgroundServices: false, locationInjector: FakeLocationInjector())
+        let start = LocationStatusPresentation.debugBuildCount
+        let first = state.locationPresentation
+        for _ in 0..<10 { _ = state.locationPresentation }
+        XCTAssertEqual(LocationStatusPresentation.debugBuildCount - start, 1, "unchanged state is built once")
+        XCTAssertEqual(first.deviceLifecycleLabel, "No visible device")
+
+        state.selectedDevice = Device(id: "bench-device", displayName: "Bench Device", connectionType: .wifi)
+        XCTAssertEqual(state.locationPresentation.deviceLifecycleLabel, "Device visible", "a device change shows at once")
+        let session = LocationSessionIdentity(stableDeviceID: "bench-device", transport: .wifi, endpointClass: .unresolved, generation: 1)
+        state.locationSessionCoordinator.connectionReady(session)
+        let ready = state.locationPresentation
+        XCTAssertEqual(ready, LocationStatusPresentation(
+            state: state.locationSessionCoordinator.state,
+            deviceVisible: true
+        ), "a session change shows at once and matches a fresh build")
+        for _ in 0..<10 { _ = state.locationPresentation }
+        XCTAssertEqual(LocationStatusPresentation.debugBuildCount - start, 4, "one build per change, plus the fresh one above")
+    }
+}

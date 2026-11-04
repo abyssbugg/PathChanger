@@ -11,6 +11,11 @@ import Combine
 import AppKit
 
 struct LocationStatusPresentation: Equatable {
+#if DEBUG
+    /// Constructions so far, for the GUI load benchmark (`GUIUpdateLoadTests`).
+    /// Written only on the main thread in practice (views and AppState build it).
+    static var debugBuildCount = 0
+#endif
     let connectionLabel: String
     let applicationLabel: String
     let movementLabel: String
@@ -36,6 +41,9 @@ struct LocationStatusPresentation: Equatable {
         hasUnresolvedClear: Bool = false,
         isAwaitingAutomaticReconnect: Bool = false
     ) {
+#if DEBUG
+        Self.debugBuildCount += 1
+#endif
         let ready: LocationSessionIdentity? = { if case .ready(let value) = state.connection { return value }; return nil }()
         let active: LocationInjectionReceipt? = {
             switch state.application {
@@ -134,9 +142,13 @@ struct LocationStatusPresentation: Equatable {
         let endpoint = ready.map { $0.endpointClass == .direct ? "Direct" : "RSD" } ?? "Unavailable"
         let generation = ready?.generation ?? state.lastAcknowledgedReceipt?.sessionGeneration ?? 0
         let request = state.lastAcknowledgedReceipt.map { String($0.requestID.uuidString.suffix(4)) } ?? "—"
-        let acknowledged = state.lastAcknowledgedReceipt.map { ISO8601DateFormatter().string(from: $0.completedAt) } ?? "—"
+        let acknowledged = state.lastAcknowledgedReceipt.map { Self.acknowledgedTimeFormatter.string(from: $0.completedAt) } ?? "—"
         sessionDiagnostic = "\(alias) · \(transport) · \(endpoint) · generation \(generation) · request …\(request) · acknowledged \(acknowledged)"
     }
+
+    /// One formatter for every build: creating one cost more than the rest of the build
+    /// (a live sample, 2026-11-03). ISO8601DateFormatter is thread-safe.
+    private static let acknowledgedTimeFormatter = ISO8601DateFormatter()
 
     private static let statusFallbacks: [String: String] = [
         "location.status.connection.unavailable": "Unavailable",
@@ -410,13 +422,33 @@ class AppState: ObservableObject, LocationTerminationHandling {
             presentationState.application = .clearing
             presentationState.movement = .idle
         }
-        return LocationStatusPresentation(
+        let inputs = LocationPresentationInputs(
             state: presentationState,
             deviceVisible: selectedDevice != nil,
             hasUnresolvedClear: unresolvedClearSession != nil,
             isAwaitingAutomaticReconnect: isAwaitingAutomaticReconnect
         )
+        // Views read this many times per render (every chip, button and the map); build
+        // it once per change of what it shows (GUI lag, 2026-11-03).
+        if let cached = locationPresentationCache, cached.inputs == inputs { return cached.presentation }
+        let presentation = LocationStatusPresentation(
+            state: inputs.state,
+            deviceVisible: inputs.deviceVisible,
+            hasUnresolvedClear: inputs.hasUnresolvedClear,
+            isAwaitingAutomaticReconnect: inputs.isAwaitingAutomaticReconnect
+        )
+        locationPresentationCache = (inputs, presentation)
+        return presentation
     }
+
+    /// Everything `locationPresentation` is built from.
+    private struct LocationPresentationInputs: Equatable {
+        let state: LocationSessionState
+        let deviceVisible: Bool
+        let hasUnresolvedClear: Bool
+        let isAwaitingAutomaticReconnect: Bool
+    }
+    private var locationPresentationCache: (inputs: LocationPresentationInputs, presentation: LocationStatusPresentation)?
 
     /// The Connection chip's words. With no device selected and nothing applied it reads
     /// Unavailable, except while PathChanger waits for the lost phone: discovery has
