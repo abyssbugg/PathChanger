@@ -326,3 +326,62 @@ final class JoystickPolishTests: XCTestCase {
         return try String(contentsOf: repositoryRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 }
+
+// MARK: - Arrow keys while the Settings panel is shown (review 2026-11-04 round 2 issue 8)
+
+/// The centred Settings panel dims the window, yet the joystick's app-local arrow-key
+/// monitor kept steering the phone behind it. While the panel is shown the keys go to the
+/// panel; a key still held from before is released once, so the phone stops.
+final class JoystickKeyRouterTests: XCTestCase {
+    private let up: UInt16 = 126
+    private let left: UInt16 = 123
+
+    func testArrowKeysSteerWhileNoPanelIsShown() {
+        var router = JoystickKeyRouter()
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: false),
+                       .steer(CGPoint(x: 0, y: 1)))
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: false, settingsPanelShown: false), .release)
+        XCTAssertEqual(router.handle(keyCode: 0, isKeyDown: true, settingsPanelShown: false), .passThrough,
+                       "other keys are not the joystick's")
+    }
+
+    func testArrowKeysNeverSteerWhileTheSettingsPanelIsShown() {
+        var router = JoystickKeyRouter()
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: true), .passThrough)
+        XCTAssertEqual(router.handle(keyCode: left, isKeyDown: true, settingsPanelShown: true), .passThrough)
+        XCTAssertEqual(router.handle(keyCode: left, isKeyDown: false, settingsPanelShown: true), .passThrough)
+        XCTAssertTrue(router.heldKeys.isEmpty)
+    }
+
+    func testAKeyHeldWhenThePanelOpensStopsThePhoneOnce() {
+        var router = JoystickKeyRouter()
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: false),
+                       .steer(CGPoint(x: 0, y: 1)))
+        // Key repeat after the panel opened: released, then left to the panel.
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: true), .release)
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: true), .passThrough)
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: false, settingsPanelShown: true), .passThrough)
+    }
+
+    func testAKeyReleasedAfterThePanelClosedStillStopsThePhone() {
+        var router = JoystickKeyRouter()
+        _ = router.handle(keyCode: up, isKeyDown: true, settingsPanelShown: false)
+        XCTAssertEqual(router.handle(keyCode: up, isKeyDown: false, settingsPanelShown: true), .release,
+                       "the held key's release always reaches the joystick")
+        XCTAssertTrue(router.heldKeys.isEmpty)
+    }
+}
+
+/// The window's location and simulation menu shortcuts (⌘L, ⌘K, ⌘R, ⌘Space, ⌘P, ⌘Esc)
+/// acted behind the Settings panel.
+@MainActor
+final class SettingsPanelShortcutTests: XCTestCase {
+    func testWindowShortcutsAreOffWhileTheSettingsPanelIsShown() {
+        let state = AppState(startBackgroundServices: false)
+        XCTAssertTrue(state.acceptsWindowShortcuts)
+        state.isSettingsPanelShown = true
+        XCTAssertFalse(state.acceptsWindowShortcuts)
+        state.isSettingsPanelShown = false
+        XCTAssertTrue(state.acceptsWindowShortcuts)
+    }
+}

@@ -8,11 +8,53 @@
 import SwiftUI
 import AppKit
 
+/// What the joystick's app-local arrow-key monitor does with a key event. While the
+/// centred Settings panel is shown the keys are the panel's, never the phone's; a key
+/// still held from before is released once, so the phone stops (review 2026-11-04 round
+/// 2 issue 8). Pure so the rules are testable.
+struct JoystickKeyRouter {
+    enum Action: Equatable {
+        /// Not the joystick's: the event goes on to the window.
+        case passThrough
+        case steer(CGPoint)
+        case release
+    }
+
+    static let directions: [UInt16: CGPoint] = [
+        126: CGPoint(x: 0, y: 1),
+        125: CGPoint(x: 0, y: -1),
+        123: CGPoint(x: -1, y: 0),
+        124: CGPoint(x: 1, y: 0)
+    ]
+
+    /// Arrow keys pressed while steering and not yet released.
+    private(set) var heldKeys: Set<UInt16> = []
+
+    mutating func handle(keyCode: UInt16, isKeyDown: Bool, settingsPanelShown: Bool) -> Action {
+        guard let direction = Self.directions[keyCode] else { return .passThrough }
+        if isKeyDown {
+            guard settingsPanelShown else {
+                heldKeys.insert(keyCode)
+                return .steer(direction)
+            }
+            guard heldKeys.isEmpty else {
+                heldKeys.removeAll()
+                return .release
+            }
+            return .passThrough
+        }
+        // The release of a key that steered always reaches the joystick.
+        if heldKeys.remove(keyCode) != nil { return .release }
+        return settingsPanelShown ? .passThrough : .release
+    }
+}
+
 struct JoystickControlView: View {
     @EnvironmentObject var appState: AppState
     @State private var knobPosition: CGPoint = .zero
     @GestureState private var dragOffset: CGSize = .zero
     @State private var keyMonitor: Any?
+    @State private var keyRouter = JoystickKeyRouter()
 
     private let outerRadius: CGFloat = 66
     private let innerRadius: CGFloat = 23
@@ -72,21 +114,22 @@ struct JoystickControlView: View {
     private func installKeyMonitor() {
         removeKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
-            let mapping: [UInt16: CGPoint] = [
-                126: CGPoint(x: 0, y: 1),
-                125: CGPoint(x: 0, y: -1),
-                123: CGPoint(x: -1, y: 0),
-                124: CGPoint(x: 1, y: 0)
-            ]
-            guard let direction = mapping[event.keyCode] else { return event }
-            if event.type == .keyDown {
+            switch keyRouter.handle(
+                keyCode: event.keyCode,
+                isKeyDown: event.type == .keyDown,
+                settingsPanelShown: appState.isSettingsPanelShown
+            ) {
+            case .passThrough:
+                return event
+            case .steer(let direction):
                 // updateJoystickDirection engages the joystick when it is not running;
                 // a second start here raced it (and repeated on key-repeat).
                 appState.updateJoystickDirection(direction)
-            } else {
+                return nil
+            case .release:
                 appState.updateJoystickDirection(.zero)
+                return nil
             }
-            return nil
         }
     }
 

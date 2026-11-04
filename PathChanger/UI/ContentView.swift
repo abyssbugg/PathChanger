@@ -473,10 +473,15 @@ struct ContentView: View {
             appState.activeMode = initialState.mode
             cardOpen = initialState.cardOpen
             showSettings = initialState.showSettings
+            appState.isSettingsPanelShown = showSettings
             Organic.registerFonts()
             syncCoordFields()
             coachOpen = !dismissedCoach && initialState == .standard
         }
+        .onChange(of: showSettings) { _, shown in
+            appState.isSettingsPanelShown = shown
+        }
+        .onDisappear { appState.isSettingsPanelShown = false }
         .onChange(of: selectedMode) { oldMode, newMode in
             if newMode != .settings {
                 appState.activeMode = newMode

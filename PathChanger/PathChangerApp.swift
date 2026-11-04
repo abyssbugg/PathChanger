@@ -276,6 +276,7 @@ struct PathChangerApp: App {
                     appState.showLocationInput = true
                 }
                 .keyboardShortcut("l", modifiers: .command)
+                .disabled(!appState.acceptsWindowShortcuts)
 
                 Button("Clear Location") {
                     Task {
@@ -283,6 +284,7 @@ struct PathChangerApp: App {
                     }
                 }
                 .keyboardShortcut("k", modifiers: .command)
+                .disabled(!appState.acceptsWindowShortcuts)
 
                 Divider()
 
@@ -292,6 +294,7 @@ struct PathChangerApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: .command)
+                .disabled(!appState.acceptsWindowShortcuts)
             }
 
             CommandMenu("Simulation") {
@@ -299,19 +302,19 @@ struct PathChangerApp: App {
                     Task { await appState.startSimulation() }
                 }
                 .keyboardShortcut(.space, modifiers: .command)
-                .disabled(!appState.canStartSimulation)
+                .disabled(!appState.canStartSimulation || !appState.acceptsWindowShortcuts)
 
                 Button("Pause Simulation") {
                     appState.pauseSimulation()
                 }
                 .keyboardShortcut("p", modifiers: .command)
-                .disabled(!appState.isSimulating)
+                .disabled(!appState.isSimulating || !appState.acceptsWindowShortcuts)
 
                 Button("Stop Simulation") {
                     Task { await appState.stopSimulation() }
                 }
                 .keyboardShortcut(.escape, modifiers: .command)
-                .disabled(!appState.isSimulating)
+                .disabled(!appState.isSimulating || !appState.acceptsWindowShortcuts)
 
                 Divider()
 
@@ -752,6 +755,11 @@ class AppState: ObservableObject, LocationTerminationHandling {
 
     // MARK: UI State
     @Published var showLocationInput: Bool = false
+    /// The centred in-window Settings panel is shown (ContentView owns it). The joystick's
+    /// arrow keys and the window's location and simulation shortcuts never act behind it
+    /// (review 2026-11-04 round 2 issue 8).
+    @Published var isSettingsPanelShown: Bool = false
+    var acceptsWindowShortcuts: Bool { !isSettingsPanelShown }
     @Published var showRouteImport: Bool = false
     @Published var showOnboarding: Bool = false
     @Published var lastError: String? {
