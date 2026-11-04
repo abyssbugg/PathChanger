@@ -992,38 +992,45 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
     }
 
     /// A record naming a PID whose command line does not serve this helper socket (a
-    /// reused PID, or not a helper at all): refused, and that process is never signalled.
+    /// reused PID, or not a helper at all): that process is never signalled. The recorded
+    /// helper is gone, so the record is stale: it is removed and a new helper starts,
+    /// instead of every Start and Clear failing until that process exits (review
+    /// 2026-11-04 issue 8).
     @MainActor
-    func testAProcessThatIsNotThisSocketsHelperIsNeverSignalled() async throws {
+    func testAProcessThatIsNotThisSocketsHelperIsNeverSignalledAndItsRecordIsStale() async throws {
         let (paths, bridgeScript, root) = try orphanFixture("other-build-cmdline")
         defer { try? FileManager.default.removeItem(at: root) }
         let earlier = ManagedLocationHelperController(
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
         let old = try await earlier.connectOrLaunch()
-        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        // The recorded helper died without removing its files (this test's own helper).
+        kill(old.record.pid, SIGKILL)
+        for _ in 0..<250 where TunnelProcessTerminator.isAlive(pid: old.record.pid) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         let bystander = Process()
         bystander.executableURL = URL(fileURLWithPath: "/bin/sleep")
         bystander.arguments = ["120"]
         try bystander.run()
         defer { if bystander.isRunning { bystander.terminate(); bystander.waitUntilExit() } }
-        try writeRecord(old.record, sessions: [], pid: bystander.processIdentifier,
-                        bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        // Its PID is in use again, by a process that is not a helper.
+        try writeRecord(old.record, sessions: [heldSession(for: "00008130-0011223344556677")],
+                        pid: bystander.processIdentifier, bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
         let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
             paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
         do {
-            do {
-                try await bridge.start()
-                XCTFail("a record whose PID is not this socket's helper is refused")
-            } catch {
-                XCTAssertTrue(error.localizedDescription.contains("not a location helper"), error.localizedDescription)
-            }
-            XCTAssertFalse(bridge.isRunning)
+            try await bridge.start()
+
             XCTAssertTrue(bystander.isRunning, "never signalled")
-            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "the record is left as found")
-            try await earlier.shutdown()
+            XCTAssertTrue(bridge.isRunning, "the stale record no longer blocks Start")
+            XCTAssertNotEqual(bridge.adoptedHelperID, old.record.helperID)
+            let current = try XCTUnwrap(bridge.helperProcessIdentifierIfRunning())
+            XCTAssertNotEqual(current, bystander.processIdentifier)
+            XCTAssertNil(bridge.inheritedHeldSession(for: "00008130-0011223344556677"),
+                         "nothing was stopped: the location ended when that helper died")
+            try await bridge.shutdownHelper()
         } catch {
-            try? await earlier.shutdown()
-            if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+            try? await bridge.shutdownHelper()
             throw error
         }
     }

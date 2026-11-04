@@ -961,9 +961,12 @@ final class ManagedLocationHelperController {
                             holdsLocation: !record.activeSessions.isEmpty)
                     }
                     // Never adopted: stopped, and this build's helper is launched below.
-                    try await stopHelperFromAnotherBuild(record, differences: differences, token: token)
                     // Kept until a launch succeeds: a failed launch must not lose what it held.
-                    replacedHelperRecordAwaitingLaunch = record
+                    // A record that was already stale stopped nothing (its location ended
+                    // when that helper died).
+                    if try await stopHelperFromAnotherBuild(record, differences: differences, token: token) {
+                        replacedHelperRecordAwaitingLaunch = record
+                    }
                 } else {
                     try record.validateForAdoption(expectation: expectation)
                     let connection = try await authenticate(
@@ -1170,24 +1173,47 @@ final class ManagedLocationHelperController {
     /// to a recorded helper; otherwise nothing is signalled. A helper on this protocol is
     /// asked to quit over its socket; if it cannot be asked or does not exit, SIGTERM (then
     /// SIGKILL) goes only to the validated PID. Stopping it ends any location it held.
+    /// Returns false when nothing was stopped: the recorded helper was already gone and
+    /// its stale record and socket were removed.
+    @discardableResult
     private func stopHelperFromAnotherBuild(
         _ record: ManagedLocationHelperRecord,
         differences: [String],
         token: String
-    ) async throws {
+    ) async throws -> Bool {
         let pid = record.pid
-        guard TunnelProcessTerminator.commandLine(of: pid)?
-            .contains(Self.helperCommandPattern(socketPath: paths.socketURL.path)) == true else {
+        guard let commandLine = TunnelProcessTerminator.commandLine(of: pid) else {
             if !processIsAlive(pid) {
                 try removeStaleArtifacts()
-                return
+                return false
             }
             Logger.error(
-                "[PersistentBridge] The location helper record names PID \(pid), whose command line does not serve "
-                    + "this helper socket; refusing it and signalling nothing",
+                "[PersistentBridge] The command line of the recorded location helper (PID \(pid)) could not be read; "
+                    + "refusing it and signalling nothing",
                 category: .device
             )
             throw ControllerError.unverifiedHelperProcess(pid)
+        }
+        guard commandLine.contains(Self.helperCommandPattern(socketPath: paths.socketURL.path)) else {
+            // The recorded helper is gone and its PID is in use again by another process:
+            // the record is stale (review 2026-11-04 issue 8). It blocked every Start and
+            // Clear until that process exited. Unless a helper with the recorded ID still
+            // answers on the socket, the files are removed; nothing is signalled.
+            if (try? await authenticate(record: record, token: token, launchedNewHelper: false)) != nil {
+                Logger.error(
+                    "[PersistentBridge] The location helper record names PID \(pid), whose command line does not "
+                        + "serve this helper socket, yet its helper answers; refusing it and signalling nothing",
+                    category: .device
+                )
+                throw ControllerError.unverifiedHelperProcess(pid)
+            }
+            Logger.info(
+                "[PersistentBridge] The location helper record names PID \(pid), which is no longer a location "
+                    + "helper; removing the stale record and socket and signalling nothing",
+                category: .device
+            )
+            try removeStaleArtifacts()
+            return false
         }
         // Replaced only when its PathChanger is gone (an orphan, the live 2026-11-03 case).
         // Another build still running holds its location through it: stopping it ended
@@ -1226,6 +1252,7 @@ final class ManagedLocationHelperController {
             throw ControllerError.helperFromAnotherBuildStillRunning(pid)
         }
         try removeStaleArtifacts()
+        return true
     }
 
     /// Every managed helper is launched with this argument pair; a reused PID is not.
