@@ -183,6 +183,107 @@ enum TunnelPillPhase: Equatable {
         }
     }
 }
+
+/// What the tunnel pill shows: where the tunnel stands (`statusText`) and, apart from it,
+/// what a click does (`actionText`). The click itself is resolved when it happens
+/// (`TunnelPillAction`), so a location held over the tunnel still asks before Stop.
+struct TunnelPillModel: Equatable {
+    let phase: TunnelPillPhase
+    let action: TunnelPillAction
+    let isEnabled: Bool
+    let hasSelectedDevice: Bool
+
+    static func resolve(
+        isRunning: Bool,
+        isWaitingForDevice: Bool,
+        isStarting: Bool,
+        isError: Bool,
+        isAutoReconnecting: Bool,
+        hasSelectedDevice: Bool
+    ) -> TunnelPillModel {
+        TunnelPillModel(
+            phase: TunnelPillPhase.resolve(
+                isWaitingForDevice: isWaitingForDevice, isStarting: isStarting, isRunning: isRunning,
+                isError: isError, isAutoReconnecting: isAutoReconnecting
+            ),
+            action: TunnelPillAction.resolve(
+                isRunning: isRunning, requiresLocationQuitDecision: false, isWaitingForDevice: isWaitingForDevice,
+                isStarting: isStarting, isAutoReconnecting: isAutoReconnecting, isError: isError
+            ),
+            isEnabled: TunnelPillAction.isEnabled(
+                hasSelectedDevice: hasSelectedDevice, isWaitingForDevice: isWaitingForDevice,
+                isAutoReconnecting: isAutoReconnecting
+            ),
+            hasSelectedDevice: hasSelectedDevice
+        )
+    }
+
+    var statusText: String {
+        switch phase {
+        case .waitingForDevice: return "Waiting for iPhone…"
+        case .connecting: return "Connecting…"
+        case .reconnecting: return "Reconnecting…"
+        case .live: return "Tunnel live"
+        case .error: return "Tunnel failed"
+        case .stopped: return "Tunnel off"
+        }
+    }
+
+    /// The click's words; nil while a Start runs (the click does nothing then).
+    var actionText: String? {
+        switch action {
+        case .confirmStop, .stop: return phase == .waitingForDevice ? "Cancel" : "Stop"
+        case .stopReconnecting: return "Stop"
+        case .reconnect: return "Reconnect"
+        case .start: return "Start tunnel"
+        case .none: return nil
+        }
+    }
+
+    /// VoiceOver reads the button by what it does, then where the tunnel stands.
+    var accessibilityLabel: String {
+        switch action {
+        case .confirmStop, .stop: return phase == .waitingForDevice ? "Cancel waiting for the iPhone" : "Stop tunnel"
+        case .stopReconnecting: return "Stop reconnecting"
+        case .reconnect: return "Reconnect tunnel"
+        case .start: return "Start tunnel"
+        case .none: return statusText
+        }
+    }
+
+    var accessibilityValue: String { statusText }
+
+    /// Something is under way: a spinner instead of the status dot.
+    var showsProgress: Bool {
+        switch phase {
+        case .waitingForDevice, .connecting, .reconnecting: return true
+        case .live, .error, .stopped: return false
+        }
+    }
+
+    /// A stopped tunnel is the one filled call to action in the title bar.
+    var isPrimary: Bool { phase == .stopped }
+}
+
+extension TunnelNotice {
+    /// One line of the notice; the reconnect's "Last attempt" line carries its label apart.
+    struct Line: Equatable, Hashable {
+        let label: String?
+        let text: String
+    }
+
+    var lines: [Line] {
+        text.split(separator: "\n", omittingEmptySubsequences: true).map { raw in
+            let line = String(raw)
+            let prefix = "Last attempt: "
+            if line.hasPrefix(prefix) {
+                return Line(label: "Last attempt", text: String(line.dropFirst(prefix.count)))
+            }
+            return Line(label: nil, text: line)
+        }
+    }
+}
+
 enum AppMode: String, CaseIterable, Identifiable {
     case teleport = "Teleport"
     case jump = "Jump"
@@ -321,6 +422,7 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
                 OrganicTitleBar(
+                    appState: appState,
                     showDeviceMenu: $showDeviceMenu,
                     showSettings: $showSettings,
                     appearanceRaw: $appearanceRaw,
@@ -331,7 +433,14 @@ struct ContentView: View {
                         }
                     }
                 )
+                .equatable()
                 .zIndex(2)
+
+                if let notice = tunnelNotice {
+                    TunnelNoticeView(text: notice.text, isError: notice.isError)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(1)
+                }
 
                 ZStack(alignment: .topLeading) {
                     SimulationView(
@@ -438,11 +547,6 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
-                if let notice = tunnelNotice {
-                    TunnelNoticeView(text: notice.text, isError: notice.isError)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
                 Spacer().allowsHitTesting(false)
             }
             .allowsHitTesting(true)
@@ -945,32 +1049,50 @@ struct ContentView: View {
     }
 }
 
-/// The notice under the tunnel pill: why the tunnel is not live, in words.
+/// Why the tunnel is not live, in words, as a strip right under the title bar (the tunnel
+/// pill's own row): the first line says what is happening, a reconnect's "Last attempt"
+/// line carries its label, and nothing hides behind a hover.
 struct TunnelNoticeView: View {
     let text: String
     let isError: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: isError ? "exclamationmark.triangle.fill" : "wifi")
-                .foregroundStyle(isError ? Organic.accent700 : Organic.neutral700)
-            Text(text)
-                .font(Organic.body(11.5))
-                .foregroundStyle(Organic.text)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+        let lines = TunnelNotice(text: text, isError: isError).lines
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "antenna.radiowaves.left.and.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isError ? Organic.danger : Organic.neutral700)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    lineText(line, isFirst: index == 0)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .textSelection(.enabled)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: 560, alignment: .leading)
-        .background(isError ? Organic.accent100 : Organic.neutral100)
-        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                .stroke(isError ? Organic.accent300 : Organic.neutral300, lineWidth: 1)
-        )
+        .frame(maxWidth: 760, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity)
+        .background(isError ? Organic.accent100 : Organic.neutral200)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(isError ? Organic.accent300 : Organic.neutral300).frame(height: 1)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("tunnel.notice")
+    }
+
+    private func lineText(_ line: TunnelNotice.Line, isFirst: Bool) -> Text {
+        let body = Text(line.text)
+            .font(isFirst ? Organic.body(12, weight: .medium) : Organic.body(11.5))
+            .foregroundColor(isFirst ? Organic.text : Organic.neutral700)
+        guard let label = line.label else { return body }
+        return Text("\(label)  ")
+            .font(Organic.body(11.5, weight: .bold))
+            .foregroundColor(isError ? Organic.accent800 : Organic.neutral800)
+            + body
     }
 }
 

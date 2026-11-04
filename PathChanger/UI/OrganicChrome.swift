@@ -54,15 +54,41 @@ enum RailPanel: String {
     case recent
 }
 
+/// The window's title bar: the phone and its connection choice, the tunnel pill, and the
+/// appearance and Settings buttons.
+///
+/// It observes the device, tunnel and reconnect state it shows, never `AppState` itself:
+/// AppState re-sends every change of a running route (about two renders per acknowledged
+/// point), none of which the title bar shows. AppState is read when a button is pressed.
 struct OrganicTitleBar: View {
-    @EnvironmentObject var appState: AppState
+    let appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
+    @ObservedObject private var device: DeviceStateManager
+    @ObservedObject private var deviceManager: DeviceManager
+    @ObservedObject private var reconnector: TunnelAutoReconnector
     @Binding var showDeviceMenu: Bool
     @State private var confirmTunnelStop = false
     @Binding var showSettings: Bool
     @Binding var appearanceRaw: String
     let onRefresh: () -> Void
     @State private var transportTick = 0
+
+    init(
+        appState: AppState,
+        showDeviceMenu: Binding<Bool>,
+        showSettings: Binding<Bool>,
+        appearanceRaw: Binding<String>,
+        onRefresh: @escaping () -> Void
+    ) {
+        self.appState = appState
+        _device = ObservedObject(wrappedValue: appState.device)
+        _deviceManager = ObservedObject(wrappedValue: appState.deviceManager)
+        _reconnector = ObservedObject(wrappedValue: appState.tunnelAutoReconnector)
+        _showDeviceMenu = showDeviceMenu
+        _showSettings = showSettings
+        _appearanceRaw = appearanceRaw
+        self.onRefresh = onRefresh
+    }
 
     var body: some View {
 #if DEBUG
@@ -78,30 +104,19 @@ struct OrganicTitleBar: View {
             }
 
             HStack(spacing: 8) {
-                Button {
+                chromeCircleButton(
+                    glyph: appearance == .dark ? .sun : .moon,
+                    selected: false,
+                    help: appearance == .dark ? "Switch to light" : "Switch to dark"
+                ) {
                     appearanceRaw = appearance == .dark
                         ? OrganicAppearance.light.rawValue
                         : OrganicAppearance.dark.rawValue
-                } label: {
-                    OrganicGlyphView(glyph: appearance == .dark ? .sun : .moon, size: 15)
-                        .foregroundStyle(Organic.neutral700)
-                        .frame(width: 32, height: 32)
-                        .background(Organic.neutral100)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Organic.neutral400, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
-                .help(appearance == .dark ? "Switch to light" : "Switch to dark")
-                Button { showSettings.toggle() } label: {
-                    OrganicGlyphView(glyph: .settings, size: 15)
-                        .foregroundStyle(showSettings ? Organic.accent700 : Organic.neutral700)
-                        .frame(width: 32, height: 32)
-                        .background(showSettings ? Organic.accent100 : Organic.neutral100)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(showSettings ? Organic.accent400 : Organic.neutral400, lineWidth: 1))
+                chromeCircleButton(glyph: .settings, selected: showSettings, help: "Settings") {
+                    showSettings.toggle()
                 }
-                .buttonStyle(.plain)
-                .help("Settings")
+                .accessibilityIdentifier("chrome.settings")
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.trailing, 40)
@@ -112,6 +127,26 @@ struct OrganicTitleBar: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Organic.neutral400).frame(height: 1)
         }
+    }
+
+    private func chromeCircleButton(
+        glyph: OrganicGlyph,
+        selected: Bool,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            OrganicGlyphView(glyph: glyph, size: 15)
+                .foregroundStyle(selected ? Organic.accent700 : Organic.neutral700)
+                .frame(width: 32, height: 32)
+                .background(selected ? Organic.accent100 : Organic.neutral100)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(selected ? Organic.accent400 : Organic.neutral400, lineWidth: 1))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private var appearance: OrganicAppearance {
@@ -222,11 +257,13 @@ struct OrganicTitleBar: View {
                 break
             }
         } label: {
-            TunnelPillLabel(phase: tunnelPhase, hasSelectedDevice: hasSelectedDevice)
+            TunnelPillFace(model: tunnelPillModel)
         }
         .buttonStyle(.plain)
         .disabled(!isTunnelPillEnabled)
-        .opacity(isTunnelPillEnabled ? 1 : 0.55)
+        .accessibilityLabel(tunnelPillModel.accessibilityLabel)
+        .accessibilityValue(tunnelPillModel.accessibilityValue)
+        .accessibilityIdentifier("tunnel.pill")
         .help(appState.isTunnelAutoReconnecting && !tunneldManager.isRunning
               ? "PathChanger keeps trying to reconnect. Click to stop reconnecting."
               : connectionHelp)
@@ -298,15 +335,14 @@ struct OrganicTitleBar: View {
         )
     }
 
-    private var tunnelPhase: TunnelPillPhase {
-        let isError: Bool
-        if case .error = tunneldManager.state { isError = true } else { isError = false }
-        return TunnelPillPhase.resolve(
+    private var tunnelPillModel: TunnelPillModel {
+        TunnelPillModel.resolve(
+            isRunning: tunneldManager.isRunning,
             isWaitingForDevice: tunneldManager.isWaitingForDevice,
             isStarting: tunneldManager.isStarting,
-            isRunning: tunneldManager.isRunning,
-            isError: isError,
-            isAutoReconnecting: appState.isTunnelAutoReconnecting
+            isError: isTunnelError,
+            isAutoReconnecting: appState.isTunnelAutoReconnecting,
+            hasSelectedDevice: hasSelectedDevice
         )
     }
 
@@ -338,6 +374,20 @@ struct OrganicTitleBar: View {
                 : "Direct USB connection ready. Click to start RemoteXPC tunnel."
         }
         return "Start RemoteXPC tunnel"
+    }
+}
+
+/// The window re-renders on every AppState change; the title bar's own observed objects
+/// re-render it when what it shows changes, so a new parent render with the same bindings
+/// (and a new, equivalent refresh closure) is the same title bar.
+extension OrganicTitleBar: Equatable {
+    nonisolated static func == (lhs: OrganicTitleBar, rhs: OrganicTitleBar) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.appState === rhs.appState
+                && lhs.showDeviceMenu == rhs.showDeviceMenu
+                && lhs.showSettings == rhs.showSettings
+                && lhs.appearanceRaw == rhs.appearanceRaw
+        }
     }
 }
 
@@ -446,63 +496,98 @@ struct OrganicDevicePopover: View {
     }
 }
 
-/// The tunnel pill's face, drawn from its phase alone (so the GUI snapshots can show every
-/// phase without a running tunnel).
-struct TunnelPillLabel: View {
-    let phase: TunnelPillPhase
-    let hasSelectedDevice: Bool
+/// The tunnel pill's face: where the tunnel stands, then (after a hairline) what a click
+/// does. A stopped tunnel is one filled "Start tunnel" button, the title bar's only filled
+/// call to action. Drawn from `TunnelPillModel` alone, so every phase renders in the GUI
+/// snapshots without a running tunnel.
+struct TunnelPillFace: View {
+    let model: TunnelPillModel
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(dot)
-                .frame(width: 7, height: 7)
-            Text(phase.label)
-                .font(Organic.body(12, weight: .bold))
+            if model.isPrimary {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .bold))
+                Text(model.actionText ?? model.statusText)
+                    .font(Organic.body(12, weight: .bold))
+            } else {
+                indicator
+                Text(model.statusText)
+                    .font(Organic.body(12, weight: .semibold))
+                    .foregroundStyle(statusInk)
+                if let action = model.actionText {
+                    Rectangle()
+                        .fill(stroke)
+                        .frame(width: 1, height: 16)
+                    Text(action)
+                        .font(Organic.body(12, weight: .bold))
+                        .foregroundStyle(actionInk)
+                }
+            }
         }
-        .foregroundStyle(ink)
-        .padding(.horizontal, 15)
+        .lineLimit(1)
+        .fixedSize()
+        .foregroundStyle(model.isPrimary ? primaryInk : statusInk)
+        .padding(.horizontal, 14)
         .frame(height: 32)
-        .background(fill)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(stroke, lineWidth: 1))
+        .background(Capsule().fill(fill))
+        .overlay(Capsule().strokeBorder(stroke, lineWidth: 1))
+        .contentShape(Capsule())
     }
+
+    @ViewBuilder
+    private var indicator: some View {
+        if model.showsProgress {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.6)
+                .frame(width: 12, height: 12)
+        } else {
+            Circle().fill(dot).frame(width: 7, height: 7)
+        }
+    }
+
+    private var primaryInk: Color { model.isEnabled ? Organic.accentInk : Organic.neutral600 }
 
     private var dot: Color {
-        if !hasSelectedDevice { return Organic.neutral500 }
-        switch phase {
-        case .waitingForDevice, .connecting, .reconnecting, .error: return Organic.accent600
+        switch model.phase {
         case .live: return Organic.sage600
-        case .stopped: return Organic.neutral100.opacity(0.75)
+        case .error: return Organic.danger
+        case .waitingForDevice, .connecting, .reconnecting, .stopped: return Organic.neutral500
         }
     }
 
-    private var ink: Color {
-        if !hasSelectedDevice { return Organic.neutral700 }
-        switch phase {
+    private var statusInk: Color {
+        switch model.phase {
         case .live: return Organic.sage800
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral700
         case .error: return Organic.accent800
-        case .stopped: return Organic.neutral100
+        case .waitingForDevice, .connecting, .reconnecting, .stopped: return Organic.neutral800
+        }
+    }
+
+    private var actionInk: Color {
+        switch model.phase {
+        case .live: return Organic.sage700
+        case .error, .reconnecting, .waitingForDevice: return Organic.accent700
+        case .connecting, .stopped: return Organic.neutral700
         }
     }
 
     private var fill: Color {
-        if !hasSelectedDevice { return Organic.neutral200 }
-        switch phase {
+        if model.isPrimary { return model.isEnabled ? Organic.accent : Organic.neutral200 }
+        switch model.phase {
         case .live: return Organic.sage100
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral200
-        case .error: return Organic.accent100
-        case .stopped: return Organic.accent
+        case .error, .reconnecting: return Organic.accent100
+        case .waitingForDevice, .connecting, .stopped: return Organic.neutral100
         }
     }
 
     private var stroke: Color {
-        switch phase {
+        if model.isPrimary { return model.isEnabled ? Organic.accent600 : Organic.neutral300 }
+        switch model.phase {
         case .live: return Organic.sage300
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral400
-        case .error: return Organic.accent300
-        case .stopped: return Color.clear
+        case .error, .reconnecting: return Organic.accent300
+        case .waitingForDevice, .connecting, .stopped: return Organic.neutral400
         }
     }
 }

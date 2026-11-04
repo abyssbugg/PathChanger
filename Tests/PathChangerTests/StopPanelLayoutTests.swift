@@ -328,7 +328,7 @@ final class StopPanelLayoutTests: XCTestCase {
 @MainActor
 final class GUIArrangementSnapshotTests: XCTestCase {
     /// "before" for the arrangement as it was, "after" once the redesign lands.
-    static let snapshotPhase = "before"
+    static let snapshotPhase = "after"
     static let windowSize = CGSize(width: 1280, height: 800)
 
     private let s0 = LocationCoordinate(latitude: 35.68000, longitude: 139.76000)
@@ -558,6 +558,7 @@ final class GUIArrangementSnapshotTests: XCTestCase {
         let state = makeState(mode: .teleport)
         let view = VStack(spacing: 0) {
             OrganicTitleBar(
+                appState: state,
                 showDeviceMenu: .constant(false),
                 showSettings: .constant(false),
                 appearanceRaw: .constant(OrganicAppearance.light.rawValue),
@@ -586,6 +587,16 @@ final class GUIArrangementSnapshotTests: XCTestCase {
         let name: String
         let phase: TunnelPillPhase
         let notice: TunnelNotice?
+
+        /// The pill for this phase with a selected phone (the flags `TunnelPillModel` reads).
+        var model: TunnelPillModel {
+            TunnelPillModel.resolve(
+                isRunning: phase == .live, isWaitingForDevice: phase == .waitingForDevice,
+                isStarting: phase == .connecting || phase == .waitingForDevice,
+                isError: phase == .error || phase == .reconnecting,
+                isAutoReconnecting: phase == .reconnecting, hasSelectedDevice: true
+            )
+        }
     }
 
     private var tunnelFixtures: [TunnelFixture] {
@@ -617,15 +628,23 @@ final class GUIArrangementSnapshotTests: XCTestCase {
         }
     }
 
+    /// The tunnel section as the window shows it: the title bar's pill, and the notice strip
+    /// right under the title bar.
     private func tunnelSection(_ fixture: TunnelFixture) -> some View {
-        VStack(spacing: 8) {
-            TunnelPillLabel(phase: fixture.phase, hasSelectedDevice: true)
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                TunnelPillFace(model: fixture.model)
+                Spacer()
+            }
+            .frame(height: 56)
+            .background(Organic.surface)
+            .overlay(alignment: .bottom) { Rectangle().fill(Organic.neutral400).frame(height: 1) }
             if let notice = fixture.notice {
                 TunnelNoticeView(text: notice.text, isError: notice.isError)
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Organic.bg)
     }

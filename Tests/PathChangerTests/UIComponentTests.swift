@@ -896,3 +896,82 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         return try String(contentsOf: repositoryRoot.appendingPathComponent(relativePath))
     }
 }
+
+// MARK: - Tunnel pill (GUI arrangement 2026-11-04)
+
+/// The pill says where the tunnel stands and, separately, what a click does: "Tunnel live"
+/// gave no hint that a click stops it, and "Reconnect tunnel" read as a status.
+final class TunnelPillModelTests: XCTestCase {
+    private func model(
+        running: Bool = false, waiting: Bool = false, starting: Bool = false,
+        error: Bool = false, reconnecting: Bool = false, device: Bool = true
+    ) -> TunnelPillModel {
+        TunnelPillModel.resolve(
+            isRunning: running, isWaitingForDevice: waiting, isStarting: starting,
+            isError: error, isAutoReconnecting: reconnecting, hasSelectedDevice: device
+        )
+    }
+
+    func testALiveTunnelSaysLiveAndOffersStop() {
+        let pill = model(running: true)
+        XCTAssertEqual(pill.statusText, "Tunnel live")
+        XCTAssertEqual(pill.actionText, "Stop")
+        XCTAssertEqual(pill.accessibilityLabel, "Stop tunnel")
+        XCTAssertEqual(pill.accessibilityValue, "Tunnel live")
+        XCTAssertFalse(pill.showsProgress)
+        XCTAssertTrue(pill.isEnabled)
+    }
+
+    func testAWaitForThePhoneOffersCancel() {
+        let pill = model(waiting: true, starting: true)
+        XCTAssertEqual(pill.statusText, "Waiting for iPhone…")
+        XCTAssertEqual(pill.actionText, "Cancel")
+        XCTAssertEqual(pill.accessibilityLabel, "Cancel waiting for the iPhone")
+        XCTAssertTrue(pill.showsProgress)
+    }
+
+    func testAnAutomaticReconnectOffersStopReconnecting() {
+        for starting in [false, true] {
+            let pill = model(starting: starting, error: !starting, reconnecting: true, device: false)
+            XCTAssertEqual(pill.statusText, "Reconnecting…")
+            XCTAssertEqual(pill.actionText, "Stop")
+            XCTAssertEqual(pill.accessibilityLabel, "Stop reconnecting")
+            XCTAssertTrue(pill.showsProgress)
+            XCTAssertTrue(pill.isEnabled, "the only way to stop the reconnect from the window")
+        }
+    }
+
+    func testConnectingHasNoAction() {
+        let pill = model(starting: true)
+        XCTAssertEqual(pill.statusText, "Connecting…")
+        XCTAssertNil(pill.actionText)
+        XCTAssertEqual(pill.accessibilityLabel, "Connecting…")
+        XCTAssertTrue(pill.showsProgress)
+    }
+
+    func testAFailedTunnelSaysFailedAndOffersReconnect() {
+        let pill = model(error: true)
+        XCTAssertEqual(pill.statusText, "Tunnel failed")
+        XCTAssertEqual(pill.actionText, "Reconnect")
+        XCTAssertEqual(pill.accessibilityLabel, "Reconnect tunnel")
+        XCTAssertFalse(pill.showsProgress)
+    }
+
+    func testAStoppedTunnelOffersStart() {
+        let pill = model()
+        XCTAssertEqual(pill.statusText, "Tunnel off")
+        XCTAssertEqual(pill.actionText, "Start tunnel")
+        XCTAssertEqual(pill.accessibilityLabel, "Start tunnel")
+        XCTAssertTrue(pill.isPrimary)
+        XCTAssertFalse(model(device: false).isEnabled, "nothing to start without a phone")
+    }
+
+    func testTheLastAttemptLineIsItsOwnLabelledLine() {
+        let notice = TunnelNotice(text: "Connection to the iPhone lost.\nLast attempt: iPhone is not reachable.\nReapplying…", isError: true)
+        XCTAssertEqual(notice.lines, [
+            TunnelNotice.Line(label: nil, text: "Connection to the iPhone lost."),
+            TunnelNotice.Line(label: "Last attempt", text: "iPhone is not reachable."),
+            TunnelNotice.Line(label: nil, text: "Reapplying…"),
+        ])
+    }
+}

@@ -359,6 +359,10 @@ final class GUIUpdateLoadTests: XCTestCase {
             sample.mapContentBuilds, sample.acknowledgedPoints * 2 + 10,
             "the maps were rebuilt for changes they do not show: \(sample)"
         )
+        // The title bar shows the phone, its connection choice and the tunnel; a running
+        // route changes none of them (GUI arrangement 2026-11-04: it rendered with every
+        // AppState change, 2.15 times per point).
+        XCTAssertLessThanOrEqual(sample.titleBarRenders, 5, "the title bar re-rendered for route changes: \(sample)")
     }
 
     /// The same run without the GUI and without real time: how many change notifications
