@@ -929,7 +929,7 @@ final class ManagedLocationHelperController {
 
     func connectOrLaunch(replacingHelperFromAnotherBuild: Bool = true) async throws -> ManagedLocationHelperConnection {
         if let activeConnection {
-            if processIsAlive(activeConnection.record.pid) {
+            if await activeHelperIsAlive(activeConnection) {
                 return activeConnection
             }
             // The helper this controller held has exited (crashed or was killed): the
@@ -1057,6 +1057,22 @@ final class ManagedLocationHelperController {
             try? removeOwnedArtifacts()
             throw error
         }
+    }
+
+    /// Whether the helper behind the held connection still runs. A PID check can be fooled
+    /// by a reused PID (review 2026-11-04 issue 7): this app's own child is asked through
+    /// its Process, an adopted helper by an authenticated ping naming its helper ID.
+    private func activeHelperIsAlive(_ connection: ManagedLocationHelperConnection) async -> Bool {
+        if let launchedProcess, launchedProcess.processIdentifier == connection.record.pid {
+            return launchedProcess.isRunning
+        }
+        guard let ping: ManagedLocationHelperPingResponse = try? await connection.client.send(
+            ManagedLocationHelperCommand(cmd: "ping"),
+            responseType: ManagedLocationHelperPingResponse.self
+        ) else {
+            return false
+        }
+        return ping.success && UUID(uuidString: ping.helperID) == connection.record.helperID
     }
 
     func refreshConnection() async throws -> ManagedLocationHelperConnection {

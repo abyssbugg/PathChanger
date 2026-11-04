@@ -1335,6 +1335,69 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.socketURL.path))
     }
 
+    // MARK: The crashed-helper check (review 2026-11-04 issue 7)
+
+    /// The adopted helper's PID was read as alive while the helper was gone (a reused PID,
+    /// here a bystander the record names): the dead connection was handed back. An adopted
+    /// helper is pinged instead, so a new helper is launched.
+    @MainActor
+    func testAnAdoptedHelperThatExitedIsNotHandedBackWhileItsPIDIsInUse() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("adopted-exited")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let helper = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: helper.record.pid) { kill(helper.record.pid, SIGTERM) } }
+        let bystander = Process()
+        bystander.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        bystander.arguments = ["120"]
+        try bystander.run()
+        defer { if bystander.isRunning { bystander.terminate(); bystander.waitUntilExit() } }
+        // The record names a live process that is not the helper: a PID reused after it died.
+        try writeRecord(helper.record, sessions: [], pid: bystander.processIdentifier, to: paths)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        do {
+            let adopted = try await controller.connectOrLaunch()
+            XCTAssertFalse(adopted.launchedNewHelper)
+            XCTAssertEqual(adopted.record.helperID, helper.record.helperID)
+            try await earlier.shutdown() // the adopted helper exits
+
+            let next = try await controller.connectOrLaunch()
+
+            XCTAssertTrue(next.launchedNewHelper, "a dead helper's connection is never handed back")
+            XCTAssertNotEqual(next.record.helperID, helper.record.helperID)
+            XCTAssertTrue(bystander.isRunning, "never signalled")
+            try await controller.shutdown()
+        } catch {
+            try? await controller.shutdown()
+            throw error
+        }
+    }
+
+    /// This app's own helper is checked through its Process, not its PID.
+    @MainActor
+    func testThisAppsOwnHelperThatCrashedIsReplacedByANewOne() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("own-crashed")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let first = try await controller.connectOrLaunch()
+        kill(first.record.pid, SIGKILL) // this test's own helper
+        for _ in 0..<250 where TunnelProcessTerminator.isAlive(pid: first.record.pid) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        do {
+            let next = try await controller.connectOrLaunch()
+            XCTAssertTrue(next.launchedNewHelper)
+            XCTAssertNotEqual(next.record.helperID, first.record.helperID)
+            try await controller.shutdown()
+        } catch {
+            try? await controller.shutdown()
+            throw error
+        }
+    }
+
     func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
         let record = ManagedLocationHelperRecord(
             protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",
