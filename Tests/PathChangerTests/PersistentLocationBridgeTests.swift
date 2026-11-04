@@ -1164,6 +1164,15 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
                 probes += 1
                 return .notConnected("another phone")
             })
+        defer {
+            // A regression replaces the helper: stop the one this test's bridge launched.
+            let reader = ManagedLocationHelperController(
+                paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+            if let launched = try? reader.currentRecord(), launched.pid != old.pid,
+               TunnelProcessTerminator.isAlive(pid: launched.pid) {
+                kill(launched.pid, SIGTERM)
+            }
+        }
 
         try await bridge.start()
         XCTAssertEqual(bridge.adoptedHelperID, old.helperID, "the same build adopts it, as before")
