@@ -113,18 +113,144 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Applies the choice through the same calls the settings use: the connection mode
-    /// (which also sets the tunnel mode, restarting a running tunnel when it changes), or
-    /// the tunnel's Background daemon mode.
-    @MainActor
-    func select(deviceManager: DeviceManager, tunnel: TunneldManager) {
+    /// The connection mode a transport choice sets; nil for Background daemon, which is a
+    /// tunnel mode only.
+    var connectionMode: DeviceManager.ConnectionMode? {
         switch self {
-        case .usb: deviceManager.setConnectionMode(.usb)
-        case .wifi: deviceManager.setConnectionMode(.wifi)
-        case .auto: deviceManager.setConnectionMode(.auto)
-        case .random: deviceManager.setConnectionMode(.random)
-        case .daemon: tunnel.preferredMode = .daemon
+        case .usb: return .usb
+        case .wifi: return .wifi
+        case .auto: return .auto
+        case .random: return .random
+        case .daemon: return nil
         }
+    }
+
+    /// Resolves a click (`ConnectionChoiceAction`) and applies it at once unless it would
+    /// end a held location. Returns the change to confirm first; nil when it was applied.
+    @MainActor
+    func select(
+        deviceManager: DeviceManager,
+        tunnel: TunneldManager,
+        requiresLocationQuitDecision: Bool
+    ) -> ConnectionChoiceChange? {
+        let action = ConnectionChoiceAction.resolve(
+            choice: self,
+            connectionMode: deviceManager.connectionMode,
+            tunnelMode: tunnel.preferredMode,
+            tunnelRunning: tunnel.isRunning || tunnel.isStarting,
+            requiresLocationQuitDecision: requiresLocationQuitDecision,
+            usbAvailable: deviceManager.usbTransportAvailable,
+            wifiAvailable: deviceManager.wifiTransportAvailable
+        )
+        switch action {
+        case .apply(let change):
+            Self.apply(change, deviceManager: deviceManager, tunnel: tunnel)
+            return nil
+        case .confirm(let change):
+            return change
+        }
+    }
+
+    /// Applies a resolved change through the same calls the settings use: the connection
+    /// mode (which also sets the tunnel mode, restarting a running tunnel when it changes),
+    /// or the tunnel's Background daemon mode. Nothing is reapplied after a restart; the
+    /// user presses Reapply location.
+    @MainActor
+    static func apply(_ change: ConnectionChoiceChange, deviceManager: DeviceManager, tunnel: TunneldManager) {
+        if let mode = change.choice.connectionMode {
+            deviceManager.setConnectionMode(mode, tunnelMode: change.tunnelMode)
+        } else {
+            tunnel.preferredMode = .daemon
+        }
+    }
+}
+
+/// A connection choice ready to apply: the tunnel mode it sets (Random's pick is made
+/// once, before any dialog, so the dialog says what will happen) and whether that
+/// restarts the running tunnel.
+struct ConnectionChoiceChange: Equatable {
+    let choice: ConnectionChoice
+    let tunnelMode: TunnelMode
+    let restartsTunnel: Bool
+
+    var confirmationTitle: String { "Switch to \(choice.title)?" }
+
+    var confirmationMessage: String {
+        let ending = "restarts the tunnel and ends the location held on the iPhone."
+        if choice == .random {
+            let pick = tunnelMode == .usb ? ConnectionChoice.usb.title : ConnectionChoice.wifi.title
+            return "Switching to Random picks \(pick), which \(ending)"
+        }
+        return "Switching to \(choice.title) \(ending)"
+    }
+}
+
+/// What a click on a connection choice does, decided when it is pressed (like
+/// `TunnelPillAction`). A restart of the running tunnel ends the held location and
+/// latches reconnect (AppState treats it as a Stop), so it asks first, as the tunnel
+/// pill's Stop does (review 2026-11-04 round 2 issue 4).
+enum ConnectionChoiceAction: Equatable {
+    case apply(ConnectionChoiceChange)
+    case confirm(ConnectionChoiceChange)
+
+    static func resolve(
+        choice: ConnectionChoice,
+        connectionMode: DeviceManager.ConnectionMode,
+        tunnelMode: TunnelMode,
+        tunnelRunning: Bool,
+        requiresLocationQuitDecision: Bool,
+        usbAvailable: Bool,
+        wifiAvailable: Bool,
+        randomPicksUSB: () -> Bool = { Bool.random() }
+    ) -> ConnectionChoiceAction {
+        let change: ConnectionChoiceChange
+        if let mode = choice.connectionMode {
+            let next = DeviceManager.tunnelMode(
+                for: mode, usbAvailable: usbAvailable, wifiAvailable: wifiAvailable, randomPicksUSB: randomPicksUSB)
+            change = ConnectionChoiceChange(
+                choice: choice,
+                tunnelMode: next,
+                restartsTunnel: DeviceManager.switchRestartsTunnel(from: tunnelMode, to: next, tunnelRunning: tunnelRunning)
+            )
+        } else {
+            // Background daemon only sets the tunnel mode; a running tunnel keeps running.
+            change = ConnectionChoiceChange(choice: choice, tunnelMode: .daemon, restartsTunnel: false)
+        }
+        return change.restartsTunnel && requiresLocationQuitDecision ? .confirm(change) : .apply(change)
+    }
+}
+
+/// The dialog a connection choice shows before a switch that ends the held location.
+/// Switch applies the change; Cancel changes nothing.
+struct ConnectionChoiceConfirmation: ViewModifier {
+    @Binding var pending: ConnectionChoiceChange?
+    let deviceManager: DeviceManager
+    let tunnel: TunneldManager
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            pending?.confirmationTitle ?? "",
+            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+            presenting: pending
+        ) { change in
+            Button("Switch", role: .destructive) {
+                pending = nil
+                ConnectionChoice.apply(change, deviceManager: deviceManager, tunnel: tunnel)
+            }
+            Button("Cancel", role: .cancel) { pending = nil }
+        } message: { change in
+            Text(change.confirmationMessage)
+        }
+    }
+}
+
+extension View {
+    func connectionChoiceConfirmation(
+        _ pending: Binding<ConnectionChoiceChange?>,
+        deviceManager: DeviceManager,
+        tunnel: TunneldManager
+    ) -> some View {
+        modifier(ConnectionChoiceConfirmation(pending: pending, deviceManager: deviceManager, tunnel: tunnel))
     }
 }
 
@@ -148,6 +274,7 @@ struct OrganicTitleBar: View {
     @ObservedObject private var reconnector: TunnelAutoReconnector
     @Binding var showDeviceMenu: Bool
     @State private var confirmTunnelStop = false
+    @State private var pendingConnectionChange: ConnectionChoiceChange?
     @Binding var showSettings: Bool
     @Binding var appearanceRaw: String
     let onRefresh: () -> Void
@@ -290,10 +417,11 @@ struct OrganicTitleBar: View {
                 height: 28,
                 title: { $0.shortTitle },
                 icon: { $0.systemImage },
-                onSelect: { $0.select(deviceManager: deviceManager, tunnel: tunneldManager) }
+                onSelect: { choose($0) }
             )
             .fixedSize()
             .help(connectionChoice.detail)
+            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: deviceManager, tunnel: tunneldManager)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
         }
@@ -306,6 +434,15 @@ struct OrganicTitleBar: View {
 
     private var connectionChoice: ConnectionChoice {
         ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunneldManager.preferredMode)
+    }
+
+    /// Whether a location is held is read when the choice is pressed, as for the pill.
+    private func choose(_ choice: ConnectionChoice) {
+        pendingConnectionChange = choice.select(
+            deviceManager: deviceManager,
+            tunnel: tunneldManager,
+            requiresLocationQuitDecision: appState.requiresLocationQuitDecision
+        )
     }
 
     private var transportOptions: [ConnectionChoice] {
@@ -475,6 +612,7 @@ struct OrganicDevicePopover: View {
     @Binding var isPresented: Bool
     let connectionMode: DeviceManager.ConnectionMode
     var onRefresh: () -> Void = {}
+    @State private var pendingConnectionChange: ConnectionChoiceChange?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -543,13 +681,21 @@ struct OrganicDevicePopover: View {
         ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
     }
 
+    private func choose(_ option: ConnectionChoice) {
+        pendingConnectionChange = option.select(
+            deviceManager: appState.deviceManager,
+            tunnel: tunneldManager,
+            requiresLocationQuitDecision: appState.requiresLocationQuitDecision
+        )
+    }
+
     private var connectSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             OrganicGroupHeader(title: "Connect over") {
                 Menu {
                     ForEach(ConnectionChoice.secondary) { option in
                         Button {
-                            option.select(deviceManager: appState.deviceManager, tunnel: tunneldManager)
+                            choose(option)
                         } label: {
                             if option == choice {
                                 Label(option.title, systemImage: "checkmark")
@@ -575,10 +721,11 @@ struct OrganicDevicePopover: View {
                 fillsWidth: true,
                 title: { $0.title },
                 icon: { $0.systemImage },
-                onSelect: { $0.select(deviceManager: appState.deviceManager, tunnel: tunneldManager) }
+                onSelect: { choose($0) }
             )
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
+            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager, tunnel: tunneldManager)
             Text(ConnectionChoice.primary.contains(choice) ? choice.detail : "Using \(choice.title): \(choice.detail)")
                 .font(Organic.body(11))
                 .foregroundStyle(Organic.neutral600)

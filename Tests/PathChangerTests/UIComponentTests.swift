@@ -1014,6 +1014,89 @@ final class ConnectionChoiceTests: XCTestCase {
             XCTAssertFalse(choice.detail.isEmpty, "\(choice) says what it does")
         }
     }
+
+    // MARK: Switching while a location is held (review 2026-11-04 round 2 issue 4)
+
+    private func resolve(
+        _ choice: ConnectionChoice,
+        connectionMode: DeviceManager.ConnectionMode = .usb,
+        tunnelMode: TunnelMode = .usb,
+        tunnelRunning: Bool = true,
+        holdsLocation: Bool = true,
+        usbAvailable: Bool = true,
+        wifiAvailable: Bool = true,
+        randomPicksUSB: Bool = true
+    ) -> ConnectionChoiceAction {
+        ConnectionChoiceAction.resolve(
+            choice: choice,
+            connectionMode: connectionMode,
+            tunnelMode: tunnelMode,
+            tunnelRunning: tunnelRunning,
+            requiresLocationQuitDecision: holdsLocation,
+            usbAvailable: usbAvailable,
+            wifiAvailable: wifiAvailable,
+            randomPicksUSB: { randomPicksUSB }
+        )
+    }
+
+    /// A switch restarts the running tunnel, which ends the held location and latches
+    /// reconnect: it asks first, like the tunnel pill's Stop.
+    func testASwitchThatRestartsATunnelHoldingALocationAsksFirst() {
+        let action = resolve(.wifi)
+        let expected = ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true)
+        XCTAssertEqual(action, .confirm(expected))
+        XCTAssertEqual(expected.confirmationTitle, "Switch to Wi\u{2011}Fi?")
+        XCTAssertEqual(
+            expected.confirmationMessage,
+            "Switching to Wi\u{2011}Fi restarts the tunnel and ends the location held on the iPhone.")
+        XCTAssertEqual(resolve(.auto), .confirm(ConnectionChoiceChange(choice: .auto, tunnelMode: .auto, restartsTunnel: true)))
+        XCTAssertEqual(resolve(.usb, connectionMode: .wifi, tunnelMode: .wifi),
+                       .confirm(ConnectionChoiceChange(choice: .usb, tunnelMode: .usb, restartsTunnel: true)))
+    }
+
+    func testWithoutAHeldLocationTheSwitchAppliesAsToday() {
+        XCTAssertEqual(resolve(.wifi, holdsLocation: false),
+                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true)))
+    }
+
+    func testWithNoTunnelRunningNothingRestartsSoNothingAsks() {
+        XCTAssertEqual(resolve(.wifi, tunnelRunning: false),
+                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
+    }
+
+    /// Background daemon only sets the tunnel mode; a running tunnel keeps running.
+    func testBackgroundDaemonNeverRestartsSoItNeverAsks() {
+        XCTAssertEqual(resolve(.daemon),
+                       .apply(ConnectionChoiceChange(choice: .daemon, tunnelMode: .daemon, restartsTunnel: false)))
+    }
+
+    /// Random is picked once, before the dialog, so the dialog says what will happen and a
+    /// pick of the transport in use restarts nothing.
+    func testRandomIsPickedBeforeAskingAndAsksOnlyWhenThePickChangesTheTunnel() {
+        XCTAssertEqual(resolve(.random, randomPicksUSB: true),
+                       .apply(ConnectionChoiceChange(choice: .random, tunnelMode: .usb, restartsTunnel: false)))
+        let change = ConnectionChoiceChange(choice: .random, tunnelMode: .wifi, restartsTunnel: true)
+        XCTAssertEqual(resolve(.random, randomPicksUSB: false), .confirm(change))
+        XCTAssertEqual(
+            change.confirmationMessage,
+            "Switching to Random picks Wi\u{2011}Fi, which restarts the tunnel and ends the location held on the iPhone.")
+        // Only one transport available: no coin.
+        XCTAssertEqual(resolve(.random, tunnelMode: .wifi, usbAvailable: false, randomPicksUSB: true),
+                       .apply(ConnectionChoiceChange(choice: .random, tunnelMode: .wifi, restartsTunnel: false)))
+    }
+
+    /// The restart rule is the one `DeviceManager.setConnectionMode` applies.
+    func testTheTunnelRestartsOnlyWhenItsModeChanges() {
+        XCTAssertTrue(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: true))
+        XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .usb, tunnelRunning: true))
+        XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: false))
+        XCTAssertEqual(DeviceManager.tunnelMode(for: .usb, usbAvailable: false, wifiAvailable: true), .usb)
+        XCTAssertEqual(DeviceManager.tunnelMode(for: .auto, usbAvailable: true, wifiAvailable: true), .auto)
+        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: false, wifiAvailable: false), .wifi)
+        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: true, wifiAvailable: false), .usb)
+        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: true, wifiAvailable: true,
+                                                randomPicksUSB: { false }), .wifi)
+    }
 }
 
 // MARK: - Settings presentation (GUI arrangement 2026-11-04)

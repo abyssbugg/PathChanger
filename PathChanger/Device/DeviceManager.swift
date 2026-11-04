@@ -1803,35 +1803,49 @@ class DeviceManager: ObservableObject {
         }
     }
 
-    func setConnectionMode(_ mode: ConnectionMode) {
+    func setConnectionMode(_ mode: ConnectionMode, tunnelMode resolved: TunnelMode? = nil) {
         connectionMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "connectionMode")
-        let tunnelMode: TunnelMode
-        switch mode {
-        case .random:
-            if usbTransportAvailable && wifiTransportAvailable {
-                tunnelMode = Bool.random() ? .usb : .wifi
-            } else if usbTransportAvailable {
-                tunnelMode = .usb
-            } else {
-                tunnelMode = .wifi
-            }
-        case .auto:
-            tunnelMode = .auto
-        case .usb:
-            tunnelMode = .usb
-        case .wifi:
-            tunnelMode = .wifi
-        }
+        // A caller that asked the user first passes the mode it asked about (Random's pick).
+        let tunnelMode = resolved ?? Self.tunnelMode(
+            for: mode,
+            usbAvailable: usbTransportAvailable,
+            wifiAvailable: wifiTransportAvailable
+        )
         Task { @MainActor in
             let manager = TunneldManager.shared
             let previous = manager.preferredMode
             manager.preferredMode = tunnelMode
-            if previous != tunnelMode, manager.isRunning || manager.isStarting {
+            if Self.switchRestartsTunnel(from: previous, to: tunnelMode,
+                                         tunnelRunning: manager.isRunning || manager.isStarting) {
                 await manager.restartTunnel()
             }
             await refreshDevices()
         }
+    }
+
+    /// The tunnel mode a connection mode sets. Random picks USB or Wi-Fi when both are
+    /// available, otherwise the one that is (Wi-Fi when neither is).
+    nonisolated static func tunnelMode(
+        for mode: ConnectionMode,
+        usbAvailable: Bool,
+        wifiAvailable: Bool,
+        randomPicksUSB: () -> Bool = { Bool.random() }
+    ) -> TunnelMode {
+        switch mode {
+        case .random:
+            if usbAvailable && wifiAvailable { return randomPicksUSB() ? .usb : .wifi }
+            return usbAvailable ? .usb : .wifi
+        case .auto: return .auto
+        case .usb: return .usb
+        case .wifi: return .wifi
+        }
+    }
+
+    /// A new tunnel mode restarts a running (or starting) tunnel; the same mode does not.
+    /// The restart ends a held location (AppState treats it as a Stop).
+    nonisolated static func switchRestartsTunnel(from previous: TunnelMode, to next: TunnelMode, tunnelRunning: Bool) -> Bool {
+        previous != next && tunnelRunning
     }
 
     /// Refresh every live transport source on the same cadence: usbmux (USB and Network

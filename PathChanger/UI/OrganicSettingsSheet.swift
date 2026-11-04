@@ -146,7 +146,11 @@ struct OrganicSettingsSheet: View {
                     .disabled(appState.selectedDevice == nil)
             }
             divider
-            SettingsConnectionChoiceRow(deviceManager: appState.deviceManager, tunnel: tunneldManager) { title, detail, control in
+            SettingsConnectionChoiceRow(
+                deviceManager: appState.deviceManager,
+                tunnel: tunneldManager,
+                requiresLocationQuitDecision: { appState.requiresLocationQuitDecision }
+            ) { title, detail, control in
                 row(title, detail) { control }
             }
             divider
@@ -360,7 +364,10 @@ struct OrganicSettingsSheet: View {
 private struct SettingsConnectionChoiceRow<Row: View>: View {
     @ObservedObject var deviceManager: DeviceManager
     @ObservedObject var tunnel: TunneldManager
+    /// Read when a choice is pressed.
+    let requiresLocationQuitDecision: () -> Bool
     let row: (String, String, AnyView) -> Row
+    @State private var pendingChange: ConnectionChoiceChange?
 
     var body: some View {
         let choice = ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunnel.preferredMode)
@@ -369,11 +376,18 @@ private struct SettingsConnectionChoiceRow<Row: View>: View {
                 options: ConnectionChoice.primary + ConnectionChoice.secondary,
                 selection: choice,
                 title: { $0.shortTitle },
-                onSelect: { $0.select(deviceManager: deviceManager, tunnel: tunnel) }
+                onSelect: { choice in
+                    pendingChange = choice.select(
+                        deviceManager: deviceManager,
+                        tunnel: tunnel,
+                        requiresLocationQuitDecision: requiresLocationQuitDecision()
+                    )
+                }
             )
             .fixedSize()
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
+            .connectionChoiceConfirmation($pendingChange, deviceManager: deviceManager, tunnel: tunnel)
         ))
     }
 }
