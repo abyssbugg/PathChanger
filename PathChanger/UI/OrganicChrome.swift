@@ -65,6 +65,9 @@ struct OrganicTitleBar: View {
     @State private var transportTick = 0
 
     var body: some View {
+#if DEBUG
+        let _ = GUIRenderCounts.titleBar += 1
+#endif
         HStack(spacing: 12) {
             Spacer(minLength: 0)
                 .frame(maxWidth: .infinity)
@@ -153,7 +156,9 @@ struct OrganicTitleBar: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showDeviceMenu, arrowEdge: .bottom) {
-                devicePopover
+                OrganicDevicePopover(isPresented: $showDeviceMenu, connectionMode: connectionMode)
+                    .environmentObject(appState)
+                    .environmentObject(tunneldManager)
             }
 
             HStack(spacing: 2) {
@@ -217,19 +222,7 @@ struct OrganicTitleBar: View {
                 break
             }
         } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(tunnelDot)
-                    .frame(width: 7, height: 7)
-                Text(tunnelLabel)
-                    .font(Organic.body(12, weight: .bold))
-            }
-            .foregroundStyle(tunnelInk)
-            .padding(.horizontal, 15)
-            .frame(height: 32)
-            .background(tunnelFill)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(tunnelStroke, lineWidth: 1))
+            TunnelPillLabel(phase: tunnelPhase, hasSelectedDevice: hasSelectedDevice)
         }
         .buttonStyle(.plain)
         .disabled(!isTunnelPillEnabled)
@@ -246,97 +239,6 @@ struct OrganicTitleBar: View {
         } message: {
             Text("The simulated location is held over this tunnel. Stopping it ends the location on the device.")
         }
-    }
-
-    private var devicePopover: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("PAIRED DEVICES")
-                    .font(Organic.body(11, weight: .bold))
-                    .foregroundStyle(Organic.neutral600)
-                    .tracking(0.8)
-                Spacer()
-                Text("\(appState.availableDevices.count)")
-                    .font(Organic.mono(10.5, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 1)
-                    .background(Organic.neutral200)
-                    .clipShape(Capsule())
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .overlay(alignment: .bottom) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
-
-            VStack(spacing: 2) {
-                if appState.availableDevices.isEmpty {
-                    Text("No devices yet")
-                        .font(Organic.body(11.5))
-                        .foregroundStyle(Organic.neutral600)
-                        .padding(12)
-                }
-                ForEach(appState.availableDevices) { device in
-                    Button {
-                        appState.selectDevice(device)
-                        showDeviceMenu = false
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: device.isWireless ? "wifi" : "cable.connector")
-                                .frame(width: 22, height: 22)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(device.chromeTitle)
-                                    .font(Organic.body(12.5, weight: .semibold))
-                                    .lineLimit(1)
-                                HStack(spacing: 6) {
-                                    Text("iOS \(device.iosVersion)")
-                                        .font(Organic.body(10.5))
-                                        .foregroundStyle(Organic.neutral600)
-                                    Text(OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode))
-                                        .font(Organic.body(10.5, weight: .semibold))
-                                        .foregroundStyle(Organic.accent700)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            if appState.selectedDevice?.id == device.id {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(Organic.accent600)
-                            }
-                        }
-                        .foregroundStyle(Organic.text)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(6)
-
-            Button {
-                Task { await appState.prepareSelectedDeviceForWiFi() }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "plus")
-                    Text("Prepare Wi-Fi")
-                        .font(Organic.body(12, weight: .bold))
-                }
-                .foregroundStyle(Organic.accent700)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
-        }
-        .frame(width: 260)
-        .background(Organic.neutral100)
-        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
-                .stroke(Organic.neutral300, lineWidth: 1)
-        )
-        .shadow(color: Organic.shadow.opacity(0.16), radius: 16, y: 8)
     }
 
     private func chromeIconButton(system: String, title: String, action: @escaping () -> Void) -> some View {
@@ -408,48 +310,6 @@ struct OrganicTitleBar: View {
         )
     }
 
-    private var tunnelLabel: String {
-        tunnelPhase.label
-    }
-
-    private var tunnelDot: Color {
-        if !hasSelectedDevice { return Organic.neutral500 }
-        switch tunnelPhase {
-        case .waitingForDevice, .connecting, .reconnecting, .error: return Organic.accent600
-        case .live: return Organic.sage600
-        case .stopped: return Organic.neutral100.opacity(0.75)
-        }
-    }
-
-    private var tunnelInk: Color {
-        if !hasSelectedDevice { return Organic.neutral700 }
-        switch tunnelPhase {
-        case .live: return Organic.sage800
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral700
-        case .error: return Organic.accent800
-        case .stopped: return Organic.neutral100
-        }
-    }
-
-    private var tunnelFill: Color {
-        if !hasSelectedDevice { return Organic.neutral200 }
-        switch tunnelPhase {
-        case .live: return Organic.sage100
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral200
-        case .error: return Organic.accent100
-        case .stopped: return Organic.accent
-        }
-    }
-
-    private var tunnelStroke: Color {
-        switch tunnelPhase {
-        case .live: return Organic.sage300
-        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral400
-        case .error: return Organic.accent300
-        case .stopped: return Color.clear
-        }
-    }
-
     private var directTransportReady: Bool {
         appState.device.selectedDirectTransportAvailable
     }
@@ -478,6 +338,172 @@ struct OrganicTitleBar: View {
                 : "Direct USB connection ready. Click to start RemoteXPC tunnel."
         }
         return "Start RemoteXPC tunnel"
+    }
+}
+
+/// The paired-device picker the device button opens.
+struct OrganicDevicePopover: View {
+    @EnvironmentObject var appState: AppState
+    @EnvironmentObject var tunneldManager: TunneldManager
+    @Binding var isPresented: Bool
+    let connectionMode: DeviceManager.ConnectionMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("PAIRED DEVICES")
+                    .font(Organic.body(11, weight: .bold))
+                    .foregroundStyle(Organic.neutral600)
+                    .tracking(0.8)
+                Spacer()
+                Text("\(appState.availableDevices.count)")
+                    .font(Organic.mono(10.5, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 1)
+                    .background(Organic.neutral200)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .overlay(alignment: .bottom) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
+
+            VStack(spacing: 2) {
+                if appState.availableDevices.isEmpty {
+                    Text("No devices yet")
+                        .font(Organic.body(11.5))
+                        .foregroundStyle(Organic.neutral600)
+                        .padding(12)
+                }
+                ForEach(appState.availableDevices) { device in
+                    Button {
+                        appState.selectDevice(device)
+                        isPresented = false
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: device.isWireless ? "wifi" : "cable.connector")
+                                .frame(width: 22, height: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.chromeTitle)
+                                    .font(Organic.body(12.5, weight: .semibold))
+                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text("iOS \(device.iosVersion)")
+                                        .font(Organic.body(10.5))
+                                        .foregroundStyle(Organic.neutral600)
+                                    Text(OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode))
+                                        .font(Organic.body(10.5, weight: .semibold))
+                                        .foregroundStyle(Organic.accent700)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            if appState.selectedDevice?.id == device.id {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(Organic.accent600)
+                            }
+                        }
+                        .foregroundStyle(Organic.text)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+
+            Button {
+                Task { await appState.prepareSelectedDeviceForWiFi() }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "plus")
+                    Text("Prepare Wi-Fi")
+                        .font(Organic.body(12, weight: .bold))
+                }
+                .foregroundStyle(Organic.accent700)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
+        }
+        .frame(width: 260)
+        .background(Organic.neutral100)
+        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
+                .stroke(Organic.neutral300, lineWidth: 1)
+        )
+        .shadow(color: Organic.shadow.opacity(0.16), radius: 16, y: 8)
+    }
+
+    /// Live reachability from usbmux, Bonjour and the tunnel manager, never from the
+    /// connection-mode setting.
+    private func reachability(of device: Device) -> DeviceReachability {
+        appState.device.reachability(of: device, tunnelRunning: tunneldManager.isRunning)
+    }
+}
+
+/// The tunnel pill's face, drawn from its phase alone (so the GUI snapshots can show every
+/// phase without a running tunnel).
+struct TunnelPillLabel: View {
+    let phase: TunnelPillPhase
+    let hasSelectedDevice: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(dot)
+                .frame(width: 7, height: 7)
+            Text(phase.label)
+                .font(Organic.body(12, weight: .bold))
+        }
+        .foregroundStyle(ink)
+        .padding(.horizontal, 15)
+        .frame(height: 32)
+        .background(fill)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(stroke, lineWidth: 1))
+    }
+
+    private var dot: Color {
+        if !hasSelectedDevice { return Organic.neutral500 }
+        switch phase {
+        case .waitingForDevice, .connecting, .reconnecting, .error: return Organic.accent600
+        case .live: return Organic.sage600
+        case .stopped: return Organic.neutral100.opacity(0.75)
+        }
+    }
+
+    private var ink: Color {
+        if !hasSelectedDevice { return Organic.neutral700 }
+        switch phase {
+        case .live: return Organic.sage800
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral700
+        case .error: return Organic.accent800
+        case .stopped: return Organic.neutral100
+        }
+    }
+
+    private var fill: Color {
+        if !hasSelectedDevice { return Organic.neutral200 }
+        switch phase {
+        case .live: return Organic.sage100
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral200
+        case .error: return Organic.accent100
+        case .stopped: return Organic.accent
+        }
+    }
+
+    private var stroke: Color {
+        switch phase {
+        case .live: return Organic.sage300
+        case .waitingForDevice, .connecting, .reconnecting: return Organic.neutral400
+        case .error: return Organic.accent300
+        case .stopped: return Color.clear
+        }
     }
 }
 

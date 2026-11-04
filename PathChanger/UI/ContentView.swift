@@ -258,6 +258,26 @@ extension AppMode {
     }
 }
 
+/// What the window shows when it first appears. The app always opens in Teleport with the
+/// card closed (`.standard`); the offscreen GUI snapshots open other states.
+struct ContentViewInitialState: Equatable {
+    var mode: AppMode = .teleport
+    var cardOpen = false
+    var showSettings = false
+
+    static let standard = ContentViewInitialState()
+}
+
+#if DEBUG
+/// Body evaluations of the mounted chrome, for the GUI load benchmark (`GUIUpdateLoadTests`).
+enum GUIRenderCounts {
+    static var contentView = 0
+    static var titleBar = 0
+    static var modeCard = 0
+    static var statusPanel = 0
+}
+#endif
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
@@ -281,8 +301,21 @@ struct ContentView: View {
     @AppStorage("PathChanger.Appearance") private var appearanceRaw = OrganicAppearance.light.rawValue
     @AppStorage("dismissedCoach") private var dismissedCoach = false
     @State private var coachOpen = true
+    private let initialState: ContentViewInitialState
+
+    init(initialState: ContentViewInitialState = .standard) {
+        self.initialState = initialState
+        // The map's first appearance sets the active mode from this, so it must start as
+        // the initial mode (a run of that mode would otherwise end on appear).
+        _selectedMode = State(initialValue: initialState.mode)
+        _cardOpen = State(initialValue: initialState.cardOpen)
+        _showSettings = State(initialValue: initialState.showSettings)
+    }
 
     var body: some View {
+#if DEBUG
+        let _ = GUIRenderCounts.contentView += 1
+#endif
         ZStack {
             Organic.neutral300.ignoresSafeArea()
 
@@ -327,12 +360,13 @@ struct ContentView: View {
         .background(Organic.bg)
         .preferredColorScheme(OrganicAppearance.persisted(appearanceRaw).colorScheme)
         .onAppear {
-            selectedMode = .teleport
-            appState.activeMode = .teleport
-            cardOpen = false
+            selectedMode = initialState.mode
+            appState.activeMode = initialState.mode
+            cardOpen = initialState.cardOpen
+            showSettings = initialState.showSettings
             Organic.registerFonts()
             syncCoordFields()
-            coachOpen = !dismissedCoach
+            coachOpen = !dismissedCoach && initialState == .standard
         }
         .onChange(of: selectedMode) { oldMode, newMode in
             if newMode != .settings {
@@ -405,7 +439,7 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 if let notice = tunnelNotice {
-                    tunnelNoticeView(notice)
+                    TunnelNoticeView(text: notice.text, isError: notice.isError)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                 }
@@ -538,29 +572,6 @@ struct ContentView: View {
             automaticReconnectNotice: appState.automaticReconnectNotice,
             tunnelError: errorText
         ).map { ($0.text, $0.isError) }
-    }
-
-    private func tunnelNoticeView(_ notice: (text: String, isError: Bool)) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "wifi")
-                .foregroundStyle(notice.isError ? Organic.accent700 : Organic.neutral700)
-            Text(notice.text)
-                .font(Organic.body(11.5))
-                .foregroundStyle(Organic.text)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: 560, alignment: .leading)
-        .background(notice.isError ? Organic.accent100 : Organic.neutral100)
-        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                .stroke(notice.isError ? Organic.accent300 : Organic.neutral300, lineWidth: 1)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("tunnel.notice")
     }
 
     private var displayedConnectionLabel: String {
@@ -931,6 +942,35 @@ struct ContentView: View {
         case .checkConnection:
             Task { await appState.checkTunneldStatus() }
         }
+    }
+}
+
+/// The notice under the tunnel pill: why the tunnel is not live, in words.
+struct TunnelNoticeView: View {
+    let text: String
+    let isError: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "wifi")
+                .foregroundStyle(isError ? Organic.accent700 : Organic.neutral700)
+            Text(text)
+                .font(Organic.body(11.5))
+                .foregroundStyle(Organic.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(isError ? Organic.accent100 : Organic.neutral100)
+        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                .stroke(isError ? Organic.accent300 : Organic.neutral300, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("tunnel.notice")
     }
 }
 

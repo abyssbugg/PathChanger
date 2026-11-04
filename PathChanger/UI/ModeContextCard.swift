@@ -92,6 +92,9 @@ struct ModeContextCard: View {
     private let travelModes: [SimulationSpeed] = [.walking, .cycling, .fast, .driving]
 
     var body: some View {
+#if DEBUG
+        let _ = GUIRenderCounts.modeCard += 1
+#endif
         VStack(spacing: 0) {
             header
             // The content scrolls between the pinned header and footer. The card hugs

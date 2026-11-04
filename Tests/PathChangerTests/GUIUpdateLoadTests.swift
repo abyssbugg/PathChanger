@@ -139,6 +139,11 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
     var probeRenders = 0
     var presentationBuilds = 0
     var mapContentBuilds = 0
+    /// Body evaluations of the window, the title bar, the mode cards and the status panel.
+    var contentViewRenders = 0
+    var titleBarRenders = 0
+    var modeCardRenders = 0
+    var statusPanelRenders = 0
     var framesWithWork = 0
     var frames = 0
     var mainThreadCPUSeconds = 0.0
@@ -162,11 +167,16 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
     var description: String {
         String(
             format: "points %d · AppState sends %d (%.2f/point) · probe renders %d (%.2f/point) · " +
-                "presentation builds %d (%.2f/point) · map content builds %d (%.2f/point) · frames with work %d of %d · " +
+                "presentation builds %d (%.2f/point) · map content builds %d (%.2f/point) · " +
+                "renders: window %d (%.2f/point) title bar %d (%.2f/point) mode cards %d (%.2f/point) status panel %d (%.2f/point) · " +
+                "frames with work %d of %d · " +
                 "main-thread CPU %.3f s of %.3f s wall (%.0f%%) · idle %.0f%% · added by the run %.3f s (%.0f%%) · frame CPU %.3f s · " +
                 "click wait p50 %.1f ms p95 %.1f ms max %.1f ms (%d probes)",
             acknowledgedPoints, appStateSends, perPoint(appStateSends), probeRenders, perPoint(probeRenders),
-            presentationBuilds, perPoint(presentationBuilds), mapContentBuilds, perPoint(mapContentBuilds), framesWithWork, frames,
+            presentationBuilds, perPoint(presentationBuilds), mapContentBuilds, perPoint(mapContentBuilds),
+            contentViewRenders, perPoint(contentViewRenders), titleBarRenders, perPoint(titleBarRenders),
+            modeCardRenders, perPoint(modeCardRenders), statusPanelRenders, perPoint(statusPanelRenders),
+            framesWithWork, frames,
             mainThreadCPUSeconds, wallSeconds, 100 * mainThreadCPUSeconds / max(wallSeconds, 0.001),
             100 * idleCPUPerSecond, addedCPUSeconds, 100 * addedCPUSeconds / max(wallSeconds, 0.001),
             frameCPUSeconds,
@@ -287,6 +297,7 @@ final class GUIUpdateLoadTests: XCTestCase {
         let rendersBefore = counter.renders
         let buildsBefore = LocationStatusPresentation.debugBuildCount
         let mapBuildsBefore = SimulationMapCanvas.debugBuildCount
+        let rendersAtStart = (GUIRenderCounts.contentView, GUIRenderCounts.titleBar, GUIRenderCounts.modeCard, GUIRenderCounts.statusPanel)
         let cpuStart = Self.threadCPUSeconds()
         let wallStart = Date()
 
@@ -320,6 +331,10 @@ final class GUIUpdateLoadTests: XCTestCase {
         sample.probeRenders = counter.renders - rendersBefore
         sample.presentationBuilds = LocationStatusPresentation.debugBuildCount - buildsBefore
         sample.mapContentBuilds = SimulationMapCanvas.debugBuildCount - mapBuildsBefore
+        sample.contentViewRenders = GUIRenderCounts.contentView - rendersAtStart.0
+        sample.titleBarRenders = GUIRenderCounts.titleBar - rendersAtStart.1
+        sample.modeCardRenders = GUIRenderCounts.modeCard - rendersAtStart.2
+        sample.statusPanelRenders = GUIRenderCounts.statusPanel - rendersAtStart.3
         record(sample, name: "hosted 5 Hz Multi-Spot run")
 
         XCTAssertEqual(state.currentLocation, s2, "harness: the run reached its last stop")

@@ -318,3 +318,315 @@ final class StopPanelLayoutTests: XCTestCase {
         XCTAssertLessThan(layout.card.height, layout.availableHeight - 150, "a short card must not stretch to the window (the old maxHeight regression)")
     }
 }
+
+// MARK: - GUI arrangement snapshots (2026-11-04)
+
+/// The whole window and its sections in fixture states (no device, no tunnel), rendered
+/// offscreen in light and dark. PNGs are written only when the marker
+/// `docs/superpowers/specs/gui-arrangement-snapshots/tmp_rovodev_write_snapshots` exists;
+/// ordinary runs only check that each state renders.
+@MainActor
+final class GUIArrangementSnapshotTests: XCTestCase {
+    /// "before" for the arrangement as it was, "after" once the redesign lands.
+    static let snapshotPhase = "before"
+    static let windowSize = CGSize(width: 1280, height: 800)
+
+    private let s0 = LocationCoordinate(latitude: 35.68000, longitude: 139.76000)
+    private let s1 = LocationCoordinate(latitude: 35.68090, longitude: 139.76000)
+    private let s2 = LocationCoordinate(latitude: 35.68090, longitude: 139.76110)
+    /// About 200 m north of `s0`: a Realistic jump at walking speed waits about 2:20.
+    private let far = LocationCoordinate(latitude: 35.68180, longitude: 139.76000)
+
+    private var gates: [DelayGate] = []
+    private var runs: [Task<Void, Never>] = []
+    private var states: [AppState] = []
+    private var windows: [NSWindow] = []
+    private var suites: [String] = []
+
+    override func tearDown() async throws {
+        for state in states { await state.stopSimulation() }
+        gates.forEach { $0.releaseAll() }
+        for run in runs { await run.value }
+        windows.forEach { $0.close() }
+        for suite in suites { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        gates = []; runs = []; states = []; windows = []; suites = []
+        try await super.tearDown()
+    }
+
+    // MARK: Fixtures
+
+    static let wifiPhone = Device(
+        id: "00008120-000A1B2C3D4E5F60", displayName: "Ada's iPhone", connectionType: .wifi,
+        productType: "iPhone16,1", productVersion: "17.6", deviceName: "Ada's iPhone"
+    )
+    static let usbPhone = Device(
+        id: "00008030-001122334455667A", displayName: "Test iPhone", connectionType: .usb,
+        productType: "iPhone14,2", productVersion: "17.4", deviceName: "Test iPhone"
+    )
+
+    private func makeState(mode: AppMode, stops: [LocationCoordinate] = [], settings: StopTravelSettings? = nil) -> AppState {
+        let gate = DelayGate()
+        gates.append(gate)
+        let state = AppState(
+            startBackgroundServices: false,
+            locationInjector: PanelAckInjector(),
+            routeDelay: { _ in await gate.wait() }
+        )
+        states.append(state)
+        state.availableDevices = [Self.wifiPhone, Self.usbPhone]
+        state.selectedDevice = Self.wifiPhone
+        state.device.wifiDirectDeviceIds = [Self.wifiPhone.id]
+        state.device.usbDirectDeviceIds = [Self.usbPhone.id]
+        state.isTunneldRunning = true
+        state.activeMode = mode
+        state.autoSpeed = true
+        state.setSpeed(.walking)
+        for stop in stops { state.stageLocation(stop, for: mode) }
+        if let settings { state.setStopTravelSettings(settings, for: mode) }
+        state.locationSessionCoordinator.connectionReady(
+            LocationSessionIdentity(stableDeviceID: Self.wifiPhone.id, transport: .wifi, endpointClass: .unresolved, generation: 1)
+        )
+        return state
+    }
+
+    /// Applies `coordinate` through Teleport (acknowledged at once), then switches to `mode`.
+    private func hold(_ coordinate: LocationCoordinate, on state: AppState, thenMode mode: AppMode) async {
+        state.activeMode = .teleport
+        state.stageLocation(coordinate, for: .teleport)
+        await state.startSimulation()
+        XCTAssertEqual(state.currentLocation, coordinate, "harness: the location is held")
+        state.activeMode = mode
+    }
+
+    private func start(_ state: AppState, until condition: @escaping () -> Bool) async {
+        let run = Task { await state.startSimulation() }
+        runs.append(run)
+        await waitUntil(condition)
+    }
+
+    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<3_000 {
+            if condition() { return }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("condition not reached", file: file, line: line)
+    }
+
+    private func settings(_ mode: AppMode, _ change: (inout StopTravelSettings) -> Void) -> StopTravelSettings {
+        var settings = StopTravelSettings.defaults(for: mode)
+        change(&settings)
+        return settings
+    }
+
+    // MARK: Rendering
+
+    private static var directory: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/superpowers/specs/gui-arrangement-snapshots")
+    }
+
+    private static var writesSnapshots: Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent("tmp_rovodev_write_snapshots").path)
+    }
+
+    /// App storage for the hosted window, so the appearance never touches the app's own
+    /// preferences.
+    private func storage(dark: Bool) -> UserDefaults {
+        let name = "tmp_rovodev.pathchanger.snapshots.\(UUID().uuidString)"
+        suites.append(name)
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.set(dark ? OrganicAppearance.dark.rawValue : OrganicAppearance.light.rawValue, forKey: "PathChanger.Appearance")
+        defaults.set(true, forKey: "dismissedCoach")
+        return defaults
+    }
+
+    @discardableResult
+    private func render<V: View>(_ view: V, size: CGSize, dark: Bool, name: String) async -> NSView {
+        let hosting = NSHostingView(rootView: view
+            .defaultAppStorage(storage(dark: dark))
+            .environment(\.colorScheme, dark ? .dark : .light))
+        hosting.sizingOptions = []
+        let window = NSWindow(
+            contentRect: NSRect(origin: NSPoint(x: -20_000, y: -20_000), size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(origin: .zero, size: size))
+        hosting.frame = container.bounds
+        hosting.autoresizingMask = [.width, .height]
+        container.addSubview(hosting)
+        window.contentView = container
+        windows.append(window)
+        for _ in 0..<10 {
+            hosting.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+            await Task.yield()
+        }
+        XCTAssertEqual(hosting.bounds.size, size, "harness: the host keeps its size (\(name))")
+        write(container, name: "\(name)-\(dark ? "dark" : "light")")
+        return container
+    }
+
+    private func write(_ view: NSView, name: String) {
+        guard Self.writesSnapshots else { return }
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return XCTFail("no bitmap for \(name)")
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { return XCTFail("no PNG for \(name)") }
+        let file = Self.directory.appendingPathComponent("\(Self.snapshotPhase)-\(name).png")
+        XCTAssertNoThrow(try png.write(to: file))
+    }
+
+    private func window(_ state: AppState, _ initial: ContentViewInitialState) -> some View {
+        ContentView(initialState: initial)
+            .environmentObject(state)
+            .environmentObject(TunneldManager.shared)
+    }
+
+    private func renderWindow(_ state: AppState, _ initial: ContentViewInitialState, name: String) async {
+        for dark in [false, true] {
+            await render(window(state, initial), size: Self.windowSize, dark: dark, name: "window-\(name)")
+        }
+    }
+
+    // MARK: Whole window, per mode
+
+    func testWindowTeleport() async {
+        let state = makeState(mode: .teleport)
+        await hold(s0, on: state, thenMode: .teleport)
+        state.stageLocation(s2, for: .teleport)
+        await renderWindow(state, ContentViewInitialState(mode: .teleport, cardOpen: true), name: "teleport")
+    }
+
+    func testWindowJumpIdle() async {
+        let state = makeState(mode: .jump, stops: [s0, s1, s2])
+        await renderWindow(state, ContentViewInitialState(mode: .jump, cardOpen: true), name: "jump-idle")
+    }
+
+    /// Jump, Realistic, one stop per Move: stop 1 placed, then a Move waiting the trip time.
+    func testWindowJumpWaiting() async {
+        let state = makeState(mode: .jump, stops: [s0, s1, s2], settings: settings(.jump) { $0.jumpTiming = .realistic })
+        await state.startSimulation()
+        XCTAssertEqual(state.jumpIndex, 1, "harness: stop 1 placed")
+        await start(state) { state.stopProgress?.phase == .waitingToJump }
+        await renderWindow(state, ContentViewInitialState(mode: .jump, cardOpen: true), name: "jump-waiting")
+        XCTAssertEqual(state.stopProgress?.phase, .waitingToJump, "the run is still under way in the snapshot")
+    }
+
+    /// Two-Spot, Getting there = Jump, Realistic: the owner's 2026-11-04 run that waited
+    /// 141 s before its jump.
+    func testWindowTwoSpotWaitingOnARealisticJump() async {
+        let state = makeState(mode: .twospot, stops: [s0, far], settings: settings(.twospot) {
+            $0.arrival = .jump
+            $0.jumpTiming = .realistic
+            $0.holdSeconds = 0
+        })
+        await start(state) { state.stopProgress?.phase == .waitingToJump }
+        await renderWindow(state, ContentViewInitialState(mode: .twospot, cardOpen: true), name: "twospot-waiting")
+        XCTAssertEqual(state.stopProgress?.phase, .waitingToJump, "the run is still under way in the snapshot")
+    }
+
+    func testWindowMultiSpotRunning() async {
+        let state = makeState(mode: .route, stops: [s0, s1, s2])
+        await start(state) { state.stopProgress?.phase == .travelling && state.currentLocation != nil }
+        await renderWindow(state, ContentViewInitialState(mode: .route, cardOpen: true), name: "multispot-running")
+        XCTAssertEqual(state.stopProgress?.phase, .travelling, "the run is still under way in the snapshot")
+    }
+
+    func testWindowJoystick() async {
+        let state = makeState(mode: .joystick)
+        await hold(s0, on: state, thenMode: .joystick)
+        await renderWindow(state, ContentViewInitialState(mode: .joystick, cardOpen: true), name: "joystick")
+    }
+
+    // MARK: Settings
+
+    func testSettingsPresentation() async {
+        let state = makeState(mode: .teleport)
+        await hold(s0, on: state, thenMode: .teleport)
+        await renderWindow(state, ContentViewInitialState(mode: .teleport, cardOpen: false, showSettings: true), name: "settings")
+    }
+
+    // MARK: Device discovery
+
+    func testDeviceDiscovery() async {
+        let state = makeState(mode: .teleport)
+        let view = VStack(spacing: 0) {
+            OrganicTitleBar(
+                showDeviceMenu: .constant(false),
+                showSettings: .constant(false),
+                appearanceRaw: .constant(OrganicAppearance.light.rawValue),
+                onRefresh: {}
+            )
+            HStack {
+                Spacer()
+                OrganicDevicePopover(isPresented: .constant(true), connectionMode: state.deviceManager.connectionMode)
+                Spacer()
+            }
+            .padding(.top, 12)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Organic.bg)
+        .environmentObject(state)
+        .environmentObject(TunneldManager.shared)
+        for dark in [false, true] {
+            await render(view, size: CGSize(width: 1280, height: 420), dark: dark, name: "devices")
+        }
+    }
+
+    // MARK: Tunnel pill
+
+    private struct TunnelFixture {
+        let name: String
+        let phase: TunnelPillPhase
+        let notice: TunnelNotice?
+    }
+
+    private var tunnelFixtures: [TunnelFixture] {
+        [
+            TunnelFixture(name: "idle", phase: .stopped, notice: nil),
+            TunnelFixture(name: "starting", phase: .connecting, notice: nil),
+            TunnelFixture(name: "waiting", phase: .waitingForDevice, notice: TunnelNotice.resolve(
+                isWaitingForDevice: true, automaticReconnectNotice: nil, tunnelError: nil)),
+            TunnelFixture(name: "running", phase: .live, notice: nil),
+            TunnelFixture(name: "reconnecting", phase: .reconnecting, notice: TunnelNotice.resolve(
+                isWaitingForDevice: false, isTunnelReconnecting: true,
+                lastReconnectAttemptError: TunneldManager.wifiDeviceNotReachableMessage,
+                automaticReconnectNotice: nil, tunnelError: nil)),
+            TunnelFixture(name: "error", phase: .error, notice: TunnelNotice.resolve(
+                isWaitingForDevice: false, automaticReconnectNotice: nil,
+                tunnelError: TunneldManager.wifiUnlistedByUsbmuxMessage)),
+        ]
+    }
+
+    func testTunnelPillStates() async {
+        let state = makeState(mode: .teleport)
+        for fixture in tunnelFixtures {
+            let view = tunnelSection(fixture)
+                .environmentObject(state)
+                .environmentObject(TunneldManager.shared)
+            for dark in [false, true] {
+                await render(view, size: CGSize(width: 1280, height: 200), dark: dark, name: "tunnel-\(fixture.name)")
+            }
+        }
+    }
+
+    private func tunnelSection(_ fixture: TunnelFixture) -> some View {
+        VStack(spacing: 8) {
+            TunnelPillLabel(phase: fixture.phase, hasSelectedDevice: true)
+            if let notice = fixture.notice {
+                TunnelNoticeView(text: notice.text, isError: notice.isError)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Organic.bg)
+    }
+}
