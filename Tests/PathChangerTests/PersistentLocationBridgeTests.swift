@@ -1139,6 +1139,51 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         XCTAssertTrue(bridge.hasRecordedHeldSessions)
     }
 
+    /// Review 2026-11-04 round 2 issue 3: a helper of this same build whose parent is another
+    /// running PathChanger was adopted, probed for this app's device and transport, found
+    /// "not connected" (another phone, the other transport, or a probe timeout) and quit,
+    /// ending the spoof that PathChanger held through it. Only an orphan is replaced.
+    @MainActor
+    func testASameBuildHelperWhoseParentIsAliveIsRefusedNotReplaced() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("same-build-live-parent")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (parent, old) = try await launchHelperUnderSeparateParent(
+            paths: paths, bridgeScript: bridgeScript, parentStaysAlive: true)
+        defer {
+            if TunnelProcessTerminator.isAlive(pid: old.pid) { kill(old.pid, SIGTERM) }
+            if parent.isRunning { parent.terminate(); parent.waitUntilExit() }
+        }
+        XCTAssertEqual(ManagedLocationHelperController.liveParentProcessID(old.pid), parent.processIdentifier)
+        let deviceID = "00008130-0011223344556677"
+        try writeRecord(old, sessions: [heldSession(for: deviceID)], to: paths)
+        var probes = 0
+        let bridge = PersistentLocationBridge(
+            helperController: ManagedLocationHelperController(
+                paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript),
+            foreignHelperStatusProbe: { _, _ in
+                probes += 1
+                return .notConnected("another phone")
+            })
+
+        try await bridge.start()
+        XCTAssertEqual(bridge.adoptedHelperID, old.helperID, "the same build adopts it, as before")
+        for attempt in 1...2 {
+            do {
+                try await bridge.replaceForeignHelperIfDisconnected(deviceID, transport: .wifi)
+                XCTFail("attempt \(attempt): another running PathChanger's helper is refused")
+            } catch {
+                XCTAssertTrue(
+                    error.localizedDescription.contains(
+                        "Another PathChanger (PID \(parent.processIdentifier)) is using the location helper. Quit it first."),
+                    error.localizedDescription)
+            }
+            XCTAssertTrue(TunnelProcessTerminator.isAlive(pid: old.pid), "attempt \(attempt): never quit or signalled")
+            XCTAssertEqual(bridge.adoptedHelperID, old.helperID, "attempt \(attempt): nothing replaced")
+        }
+        XCTAssertEqual(probes, 0, "its owner decides, not a per-device probe")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "its record is left alone")
+    }
+
     /// The live 2026-11-03 case: the other build's PathChanger is gone (the helper's parent
     /// is PID 1), so its helper is stopped and replaced.
     @MainActor

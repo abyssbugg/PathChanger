@@ -854,11 +854,22 @@ final class ManagedLocationHelperController {
         activeConnection.map { isForeign($0.record) } ?? false
     }
 
+    /// The other running PathChanger that launched the adopted helper (see
+    /// `otherLiveParent`); nil when there is none or the helper is an orphan.
+    var activeConnectionOwner: Int32? {
+        activeConnection.flatMap { otherLiveParent(of: $0.record) }
+    }
+
     /// Stop the adopted foreign helper and launch this app run's own. Asks it to quit over
     /// its socket; if it cannot be asked, SIGTERM (then SIGKILL) goes only to the PID its
     /// validated record names, while its command line still serves this helper socket.
+    /// Only an orphan is stopped: another PathChanger still running holds its location
+    /// through the helper, so it is refused (review 2026-11-04 round 2 issue 3).
     func replaceForeignHelper() async throws -> ManagedLocationHelperConnection {
         if let foreign = activeConnection, isForeign(foreign.record) {
+            if let owner = otherLiveParent(of: foreign.record) {
+                throw ControllerError.helperInUseByAnotherPathChanger(owner)
+            }
             do {
                 try await shutdown()
             } catch {
@@ -2336,6 +2347,13 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         }
         guard let helperController, helperController.activeConnectionIsForeign,
               let adoptedID = helperController.activeRecord?.helperID else { return }
+        // A helper another running PathChanger launched holds that app's location: refused
+        // before any probe, which asks about this app's device and transport only, so its
+        // "not connected" (another phone, the other transport, a timeout) ended that spoof
+        // (review 2026-11-04 round 2 issue 3). Only an orphan is probed and replaced.
+        if let owner = helperController.activeConnectionOwner {
+            throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
+        }
         // Decided once per adopted helper: a kept orphan is not probed before every Move.
         guard keptForeignHelperID != adoptedID else { return }
         let status: HelperConnectionStatus
@@ -2369,6 +2387,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         // already reset the bridge's view of the helper.
         guard let helperController, let adopted = helperController.activeRecord,
               helperController.isForeign(adopted) else { return }
+        if let owner = helperController.activeConnectionOwner {
+            throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
+        }
         // An earlier launch recorded what this helper lists, so any Clear, Stop or Move of
         // this launch supersedes it, including one that never reached the helper or came
         // before the bridge first adopted it.
@@ -2411,6 +2432,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             // The orphan was stopped before the launch failed: what it held has ended.
             if !TunnelProcessTerminator.isAlive(pid: record.pid), inheritSessionsEndedByAFailedLaunch(record) {
                 throw reportEndedLocation(launchFailure: error)
+            }
+            if case let ManagedLocationHelperController.ControllerError.helperInUseByAnotherPathChanger(owner) = error {
+                throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
             }
             throw PersistentBridgeError.processStartFailed(error.localizedDescription)
         }
