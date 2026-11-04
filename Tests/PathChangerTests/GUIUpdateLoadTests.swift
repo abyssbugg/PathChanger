@@ -337,4 +337,79 @@ final class GUIUpdateLoadTests: XCTestCase {
         for _ in 0..<10 { _ = state.locationPresentation }
         XCTAssertEqual(LocationStatusPresentation.debugBuildCount - start, 4, "one build per change, plus the fresh one above")
     }
+
+    // MARK: - The main thread stays free
+
+    /// Every acknowledged point refreshes the helper connection: it read the token, the
+    /// helper record (tens of KB of JSON) and hashed the Python and bridge files on the
+    /// main thread, five times a second during a run (a live sample showed the bridge's
+    /// setLocation on the main thread). That file work runs off the main thread.
+    func testRefreshingTheHelperConnectionReadsItsFilesOffTheMainThread() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-refresh-offmain-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let python = root.appendingPathComponent("python3")
+        let bridge = root.appendingPathComponent("location_bridge.py")
+        try Data("python stand-in".utf8).write(to: python)
+        try Data("bridge stand-in".utf8).write(to: bridge)
+        let fileManager = ThreadRecordingFileManager()
+        let controller = ManagedLocationHelperController(
+            paths: ManagedLocationHelperPaths(baseDirectory: root.appendingPathComponent("helper", isDirectory: true)),
+            pythonPath: python.path,
+            bridgePath: bridge.path,
+            fileManager: fileManager
+        )
+
+        do {
+            _ = try await controller.refreshConnection()
+            XCTFail("harness: there is no helper record, so the refresh fails")
+        } catch ManagedLocationHelperController.ControllerError.invalidRecord {
+            // Expected: the files were read, then the missing record ended the refresh.
+        }
+        XCTAssertGreaterThan(fileManager.callCount, 0, "harness: the refresh used the file manager")
+        XCTAssertEqual(fileManager.mainThreadCalls, [], "the helper files were read on the main thread")
+    }
+}
+
+/// Records which file-manager calls ran on the main thread.
+private final class ThreadRecordingFileManager: FileManager, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private var onMain: [String] = []
+
+    var callCount: Int { lock.withLock { calls } }
+    var mainThreadCalls: [String] { lock.withLock { onMain } }
+
+    private func record(_ name: String) {
+        let isMain = Thread.isMainThread
+        lock.withLock {
+            calls += 1
+            if isMain { onMain.append(name) }
+        }
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        record("fileExists")
+        return super.fileExists(atPath: path)
+    }
+
+    override func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
+        record("attributesOfItem")
+        return try super.attributesOfItem(atPath: path)
+    }
+
+    override func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
+        record("setAttributes")
+        try super.setAttributes(attributes, ofItemAtPath: path)
+    }
+
+    override func createDirectory(
+        at url: URL,
+        withIntermediateDirectories createIntermediates: Bool,
+        attributes: [FileAttributeKey: Any]? = nil
+    ) throws {
+        record("createDirectory")
+        try super.createDirectory(at: url, withIntermediateDirectories: createIntermediates, attributes: attributes)
+    }
 }

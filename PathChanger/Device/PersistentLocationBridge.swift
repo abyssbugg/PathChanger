@@ -985,17 +985,16 @@ final class ManagedLocationHelperController {
     }
 
     func refreshConnection() async throws -> ManagedLocationHelperConnection {
-        let token = try paths.prepare(fileManager: fileManager)
-        let expectation = try makeExpectation(token: token)
-        guard fileManager.fileExists(atPath: paths.recordURL.path) else {
-            throw ControllerError.invalidRecord
-        }
-        let record = try loadRecord()
-        guard processIsAlive(record.pid) else {
-            try removeStaleArtifacts()
-            throw ControllerError.helperNotRunning
-        }
-        try record.validateForAdoption(expectation: expectation)
+        // Runs after every acknowledged point: the token, the record (tens of KB of JSON)
+        // and the hashes of the Python and bridge files are read off the main thread,
+        // which a 5 Hz run otherwise kept busy (GUI lag, 2026-11-03).
+        let paths = paths
+        let pythonPath = pythonPath
+        let bridgePath = bridgePath
+        let fileManager = fileManager
+        let (token, record) = try await Task.detached(priority: .userInitiated) {
+            try Self.readAdoptableRecord(paths: paths, pythonPath: pythonPath, bridgePath: bridgePath, fileManager: fileManager)
+        }.value
         let connection = try await authenticate(
             record: record,
             token: token,
@@ -1159,7 +1158,41 @@ final class ManagedLocationHelperController {
         )
     }
 
+    /// The checks `refreshConnection` makes before authenticating, in order: the token,
+    /// the expected evidence, a record whose process is alive and whose evidence matches.
+    /// File work only, so it can run off the main thread.
+    private nonisolated static func readAdoptableRecord(
+        paths: ManagedLocationHelperPaths,
+        pythonPath: String,
+        bridgePath: String,
+        fileManager: FileManager
+    ) throws -> (token: String, record: ManagedLocationHelperRecord) {
+        let token = try paths.prepare(fileManager: fileManager)
+        let expectation = try makeExpectation(
+            token: token, paths: paths, pythonPath: pythonPath, bridgePath: bridgePath
+        )
+        guard fileManager.fileExists(atPath: paths.recordURL.path) else {
+            throw ControllerError.invalidRecord
+        }
+        let record = try loadRecord(paths: paths, fileManager: fileManager)
+        guard processIsAlive(record.pid) else {
+            try removeStaleArtifacts(paths: paths, fileManager: fileManager)
+            throw ControllerError.helperNotRunning
+        }
+        try record.validateForAdoption(expectation: expectation)
+        return (token, record)
+    }
+
     private func makeExpectation(token: String) throws -> ManagedLocationHelperExpectation {
+        try Self.makeExpectation(token: token, paths: paths, pythonPath: pythonPath, bridgePath: bridgePath)
+    }
+
+    private nonisolated static func makeExpectation(
+        token: String,
+        paths: ManagedLocationHelperPaths,
+        pythonPath: String,
+        bridgePath: String
+    ) throws -> ManagedLocationHelperExpectation {
         let canonicalPythonPath = URL(fileURLWithPath: pythonPath)
             .resolvingSymlinksInPath().standardizedFileURL.path
         let canonicalBridgePath = URL(fileURLWithPath: bridgePath)
@@ -1175,6 +1208,13 @@ final class ManagedLocationHelperController {
     }
 
     private func loadRecord() throws -> ManagedLocationHelperRecord {
+        try Self.loadRecord(paths: paths, fileManager: fileManager)
+    }
+
+    private nonisolated static func loadRecord(
+        paths: ManagedLocationHelperPaths,
+        fileManager: FileManager
+    ) throws -> ManagedLocationHelperRecord {
         let values = try paths.recordURL.resourceValues(forKeys: [.isSymbolicLinkKey])
         guard values.isSymbolicLink != true else { throw ControllerError.unsafeRecord }
         let attributes = try fileManager.attributesOfItem(atPath: paths.recordURL.path)
@@ -1194,10 +1234,21 @@ final class ManagedLocationHelperController {
     }
 
     private func processIsAlive(_ pid: Int32) -> Bool {
+        Self.processIsAlive(pid)
+    }
+
+    private nonisolated static func processIsAlive(_ pid: Int32) -> Bool {
         Darwin.kill(pid, 0) == 0 || errno == EPERM
     }
 
     private func removeStaleArtifacts() throws {
+        try Self.removeStaleArtifacts(paths: paths, fileManager: fileManager)
+    }
+
+    private nonisolated static func removeStaleArtifacts(
+        paths: ManagedLocationHelperPaths,
+        fileManager: FileManager
+    ) throws {
         if fileManager.fileExists(atPath: paths.socketURL.path) {
             try fileManager.removeItem(at: paths.socketURL)
         }
@@ -1210,11 +1261,11 @@ final class ManagedLocationHelperController {
         try removeStaleArtifacts()
     }
 
-    private func sha256(fileAtPath path: String) throws -> String {
+    private nonisolated static func sha256(fileAtPath path: String) throws -> String {
         try sha256(data: Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe))
     }
 
-    private func sha256(data: Data) -> String {
+    private nonisolated static func sha256(data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
