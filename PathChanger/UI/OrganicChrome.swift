@@ -71,13 +71,15 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
     static let primary: [ConnectionChoice] = [.usb, .wifi]
     static let secondary: [ConnectionChoice] = [.auto, .random, .daemon]
 
+    /// The choice in use. The tunnel mode decides, because it is what Start uses and the
+    /// Settings window's Tunnel Mode picker sets it on its own; the connection-mode setting
+    /// only tells Random (which sets USB or Wi-Fi) apart (review 2026-11-04 round 2 issue 7).
     static func current(connectionMode: DeviceManager.ConnectionMode, tunnelMode: TunnelMode) -> ConnectionChoice {
-        if tunnelMode == .daemon { return .daemon }
-        switch connectionMode {
-        case .usb: return .usb
-        case .wifi: return .wifi
+        switch tunnelMode {
+        case .daemon: return .daemon
         case .auto: return .auto
-        case .random: return .random
+        case .usb: return connectionMode == .random ? .random : .usb
+        case .wifi: return connectionMode == .random ? .random : .wifi
         }
     }
 
@@ -92,6 +94,35 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
     }
 
     var shortTitle: String { self == .daemon ? "Daemon" : title }
+
+    /// Background daemon only sets the tunnel mode: a running USB or Wi-Fi tunnel keeps
+    /// running and the daemon is used from the next Start (review issue 6). Nil for every
+    /// other case.
+    func nextStartNote(tunnelRunning: Bool, activeMode: TunnelMode?) -> String? {
+        guard self == .daemon, tunnelRunning, activeMode != .daemon else { return nil }
+        let running: String
+        switch activeMode {
+        case .usb: running = "The USB tunnel"
+        case .wifi: running = "The Wi\u{2011}Fi tunnel"
+        case .auto: running = "The Auto tunnel"
+        case .daemon, nil: running = "The running tunnel"
+        }
+        return "Background daemon applies at the next Start. \(running) keeps running until then."
+    }
+
+    /// The Other modes menu item: Background daemon says when it takes effect while
+    /// another tunnel runs.
+    func menuTitle(tunnelRunning: Bool, activeMode: TunnelMode?) -> String {
+        nextStartNote(tunnelRunning: tunnelRunning, activeMode: activeMode) == nil
+            ? title : "\(title) (from the next Start)"
+    }
+
+    /// What the picker says under the choice in use: what it does, and for Background
+    /// daemon chosen while another tunnel runs, that it applies at the next Start.
+    func detail(tunnelRunning: Bool, activeMode: TunnelMode?) -> String {
+        guard let note = nextStartNote(tunnelRunning: tunnelRunning, activeMode: activeMode) else { return detail }
+        return "\(detail) \(note)"
+    }
 
     var systemImage: String {
         switch self {
@@ -208,7 +239,10 @@ enum ConnectionChoiceAction: Equatable {
         wifiAvailable: Bool,
         randomPicksUSB: () -> Bool = { Bool.random() }
     ) -> ConnectionChoiceAction {
-        guard choice != ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunnelMode) else {
+        // In use only when the setting agrees too: clicking the shown choice while the
+        // setting disagrees (the Settings window set the tunnel mode) aligns the setting.
+        guard choice != ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunnelMode)
+                || !(choice.connectionMode.map { $0 == connectionMode } ?? true) else {
             return .none
         }
         let change: ConnectionChoiceChange
@@ -428,7 +462,7 @@ struct OrganicTitleBar: View {
                 onSelect: { choose($0) }
             )
             .fixedSize()
-            .help(connectionChoice.detail)
+            .help(connectionChoice.detail(tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode))
             .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: deviceManager, tunnel: tunneldManager)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
@@ -689,6 +723,11 @@ struct OrganicDevicePopover: View {
         ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
     }
 
+    private var choiceDetail: String {
+        let detail = choice.detail(tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode)
+        return ConnectionChoice.primary.contains(choice) ? detail : "Using \(choice.title): \(detail)"
+    }
+
     private func choose(_ option: ConnectionChoice) {
         pendingConnectionChange = option.select(
             deviceManager: appState.deviceManager,
@@ -705,10 +744,12 @@ struct OrganicDevicePopover: View {
                         Button {
                             choose(option)
                         } label: {
+                            let title = option.menuTitle(
+                                tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode)
                             if option == choice {
-                                Label(option.title, systemImage: "checkmark")
+                                Label(title, systemImage: "checkmark")
                             } else {
-                                Text(option.title)
+                                Text(title)
                             }
                         }
                     }
@@ -734,7 +775,7 @@ struct OrganicDevicePopover: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
             .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager, tunnel: tunneldManager)
-            Text(ConnectionChoice.primary.contains(choice) ? choice.detail : "Using \(choice.title): \(choice.detail)")
+            Text(choiceDetail)
                 .font(Organic.body(11))
                 .foregroundStyle(Organic.neutral600)
                 .fixedSize(horizontal: false, vertical: true)

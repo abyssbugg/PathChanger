@@ -1099,6 +1099,70 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertEqual(resolve(.daemon, tunnelMode: .daemon), ConnectionChoiceAction.none)
     }
 
+    // MARK: The shown choice and Background daemon (review 2026-11-04 round 2 issues 6-7)
+
+    /// The Settings window's Tunnel Mode picker sets the tunnel mode on its own, so the
+    /// connection-mode setting alone could name a transport the tunnel is not using.
+    /// The tunnel mode decides; the setting only tells Random apart.
+    func testTheShownChoiceIsTheTunnelModeInUse() {
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .wifi), .wifi)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .usb), .usb)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .auto, tunnelMode: .usb), .usb)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .auto), .auto)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .auto), .auto)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .usb), .random)
+    }
+
+    /// Clicking the shown choice while the setting disagrees aligns the setting; the tunnel
+    /// mode is unchanged, so nothing restarts and nothing asks.
+    func testClickingTheShownChoiceAlignsADisagreeingSettingWithoutARestart() {
+        XCTAssertEqual(resolve(.wifi, connectionMode: .usb, tunnelMode: .wifi),
+                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
+    }
+
+    /// Choosing Background daemon only sets the tunnel mode: a running USB or Wi-Fi tunnel
+    /// keeps running, and the daemon is used from the next Start. The picker says so.
+    func testBackgroundDaemonSaysItAppliesAtTheNextStartWhileAnotherTunnelRuns() {
+        XCTAssertEqual(
+            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .usb),
+            "Background daemon applies at the next Start. The USB tunnel keeps running until then.")
+        XCTAssertEqual(
+            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .wifi),
+            "Background daemon applies at the next Start. The Wi\u{2011}Fi tunnel keeps running until then.")
+        XCTAssertEqual(
+            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: nil),
+            "Background daemon applies at the next Start. The running tunnel keeps running until then.")
+        XCTAssertNil(ConnectionChoice.daemon.nextStartNote(tunnelRunning: false, activeMode: nil))
+        XCTAssertNil(ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .daemon))
+        XCTAssertNil(ConnectionChoice.usb.nextStartNote(tunnelRunning: true, activeMode: .wifi),
+                     "a transport choice restarts the tunnel instead")
+        XCTAssertEqual(ConnectionChoice.daemon.menuTitle(tunnelRunning: true, activeMode: .usb),
+                       "Background daemon (from the next Start)")
+        XCTAssertEqual(ConnectionChoice.daemon.menuTitle(tunnelRunning: false, activeMode: nil), "Background daemon")
+        XCTAssertEqual(ConnectionChoice.auto.menuTitle(tunnelRunning: true, activeMode: .usb), "Auto")
+    }
+
+    /// A repeat click of Background daemon used to send the reconnect control signal again,
+    /// which ends an automatic reconnect.
+    @MainActor
+    func testARepeatClickOfBackgroundDaemonSendsNothing() {
+        let tunnel = TunneldManager.shared
+        let previousMode = tunnel.preferredMode
+        addTeardownBlock { @MainActor in tunnel.preferredMode = previousMode }
+        tunnel.preferredMode = .daemon
+        let deviceManager = DeviceManager(startBackgroundServices: false)
+        var signals = 0
+        let subscription = tunnel.reconnectControlChanges.sink { signals += 1 }
+        defer { subscription.cancel() }
+
+        let pending = ConnectionChoice.daemon.select(
+            deviceManager: deviceManager, tunnel: tunnel, requiresLocationQuitDecision: true)
+
+        XCTAssertNil(pending, "nothing to confirm")
+        XCTAssertEqual(signals, 0, "no reconnect control signal")
+        XCTAssertEqual(tunnel.preferredMode, .daemon)
+    }
+
     /// The restart rule is the one `DeviceManager.setConnectionMode` applies.
     func testTheTunnelRestartsOnlyWhenItsModeChanges() {
         XCTAssertTrue(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: true))

@@ -371,7 +371,7 @@ private struct SettingsConnectionChoiceRow<Row: View>: View {
 
     var body: some View {
         let choice = ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunnel.preferredMode)
-        row("Connect over", choice.detail, AnyView(
+        row("Connect over", choice.detail(tunnelRunning: tunnel.isRunning, activeMode: tunnel.activeMode), AnyView(
             OrganicSegmented(
                 options: ConnectionChoice.primary + ConnectionChoice.secondary,
                 selection: choice,
