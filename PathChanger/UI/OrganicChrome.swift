@@ -143,6 +143,8 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
             wifiAvailable: deviceManager.wifiTransportAvailable
         )
         switch action {
+        case .none:
+            return nil
         case .apply(let change):
             Self.apply(change, deviceManager: deviceManager, tunnel: tunnel)
             return nil
@@ -190,6 +192,9 @@ struct ConnectionChoiceChange: Equatable {
 /// latches reconnect (AppState treats it as a Stop), so it asks first, as the tunnel
 /// pill's Stop does (review 2026-11-04 round 2 issue 4).
 enum ConnectionChoiceAction: Equatable {
+    /// The choice in use: nothing changes (re-clicking Random used to re-roll the
+    /// transport and restart the tunnel half the time, review issue 5).
+    case none
     case apply(ConnectionChoiceChange)
     case confirm(ConnectionChoiceChange)
 
@@ -203,6 +208,9 @@ enum ConnectionChoiceAction: Equatable {
         wifiAvailable: Bool,
         randomPicksUSB: () -> Bool = { Bool.random() }
     ) -> ConnectionChoiceAction {
+        guard choice != ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunnelMode) else {
+            return .none
+        }
         let change: ConnectionChoiceChange
         if let mode = choice.connectionMode {
             let next = DeviceManager.tunnelMode(

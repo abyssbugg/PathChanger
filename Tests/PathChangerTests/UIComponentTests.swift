@@ -1085,6 +1085,20 @@ final class ConnectionChoiceTests: XCTestCase {
                        .apply(ConnectionChoiceChange(choice: .random, tunnelMode: .wifi, restartsTunnel: false)))
     }
 
+    /// Review 2026-11-04 round 2 issue 5: re-clicking the selected Random segment re-rolled
+    /// USB vs Wi-Fi and, with both available, restarted the tunnel half the time.
+    /// Selecting the choice in use changes nothing.
+    func testSelectingTheChoiceInUseDoesNothing() {
+        XCTAssertEqual(resolve(.usb, connectionMode: .usb, tunnelMode: .usb), ConnectionChoiceAction.none)
+        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .wifi), ConnectionChoiceAction.none)
+        XCTAssertEqual(resolve(.auto, connectionMode: .auto, tunnelMode: .auto), ConnectionChoiceAction.none)
+        for picksUSB in [true, false] {
+            XCTAssertEqual(resolve(.random, connectionMode: .random, tunnelMode: .usb, randomPicksUSB: picksUSB),
+                           ConnectionChoiceAction.none, "Random is not re-rolled")
+        }
+        XCTAssertEqual(resolve(.daemon, tunnelMode: .daemon), ConnectionChoiceAction.none)
+    }
+
     /// The restart rule is the one `DeviceManager.setConnectionMode` applies.
     func testTheTunnelRestartsOnlyWhenItsModeChanges() {
         XCTAssertTrue(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: true))
