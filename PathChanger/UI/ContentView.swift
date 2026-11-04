@@ -538,23 +538,21 @@ struct ContentView: View {
 
     private var mapChrome: some View {
         ZStack(alignment: .topLeading) {
-            VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
-                    searchField
-                    statusCluster
-                    clearLocationButton
-                    modePill
+            VStack(alignment: .leading, spacing: 4) {
+                locationPanel
+                if showSearchResults && !searchService.searchResults.isEmpty {
+                    searchResults
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
                 Spacer().allowsHitTesting(false)
             }
-            .allowsHitTesting(true)
+            .padding(.horizontal, Organic.space4)
+            .padding(.top, Organic.space4)
+            .zIndex(27)
 
             if savedOpen {
                 SavedPlacesCard(tab: $savedTab, onSelect: applyPlace, onClose: { savedOpen = false })
-                    .padding(.leading, 16)
-                    .padding(.top, 70)
+                    .padding(.leading, ModeContextCard.placementInsets.leading)
+                    .padding(.top, ModeContextCard.placementInsets.top)
                     .zIndex(26)
             } else if cardOpen {
                 ModeContextCard(
@@ -585,81 +583,118 @@ struct ContentView: View {
         }
     }
 
-    private var searchField: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Organic.neutral500)
-                TextField("Address or 6.447400, 3.390300", text: $searchService.searchText)
-                    .textFieldStyle(.plain)
-                    .font(Organic.body(12, weight: .semibold))
-                    .onChange(of: searchService.searchText) { _, newValue in
-                        showSearchResults = !newValue.isEmpty
-                    }
-                    .onSubmit { commitSearch() }
-                if searchService.isSearching {
-                    ProgressView().controlSize(.mini)
+    /// One panel for finding a place, choosing a mode and reading where the phone stands:
+    /// the search field and the mode switcher on top, then Connection, Location, Movement
+    /// and the applied coordinate, with Reapply and Clear at the end of that row.
+    private var locationPanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Organic.space2) {
+                searchField
+                modePill
+            }
+            .padding(LocationPanelMetrics.inset)
+            .frame(height: LocationPanelMetrics.topRowHeight)
+            Rectangle().fill(Organic.neutral300).frame(height: 1)
+            HStack(spacing: Organic.space2) {
+                statusCluster
+                Spacer(minLength: Organic.space2)
+                if let reapply = reapplyLocationButton {
+                    reapply
                 }
-                Button(action: commitSearch) {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Organic.neutral100)
-                        .frame(width: 30, height: 30)
-                        .background(Organic.accent)
-                        .clipShape(Circle())
+                clearLocationButton
+            }
+            .padding(.leading, LocationPanelMetrics.inset)
+            .padding(.trailing, LocationPanelMetrics.inset + 2)
+            .frame(height: LocationPanelMetrics.statusRowHeight)
+        }
+        .frame(maxWidth: LocationPanelMetrics.maxWidth)
+        .background(
+            RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
+                .fill(Organic.neutral100)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
+                .strokeBorder(Organic.neutral300, lineWidth: 1)
+        )
+        .shadow(color: Organic.shadow.opacity(0.10), radius: 10, y: 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Location")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Organic.neutral500)
+                .accessibilityHidden(true)
+            TextField("Search a place or coordinates", text: $searchService.searchText)
+                .textFieldStyle(.plain)
+                .font(Organic.body(12.5, weight: .medium))
+                .onChange(of: searchService.searchText) { _, newValue in
+                    showSearchResults = !newValue.isEmpty
+                }
+                .onSubmit { commitSearch() }
+                .accessibilityLabel("Search for a place")
+            if searchService.isSearching {
+                ProgressView().controlSize(.mini)
+            }
+            Button(action: commitSearch) {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Organic.accentInk)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(Organic.accent))
+            }
+            .buttonStyle(.plain)
+            .help("Go to location")
+            .accessibilityLabel("Go to location")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .frame(minWidth: 220, maxWidth: .infinity)
+        .frame(height: 44)
+        .background(Capsule().fill(Organic.bg))
+        .overlay(Capsule().strokeBorder(Organic.neutral300, lineWidth: 1))
+    }
+
+    private var searchResults: some View {
+        VStack(spacing: 1) {
+            ForEach(searchService.searchResults.prefix(6)) { result in
+                Button {
+                    applyPlace(result.coordinate, name: result.name)
+                    searchService.clearSearch()
+                    showSearchResults = false
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "mappin.circle")
+                            .foregroundStyle(Organic.accent600)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(result.name)
+                                .font(Organic.body(12, weight: .bold))
+                                .lineLimit(1)
+                            Text(result.subtitle)
+                                .font(Organic.mono(10))
+                                .foregroundStyle(Organic.neutral600)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Go to location")
-            }
-            .padding(.leading, 14)
-            .padding(.trailing, 6)
-            .frame(height: 42)
-            .background(Organic.neutral100)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-            .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
-
-            if showSearchResults && !searchService.searchResults.isEmpty {
-                VStack(spacing: 1) {
-                    ForEach(searchService.searchResults.prefix(6)) { result in
-                        Button {
-                            applyPlace(result.coordinate, name: result.name)
-                            searchService.clearSearch()
-                            showSearchResults = false
-                        } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: "mappin.circle")
-                                    .foregroundStyle(Organic.accent600)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(result.name)
-                                        .font(Organic.body(12, weight: .bold))
-                                        .lineLimit(1)
-                                    Text(result.subtitle)
-                                        .font(Organic.mono(10))
-                                        .foregroundStyle(Organic.neutral600)
-                                        .lineLimit(1)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(5)
-                .background(Organic.neutral100)
-                .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
-                        .stroke(Organic.neutral300, lineWidth: 1)
-                )
-                .shadow(color: Organic.shadow.opacity(0.16), radius: 10, y: 4)
             }
         }
-        .frame(maxWidth: 360, alignment: .leading)
+        .padding(5)
+        .frame(width: 360)
+        .background(Organic.neutral100)
+        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                .strokeBorder(Organic.neutral300, lineWidth: 1)
+        )
+        .shadow(color: Organic.shadow.opacity(0.16), radius: 10, y: 4)
     }
 
     /// Why the tunnel is not live, in words, without hovering: the pill alone only
@@ -692,114 +727,90 @@ struct ContentView: View {
         return phase
     }
 
+    /// Connection, Location, Movement and the applied coordinate: three separate states
+    /// and the receipt's coordinate, never one combined light. A value view, so the window's
+    /// renders redraw it only when one of them changes.
     private var statusCluster: some View {
         let status = appState.locationPresentation
         let state = appState.locationSessionCoordinator.state
-        return HStack(spacing: 6) {
-            statusChip(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
-                       tone: connectionTone(for: displayedConnectionPhase),
-                       localizationKey: "accessibility.location.status.connection", id: "location.status.connection")
-            if LocationReapplyAvailability.isOffered(connection: state.connection, application: state.application) {
-                reapplyLocationButton
-            }
-            statusChip(titleKey: "location.status.domain.application", value: status.applicationLabel,
-                       tone: status.isSpoofing ? Organic.sage600 : applicationTone(for: state.application),
-                       localizationKey: "accessibility.location.status.application", id: "location.status.application")
-            statusChip(titleKey: "location.status.domain.movement", value: status.movementLabel,
-                       tone: movementTone(for: state.movement),
-                       localizationKey: "accessibility.location.status.movement", id: "location.status.movement")
-            if status.appliedCoordinate != nil {
-                statusChip(titleKey: "location.status.domain.applied", value: status.appliedCoordinateLabel,
-                           tone: Organic.sage600,
-                           localizationKey: "accessibility.location.status.coordinate", id: "location.status.coordinate")
-            }
-        }
-        .padding(4)
-        .frame(height: 42)
-        .background(Organic.neutral100)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
+        return LocationStatusStrip(cells: [
+            .init(titleKey: "location.status.domain.connection", value: displayedConnectionLabel,
+                  tone: connectionTone(for: displayedConnectionPhase),
+                  localizationKey: "accessibility.location.status.connection", id: "location.status.connection"),
+            .init(titleKey: "location.status.domain.application", value: status.applicationLabel,
+                  tone: status.isSpoofing ? Organic.sage600 : applicationTone(for: state.application),
+                  localizationKey: "accessibility.location.status.application", id: "location.status.application"),
+            .init(titleKey: "location.status.domain.movement", value: status.movementLabel,
+                  tone: movementTone(for: state.movement),
+                  localizationKey: "accessibility.location.status.movement", id: "location.status.movement"),
+            // Shown only from an acknowledged receipt; the cell keeps its place without one.
+            .init(titleKey: "location.status.domain.applied",
+                  value: status.appliedCoordinate != nil ? status.appliedCoordinateLabel : LocationStatusStrip.noCoordinate,
+                  tone: status.appliedCoordinate != nil ? Organic.sage600 : Organic.neutral400,
+                  localizationKey: "accessibility.location.status.coordinate", id: "location.status.coordinate",
+                  isCoordinate: true),
+        ])
+        .equatable()
     }
 
     /// The location area's only recovery control: it reapplies the held location over the
     /// current connection and never starts, restarts or stops the tunnel (the tunnel pill
-    /// does). Disabled with a plain reason when the tunnel is not live or nothing is held.
-    private var reapplyLocationButton: some View {
+    /// does). Offered only where the held location may not be on the phone; disabled with
+    /// a plain reason when the tunnel is not live or nothing is held.
+    private var reapplyLocationButton: AnyView? {
+        let state = appState.locationSessionCoordinator.state
+        guard LocationReapplyAvailability.isOffered(connection: state.connection, application: state.application) else {
+            return nil
+        }
         let availability = appState.locationReapplyAvailability
         let enabled = availability.isAvailable
-        return Button {
+        return AnyView(Button {
             Task { await appState.reapplyLocation() }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 9, weight: .bold))
-                Text("Reapply location")
-                    .font(Organic.body(10.5, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(enabled ? Organic.accent700 : Organic.neutral600)
-            .padding(.horizontal, 8)
-            .frame(maxHeight: .infinity)
-            .background(enabled ? Organic.accent100 : Organic.neutral200)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Label("Reapply location", systemImage: "arrow.clockwise")
+                .font(Organic.body(11.5, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(enabled ? Organic.accent700 : Organic.neutral600)
+                .padding(.horizontal, 12)
+                .frame(height: LocationPanelMetrics.actionHeight)
+                .background(Capsule().fill(enabled ? Organic.accent100 : Organic.neutral200))
+                .overlay(Capsule().strokeBorder(enabled ? Organic.accent300 : Organic.neutral300, lineWidth: 1))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .disabled(!enabled)
         .help(availability.disabledReason ?? "Send the held location to the iPhone again over the current connection")
         .accessibilityLabel("Reapply location")
         .accessibilityHint(availability.disabledReason ?? "Sends the held location to the iPhone again over the current connection")
-        .accessibilityIdentifier("location.action.reapply")
+        .accessibilityIdentifier("location.action.reapply"))
     }
 
     private var clearLocationButton: some View {
         let canClear = appState.locationPresentation.canClear
-        return Button("Clear") { showClearConfirmation = true }
-            .buttonStyle(.plain)
-            .font(Organic.body(12, weight: .semibold))
-            .foregroundStyle(canClear ? Organic.accent700 : Organic.neutral600)
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(canClear ? Organic.accent100 : Organic.neutral200)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(canClear ? Organic.accent400 : Organic.neutral300, lineWidth: 1))
-            .disabled(!canClear)
-            .accessibilityIdentifier("location.action.clear")
-            .confirmationDialog("Return to real GPS?", isPresented: $showClearConfirmation, titleVisibility: .visible) {
-                Button("Clear simulated location", role: .destructive) { Task { await appState.clearLocation() } }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This is the only action that removes the applied location.")
-            }
-    }
-
-    private func statusChip(
-        titleKey: String,
-        value: String,
-        tone: Color,
-        localizationKey: String,
-        id: String
-    ) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(tone).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(NSLocalizedString(titleKey, comment: "Location status domain"))
-                    .font(Organic.body(8, weight: .semibold))
-                    .foregroundStyle(Organic.neutral600)
-                    .tracking(0.35)
-                Text(value)
-                    .font(Organic.body(10.5, weight: .semibold))
-                    .foregroundStyle(Organic.neutral900)
-                    .lineLimit(1)
-            }
+        return Button { showClearConfirmation = true } label: {
+            Label("Clear", systemImage: "xmark.circle")
+                .font(Organic.body(11.5, weight: .bold))
+                .foregroundStyle(canClear ? Organic.accent700 : Organic.neutral500)
+                .padding(.horizontal, 12)
+                .frame(height: LocationPanelMetrics.actionHeight)
+                .background(Capsule().fill(canClear ? Organic.accent100 : Organic.neutral200))
+                .overlay(Capsule().strokeBorder(canClear ? Organic.accent400 : Organic.neutral300, lineWidth: 1))
+                .contentShape(Capsule())
         }
-        .padding(.horizontal, 8)
-        .frame(maxHeight: .infinity)
-        .background(Organic.neutral200)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier(id)
-        .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
-        .accessibilityValue(value)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .disabled(!canClear)
+        .help(canClear ? "Return the iPhone to its real location" : "Nothing to clear: no simulated location is held")
+        .accessibilityLabel("Clear")
+        .accessibilityHint("Returns the iPhone to its real location")
+        .accessibilityIdentifier("location.action.clear")
+        .confirmationDialog("Return to real GPS?", isPresented: $showClearConfirmation, titleVisibility: .visible) {
+            Button("Clear simulated location", role: .destructive) { Task { await appState.clearLocation() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This is the only action that removes the applied location.")
+        }
     }
 
     private func connectionTone(for phase: LocationConnectionPhase) -> Color {
@@ -828,10 +839,12 @@ struct ContentView: View {
         }
     }
 
+    /// The five modes as one segmented row (every label in full), then Saved & History.
     private var modePill: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             ForEach(AppMode.mapModes) { mode in
                 let isActive = selectedMode == mode && cardOpen
+                let isSelected = selectedMode == mode
                 Button {
                     if selectedMode == mode {
                         cardOpen.toggle()
@@ -840,19 +853,22 @@ struct ContentView: View {
                         selectedMode = mode
                     }
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         OrganicGlyphView(glyph: mode.glyph, size: 14)
                         Text(mode.localizedLabel)
-                            .font(Organic.body(10, weight: .semibold))
+                            .font(Organic.body(11.5, weight: isSelected ? .bold : .semibold))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(isActive ? Organic.accentInk : Organic.neutral700)
-                    .padding(.horizontal, 9)
+                    .foregroundStyle(isActive ? Organic.accentInk : (isSelected ? Organic.accent800 : Organic.neutral700))
+                    .padding(.horizontal, 11)
                     .frame(minWidth: 44, minHeight: 44)
-                    .background(isActive ? Organic.accent : Color.clear)
-                    .clipShape(Capsule())
+                    .background(
+                        Capsule().fill(isActive ? Organic.accent : (isSelected ? Organic.accent100 : Color.clear))
+                    )
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
                 .help(mode.description)
                 .accessibilityLabel(mode.localizedLabel)
                 .accessibilityValue(
@@ -866,7 +882,7 @@ struct ContentView: View {
             Rectangle()
                 .fill(Organic.neutral300)
                 .frame(width: 1, height: 22)
-                .padding(.horizontal, 3)
+                .padding(.horizontal, 4)
             Button {
                 savedOpen.toggle()
                 if savedOpen {
@@ -874,22 +890,19 @@ struct ContentView: View {
                     coachOpen = false
                 }
             } label: {
-                Image(systemName: "calendar")
+                Image(systemName: "bookmark")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(savedOpen ? Organic.accent800 : Organic.neutral600)
+                    .foregroundStyle(savedOpen ? Organic.accentInk : Organic.neutral700)
                     .frame(width: 44, height: 44)
-                    .background(savedOpen ? Organic.neutral200 : Color.clear)
-                    .clipShape(Circle())
+                    .background(Circle().fill(savedOpen ? Organic.accent : Color.clear))
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .help(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
             .accessibilityLabel(NSLocalizedString("location.savedHistory", comment: "Saved places and location history"))
         }
-        .padding(5)
-        .background(Organic.neutral100)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-        .shadow(color: Organic.shadow.opacity(0.08), radius: 4, y: 1)
+        .fixedSize()
+        .background(Capsule().fill(Organic.neutral200))
     }
 
     private var handleButton: some View {
@@ -1046,6 +1059,80 @@ struct ContentView: View {
         case .checkConnection:
             Task { await appState.checkTunneldStatus() }
         }
+    }
+}
+
+/// The location panel's fixed geometry: the mode card is placed right under it.
+enum LocationPanelMetrics {
+    static let maxWidth: CGFloat = 820
+    static let inset: CGFloat = 6
+    /// 44 pt search field and mode buttons, plus the inset above and below.
+    static let topRowHeight: CGFloat = 56
+    static let statusRowHeight: CGFloat = 46
+    static let actionHeight: CGFloat = 30
+    /// Top row, hairline, status row.
+    static let height: CGFloat = topRowHeight + 1 + statusRowHeight
+}
+
+/// Connection, Location, Movement and Applied, side by side, split by hairlines: a dot in
+/// the state's tone, a small label, the value. Equatable on what it shows.
+struct LocationStatusStrip: View, Equatable {
+    struct Cell: Equatable {
+        let titleKey: String
+        let value: String
+        let tone: Color
+        let localizationKey: String
+        let id: String
+        var isCoordinate = false
+    }
+
+    static let noCoordinate = "None"
+
+    let cells: [Cell]
+
+    var body: some View {
+#if DEBUG
+        let _ = GUIRenderCounts.statusPanel += 1
+#endif
+        HStack(spacing: 0) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
+                if index > 0 {
+                    Rectangle().fill(Organic.neutral300).frame(width: 1, height: 24)
+                        .accessibilityHidden(true)
+                }
+                statusChip(titleKey: cell.titleKey, value: cell.value, tone: cell.tone,
+                           localizationKey: cell.localizationKey, id: cell.id, isCoordinate: cell.isCoordinate)
+            }
+        }
+        .fixedSize()
+    }
+
+    private func statusChip(
+        titleKey: String,
+        value: String,
+        tone: Color,
+        localizationKey: String,
+        id: String,
+        isCoordinate: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(NSLocalizedString(titleKey, comment: "Location status domain"))
+                .font(Organic.body(10, weight: .semibold))
+                .foregroundStyle(Organic.neutral600)
+            HStack(spacing: 6) {
+                Circle().fill(tone).frame(width: 7, height: 7)
+                Text(value)
+                    .font(isCoordinate && value != Self.noCoordinate ? Organic.mono(11.5, weight: .semibold) : Organic.body(12, weight: .semibold))
+                    .foregroundStyle(value == Self.noCoordinate ? Organic.neutral600 : Organic.neutral900)
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 10)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(NSLocalizedString(localizationKey, comment: "Location status field"))
+        .accessibilityValue(value)
     }
 }
 

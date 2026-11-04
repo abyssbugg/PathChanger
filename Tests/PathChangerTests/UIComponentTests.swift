@@ -670,12 +670,12 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
 
         XCTAssertTrue(design.contains(".system(size: size, weight: weight, design: .rounded)"))
         XCTAssertFalse(design.contains(".custom(bodyName, size: size).weight(weight)"))
-        XCTAssertTrue(content.contains(".frame(maxWidth: 360"))
+        XCTAssertTrue(content.contains(".frame(maxWidth: LocationPanelMetrics.maxWidth)"), "the location panel is one panel of bounded width")
         XCTAssertTrue(content.contains("private var statusCluster: some View"))
         XCTAssertTrue(content.contains("private var clearLocationButton: some View"))
-        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.connection\""))
-        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.application\""))
-        XCTAssertTrue(content.contains("statusChip(titleKey: \"location.status.domain.movement\""))
+        XCTAssertTrue(content.contains(".init(titleKey: \"location.status.domain.connection\""), "a separate connection cell")
+        XCTAssertTrue(content.contains(".init(titleKey: \"location.status.domain.application\""), "a separate application cell")
+        XCTAssertTrue(content.contains(".init(titleKey: \"location.status.domain.movement\""), "a separate movement cell")
         XCTAssertFalse(chrome.contains("Circle().fill(Color(hex: 0xE8695E))"))
         XCTAssertTrue(chrome.contains(".frame(height: 56)"))
     }

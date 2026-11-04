@@ -73,9 +73,13 @@ struct ContentHuggingLayout: Layout {
 }
 
 struct ModeContextCard: View {
-    /// Where ContentView places the card in the map area: below the search row, with a
-    /// bottom margin so the footer never touches the window edge.
-    static let placementInsets = EdgeInsets(top: 70, leading: 16, bottom: 16, trailing: 16)
+    /// Where ContentView places the card in the map area: 12 pt below the location panel,
+    /// on the panel's left edge, with a bottom margin so the footer never touches the
+    /// window edge.
+    static let placementInsets = EdgeInsets(
+        top: Organic.space4 + LocationPanelMetrics.height + Organic.space3,
+        leading: 16, bottom: 16, trailing: 16
+    )
 
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
