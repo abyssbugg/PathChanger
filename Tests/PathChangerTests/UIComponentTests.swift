@@ -1142,6 +1142,29 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertEqual(ConnectionChoice.auto.menuTitle(tunnelRunning: true, activeMode: .usb), "Auto")
     }
 
+    /// Review issue 11: choosing Background daemon only sets the tunnel mode, once, and
+    /// leaves the connection-mode setting alone; nothing is left to confirm.
+    @MainActor
+    func testChoosingBackgroundDaemonSetsOnlyTheTunnelModeOnce() {
+        let tunnel = TunneldManager.shared
+        let previousMode = tunnel.preferredMode
+        addTeardownBlock { @MainActor in tunnel.preferredMode = previousMode }
+        tunnel.preferredMode = .usb
+        let deviceManager = DeviceManager(startBackgroundServices: false)
+        let connectionMode = deviceManager.connectionMode
+        var signals = 0
+        let subscription = tunnel.reconnectControlChanges.sink { signals += 1 }
+        defer { subscription.cancel() }
+
+        let pending = ConnectionChoice.daemon.select(
+            deviceManager: deviceManager, tunnel: tunnel, requiresLocationQuitDecision: true)
+
+        XCTAssertNil(pending, "no restart, so nothing to confirm")
+        XCTAssertEqual(tunnel.preferredMode, .daemon)
+        XCTAssertEqual(deviceManager.connectionMode, connectionMode)
+        XCTAssertEqual(signals, 1, "one reconnect control signal for the mode change")
+    }
+
     /// A repeat click of Background daemon used to send the reconnect control signal again,
     /// which ends an automatic reconnect.
     @MainActor

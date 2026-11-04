@@ -960,6 +960,31 @@ final class StopTravelEngineTests: XCTestCase {
         XCTAssertEqual(lefts.first ?? nil, wait, "the first tick is the whole wait left")
     }
 
+    /// Review 2026-11-04 round 2 issue 10: a travelled leg publishes its whole length with
+    /// every point, so the card's bar runs over the leg (the wait and the hold were tested,
+    /// the travelled leg was not).
+    func testATravelledLegPublishesItsWholeLengthWithEveryPoint() async {
+        let harness = await StopRunHarness.make(
+            mode: .route, stops: [s0, s1], settings: settings(.travel), metersPerSecond: 20, updateHz: 5)
+        let state = harness.state!
+        var travelled: [(total: TimeInterval?, left: TimeInterval?)] = []
+        harness.onApply = { _, _ in
+            guard state.stopProgress?.phase == .travelling else { return }
+            travelled.append((state.stopProgress?.phaseSecondsTotal, state.stopProgress?.legSecondsLeft))
+        }
+        await state.startSimulation()
+
+        let interval = 1.0 / 5
+        XCTAssertGreaterThan(travelled.count, 1, "the leg s0 → s1 is travelled point by point")
+        let total = Double(travelled.count) * interval
+        for (index, tick) in travelled.enumerated() {
+            XCTAssertEqual(tick.total ?? -1, total, accuracy: 1e-9, "point \(index) carries the whole leg")
+            XCTAssertEqual(tick.left ?? -1, total - Double(index) * interval, accuracy: 1e-9, "point \(index)")
+        }
+        XCTAssertEqual(total, Geo.distance(from: s0, to: s1) / 20, accuracy: interval,
+                       "the leg's length is its trip time at the travel speed")
+    }
+
     func testAHoldPublishesItsWholeLength() async {
         let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: settings(.travel, hold: 2))
         let state = harness.state!
