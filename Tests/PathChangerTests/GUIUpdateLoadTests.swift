@@ -108,6 +108,7 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
     var appStateSends = 0
     var probeRenders = 0
     var presentationBuilds = 0
+    var mapContentBuilds = 0
     var framesWithWork = 0
     var frames = 0
     var mainThreadCPUSeconds = 0.0
@@ -123,10 +124,10 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
     var description: String {
         String(
             format: "points %d · AppState sends %d (%.2f/point) · probe renders %d (%.2f/point) · " +
-                "presentation builds %d (%.2f/point) · frames with work %d of %d · " +
+                "presentation builds %d (%.2f/point) · map content builds %d (%.2f/point) · frames with work %d of %d · " +
                 "main-thread CPU %.3f s of %.3f s wall (%.0f%%) · idle %.0f%% · added by the run %.3f s (%.0f%%) · frame CPU %.3f s",
             acknowledgedPoints, appStateSends, perPoint(appStateSends), probeRenders, perPoint(probeRenders),
-            presentationBuilds, perPoint(presentationBuilds), framesWithWork, frames,
+            presentationBuilds, perPoint(presentationBuilds), mapContentBuilds, perPoint(mapContentBuilds), framesWithWork, frames,
             mainThreadCPUSeconds, wallSeconds, 100 * mainThreadCPUSeconds / max(wallSeconds, 0.001),
             100 * idleCPUPerSecond, addedCPUSeconds, 100 * addedCPUSeconds / max(wallSeconds, 0.001),
             frameCPUSeconds
@@ -214,7 +215,7 @@ final class GUIUpdateLoadTests: XCTestCase {
 
     /// The mounted GUI during a real-time 5 Hz Multi-Spot run, laid out at 60 frames a
     /// second.
-    func testAMultiSpotRunBuildsThePresentationOncePerRenderedChange() async throws {
+    func testAMultiSpotRunRebuildsThePresentationAndTheMapsOnlyForWhatTheyShow() async throws {
         let injector = DelayedAckInjector(roundTrip: 0.03)
         let state = makeRouteState(injector: injector, realTime: true)
         let counter = RenderCounter()
@@ -242,6 +243,7 @@ final class GUIUpdateLoadTests: XCTestCase {
         state.objectWillChange.sink { sample.appStateSends += 1 }.store(in: &cancellables)
         let rendersBefore = counter.renders
         let buildsBefore = LocationStatusPresentation.debugBuildCount
+        let mapBuildsBefore = SimulationMapCanvas.debugBuildCount
         let cpuStart = Self.threadCPUSeconds()
         let wallStart = Date()
 
@@ -270,6 +272,7 @@ final class GUIUpdateLoadTests: XCTestCase {
         sample.acknowledgedPoints = await injector.applied.count
         sample.probeRenders = counter.renders - rendersBefore
         sample.presentationBuilds = LocationStatusPresentation.debugBuildCount - buildsBefore
+        sample.mapContentBuilds = SimulationMapCanvas.debugBuildCount - mapBuildsBefore
         record(sample, name: "hosted 5 Hz Multi-Spot run")
 
         XCTAssertEqual(state.currentLocation, s2, "harness: the run reached its last stop")
@@ -279,6 +282,13 @@ final class GUIUpdateLoadTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             sample.presentationBuilds, sample.acknowledgedPoints * 3 + 10,
             "the presentation was rebuilt on every read: \(sample)"
+        )
+        // The host shows two maps (ContentView's and the Multi-Spot one). Each changes once
+        // per acknowledged point (the dot, the trail); a step being sent, the run's
+        // countdown and the card change nothing on the map, so they must not rebuild it.
+        XCTAssertLessThanOrEqual(
+            sample.mapContentBuilds, sample.acknowledgedPoints * 2 + 10,
+            "the maps were rebuilt for changes they do not show: \(sample)"
         )
     }
 

@@ -88,92 +88,23 @@ struct SimulationView: View {
         }
     }
 
+    /// The map, rebuilt only when what it draws changes (see `SimulationMapCanvas`).
     private var mapView: some View {
-        MapReader { proxy in
-            Map(position: $position, interactionModes: [.all]) {
-                if let marker = appState.locationMarker {
-                    Annotation(marker.accessibilityLabel, coordinate: marker.coordinate.clLocationCoordinate2D) {
-                        // Staged (nothing sent, PRODUCT_REQUIREMENTS 5.2): a hollow dashed
-                        // ring in a neutral color. Spoofed: the filled accent dot. Uncertain
-                        // (applied, but the session holding it is lost or unconfirmed): a
-                        // hollow dashed ring in the accent color.
-                        ZStack {
-                            switch marker.style {
-                            case .spoofed:
-                                Circle()
-                                    .fill(Organic.accent300.opacity(0.45))
-                                    .frame(width: 34, height: 34)
-                                Circle()
-                                    .fill(Organic.accent600)
-                                    .frame(width: 15, height: 15)
-                                    .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
-                                    .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
-                            case .uncertain:
-                                Circle()
-                                    .fill(Organic.accent100.opacity(0.6))
-                                    .frame(width: 26, height: 26)
-                                    .overlay(
-                                        Circle().stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
-                                    )
-                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
-                            case .staged:
-                                Circle()
-                                    .fill(Organic.neutral100.opacity(0.6))
-                                    .frame(width: 22, height: 22)
-                                    .overlay(
-                                        Circle().stroke(Organic.neutral600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
-                                    )
-                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
-                            }
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(marker.accessibilityLabel)
-                    }
-                }
-
-                if mode.showsRouteList {
-                    // Decorative: the stops and the legend carry the meaning.
-                    ForEach(appState.routePreview.legs) { leg in
-                        MapPolyline(coordinates: leg.points.map(\.clLocationCoordinate2D))
-                            .stroke(RoutePreviewStroke.color(leg.style), style: RoutePreviewStroke.style(leg.style))
-                    }
-                    // The shown mode's own trail only, one line per segment (travel
-                    // never joined by a line the phone did not drive).
-                    let trailSegments = appState.travelTrail.segments(for: mode).filter { $0.count >= 2 }
-                    ForEach(Array(trailSegments.enumerated()), id: \.offset) { _, segment in
-                        MapPolyline(coordinates: segment.map(\.clLocationCoordinate2D))
-                            .stroke(Organic.sage600, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                    }
-                }
-
-                if mode.showsRouteList {
-                    ForEach(Array(appState.currentRoute.enumerated()), id: \.offset) { index, coord in
-                        Annotation("Spot \(index + 1)", coordinate: coord.clLocationCoordinate2D) {
-                            Text("\(index + 1)")
-                                .font(Organic.body(11, weight: .bold))
-                                .foregroundStyle(Organic.neutral100)
-                                .frame(width: 22, height: 22)
-                                .background(index == 0 ? Organic.sage600 : Organic.accent600)
-                                .clipShape(Circle())
-                                .shadow(color: Organic.shadow.opacity(0.18), radius: 4, y: 1)
-                                .onTapGesture(count: 2) {
-                                    appState.removeRouteWaypoint(at: index)
-                                }
-                        }
-                    }
-                }
-            }
-            .mapStyle(mapStyle.style)
-            .mapControlVisibility(.hidden)
-            .onMapCameraChange(frequency: .onEnd) { context in
-                currentRegion = context.region
-            }
-            .onTapGesture { screenPoint in
-                if let coordinate = proxy.convert(screenPoint, from: .local) {
-                    handleMapTap(at: coordinate)
-                }
-            }
-        }
+        let showsRoute = mode.showsRouteList
+        return SimulationMapCanvas(
+            marker: appState.locationMarker,
+            mode: mode,
+            legs: showsRoute ? appState.routePreview.legs : [],
+            trailSegments: showsRoute ? appState.travelTrail.segments(for: mode).filter { $0.count >= 2 } : [],
+            routeStops: showsRoute ? appState.currentRoute : [],
+            mapStyle: mapStyle,
+            cameraPosition: position,
+            position: $position,
+            onCameraChangeEnd: { region in currentRegion = region },
+            onTap: { coordinate in handleMapTap(at: coordinate) },
+            onRemoveStop: { index in appState.removeRouteWaypoint(at: index) }
+        )
+        .equatable()
     }
 
     private var mapFooter: some View {
@@ -348,6 +279,127 @@ struct SimulationView: View {
         case .failure(let error):
             appState.lastError = error.localizedDescription
             appState.statusMessage = error.localizedDescription
+        }
+    }
+}
+
+/// The map and what it draws: the location marker, the planned legs, the trail and the
+/// stops. It compares what it shows, so a change elsewhere in AppState (a step being sent,
+/// a run's countdown, the card, the device list) does not rebuild the map; each rebuild
+/// updated MKMapView's configuration, attribution and overlays (GUI lag, 2026-11-03).
+struct SimulationMapCanvas: View, Equatable {
+    let marker: LocationMarker?
+    let mode: AppMode
+    let legs: [RoutePreviewModel.Leg]
+    let trailSegments: [[LocationCoordinate]]
+    let routeStops: [LocationCoordinate]
+    let mapStyle: MapStyleType
+    /// The camera position this canvas was built with: the binding alone always reads the
+    /// current value, so it cannot tell a moved camera apart.
+    let cameraPosition: MapCameraPosition
+    @Binding var position: MapCameraPosition
+    let onCameraChangeEnd: (MKCoordinateRegion) -> Void
+    let onTap: (CLLocationCoordinate2D) -> Void
+    let onRemoveStop: (Int) -> Void
+
+#if DEBUG
+    /// Builds of the map's content, for the GUI load benchmark (`GUIUpdateLoadTests`).
+    static var debugBuildCount = 0
+#endif
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.marker == rhs.marker && lhs.mode == rhs.mode && lhs.legs == rhs.legs
+            && lhs.trailSegments == rhs.trailSegments && lhs.routeStops == rhs.routeStops
+            && lhs.mapStyle == rhs.mapStyle && lhs.cameraPosition == rhs.cameraPosition
+    }
+
+    var body: some View {
+#if DEBUG
+        Self.debugBuildCount += 1
+#endif
+        return MapReader { proxy in
+            Map(position: $position, interactionModes: [.all]) {
+                if let marker {
+                    Annotation(marker.accessibilityLabel, coordinate: marker.coordinate.clLocationCoordinate2D) {
+                        // Staged (nothing sent, PRODUCT_REQUIREMENTS 5.2): a hollow dashed
+                        // ring in a neutral color. Spoofed: the filled accent dot. Uncertain
+                        // (applied, but the session holding it is lost or unconfirmed): a
+                        // hollow dashed ring in the accent color.
+                        ZStack {
+                            switch marker.style {
+                            case .spoofed:
+                                Circle()
+                                    .fill(Organic.accent300.opacity(0.45))
+                                    .frame(width: 34, height: 34)
+                                Circle()
+                                    .fill(Organic.accent600)
+                                    .frame(width: 15, height: 15)
+                                    .overlay(Circle().stroke(Organic.neutral100, lineWidth: 3))
+                                    .shadow(color: Organic.shadow.opacity(0.2), radius: 6, y: 2)
+                            case .uncertain:
+                                Circle()
+                                    .fill(Organic.accent100.opacity(0.6))
+                                    .frame(width: 26, height: 26)
+                                    .overlay(
+                                        Circle().stroke(Organic.accent600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
+                                    )
+                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
+                            case .staged:
+                                Circle()
+                                    .fill(Organic.neutral100.opacity(0.6))
+                                    .frame(width: 22, height: 22)
+                                    .overlay(
+                                        Circle().stroke(Organic.neutral600, style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
+                                    )
+                                    .shadow(color: Organic.shadow.opacity(0.15), radius: 4, y: 1)
+                            }
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(marker.accessibilityLabel)
+                    }
+                }
+
+                if mode.showsRouteList {
+                    // Decorative: the stops and the legend carry the meaning.
+                    ForEach(legs) { leg in
+                        MapPolyline(coordinates: leg.points.map(\.clLocationCoordinate2D))
+                            .stroke(RoutePreviewStroke.color(leg.style), style: RoutePreviewStroke.style(leg.style))
+                    }
+                    // The shown mode's own trail only, one line per segment (travel
+                    // never joined by a line the phone did not drive).
+                    ForEach(Array(trailSegments.enumerated()), id: \.offset) { _, segment in
+                        MapPolyline(coordinates: segment.map(\.clLocationCoordinate2D))
+                            .stroke(Organic.sage600, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                    }
+                }
+
+                if mode.showsRouteList {
+                    ForEach(Array(routeStops.enumerated()), id: \.offset) { index, coord in
+                        Annotation("Spot \(index + 1)", coordinate: coord.clLocationCoordinate2D) {
+                            Text("\(index + 1)")
+                                .font(Organic.body(11, weight: .bold))
+                                .foregroundStyle(Organic.neutral100)
+                                .frame(width: 22, height: 22)
+                                .background(index == 0 ? Organic.sage600 : Organic.accent600)
+                                .clipShape(Circle())
+                                .shadow(color: Organic.shadow.opacity(0.18), radius: 4, y: 1)
+                                .onTapGesture(count: 2) {
+                                    onRemoveStop(index)
+                                }
+                        }
+                    }
+                }
+            }
+            .mapStyle(mapStyle.style)
+            .mapControlVisibility(.hidden)
+            .onMapCameraChange(frequency: .onEnd) { context in
+                onCameraChangeEnd(context.region)
+            }
+            .onTapGesture { screenPoint in
+                if let coordinate = proxy.convert(screenPoint, from: .local) {
+                    onTap(coordinate)
+                }
+            }
         }
     }
 }
