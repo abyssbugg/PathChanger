@@ -1433,7 +1433,7 @@ extension StopTravelEngineTests {
                     let points = [s0, s1, s2, s3].map { "<rtept lat=\"\($0.latitude)\" lon=\"\($0.longitude)\"/>" }.joined()
                     try Data("<?xml version=\"1.0\"?><gpx version=\"1.1\" creator=\"test\"><rte>\(points)</rte></gpx>".utf8).write(to: url)
                     defer { try? FileManager.default.removeItem(at: url) }
-                    state.importRoute(from: url)
+                    await state.importRoute(from: url)
                     XCTAssertEqual(state.currentRoute, [s0, s1, s2, s3], label)
                 }
                 XCTAssertEqual(state.displayStopCursor(for: mode), StopCursor(), "progress starts over (\(label))")

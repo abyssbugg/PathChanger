@@ -184,6 +184,9 @@ enum GPXParserError: Error, LocalizedError {
     case parseError(String)
     case emptyFile
     case unsupportedVersion
+    case fileTooLarge(bytes: Int, limit: Int)
+    case tooManyPoints(limit: Int)
+    case invalidCoordinate(element: String, line: Int, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -191,6 +194,15 @@ enum GPXParserError: Error, LocalizedError {
         case .parseError(let msg): return "GPX parse error: \(msg)"
         case .emptyFile: return "GPX file contains no tracks or routes"
         case .unsupportedVersion: return "Unsupported GPX version"
+        case .fileTooLarge(let bytes, let limit):
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            return "GPX file is too large (\(formatter.string(fromByteCount: Int64(bytes))); " +
+                "the limit is \(formatter.string(fromByteCount: Int64(limit))))"
+        case .tooManyPoints(let limit):
+            return "GPX file has more than \(limit) points"
+        case .invalidCoordinate(let element, let line, let reason):
+            return "Invalid coordinate in <\(element)> on line \(line): \(reason)"
         }
     }
 }
@@ -200,6 +212,22 @@ enum GPXParserError: Error, LocalizedError {
 /// Parser for GPX files using streaming XMLParser delegate pattern
 /// Memory-efficient: processes XML elements incrementally without loading entire DOM
 class GPXParser: NSObject {
+    /// Largest GPX file read (audit R5: the whole file used to be read with no limit).
+    /// Checked from the file's size before reading, and again on the bytes read.
+    static let maximumFileBytes = 20 * 1024 * 1024
+    /// Most points (waypoints, track and route points together) one file may hold;
+    /// parsing stops at the first point past it.
+    static let maximumPointCount = 200_000
+    let maximumFileBytes: Int
+    let maximumPointCount: Int
+    private var pointCount = 0
+
+    init(maximumFileBytes: Int = GPXParser.maximumFileBytes, maximumPointCount: Int = GPXParser.maximumPointCount) {
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumPointCount = maximumPointCount
+        super.init()
+    }
+
     private var currentGPX: GPXFile?
 
     /// Track parsing statistics for performance monitoring
@@ -253,6 +281,9 @@ class GPXParser: NSObject {
         guard !data.isEmpty else {
             throw GPXParserError.invalidData
         }
+        guard data.count <= maximumFileBytes else {
+            throw GPXParserError.fileTooLarge(bytes: data.count, limit: maximumFileBytes)
+        }
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let startMemory = getMemoryUsage()
@@ -264,6 +295,7 @@ class GPXParser: NSObject {
         currentElement = ""
         currentText = ""
         parseError = nil
+        pointCount = 0
 
         let parser = XMLParser(data: data)
         parser.delegate = self
@@ -306,9 +338,20 @@ class GPXParser: NSObject {
         return result == KERN_SUCCESS ? Int64(info.resident_size) : 0
     }
 
-    /// Parse GPX from file URL
+    /// Parse GPX from file URL. A file over `maximumFileBytes` is refused from its size,
+    /// before it is read; the read itself stops one byte past the limit (a file that grew
+    /// meanwhile is refused too).
     func parse(fileURL: URL) throws -> GPXFile {
-        let data = try Data(contentsOf: fileURL)
+        let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        if let size, size > maximumFileBytes {
+            throw GPXParserError.fileTooLarge(bytes: size, limit: maximumFileBytes)
+        }
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumFileBytes + 1) ?? Data()
+        guard data.count <= maximumFileBytes else {
+            throw GPXParserError.fileTooLarge(bytes: max(size ?? 0, data.count), limit: maximumFileBytes)
+        }
         var gpx = try parse(data: data)
         gpx.name = fileURL.deletingPathExtension().lastPathComponent
         return gpx
@@ -337,10 +380,8 @@ extension GPXParser: XMLParserDelegate {
             break
 
         case "wpt":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let waypoint = GPXWaypoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentGPX?.waypoints.append(waypoint)
+            if let coordinate = acceptPoint(attributeDict, parser: parser) {
+                currentGPX?.waypoints.append(GPXWaypoint(coordinate: coordinate))
             }
 
         case "trk":
@@ -350,20 +391,16 @@ extension GPXParser: XMLParserDelegate {
             currentSegment = GPXTrackSegment()
 
         case "trkpt":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let point = GPXTrackPoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentSegment?.points.append(point)
+            if let coordinate = acceptPoint(attributeDict, parser: parser) {
+                currentSegment?.points.append(GPXTrackPoint(coordinate: coordinate))
             }
 
         case "rte":
             currentRoute = GPXRoute()
 
         case "rtept":
-            if let lat = attributeDict["lat"].flatMap(Double.init),
-               let lon = attributeDict["lon"].flatMap(Double.init) {
-                let point = GPXRoutePoint(coordinate: LocationCoordinate(latitude: lat, longitude: lon))
-                currentRoute?.points.append(point)
+            if let coordinate = acceptPoint(attributeDict, parser: parser) {
+                currentRoute?.points.append(GPXRoutePoint(coordinate: coordinate))
             }
 
         default:
@@ -448,7 +485,53 @@ extension GPXParser: XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
+        // A refusal (too many points, an invalid coordinate) aborted the parse: keep it,
+        // not the parser's own "aborted" error.
+        guard self.parseError == nil else { return }
         self.parseError = GPXParserError.parseError(parseError.localizedDescription)
+    }
+
+    /// Counts a point element (`wpt`, `trkpt`, `rtept`) and returns its coordinate. Past
+    /// `maximumPointCount`, or with a latitude or longitude that is missing, not a number,
+    /// not finite or out of range, the parse stops with an error naming the element and
+    /// its line; nothing is imported.
+    private func acceptPoint(_ attributes: [String: String], parser: XMLParser) -> LocationCoordinate? {
+        guard parseError == nil else { return nil }
+        pointCount += 1
+        guard pointCount <= maximumPointCount else {
+            return refuse(GPXParserError.tooManyPoints(limit: maximumPointCount), parser: parser)
+        }
+        let element = currentElement
+        let line = parser.lineNumber
+        func value(_ key: String, _ name: String, range: ClosedRange<Double>) -> Result<Double, GPXParserError> {
+            guard let raw = attributes[key] else {
+                return .failure(.invalidCoordinate(element: element, line: line, reason: "the \(name) (\(key)) is missing"))
+            }
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let number = Double(text) else {
+                return .failure(.invalidCoordinate(element: element, line: line, reason: "the \(name) '\(raw)' is not a number"))
+            }
+            guard number.isFinite else {
+                return .failure(.invalidCoordinate(element: element, line: line, reason: "the \(name) '\(raw)' is not finite"))
+            }
+            guard range.contains(number) else {
+                let bounds = "\(Int(range.lowerBound))...\(Int(range.upperBound))"
+                return .failure(.invalidCoordinate(element: element, line: line, reason: "the \(name) \(raw) is outside \(bounds)"))
+            }
+            return .success(number)
+        }
+        switch (value("lat", "latitude", range: -90...90), value("lon", "longitude", range: -180...180)) {
+        case (.success(let latitude), .success(let longitude)):
+            return LocationCoordinate(latitude: latitude, longitude: longitude)
+        case (.failure(let error), _), (_, .failure(let error)):
+            return refuse(error, parser: parser)
+        }
+    }
+
+    private func refuse(_ error: GPXParserError, parser: XMLParser) -> LocationCoordinate? {
+        parseError = error
+        parser.abortParsing()
+        return nil
     }
 }
 

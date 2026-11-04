@@ -2569,9 +2569,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
 
-    func importRoute(from url: URL) {
+    func importRoute(from url: URL) async {
         do {
-            let count = try route.importRoute(from: url)
+            let count = try await route.importRoute(from: url)
             resetShownStopProgressAfterLoad()
             targetLocation = currentRoute.last
             lastError = nil
@@ -2579,6 +2579,9 @@ class AppState: ObservableObject, LocationTerminationHandling {
         } catch RouteLibraryError.emptyRoute {
             lastError = "GPX file needs at least two points"
             statusMessage = lastError
+        } catch is CancellationError {
+            // A newer import or a mode change came first; that is what the GUI shows.
+            Logger.info("[Import] Dropped: a newer import or a mode change came first", category: .session)
         } catch {
             lastError = error.localizedDescription
             statusMessage = lastError

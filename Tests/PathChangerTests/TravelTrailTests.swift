@@ -385,14 +385,14 @@ final class TravelTrailTests: XCTestCase {
         _ what: String,
         file: StaticString = #filePath,
         line: UInt = #line,
-        reset: (AppState) -> Void
+        reset: (AppState) async -> Void
     ) async {
         let (state, fake, run) = await makeBlockedRun()
         XCTAssertFalse(state.travelTrail.points(for: .route).isEmpty, "precondition: the run drew a trail", file: file, line: line)
         let inFlight = await blockedCoordinate(fake)
         XCTAssertNotNil(inFlight, file: file, line: line)
 
-        reset(state)
+        await reset(state)
         XCTAssertTrue(state.travelTrail.points(for: .route).isEmpty, "\(what) erases the trail", file: file, line: line)
         let epochAfterReset = state.route.stopProgressEpoch(for: .route)
 
@@ -423,6 +423,18 @@ final class TravelTrailTests: XCTestCase {
     func testALateReceiptAfterALoadDoesNotRedrawTheTrail() async {
         let replacement = [s2, s1, s0]
         await assertLateReceiptKeepsTheTrailErased("a load") { $0.loadRoute(from: replacement) }
+    }
+
+    func testALateReceiptAfterAGPXImportDoesNotRedrawTheTrail() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmp_rovodev_trail-import-\(UUID().uuidString).gpx")
+        let points = [s2, s1, s0].map { "<rtept lat=\"\($0.latitude)\" lon=\"\($0.longitude)\"/>" }.joined()
+        try Data("<?xml version=\"1.0\"?><gpx version=\"1.1\" creator=\"test\"><rte>\(points)</rte></gpx>".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        await assertLateReceiptKeepsTheTrailErased("a GPX import") { state in
+            await state.importRoute(from: url)
+            XCTAssertEqual(state.currentRoute, [self.s2, self.s1, self.s0])
+        }
     }
 
     /// Owner decision 2026-11-03: travel in one stop mode never erases another's trail,

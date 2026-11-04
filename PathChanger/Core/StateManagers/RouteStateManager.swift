@@ -363,18 +363,46 @@ final class RouteStateManager: ObservableObject {
         }
     }
 
-    /// Import a route from a GPX file on disk.
+    /// Reads a route file into its coordinates. Runs off the main actor.
+    typealias RouteFileReader = @Sendable (URL) throws -> [LocationCoordinate]
+
+    /// The GPX reader: size and point limits, every coordinate finite and in range, no
+    /// external entities (`GPXParser`).
+    nonisolated static let gpxRouteFileReader: RouteFileReader = { url in
+        try GPXParser().parse(fileURL: url).allCoordinates
+    }
+
+    /// Advanced by every import, so only the latest one publishes its route.
+    private var importGeneration: UInt64 = 0
+
+    /// Import a route from a GPX file on disk into the shown mode's stops.
+    ///
+    /// The file is read and parsed off the main actor (audit R5); the validated route is
+    /// then published in one step. A failed import (unreadable, too large, too many
+    /// points, an invalid coordinate, fewer than two points) throws and leaves the stops
+    /// and their progress unchanged. An import that a newer one or a mode change
+    /// overtook while the file was read throws `CancellationError` and changes nothing.
+    ///
+    /// Every point is kept, also past the mode's on-map stop limit (`AppMode.maxStops`,
+    /// 24 for Multi-Spot): a track is not simplified or cut.
     /// - Returns: the number of coordinates imported.
     @discardableResult
-    func importRoute(from url: URL) throws -> Int {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer {
-            if accessed {
-                url.stopAccessingSecurityScopedResource()
+    func importRoute(from url: URL, reader: @escaping RouteFileReader = RouteStateManager.gpxRouteFileReader) async throws -> Int {
+        importGeneration &+= 1
+        let generation = importGeneration
+        let mode = stopsMode
+        let coordinates = try await Task.detached(priority: .userInitiated) {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed {
+                    url.stopAccessingSecurityScopedResource()
+                }
             }
+            return try reader(url)
+        }.value
+        guard generation == importGeneration, mode == stopsMode else {
+            throw CancellationError()
         }
-
-        let coordinates = try GPXParser().parse(fileURL: url).allCoordinates
         guard coordinates.count >= 2 else {
             throw RouteLibraryError.emptyRoute
         }

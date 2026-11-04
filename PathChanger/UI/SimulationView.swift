@@ -275,7 +275,7 @@ struct SimulationView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            appState.importRoute(from: url)
+            Task { await appState.importRoute(from: url) }
         case .failure(let error):
             appState.lastError = error.localizedDescription
             appState.statusMessage = error.localizedDescription
