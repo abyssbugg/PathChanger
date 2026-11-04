@@ -237,10 +237,23 @@ actor DeveloperDiskImagePreparer {
                 if Self.isPhoneNotConnected(text) { throw LocationInjectionError.deviceNotFound }
                 throw error
             }
-            return try await runner(mobdev2Fallback)
+            return try await runMobdev2Fallback(mobdev2Fallback)
         }
         guard Self.isUsbmuxDeviceNotFound(output), await allowsNetworkFallback() else { return output }
-        return try await runner(mobdev2Fallback)
+        return try await runMobdev2Fallback(mobdev2Fallback)
+    }
+
+    /// The retry's own "Device is not connected" (the phone left during it) is a
+    /// connection loss too (review 2026-11-04 issue 9); its output is checked by the caller.
+    private func runMobdev2Fallback(_ command: [String]) async throws -> String {
+        do {
+            return try await runner(command)
+        } catch {
+            if Self.isPhoneNotConnected("\(error) \(error.localizedDescription)") {
+                throw LocationInjectionError.deviceNotFound
+            }
+            throw error
+        }
     }
 
     /// pymobiledevice3 11.49 raises `DeviceNotFoundError("Device not found: usbmux has no

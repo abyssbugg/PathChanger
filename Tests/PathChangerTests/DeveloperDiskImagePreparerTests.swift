@@ -416,6 +416,33 @@ final class DeveloperDiskImagePreparerTests: XCTestCase {
         }
     }
 
+    /// Review 2026-11-04 issue 9: the mobdev2 retry that throws "Device is not connected"
+    /// (the phone left during the retry) propagated raw instead of as `deviceNotFound`.
+    func testANotConnectedErrorThrownByTheMobdev2RetryIsReportedAsNotConnected() async {
+        let usbmuxMiss = "DeviceNotFoundError: Device not found: usbmux has no device matching udid"
+        for operation in ["status", "mount"] {
+            let preparer = DeveloperDiskImagePreparer(
+                runner: { [notConnectedStderr] command in
+                    if command.contains("--mobdev2") { throw DeviceError.commandFailed(notConnectedStderr) }
+                    return usbmuxMiss
+                },
+                allowsNetworkFallback: { true }
+            )
+            do {
+                if operation == "status" {
+                    _ = try await preparer.isDeveloperDiskImageMounted(udid: udid)
+                } else {
+                    try await preparer.ensureMounted(udid: udid)
+                }
+                XCTFail("\(operation): expected the phone to be reported not connected")
+            } catch let error as LocationInjectionError {
+                if case .deviceNotFound = error {} else { XCTFail("\(operation): expected deviceNotFound, got \(error)") }
+            } catch {
+                XCTFail("\(operation): expected deviceNotFound, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Helper first (live 2026-11-03: the helper held the phone over its remote
     // pairing lane, usbmuxd listed nothing and the phone refused the image mounter over
     // mobdev2, so every Move failed at this gate; over the helper's RSD it answered).
