@@ -252,7 +252,8 @@ Current disposition:
 - Automatic reconnect (owner decision 2026-11-02): when the phone becomes reachable again after a connection loss the user did not cause (not after Stop Tunnel), PathChanger reopens the helper's unprivileged device connection and reapplies the held desired coordinate without waiting for Start. This never elevates privileges, never starts a privileged tunnel or daemon, stays cancelable, and reports reconnecting until the reapplication is acknowledged.
 - Wi-Fi availability must not be inferred from a paired placeholder alone.
 - Controls (owner decision 2026-11-03): the tunnel status pill and Settings own the tunnel (Start, Reconnect tunnel, Stop Reconnecting, Stop); Reconnect tunnel never stops a live tunnel. The location area offers only Reapply location, which reapplies the held location over the live connection and never starts, restarts or stops the tunnel.
-- A location helper left running by an earlier PathChanger launch is replaced before a device connection is opened through it (macOS stops letting it use the local network once the app that started it exits), and a Clear, Stop or Move of the current launch supersedes the location it held.
+- A connection-mode switch that would restart a tunnel holding a location asks first and changes nothing on Cancel (owner request 2026-11-04: the GUI must not end a spoof as a side effect).
+- A location helper left running by an earlier PathChanger launch is replaced before a device connection is opened through it (macOS stops letting it use the local network once the app that started it exits), and a Clear, Stop or Move of the current launch supersedes the location it held. A helper whose PathChanger is still running is never replaced or stopped by another instance.
 
 ### 7.4 Transport failover
 

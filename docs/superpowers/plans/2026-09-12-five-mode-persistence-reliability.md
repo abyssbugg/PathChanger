@@ -146,6 +146,13 @@ CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
 PRODUCT_REQUIREMENTS.md: 1be9aa85b70ab1cf4dc06a3f4ab82e702ded48c0e1c675e5ee041cc883815f0f
 ```
 
+Re-recorded 2026-11-04 after the connection-switch confirmation and live-owner helper rules in `PRODUCT_REQUIREMENTS.md` §7.3:
+
+```text
+CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
+PRODUCT_REQUIREMENTS.md: 27c0dd42d5e1f267f564ebe58f9a0ba1ce0ed39a688857ca7f015c5e14f987f8
+```
+
 - [x] **Step 2: Create a global documentation worktree**
 
 Use the normalized `main` as the base:
