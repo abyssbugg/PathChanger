@@ -567,6 +567,8 @@ final class GUIArrangementSnapshotTests: XCTestCase {
             HStack {
                 Spacer()
                 OrganicDevicePopover(isPresented: .constant(true), connectionMode: state.deviceManager.connectionMode)
+                    .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
+                    .shadow(color: Organic.shadow.opacity(0.16), radius: 16, y: 8)
                 Spacer()
             }
             .padding(.top, 12)

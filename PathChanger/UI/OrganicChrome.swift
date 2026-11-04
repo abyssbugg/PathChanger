@@ -34,6 +34,17 @@ enum OrganicDeviceChromeText {
         return "iOS \(device.iosVersion) · \(reachabilityWord(reachability, mode: mode))"
     }
 
+    /// The reachability dot: green when PathChanger can reach the phone, accent when only
+    /// the network sees it, grey otherwise.
+    static func tone(_ reachability: DeviceReachability, hasDevice: Bool) -> Color {
+        guard hasDevice else { return Organic.neutral500 }
+        switch reachability {
+        case .connected, .readyUSB, .readyWiFi: return Organic.sage600
+        case .onNetwork: return Organic.accent600
+        case .notReachable: return Organic.neutral500
+        }
+    }
+
     /// Tunnel help while nothing is running and no live source sees the selected phone.
     static func unreachableTunnelHelp(
         reachability: DeviceReachability,
@@ -45,6 +56,75 @@ enum OrganicDeviceChromeText {
             return "iPhone is not reachable over USB. Connect it with a data cable, unlock it and tap Trust, then click to start."
         }
         return "iPhone is not reachable. Unlock it and keep it on the same \(wiFi) as this Mac, then click to start."
+    }
+}
+
+/// How PathChanger connects to the phone, as the window offers it: USB or Wi‑Fi first,
+/// Auto, Random and Background daemon as secondary choices. It is the setting in use
+/// (`DeviceManager.connectionMode`, and the tunnel's Background daemon mode), never a
+/// guess of the transport.
+enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
+    case usb, wifi, auto, random, daemon
+
+    var id: String { rawValue }
+
+    static let primary: [ConnectionChoice] = [.usb, .wifi]
+    static let secondary: [ConnectionChoice] = [.auto, .random, .daemon]
+
+    static func current(connectionMode: DeviceManager.ConnectionMode, tunnelMode: TunnelMode) -> ConnectionChoice {
+        if tunnelMode == .daemon { return .daemon }
+        switch connectionMode {
+        case .usb: return .usb
+        case .wifi: return .wifi
+        case .auto: return .auto
+        case .random: return .random
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .usb: return "USB"
+        case .wifi: return "Wi\u{2011}Fi"
+        case .auto: return "Auto"
+        case .random: return "Random"
+        case .daemon: return "Background daemon"
+        }
+    }
+
+    var shortTitle: String { self == .daemon ? "Daemon" : title }
+
+    var systemImage: String {
+        switch self {
+        case .usb: return "cable.connector"
+        case .wifi: return "wifi"
+        case .auto: return "sparkles"
+        case .random: return "shuffle"
+        case .daemon: return "server.rack"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .usb: return "Over the cable. Unlock the iPhone and tap Trust once."
+        case .wifi: return "Over this Mac's Wi\u{2011}Fi network. Prepare the iPhone for Wi\u{2011}Fi once, over the cable."
+        case .auto: return "USB when the cable is connected, otherwise Wi\u{2011}Fi."
+        case .random: return "USB or Wi\u{2011}Fi, picked at random when both are available."
+        case .daemon: return "A background remote tunneld service finds the iPhone."
+        }
+    }
+
+    /// Applies the choice through the same calls the settings use: the connection mode
+    /// (which also sets the tunnel mode, restarting a running tunnel when it changes), or
+    /// the tunnel's Background daemon mode.
+    @MainActor
+    func select(deviceManager: DeviceManager, tunnel: TunneldManager) {
+        switch self {
+        case .usb: deviceManager.setConnectionMode(.usb)
+        case .wifi: deviceManager.setConnectionMode(.wifi)
+        case .auto: deviceManager.setConnectionMode(.auto)
+        case .random: deviceManager.setConnectionMode(.random)
+        case .daemon: tunnel.preferredMode = .daemon
+        }
     }
 }
 
@@ -71,7 +151,6 @@ struct OrganicTitleBar: View {
     @Binding var showSettings: Bool
     @Binding var appearanceRaw: String
     let onRefresh: () -> Void
-    @State private var transportTick = 0
 
     init(
         appState: AppState,
@@ -102,6 +181,9 @@ struct OrganicTitleBar: View {
                 deviceCluster
                 tunnelButton
             }
+            // The centre group keeps its own width; the flexible sides give way.
+            .fixedSize()
+            .layoutPriority(1)
 
             HStack(spacing: 8) {
                 chromeCircleButton(
@@ -157,79 +239,83 @@ struct OrganicTitleBar: View {
         appState.selectedDevice != nil
     }
 
-    private var deviceCount: Int {
-        max(appState.availableDevices.count, hasSelectedDevice ? 1 : 0)
-    }
-
+    /// The phone and how PathChanger connects to it: one capsule holding the device button
+    /// (name, then a dot and the live reachability) and the USB / Wi‑Fi choice.
     private var deviceCluster: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             Button { showDeviceMenu.toggle() } label: {
                 HStack(spacing: 9) {
                     OrganicGlyphView(glyph: .phone, size: 15)
-                        .foregroundStyle(Organic.sage700)
+                        .foregroundStyle(hasSelectedDevice ? Organic.sage700 : Organic.neutral500)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(appState.selectedDevice?.chromeTitle ?? "No device")
                             .font(Organic.body(12, weight: .bold))
-                            .lineLimit(1)
-                        Text(deviceSubtitle)
-                            .font(Organic.body(10))
-                            .foregroundStyle(Organic.neutral600)
-                            .lineLimit(1)
+                            .foregroundStyle(Organic.text)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(OrganicDeviceChromeText.tone(selectedReachability, hasDevice: hasSelectedDevice))
+                                .frame(width: 6, height: 6)
+                            Text(deviceSubtitle)
+                                .font(Organic.body(10.5))
+                                .foregroundStyle(Organic.neutral600)
+                        }
                     }
-                    Text("\(deviceCount)")
-                        .font(Organic.mono(10, weight: .bold))
-                        .foregroundStyle(Organic.neutral100)
-                        .padding(.horizontal, 5)
-                        .frame(minWidth: 17, minHeight: 17)
-                        .background(deviceCount == 0 ? Organic.neutral500 : Organic.sage600)
-                        .clipShape(Capsule())
+                    .lineLimit(1)
+                    .fixedSize()
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Organic.neutral500)
                         .rotationEffect(.degrees(showDeviceMenu ? 180 : 0))
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help("Choose the iPhone")
+            .accessibilityLabel("iPhone")
+            .accessibilityValue(appState.selectedDevice.map { "\($0.chromeTitle), \(deviceSubtitle)" } ?? "No device")
+            .accessibilityHint("Shows the iPhones PathChanger can see")
             .popover(isPresented: $showDeviceMenu, arrowEdge: .bottom) {
-                OrganicDevicePopover(isPresented: $showDeviceMenu, connectionMode: connectionMode)
+                OrganicDevicePopover(isPresented: $showDeviceMenu, connectionMode: connectionMode, onRefresh: onRefresh)
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
             }
 
-            HStack(spacing: 2) {
-                transportChip("USB-C", selected: transportIsUSB) {
-                    appState.deviceManager.setConnectionMode(.usb)
-                    transportTick += 1
-                }
-                transportChip("Wi-Fi", selected: !transportIsUSB) {
-                    appState.deviceManager.setConnectionMode(.wifi)
-                    transportTick += 1
-                }
-            }
-            .padding(2)
-            .background(Organic.neutral300)
-            .clipShape(Capsule())
+            Rectangle().fill(Organic.neutral300).frame(width: 1, height: 20)
+
+            // USB and Wi‑Fi up front; a secondary mode in use shows as a third segment.
+            // Never disabled without a phone: the choice decides where to look for one.
+            OrganicSegmented(
+                options: transportOptions,
+                selection: connectionChoice,
+                height: 28,
+                title: { $0.shortTitle },
+                icon: { $0.systemImage },
+                onSelect: { $0.select(deviceManager: deviceManager, tunnel: tunneldManager) }
+            )
+            .fixedSize()
+            .help(connectionChoice.detail)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Connect over")
         }
-        .padding(.leading, 11)
-        .padding(.trailing, 5)
-        .frame(height: 34)
-        .background(Organic.neutral100)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Organic.neutral400, lineWidth: 1))
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .frame(height: 36)
+        .background(Capsule().fill(Organic.neutral100))
+        .overlay(Capsule().strokeBorder(Organic.neutral400, lineWidth: 1))
     }
 
-    private func transportChip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(Organic.body(10, weight: .bold))
-                .foregroundStyle(selected ? Organic.accent800 : Organic.neutral700)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(selected ? Organic.neutral100 : Color.clear)
-                .clipShape(Capsule())
-                .shadow(color: selected ? Organic.shadow.opacity(0.08) : .clear, radius: 2, y: 1)
-        }
-        .buttonStyle(.plain)
+    private var connectionChoice: ConnectionChoice {
+        ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunneldManager.preferredMode)
+    }
+
+    private var transportOptions: [ConnectionChoice] {
+        ConnectionChoice.primary.contains(connectionChoice)
+            ? ConnectionChoice.primary
+            : ConnectionChoice.primary + [connectionChoice]
+    }
+
+    private var selectedReachability: DeviceReachability {
+        appState.selectedDevice.map(reachability(of:)) ?? .notReachable
     }
 
     private var tunnelButton: some View {
@@ -303,23 +389,13 @@ struct OrganicTitleBar: View {
     /// The user's connection-mode choice; selects which advice an unreachable phone gets
     /// (cable for USB, Wi-Fi otherwise). Never used as evidence of reachability.
     private var connectionMode: DeviceManager.ConnectionMode {
-        _ = transportTick
-        return appState.deviceManager.connectionMode
+        deviceManager.connectionMode
     }
 
     /// Live reachability from usbmux, Bonjour and the tunnel manager, never from the
     /// connection-mode setting (live 2026-11-01: "trusted · Wi-Fi" while usbmux had no phone).
     private func reachability(of device: Device) -> DeviceReachability {
         appState.device.reachability(of: device, tunnelRunning: tunneldManager.isRunning)
-    }
-
-    private var transportIsUSB: Bool {
-        _ = transportTick
-        switch appState.deviceManager.connectionMode {
-        case .usb: return true
-        case .wifi: return false
-        default: return appState.isUSBConnected || !appState.isWiFiTransportAvailable
-        }
     }
 
     private var isTunnelError: Bool {
@@ -391,102 +467,200 @@ extension OrganicTitleBar: Equatable {
     }
 }
 
-/// The paired-device picker the device button opens.
+/// The device picker the device button opens: how to connect (USB or Wi‑Fi up front, the
+/// other modes in a menu), one row per phone, and Prepare for Wi‑Fi.
 struct OrganicDevicePopover: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
     @Binding var isPresented: Bool
     let connectionMode: DeviceManager.ConnectionMode
+    var onRefresh: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("PAIRED DEVICES")
-                    .font(Organic.body(11, weight: .bold))
-                    .foregroundStyle(Organic.neutral600)
-                    .tracking(0.8)
-                Spacer()
-                Text("\(appState.availableDevices.count)")
-                    .font(Organic.mono(10.5, weight: .bold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 1)
-                    .background(Organic.neutral200)
-                    .clipShape(Capsule())
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .overlay(alignment: .bottom) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
-
-            VStack(spacing: 2) {
-                if appState.availableDevices.isEmpty {
-                    Text("No devices yet")
-                        .font(Organic.body(11.5))
-                        .foregroundStyle(Organic.neutral600)
-                        .padding(12)
-                }
-                ForEach(appState.availableDevices) { device in
-                    Button {
-                        appState.selectDevice(device)
-                        isPresented = false
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: device.isWireless ? "wifi" : "cable.connector")
-                                .frame(width: 22, height: 22)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(device.chromeTitle)
-                                    .font(Organic.body(12.5, weight: .semibold))
-                                    .lineLimit(1)
-                                HStack(spacing: 6) {
-                                    Text("iOS \(device.iosVersion)")
-                                        .font(Organic.body(10.5))
-                                        .foregroundStyle(Organic.neutral600)
-                                    Text(OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode))
-                                        .font(Organic.body(10.5, weight: .semibold))
-                                        .foregroundStyle(Organic.accent700)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            if appState.selectedDevice?.id == device.id {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(Organic.accent600)
-                            }
-                        }
-                        .foregroundStyle(Organic.text)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(6)
-
+            header
+            connectSection
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+            divider
+            deviceList
+                .padding(6)
+            divider
             Button {
                 Task { await appState.prepareSelectedDeviceForWiFi() }
             } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "plus")
-                    Text("Prepare Wi-Fi")
-                        .font(Organic.body(12, weight: .bold))
-                }
-                .foregroundStyle(Organic.accent700)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Label("Prepare for Wi\u{2011}Fi…", systemImage: "wifi")
+                    .font(Organic.body(12, weight: .bold))
+                    .foregroundStyle(Organic.accent700)
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .overlay(alignment: .top) { Rectangle().fill(Organic.neutral300).frame(height: 1) }
+            .help("With the iPhone on the cable and unlocked: pairs it for Wi\u{2011}Fi connections")
         }
-        .frame(width: 260)
+        .frame(width: 320)
         .background(Organic.neutral100)
-        .clipShape(RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Organic.radiusMD, style: .continuous)
-                .stroke(Organic.neutral300, lineWidth: 1)
-        )
-        .shadow(color: Organic.shadow.opacity(0.16), radius: 16, y: 8)
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Organic.neutral300).frame(height: 1)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("iPhones")
+                .font(Organic.body(13, weight: .bold))
+                .foregroundStyle(Organic.text)
+                .accessibilityAddTraits(.isHeader)
+            Text(countText)
+                .font(Organic.body(11))
+                .foregroundStyle(Organic.neutral600)
+            Spacer()
+            Button(action: onRefresh) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Look for iPhones again")
+            .accessibilityLabel("Look for iPhones again")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private var countText: String {
+        let count = appState.availableDevices.count
+        return count == 1 ? "1 found" : "\(count) found"
+    }
+
+    private var choice: ConnectionChoice {
+        ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
+    }
+
+    private var connectSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            OrganicGroupHeader(title: "Connect over") {
+                Menu {
+                    ForEach(ConnectionChoice.secondary) { option in
+                        Button {
+                            option.select(deviceManager: appState.deviceManager, tunnel: tunneldManager)
+                        } label: {
+                            if option == choice {
+                                Label(option.title, systemImage: "checkmark")
+                            } else {
+                                Text(option.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Text("Other modes")
+                        .font(Organic.body(11, weight: .semibold))
+                        .foregroundStyle(Organic.accent700)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.visible)
+                .fixedSize()
+                .help("Auto, Random or Background daemon")
+            }
+            OrganicSegmented(
+                options: ConnectionChoice.primary,
+                selection: ConnectionChoice.primary.contains(choice) ? choice : nil,
+                height: 34,
+                fillsWidth: true,
+                title: { $0.title },
+                icon: { $0.systemImage },
+                onSelect: { $0.select(deviceManager: appState.deviceManager, tunnel: tunneldManager) }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Connect over")
+            Text(ConnectionChoice.primary.contains(choice) ? choice.detail : "Using \(choice.title): \(choice.detail)")
+                .font(Organic.body(11))
+                .foregroundStyle(Organic.neutral600)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var deviceList: some View {
+        VStack(spacing: 2) {
+            if appState.availableDevices.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("No iPhone found yet")
+                        .font(Organic.body(12, weight: .semibold))
+                        .foregroundStyle(Organic.neutral800)
+                    Text(connectionMode == .usb
+                         ? "Connect it with a data cable, unlock it and tap Trust."
+                         : "Unlock it and keep it on this Mac's Wi\u{2011}Fi, or connect the cable.")
+                        .font(Organic.body(11))
+                        .foregroundStyle(Organic.neutral600)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 10)
+            }
+            ForEach(appState.availableDevices) { device in
+                deviceRow(device)
+            }
+        }
+    }
+
+    private func deviceRow(_ device: Device) -> some View {
+        let selected = appState.selectedDevice?.id == device.id
+        let reachable = reachability(of: device)
+        return Button {
+            appState.selectDevice(device)
+            isPresented = false
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: device.isWireless ? "wifi" : "cable.connector")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Organic.neutral700)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Organic.neutral200))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.chromeTitle)
+                        .font(Organic.body(12.5, weight: .semibold))
+                        .foregroundStyle(Organic.text)
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text("iOS \(device.iosVersion)")
+                            .foregroundStyle(Organic.neutral600)
+                        Circle()
+                            .fill(OrganicDeviceChromeText.tone(reachable, hasDevice: true))
+                            .frame(width: 6, height: 6)
+                        Text(OrganicDeviceChromeText.reachabilityWord(reachability(of: device), mode: connectionMode))
+                            .foregroundStyle(Organic.neutral700)
+                            .lineLimit(1)
+                    }
+                    .font(Organic.body(10.5))
+                }
+                Spacer(minLength: 4)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Organic.accent700)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 46)
+            .background(
+                RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                    .fill(selected ? Organic.accent100 : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     /// Live reachability from usbmux, Bonjour and the tunnel manager, never from the

@@ -298,3 +298,86 @@ struct OrganicGlyphView: View {
         .accessibilityHidden(true)
     }
 }
+
+// MARK: - Shared controls (GUI arrangement 2026-11-04)
+
+extension Organic {
+    /// One spacing rhythm for the chrome: 4, 8, 12, 16.
+    static let space1: CGFloat = 4
+    static let space2: CGFloat = 8
+    static let space3: CGFloat = 12
+    static let space4: CGFloat = 16
+    /// Controls in one row share one height.
+    static let controlHeight: CGFloat = 32
+    /// Inner groups step down from the 16 pt cards.
+    static let radiusGroup: CGFloat = 10
+}
+
+/// Mutually exclusive choices on a recessed capsule track: the selected one is a raised
+/// segment. Used for the connection choice, appearance, units and the like, so every
+/// segmented choice in the app looks and sizes the same.
+struct OrganicSegmented<Option: Hashable>: View {
+    let options: [Option]
+    /// Nil when the setting in use is none of these options.
+    let selection: Option?
+    var height: CGFloat = 28
+    var fillsWidth = false
+    let title: (Option) -> String
+    var icon: (Option) -> String? = { _ in nil }
+    let onSelect: (Option) -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.self) { option in
+                let selected = option == selection
+                Button { onSelect(option) } label: {
+                    HStack(spacing: 5) {
+                        if let symbol = icon(option) {
+                            Image(systemName: symbol)
+                                .font(.system(size: 10, weight: .semibold))
+                                .accessibilityHidden(true)
+                        }
+                        Text(title(option))
+                            .font(Organic.body(11, weight: selected ? .bold : .semibold))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(selected ? Organic.accent800 : Organic.neutral700)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: fillsWidth ? .infinity : nil)
+                    .frame(height: height - 4)
+                    .background(Capsule().fill(selected ? Organic.neutral100 : Color.clear))
+                    .shadow(color: selected ? Organic.shadow.opacity(0.10) : .clear, radius: 1.5, y: 1)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title(option))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(Capsule().fill(Organic.neutral300))
+    }
+}
+
+/// A sentence-case group title, with an optional trailing value or control.
+struct OrganicGroupHeader<Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(Organic.body(12, weight: .bold))
+                .foregroundStyle(Organic.neutral800)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 4)
+            trailing()
+        }
+    }
+}
+
+extension OrganicGroupHeader where Trailing == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}

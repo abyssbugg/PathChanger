@@ -690,12 +690,15 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         // `TunnelPillAction.isEnabled` (LocationStatusPresentationTests).
         XCTAssertTrue(chrome.contains(".disabled(!isTunnelPillEnabled)"))
         XCTAssertTrue(chrome.contains("isWaitingForDevice: tunneldManager.isWaitingForDevice,\n            isAutoReconnecting: appState.isTunnelAutoReconnecting"))
-        let transportStart = try XCTUnwrap(chrome.range(of: "HStack(spacing: 2)"))
+        let transportStart = try XCTUnwrap(chrome.range(of: "OrganicSegmented("))
         let transportSuffix = chrome[transportStart.lowerBound...]
-        let transportEnd = try XCTUnwrap(transportSuffix.range(of: ".padding(.leading, 11)"))
+        let transportEnd = try XCTUnwrap(transportSuffix.range(of: ".padding(.leading, 12)"))
         let transportBlock = String(transportSuffix[..<transportEnd.lowerBound])
         XCTAssertFalse(transportBlock.contains(".disabled(!hasSelectedDevice)"))
-        XCTAssertTrue(chrome.contains("deviceCount == 0 ? Organic.neutral500 : Organic.sage600"))
+        // GUI arrangement 2026-11-04: the device-count badge beside the name is gone (the
+        // picker's header says how many); without a phone the reachability dot is grey.
+        XCTAssertTrue(chrome.contains("guard hasDevice else { return Organic.neutral500 }"))
+        XCTAssertTrue(chrome.contains("return count == 1 ? \"1 found\" : \"\\(count) found\""))
         XCTAssertTrue(chrome.contains("return \"No iOS device\""))
     }
 
@@ -973,5 +976,42 @@ final class TunnelPillModelTests: XCTestCase {
             TunnelNotice.Line(label: "Last attempt", text: "iPhone is not reachable."),
             TunnelNotice.Line(label: nil, text: "Reapplying…"),
         ])
+    }
+}
+
+// MARK: - Connection choice (GUI arrangement 2026-11-04)
+
+/// USB and Wi-Fi are the two choices the window offers; Auto, Random and Background
+/// daemon stay reachable as secondary choices. The control shows the setting in use: in
+/// Auto it used to highlight USB or Wi-Fi from the transport it guessed.
+final class ConnectionChoiceTests: XCTestCase {
+    func testTheChoiceFollowsTheConnectionModeSetting() {
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .usb), .usb)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .wifi), .wifi)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .auto, tunnelMode: .auto), .auto)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .wifi), .random)
+    }
+
+    func testBackgroundDaemonIsReadFromTheTunnelMode() {
+        for mode in DeviceManager.ConnectionMode.allCases {
+            XCTAssertEqual(ConnectionChoice.current(connectionMode: mode, tunnelMode: .daemon), .daemon, "\(mode)")
+        }
+    }
+
+    func testUSBAndWiFiArePrimaryAndTheRestSecondary() {
+        XCTAssertEqual(ConnectionChoice.primary, [.usb, .wifi])
+        XCTAssertEqual(ConnectionChoice.secondary, [.auto, .random, .daemon])
+        XCTAssertEqual(Set(ConnectionChoice.primary + ConnectionChoice.secondary).count, 5, "every mode stays reachable")
+    }
+
+    func testChoicesReadAsWords() {
+        XCTAssertEqual(ConnectionChoice.usb.title, "USB")
+        XCTAssertEqual(ConnectionChoice.wifi.title, "Wi\u{2011}Fi")
+        XCTAssertEqual(ConnectionChoice.auto.title, "Auto")
+        XCTAssertEqual(ConnectionChoice.daemon.title, "Background daemon")
+        XCTAssertEqual(ConnectionChoice.daemon.shortTitle, "Daemon")
+        for choice in ConnectionChoice.primary + ConnectionChoice.secondary {
+            XCTAssertFalse(choice.detail.isEmpty, "\(choice) says what it does")
+        }
     }
 }
