@@ -320,6 +320,12 @@ struct OrganicTitleBar: View {
     @Binding var showSettings: Bool
     @Binding var appearanceRaw: String
     let onRefresh: () -> Void
+    /// The values the parent rendered with. `==` compares these, never the bindings: the
+    /// parent's bindings read the same storage on both sides, so they always compared
+    /// equal (review 2026-11-04 round 2 issue 9). The body draws from them too.
+    private let deviceMenuShown: Bool
+    private let settingsShown: Bool
+    private let appearanceValue: String
 
     init(
         appState: AppState,
@@ -336,6 +342,9 @@ struct OrganicTitleBar: View {
         _showSettings = showSettings
         _appearanceRaw = appearanceRaw
         self.onRefresh = onRefresh
+        deviceMenuShown = showDeviceMenu.wrappedValue
+        settingsShown = showSettings.wrappedValue
+        appearanceValue = appearanceRaw.wrappedValue
     }
 
     var body: some View {
@@ -364,7 +373,7 @@ struct OrganicTitleBar: View {
                         ? OrganicAppearance.light.rawValue
                         : OrganicAppearance.dark.rawValue
                 }
-                chromeCircleButton(glyph: .settings, selected: showSettings, help: "Settings") {
+                chromeCircleButton(glyph: .settings, selected: settingsShown, help: "Settings") {
                     showSettings.toggle()
                 }
                 .accessibilityIdentifier("chrome.settings")
@@ -401,7 +410,7 @@ struct OrganicTitleBar: View {
     }
 
     private var appearance: OrganicAppearance {
-        OrganicAppearance.persisted(appearanceRaw)
+        OrganicAppearance.persisted(appearanceValue)
     }
 
     private var hasSelectedDevice: Bool {
@@ -434,7 +443,7 @@ struct OrganicTitleBar: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Organic.neutral500)
-                        .rotationEffect(.degrees(showDeviceMenu ? 180 : 0))
+                        .rotationEffect(.degrees(deviceMenuShown ? 180 : 0))
                 }
                 .contentShape(Rectangle())
             }
@@ -633,15 +642,15 @@ struct OrganicTitleBar: View {
 }
 
 /// The window re-renders on every AppState change; the title bar's own observed objects
-/// re-render it when what it shows changes, so a new parent render with the same bindings
-/// (and a new, equivalent refresh closure) is the same title bar.
+/// re-render it when what it shows changes, so a new parent render with the same values
+/// (and new, equivalent bindings and refresh closure) is the same title bar.
 extension OrganicTitleBar: Equatable {
     nonisolated static func == (lhs: OrganicTitleBar, rhs: OrganicTitleBar) -> Bool {
         MainActor.assumeIsolated {
             lhs.appState === rhs.appState
-                && lhs.showDeviceMenu == rhs.showDeviceMenu
-                && lhs.showSettings == rhs.showSettings
-                && lhs.appearanceRaw == rhs.appearanceRaw
+                && lhs.deviceMenuShown == rhs.deviceMenuShown
+                && lhs.settingsShown == rhs.settingsShown
+                && lhs.appearanceValue == rhs.appearanceValue
         }
     }
 }

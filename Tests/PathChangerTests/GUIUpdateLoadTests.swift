@@ -622,3 +622,48 @@ final class SimulationMapCanvasEqualityTests: XCTestCase {
         }
     }
 }
+
+/// Review 2026-11-04 round 2 issue 9: the title bar's `==` compared bindings, and the
+/// parent's bindings read the same storage on both sides, so a changed device menu,
+/// Settings highlight or theme always compared equal. The values the parent rendered
+/// with are compared instead.
+@MainActor
+final class OrganicTitleBarEqualityTests: XCTestCase {
+    private final class Storage {
+        var showDeviceMenu = false
+        var showSettings = false
+        var appearanceRaw = OrganicAppearance.light.rawValue
+    }
+
+    private func titleBar(_ appState: AppState, _ storage: Storage) -> OrganicTitleBar {
+        OrganicTitleBar(
+            appState: appState,
+            showDeviceMenu: Binding(get: { storage.showDeviceMenu }, set: { storage.showDeviceMenu = $0 }),
+            showSettings: Binding(get: { storage.showSettings }, set: { storage.showSettings = $0 }),
+            appearanceRaw: Binding(get: { storage.appearanceRaw }, set: { storage.appearanceRaw = $0 }),
+            onRefresh: {}
+        )
+    }
+
+    func testTheSameValuesAreEqual() {
+        let state = AppState(startBackgroundServices: false)
+        let storage = Storage()
+        XCTAssertEqual(titleBar(state, storage), titleBar(state, storage), "the closures are not compared")
+    }
+
+    func testEveryValueChangeMakesTheTitleBarUnequal() {
+        let state = AppState(startBackgroundServices: false)
+        let changes: [(String, (Storage) -> Void)] = [
+            ("device menu", { $0.showDeviceMenu = true }),
+            ("Settings highlight", { $0.showSettings = true }),
+            ("theme", { $0.appearanceRaw = OrganicAppearance.dark.rawValue }),
+        ]
+        for (input, change) in changes {
+            let storage = Storage()
+            let before = titleBar(state, storage)
+            change(storage)
+            let after = titleBar(state, storage)
+            XCTAssertNotEqual(before, after, "a changed \(input) must redraw the title bar")
+        }
+    }
+}
