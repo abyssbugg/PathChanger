@@ -38,9 +38,13 @@ struct OrganicSliderRow: View {
                 }
                 .buttonStyle(.plain)
                 .help(isAuto ? "Auto — follow travel mode" : "Manual")
+                .accessibilityLabel("Automatic speed")
+                .accessibilityValue(isAuto ? "On, follows the travel mode" : "Off")
             }
 
             Slider(value: $value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(valueLabel)
                 .disabled(sliderIsAuto)
                 .opacity(sliderIsAuto ? 0.55 : 1)
                 .tint(Organic.accent600)

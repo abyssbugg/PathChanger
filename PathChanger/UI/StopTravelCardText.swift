@@ -269,6 +269,57 @@ enum StopTravelCardText {
         return lines
     }
 
+    // MARK: Live run panel (GUI arrangement 2026-11-04)
+
+    /// The countdown the panel shows big: a hold's, else the leg's (a Realistic wait's).
+    static func countdown(_ progress: StopProgress) -> TimeInterval? {
+        progress.holdSecondsLeft ?? progress.legSecondsLeft
+    }
+
+    /// The words beside the countdown.
+    static func countdownCaption(_ progress: StopProgress) -> String? {
+        guard countdown(progress) != nil else { return nil }
+        switch progress.phase {
+        case .waitingToJump: return "Jump in"
+        case .holding: return "Leaves in"
+        case .travelling: return "Arrives in"
+        case .findingRoute, .jumping: return nil
+        }
+    }
+
+    /// How far the current countdown has come, 0 to 1; nil when its length is unknown.
+    static func phaseFraction(_ progress: StopProgress) -> Double? {
+        guard let total = progress.phaseSecondsTotal, total > 0, let left = countdown(progress) else { return nil }
+        return min(max(1 - left / total, 0), 1)
+    }
+
+    /// What is happening and what comes next, in one or two sentences; nil while
+    /// travelling (the countdown and the next stop say it).
+    static func phaseExplanation(_ progress: StopProgress, settings: StopTravelSettings, travelName: String) -> String? {
+        let next = min(max(progress.nextStopIndex, 0) + 1, max(progress.totalStops, 1))
+        if progress.isPaused {
+            return "Paused: nothing is sent and the countdown stops. The iPhone keeps its current location."
+        }
+        switch progress.phase {
+        case .waitingToJump:
+            return "Realistic timing waits the trip time at \(travelName) speed, then jumps to stop \(next). "
+                + "Nothing is sent until then; the iPhone keeps its current location."
+        case .holding:
+            let heldIndex = progress.heldStopIndex ?? max(progress.nextStopIndex - 1, 0)
+            guard progress.nextStopIndex != heldIndex else {
+                return "The iPhone stays at stop \(heldIndex + 1); the run then ends and keeps it."
+            }
+            let verb = settings.arrival == .jump ? "jumps" : "travels"
+            return "The iPhone stays at stop \(heldIndex + 1), then \(verb) to stop \(next)."
+        case .findingRoute:
+            return "Asking Apple Maps for a road route. Nothing is sent meanwhile."
+        case .jumping:
+            return "Sending the jump. Stop \(next) counts once the iPhone confirms it."
+        case .travelling:
+            return nil
+        }
+    }
+
     /// m:ss, rounded up so a countdown reaches 0:00 only when the time is up.
     static func clock(_ seconds: TimeInterval) -> String {
         let total = roundedUpSeconds(seconds)

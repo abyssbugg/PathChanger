@@ -875,7 +875,7 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
         XCTAssertTrue(stopRow.contains(".accessibilityElement(children: .combine)"), "each route stop reads as one element")
 
         // The travel-mode header reads together with its current value, separate from the picker buttons.
-        let travelHeader = try XCTUnwrap(card.range(of: "Text(\"TRAVEL MODE\")"))
+        let travelHeader = try XCTUnwrap(card.range(of: "Text(\"Travel mode\")"))
         let travelStart = try XCTUnwrap(card[..<travelHeader.lowerBound].range(of: "HStack {", options: .backwards))
         let travelSuffix = card[travelStart.lowerBound...]
         let travelEnd = try XCTUnwrap(travelSuffix.range(of: "OrganicSliderRow("))

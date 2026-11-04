@@ -141,6 +141,9 @@ struct StopProgress: Equatable, Sendable {
     /// detour); nil when there is nothing to say or the leg is a straight line.
     var routeNote: String? = nil
     var phase: Phase = .travelling
+    /// The whole length of the current countdown (a Realistic jump's wait, a hold, a
+    /// travelled leg), so the GUI can show how far it has come; nil when nothing counts.
+    var phaseSecondsTotal: TimeInterval? = nil
 
     var isHolding: Bool { holdSecondsLeft != nil }
 }

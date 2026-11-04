@@ -586,3 +586,81 @@ extension StopTravelCardTests {
         XCTAssertNil(StopTravelCardText.completionLine(movement: .idle, mode: .route, isHeld: true, reachedStop: 1, totalStops: 2))
     }
 }
+
+/// GUI arrangement 2026-11-04: a Two-Spot "Jump, Realistic" run waited 141 s before its
+/// jump and the owner stopped it after 54 s, likely thinking it was stuck. The live panel
+/// says how long is left, how far the wait has come, and what happens next.
+final class StopRunPanelTextTests: XCTestCase {
+    private func progress(
+        _ phase: StopProgress.Phase,
+        next: Int = 1,
+        total: Int = 2,
+        legLeft: TimeInterval? = nil,
+        holdLeft: TimeInterval? = nil,
+        held: Int? = nil,
+        phaseTotal: TimeInterval? = nil,
+        paused: Bool = false
+    ) -> StopProgress {
+        var progress = StopProgress(
+            nextStopIndex: next, totalStops: total, legSecondsLeft: legLeft, holdSecondsLeft: holdLeft,
+            heldStopIndex: held, usesStraightLineFallback: false, fallbackNote: nil, isPaused: paused, phase: phase
+        )
+        progress.phaseSecondsTotal = phaseTotal
+        return progress
+    }
+
+    private var realisticJump: StopTravelSettings {
+        StopTravelSettings(arrival: .jump, jumpTiming: .realistic, holdSeconds: 0, progression: .automatic, repeatMode: .oneWay)
+    }
+
+    func testTheWaitSaysWhenTheJumpComesAndThatNothingIsSentUntilThen() {
+        let wait = progress(.waitingToJump, legLeft: 87, phaseTotal: 141)
+        XCTAssertEqual(StopTravelCardText.countdown(wait), 87)
+        XCTAssertEqual(StopTravelCardText.countdownCaption(wait), "Jump in")
+        let text = StopTravelCardText.phaseExplanation(wait, settings: realisticJump, travelName: "Walking")
+        XCTAssertEqual(
+            text,
+            "Realistic timing waits the trip time at Walking speed, then jumps to stop 2. Nothing is sent until then; the iPhone keeps its current location."
+        )
+    }
+
+    func testTheWaitsProgressIsTheShareAlreadyWaited() {
+        XCTAssertEqual(StopTravelCardText.phaseFraction(progress(.waitingToJump, legLeft: 141, phaseTotal: 141)) ?? -1, 0, accuracy: 1e-9)
+        XCTAssertEqual(StopTravelCardText.phaseFraction(progress(.waitingToJump, legLeft: 54, phaseTotal: 141)) ?? -1, 87.0 / 141, accuracy: 1e-9)
+        XCTAssertEqual(StopTravelCardText.phaseFraction(progress(.holding, holdLeft: 0, held: 0, phaseTotal: 5)) ?? -1, 1, accuracy: 1e-9)
+        XCTAssertNil(StopTravelCardText.phaseFraction(progress(.waitingToJump, legLeft: 54)), "no length, no bar")
+        XCTAssertNil(StopTravelCardText.phaseFraction(progress(.findingRoute)), "nothing to count")
+    }
+
+    func testAHoldSaysWhatFollowsIt() {
+        let travel = StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 5, progression: .automatic, repeatMode: .oneWay)
+        let hold = progress(.holding, next: 2, total: 3, holdLeft: 3, held: 1, phaseTotal: 5)
+        XCTAssertEqual(StopTravelCardText.countdownCaption(hold), "Leaves in")
+        XCTAssertEqual(
+            StopTravelCardText.phaseExplanation(hold, settings: travel, travelName: "Walking"),
+            "The iPhone stays at stop 2, then travels to stop 3."
+        )
+        let last = progress(.holding, next: 2, total: 3, holdLeft: 3, held: 2, phaseTotal: 5)
+        XCTAssertEqual(
+            StopTravelCardText.phaseExplanation(last, settings: travel, travelName: "Walking"),
+            "The iPhone stays at stop 3; the run then ends and keeps it."
+        )
+    }
+
+    func testTheOtherPhasesSayWhatIsHappening() {
+        XCTAssertEqual(StopTravelCardText.countdownCaption(progress(.travelling, legLeft: 30)), "Arrives in")
+        XCTAssertNil(StopTravelCardText.phaseExplanation(progress(.travelling, legLeft: 30), settings: realisticJump, travelName: "Walking"))
+        XCTAssertEqual(
+            StopTravelCardText.phaseExplanation(progress(.findingRoute), settings: realisticJump, travelName: "Walking"),
+            "Asking Apple Maps for a road route. Nothing is sent meanwhile."
+        )
+        XCTAssertEqual(
+            StopTravelCardText.phaseExplanation(progress(.jumping, legLeft: 0), settings: realisticJump, travelName: "Walking"),
+            "Sending the jump. Stop 2 counts once the iPhone confirms it."
+        )
+        XCTAssertEqual(
+            StopTravelCardText.phaseExplanation(progress(.waitingToJump, legLeft: 50, phaseTotal: 141, paused: true), settings: realisticJump, travelName: "Walking"),
+            "Paused: nothing is sent and the countdown stops. The iPhone keeps its current location."
+        )
+    }
+}

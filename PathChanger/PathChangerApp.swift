@@ -2789,6 +2789,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             legSecondsLeft: TimeInterval?,
             holdSecondsLeft: TimeInterval? = nil,
             heldStop: Int? = nil,
+            total: TimeInterval? = nil,
             path: LegPath?
         ) {
             guard stopRun?.id == run.id else { return }
@@ -2805,7 +2806,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 fallbackNote: path.flatMap { $0.followsRoads ? nil : $0.note },
                 isPaused: isPaused,
                 routeNote: path.flatMap { $0.followsRoads ? $0.note : nil },
-                phase: phase
+                phase: phase,
+                phaseSecondsTotal: total
             )
         }
 
@@ -2964,6 +2966,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                             .travelling,
                             next: current.stopIndex,
                             legSecondsLeft: Double(points.count - index) * pace.interval,
+                            total: Double(points.count) * pace.interval,
                             path: path
                         )
                         guard await apply(point, arrivalAt: index == points.count - 1 ? current : nil) else { return }
@@ -2971,7 +2974,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 case .jump(let destination, _, let waitBefore):
                     if waitBefore > 0 {
                         let waited = await countdown(waitBefore) { left in
-                            publish(.waitingToJump, next: current.stopIndex, legSecondsLeft: left, path: path)
+                            publish(.waitingToJump, next: current.stopIndex, legSecondsLeft: left, total: waitBefore, path: path)
                         }
                         guard waited else { return }
                     }
@@ -2985,6 +2988,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
                             legSecondsLeft: nil,
                             holdSecondsLeft: left,
                             heldStop: stop,
+                            total: seconds,
                             path: nil
                         )
                     }

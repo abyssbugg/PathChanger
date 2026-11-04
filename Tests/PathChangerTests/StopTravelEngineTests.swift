@@ -936,6 +936,42 @@ final class StopTravelEngineTests: XCTestCase {
         assertHeld(state, at: s1)
     }
 
+    /// GUI arrangement 2026-11-04: the card draws the wait's progress, so the run publishes
+    /// the whole wait with every tick (an owner stopped a 141 s wait at 54 s, thinking the
+    /// run was stuck).
+    func testARealisticJumpWaitPublishesItsWholeLength() async {
+        let harness = await StopRunHarness.make(
+            mode: .jump, stops: [s0, s1],
+            settings: settings(.jump, timing: .realistic, hold: 5, progression: .onePerMove)
+        )
+        let state = harness.state!
+        await state.startSimulation()
+        var totals: [TimeInterval?] = []
+        var lefts: [TimeInterval?] = []
+        harness.onDelay = { _ in
+            totals.append(state.stopProgress?.phaseSecondsTotal)
+            lefts.append(state.stopProgress?.legSecondsLeft)
+        }
+        await state.startSimulation()
+
+        let wait = Geo.distance(from: s0, to: s1) / 20
+        XCTAssertFalse(totals.isEmpty)
+        for total in totals { XCTAssertEqual(total ?? -1, wait, accuracy: 0.01, "every tick carries the whole wait") }
+        XCTAssertEqual(lefts.first ?? nil, wait, "the first tick is the whole wait left")
+    }
+
+    func testAHoldPublishesItsWholeLength() async {
+        let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: settings(.travel, hold: 2))
+        let state = harness.state!
+        var holdTotals: [TimeInterval?] = []
+        harness.onDelay = { _ in
+            if state.stopProgress?.phase == .holding { holdTotals.append(state.stopProgress?.phaseSecondsTotal) }
+        }
+        await state.startSimulation()
+        XCTAssertFalse(holdTotals.isEmpty)
+        XCTAssertEqual(Set(holdTotals.compactMap { $0 }), [2], "a hold carries its whole length")
+    }
+
     func testTravelAndHoldArePublishedAsTheirPhases() async {
         let harness = await StopRunHarness.make(mode: .route, stops: [s0, s1, s2], settings: settings(.travel, hold: 2))
         let state = harness.state!
