@@ -18,6 +18,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import Combine
+import MapKit
 @testable import PathChanger
 
 /// Acknowledges every application after `roundTrip`, as the helper does.
@@ -542,5 +543,63 @@ private final class ThreadRecordingFileManager: FileManager, @unchecked Sendable
     ) throws {
         record("createDirectory")
         try super.createDirectory(at: url, withIntermediateDirectories: createIntermediates, attributes: attributes)
+    }
+}
+
+/// The lower bound the benchmark's rebuild ceiling does not give (review 2026-11-04
+/// issue 10): an `==` that wrongly returned true would skip a rebuild and leave the map
+/// drawing stale content. Every input the canvas draws must make it unequal.
+@MainActor
+final class SimulationMapCanvasEqualityTests: XCTestCase {
+    private func canvas(
+        marker: LocationMarker? = LocationMarker(
+            coordinate: LocationCoordinate(latitude: 35.6762, longitude: 139.6503), style: .spoofed),
+        mode: AppMode = .route,
+        legs: [RoutePreviewModel.Leg] = [RoutePreviewModel.Leg(
+            id: 0,
+            points: [LocationCoordinate(latitude: 35.0, longitude: 139.0),
+                     LocationCoordinate(latitude: 35.1, longitude: 139.1)],
+            style: .road)],
+        trailSegments: [[LocationCoordinate]] = [[LocationCoordinate(latitude: 35.0, longitude: 139.0)]],
+        routeStops: [LocationCoordinate] = [LocationCoordinate(latitude: 35.1, longitude: 139.1)],
+        mapStyle: MapStyleType = .standard,
+        cameraPosition: MapCameraPosition = .automatic
+    ) -> SimulationMapCanvas {
+        SimulationMapCanvas(
+            marker: marker, mode: mode, legs: legs, trailSegments: trailSegments, routeStops: routeStops,
+            mapStyle: mapStyle, cameraPosition: cameraPosition, position: .constant(cameraPosition),
+            onCameraChangeEnd: { _ in }, onTap: { _ in }, onRemoveStop: { _ in }
+        )
+    }
+
+    func testTheSameInputsAreEqual() {
+        XCTAssertEqual(canvas(), canvas(), "the closures are not compared")
+    }
+
+    func testEveryDrawnInputMakesTheCanvasRebuild() {
+        let base = canvas()
+        let moved = LocationCoordinate(latitude: 35.6800, longitude: 139.6600)
+        let changes: [(String, SimulationMapCanvas)] = [
+            ("marker coordinate", canvas(marker: LocationMarker(coordinate: moved, style: .spoofed))),
+            ("marker style", canvas(marker: LocationMarker(
+                coordinate: LocationCoordinate(latitude: 35.6762, longitude: 139.6503), style: .uncertain))),
+            ("no marker", canvas(marker: nil)),
+            ("mode", canvas(mode: .jump)),
+            ("legs", canvas(legs: [])),
+            ("leg style", canvas(legs: [RoutePreviewModel.Leg(
+                id: 0,
+                points: [LocationCoordinate(latitude: 35.0, longitude: 139.0),
+                         LocationCoordinate(latitude: 35.1, longitude: 139.1)],
+                style: .straight)])),
+            ("trail", canvas(trailSegments: [[LocationCoordinate(latitude: 35.0, longitude: 139.0), moved]])),
+            ("stops", canvas(routeStops: [moved])),
+            ("map style", canvas(mapStyle: .satellite)),
+            ("camera position", canvas(cameraPosition: .region(MKCoordinateRegion(
+                center: moved.clLocationCoordinate2D,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))))),
+        ]
+        for (input, changed) in changes {
+            XCTAssertNotEqual(base, changed, "a changed \(input) must rebuild the map")
+        }
     }
 }
