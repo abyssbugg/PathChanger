@@ -339,6 +339,92 @@ final class TravelTrailTests: XCTestCase {
         XCTAssertEqual(state.travelTrail.points(for: .route).last, held, "the trail ends at the held dot")
     }
 
+    // MARK: - A late receipt after the trail was erased (audit R4)
+
+    private let lateSession = LocationSessionIdentity(
+        stableDeviceID: "trail-device", transport: .wifi, endpointClass: .unresolved, generation: 1
+    )
+
+    /// A travelled Multi-Spot run whose first two points were acknowledged and whose third
+    /// application is held by the fake, so a reset can come while it is in flight.
+    private func makeBlockedRun() async -> (AppState, FakeLocationInjector, Task<Void, Never>) {
+        let fake = FakeLocationInjector()
+        let state = AppState(startBackgroundServices: false, locationInjector: fake, routeDelay: { _ in })
+        state.selectedDevice = Device(id: "trail-device", displayName: "Trail Device", connectionType: .wifi)
+        state.isTunneldRunning = true
+        state.activeMode = .route
+        state.autoSpeed = false
+        state.customSpeedMps = 20
+        state.updateFrequencyHz = 5
+        for stop in [s0, s1, s2] { state.stageLocation(stop, for: .route) }
+        state.setStopTravelSettings(
+            StopTravelSettings(arrival: .travel, jumpTiming: .fixed, holdSeconds: 0, progression: .automatic, repeatMode: .oneWay),
+            for: .route
+        )
+        state.locationSessionCoordinator.connectionReady(lateSession)
+        let run = Task { await state.startSimulation() }
+        for _ in 0..<2 {
+            await fake.waitUntilApplicationPending()
+            await fake.releaseNextApplication(session: lateSession)
+        }
+        await fake.waitUntilApplicationPending()
+        return (state, fake, run)
+    }
+
+    /// The coordinate of the application the fake holds now (the last one sent).
+    private func blockedCoordinate(_ fake: FakeLocationInjector) async -> LocationCoordinate? {
+        for call in await fake.calls().reversed() {
+            if case .apply(let request) = call { return request.coordinate }
+        }
+        return nil
+    }
+
+    /// Releases the held application after `reset` and checks the outcome: the phone holds
+    /// the receipt, nothing restarts, progress stays reset and the erased trail stays erased.
+    private func assertLateReceiptKeepsTheTrailErased(
+        _ what: String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        reset: (AppState) -> Void
+    ) async {
+        let (state, fake, run) = await makeBlockedRun()
+        XCTAssertFalse(state.travelTrail.points(for: .route).isEmpty, "precondition: the run drew a trail", file: file, line: line)
+        let inFlight = await blockedCoordinate(fake)
+        XCTAssertNotNil(inFlight, file: file, line: line)
+
+        reset(state)
+        XCTAssertTrue(state.travelTrail.points(for: .route).isEmpty, "\(what) erases the trail", file: file, line: line)
+        let epochAfterReset = state.route.stopProgressEpoch(for: .route)
+
+        await fake.releaseNextApplication(session: lateSession)
+        await run.value
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(state.currentLocation, inFlight, "the late receipt is what the phone holds", file: file, line: line)
+        XCTAssertTrue(state.travelTrail.points(for: .route).isEmpty, "the trail \(what) erased stays erased", file: file, line: line)
+        XCTAssertTrue(state.travelTrail.segments(for: .route).isEmpty, file: file, line: line)
+        XCTAssertEqual(state.route.stopCursor(for: .route), StopCursor(), "progress stays reset", file: file, line: line)
+        XCTAssertEqual(state.route.stopProgressEpoch(for: .route), epochAfterReset, file: file, line: line)
+        if case .moving = state.locationSessionCoordinator.state.movement {
+            XCTFail("movement does not restart after \(what)", file: file, line: line)
+        }
+        let pending = await fake.pendingApplicationCount()
+        XCTAssertEqual(pending, 0, "nothing more is sent", file: file, line: line)
+    }
+
+    func testALateReceiptAfterResetRouteDoesNotRedrawTheTrail() async {
+        await assertLateReceiptKeepsTheTrailErased("Reset Route") { $0.clearRoute() }
+    }
+
+    func testALateReceiptAfterAReplacingStopEditDoesNotRedrawTheTrail() async {
+        await assertLateReceiptKeepsTheTrailErased("a stop edit") { $0.removeRouteWaypoint(at: 2) }
+    }
+
+    func testALateReceiptAfterALoadDoesNotRedrawTheTrail() async {
+        let replacement = [s2, s1, s0]
+        await assertLateReceiptKeepsTheTrailErased("a load") { $0.loadRoute(from: replacement) }
+    }
+
     /// Owner decision 2026-11-03: travel in one stop mode never erases another's trail,
     /// and a confirmed Clear erases them all.
     func testTravelInAnotherModeKeepsEachModesTrailUntilClear() async {

@@ -822,13 +822,18 @@ class AppState: ObservableObject, LocationTerminationHandling {
     /// commands run outside the real app.
     private let ddiPreparer: DeveloperDiskImagePreparer?
     /// Requests in flight: the mode that applied each, the stop it arrives at (the
-    /// stop index advances only when that receipt is acknowledged), and whether it is a
-    /// travelled step the map's trail draws (also when it lands after the run ended).
+    /// stop index advances only when that receipt is acknowledged), and, for a travelled
+    /// step the map's trail draws, the mode's progress epoch its run began with.
     private var pendingApplications: [UUID: PendingApplication] = [:]
     private struct PendingApplication {
         let mode: AppMode
         let stopArrival: StopArrival?
-        var drawsTrail = false
+        /// The mode's stop-progress epoch when the travelled run began; nil when the step
+        /// draws no trail. Every trail erase (a stop edit, Reset Route, a load or import,
+        /// a confirmed Clear) also resets that progress, so a receipt landing after one
+        /// (audit R4) is held but not drawn: the erased trail stays erased. A plain Stop
+        /// keeps the epoch, so the run's last step is still drawn.
+        var trailEpoch: Int?
     }
     /// Where a run stands once an arrival is acknowledged.
     private struct StopArrival {
@@ -1894,7 +1899,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         _ coordinate: LocationCoordinate,
         mode: AppMode,
         stopArrival: StopArrival? = nil,
-        drawsTrail: Bool = false
+        trailEpoch: Int? = nil
     ) async -> LocationInjectionReceipt? {
         guard canBeginLocationOperation else {
             Logger.info("[Apply] Skipped (\(mode)): a Clear is in progress or unresolved", category: .session)
@@ -1922,7 +1927,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         do {
             let request = try locationSessionCoordinator.beginApplication()
             ownRequestID = request.id
-            pendingApplications[request.id] = PendingApplication(mode: mode, stopArrival: stopArrival, drawsTrail: drawsTrail)
+            pendingApplications[request.id] = PendingApplication(mode: mode, stopArrival: stopArrival, trailEpoch: trailEpoch)
 
             // Device-readiness gate before injection: with no mounted
             // personalized Developer Disk Image, DVT injection completes
@@ -2247,7 +2252,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
         // run's last step when it lands after Stop (it is what the phone holds). Travel
         // that leaves from somewhere the trail does not end (a Teleport, a Joystick drive
         // or a Jump arrival moved the phone meanwhile) starts a new line at the held point.
-        if pending.drawsTrail {
+        // A receipt landing after the mode's trail was erased is held above but not drawn.
+        if let trailEpoch = pending.trailEpoch, route.stopProgressEpoch(for: pending.mode) == trailEpoch {
             travelTrail.record(receipt.coordinate, mode: pending.mode, after: heldBefore)
         }
         // A paused run stays paused when the point in flight lands.
@@ -2874,7 +2880,8 @@ class AppState: ObservableObject, LocationTerminationHandling {
                 )
             }
             guard await applyPlannedLocation(
-                coordinate, mode: run.mode, stopArrival: arrival, drawsTrail: run.settings.arrival == .travel
+                coordinate, mode: run.mode, stopArrival: arrival,
+                trailEpoch: run.settings.arrival == .travel ? run.progressEpoch : nil
             ) != nil else {
                 if isCurrent() { stopAfterFailure() }
                 return false
