@@ -504,3 +504,111 @@ private final class LockedFlag: @unchecked Sendable {
     var value: Bool? { lock.lock(); defer { lock.unlock() }; return stored }
     func set(_ value: Bool) { lock.lock(); stored = value; lock.unlock() }
 }
+
+// MARK: - Writer -> parser round trip (audit R6)
+
+final class GPXRoundTripTests: XCTestCase {
+    private func roundTrip(_ file: GPXFile) throws -> GPXFile {
+        try GPXParser().parse(string: GPXWriter.createGPX(from: file))
+    }
+
+    private func sampleFile() -> GPXFile {
+        GPXFile(
+            name: "Morning <Loop> & Co",
+            description: "Along the river",
+            author: "Ada Lovelace",
+            time: Date(timeIntervalSince1970: 1_789_000_000),
+            waypoints: [
+                GPXWaypoint(coordinate: LocationCoordinate(latitude: 35.1, longitude: 139.1), name: "Cafe", elevation: 12.5),
+                GPXWaypoint(coordinate: LocationCoordinate(latitude: 35.2, longitude: 139.2), name: "Bridge"),
+            ],
+            tracks: [
+                GPXTrack(name: "Track One", segments: [
+                    GPXTrackSegment(points: [
+                        GPXTrackPoint(coordinate: LocationCoordinate(latitude: 35.3, longitude: 139.3), elevation: 4),
+                        GPXTrackPoint(coordinate: LocationCoordinate(latitude: 35.4, longitude: 139.4)),
+                    ]),
+                    GPXTrackSegment(points: [
+                        GPXTrackPoint(coordinate: LocationCoordinate(latitude: 35.5, longitude: 139.5)),
+                    ]),
+                ]),
+            ],
+            routes: [
+                GPXRoute(name: "Route One", points: [
+                    GPXRoutePoint(coordinate: LocationCoordinate(latitude: 35.6, longitude: 139.6), name: "Start"),
+                    GPXRoutePoint(coordinate: LocationCoordinate(latitude: 35.7, longitude: 139.7), name: "End"),
+                ]),
+            ]
+        )
+    }
+
+    func testTheTitleAndAuthorSurviveARoundTrip() throws {
+        let parsed = try roundTrip(sampleFile())
+        XCTAssertEqual(parsed.name, "Morning <Loop> & Co", "the author's name must not replace the title")
+        XCTAssertEqual(parsed.author, "Ada Lovelace", "the author is read from <author><name>")
+        XCTAssertEqual(parsed.description, "Along the river")
+        XCTAssertEqual(parsed.time, Date(timeIntervalSince1970: 1_789_000_000))
+    }
+
+    func testWaypointsSurviveARoundTrip() throws {
+        let parsed = try roundTrip(sampleFile())
+        XCTAssertEqual(parsed.waypoints.map(\.coordinate), sampleFile().waypoints.map(\.coordinate))
+        XCTAssertEqual(parsed.waypoints.map(\.name), ["Cafe", "Bridge"])
+        XCTAssertEqual(parsed.waypoints.map(\.elevation), [12.5, nil])
+    }
+
+    func testTracksSurviveARoundTrip() throws {
+        let parsed = try roundTrip(sampleFile())
+        XCTAssertEqual(parsed.tracks.count, 1)
+        XCTAssertEqual(parsed.tracks.first?.name, "Track One")
+        XCTAssertEqual(parsed.tracks.first?.segments.map { $0.points.map(\.coordinate) },
+                       sampleFile().tracks.first?.segments.map { $0.points.map(\.coordinate) })
+        XCTAssertEqual(parsed.tracks.first?.segments.first?.points.map(\.elevation), [4, nil])
+    }
+
+    func testRoutesSurviveARoundTrip() throws {
+        let parsed = try roundTrip(sampleFile())
+        XCTAssertEqual(parsed.routes.count, 1)
+        XCTAssertEqual(parsed.routes.first?.name, "Route One", "a route point's name must not replace the route's")
+        XCTAssertEqual(parsed.routes.first?.points.map(\.coordinate), sampleFile().routes.first?.points.map(\.coordinate))
+        XCTAssertEqual(parsed.routes.first?.points.map(\.name), ["Start", "End"])
+        XCTAssertEqual(parsed.allCoordinates, sampleFile().allCoordinates)
+    }
+
+    func testAFileWithoutAuthorOrDescriptionRoundTrips() throws {
+        var file = sampleFile()
+        file.author = nil
+        file.description = nil
+        let parsed = try roundTrip(file)
+        XCTAssertEqual(parsed.name, file.name)
+        XCTAssertNil(parsed.author)
+        XCTAssertNil(parsed.description)
+    }
+
+    func testTheCoordinateWriterRoundTripsItsName() throws {
+        let coordinates = [LocationCoordinate(latitude: 1, longitude: 2), LocationCoordinate(latitude: 3, longitude: 4)]
+        let parsed = try GPXParser().parse(string: GPXWriter.createGPX(from: coordinates, name: "Walk"))
+        XCTAssertEqual(parsed.name, "Walk")
+        XCTAssertEqual(parsed.tracks.first?.name, "Walk")
+        XCTAssertEqual(parsed.allCoordinates, coordinates)
+    }
+
+    /// GPX 1.0 has <name>, <desc> and a text <author> directly under <gpx>.
+    func testGPX10TopLevelMetadataIsStillRead() throws {
+        let document = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <gpx version="1.0" creator="Test">
+          <name>Old Title</name>
+          <desc>Old description</desc>
+          <author>Grace Hopper</author>
+          <wpt lat="1" lon="2"><name>Point</name><desc>Point description</desc></wpt>
+        </gpx>
+        """
+        let parsed = try GPXParser().parse(string: document)
+        XCTAssertEqual(parsed.name, "Old Title")
+        XCTAssertEqual(parsed.description, "Old description", "a waypoint's desc must not replace the file's")
+        XCTAssertEqual(parsed.author, "Grace Hopper")
+        XCTAssertEqual(parsed.waypoints.first?.name, "Point")
+        XCTAssertEqual(parsed.waypoints.first?.description, "Point description")
+    }
+}

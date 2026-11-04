@@ -242,6 +242,10 @@ class GPXParser: NSObject {
     private var currentSegment: GPXTrackSegment?
     private var currentRoute: GPXRoute?
     private var currentElement: String = ""
+    /// Open elements, outermost first: a text element is assigned by the element it is in
+    /// (audit R6: an unscoped </name> put the metadata author's name into the title, and a
+    /// route point's name into the route's).
+    private var elementStack: [String] = []
     private var currentAttributes: [String: String] = [:]
     private var currentText: String = ""
     private var parseError: Error?
@@ -294,6 +298,7 @@ class GPXParser: NSObject {
         currentRoute = nil
         currentElement = ""
         currentText = ""
+        elementStack = []
         parseError = nil
         pointCount = 0
 
@@ -372,6 +377,7 @@ extension GPXParser: XMLParserDelegate {
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                 qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         currentElement = elementName.lowercased()
+        elementStack.append(currentElement)
         currentAttributes = attributeDict
         currentText = ""
 
@@ -414,48 +420,86 @@ extension GPXParser: XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let element = elementName.lowercased()
+        if elementStack.last == element { elementStack.removeLast() }
+        // The element this one is in: <name> in <metadata> is the title, in <author> the
+        // author, in <wpt>/<trk>/<rte>/<rtept> that item's name.
+        let parent = elementStack.last ?? ""
+        let grandparent = elementStack.dropLast().last ?? ""
 
-        switch elementName.lowercased() {
+        switch element {
         case "name":
-            if currentRoute != nil {
-                currentRoute?.name = text
-            } else if currentTrack != nil {
-                currentTrack?.name = text
-            } else if let lastIndex = currentGPX?.waypoints.indices.last {
-                currentGPX?.waypoints[lastIndex].name = text
-            } else {
+            switch parent {
+            case "metadata", "gpx":
                 currentGPX?.name = text
+            case "author" where grandparent == "metadata":
+                currentGPX?.author = text
+            case "wpt":
+                if let index = lastWaypointIndex { currentGPX?.waypoints[index].name = text }
+            case "trk":
+                currentTrack?.name = text
+            case "rte":
+                currentRoute?.name = text
+            case "rtept":
+                if let lastIndex = currentRoute?.points.indices.last {
+                    currentRoute?.points[lastIndex].name = text
+                }
+            default:
+                break
             }
 
         case "desc":
-            if currentRoute != nil {
-                currentRoute?.description = text
-            } else if currentTrack != nil {
-                currentTrack?.description = text
-            } else {
+            switch parent {
+            case "metadata", "gpx":
                 currentGPX?.description = text
+            case "wpt":
+                if let index = lastWaypointIndex { currentGPX?.waypoints[index].description = text }
+            case "trk":
+                currentTrack?.description = text
+            case "rte":
+                currentRoute?.description = text
+            default:
+                break
             }
 
         case "author":
-            currentGPX?.author = text
+            // GPX 1.0: a text <author> under <gpx>. GPX 1.1's <author> holds a <name>
+            // (read above) and has no text of its own, so it must not overwrite it.
+            if parent == "gpx", !text.isEmpty {
+                currentGPX?.author = text
+            }
 
         case "time":
             if let date = parseTimestamp(text) {
-                if currentSegment != nil, let lastIndex = currentSegment?.points.indices.last {
-                    currentSegment?.points[lastIndex].time = date
-                } else {
+                switch parent {
+                case "trkpt":
+                    if let lastIndex = currentSegment?.points.indices.last {
+                        currentSegment?.points[lastIndex].time = date
+                    }
+                case "wpt":
+                    if let index = lastWaypointIndex { currentGPX?.waypoints[index].time = date }
+                case "metadata", "gpx":
                     currentGPX?.time = date
+                default:
+                    break
                 }
             }
 
         case "ele":
-            if let elevation = Double(text) {
-                if currentSegment != nil, let lastIndex = currentSegment?.points.indices.last {
-                    currentSegment?.points[lastIndex].elevation = elevation
-                } else if currentRoute != nil, let lastIndex = currentRoute?.points.indices.last {
-                    currentRoute?.points[lastIndex].elevation = elevation
-                } else if let lastIndex = currentGPX?.waypoints.indices.last {
-                    currentGPX?.waypoints[lastIndex].elevation = elevation
+            if let elevation = Double(text), elevation.isFinite {
+                switch parent {
+                case "trkpt":
+                    if let lastIndex = currentSegment?.points.indices.last {
+                        currentSegment?.points[lastIndex].elevation = elevation
+                    }
+                case "rtept":
+                    if let lastIndex = currentRoute?.points.indices.last {
+                        currentRoute?.points[lastIndex].elevation = elevation
+                    }
+                case "wpt":
+                    if let index = lastWaypointIndex { currentGPX?.waypoints[index].elevation = elevation }
+                default:
+                    break
                 }
             }
 
@@ -482,6 +526,10 @@ extension GPXParser: XMLParserDelegate {
         }
 
         currentText = ""
+    }
+
+    private var lastWaypointIndex: Int? {
+        currentGPX?.waypoints.indices.last
     }
 
     func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
