@@ -1199,6 +1199,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
             self.tunnelBecameLive()
         }
 
+        self.managedLocationSessionSource.onReplacedHelperLocationEnded = { [weak self] text in
+            self?.replacedHelperLocationEnded(text)
+        }
+
         device.onLocationSessionLoss = { [weak self] event in
             self?.handleLocationSessionLoss(event)
         }
@@ -3648,6 +3652,33 @@ class AppState: ObservableObject, LocationTerminationHandling {
         if automaticReconnectTask != nil {
             automaticReconnectWaiter.signalTunnelLive()
         }
+    }
+
+    /// A launch failed after this app stopped the helper that held the location (another
+    /// build's, or an orphan): the phone no longer holds it and no helper runs (review
+    /// 2026-11-04 issue 3). The location reads uncertain with the reason, never held: it is
+    /// recorded in the coordinator only (nothing is sent), and the inherited session stays
+    /// for the next successful start's tunnel edge to reapply, under the same rules as
+    /// after a successful replacement.
+    private func replacedHelperLocationEnded(_ text: String) {
+        statusMessage = text
+        guard let device = selectedDevice, !ownsLocationOperation,
+              let inherited = managedLocationSessionSource.inheritedHeldSession(for: device.id),
+              (inherited.clearEpoch ?? locationOperationGeneration) == locationOperationGeneration,
+              inherited.supersedeGeneration == locationSupersedeGeneration,
+              let receipt = inherited.session.locationReceipt(helperID: inherited.helperID) else {
+            return
+        }
+        let identity = LocationSessionIdentity(
+            stableDeviceID: device.id,
+            transport: receipt.transport,
+            endpointClass: receipt.endpointClass,
+            generation: receipt.sessionGeneration
+        )
+        guard locationSessionCoordinator.adoptHeldSession(identity: identity, receipt: receipt) == nil else { return }
+        locationSessionCoordinator.connectionLost(reason: text)
+        simulation.currentLocation = receipt.coordinate
+        simulation.targetLocation = receipt.coordinate
     }
 
     private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {

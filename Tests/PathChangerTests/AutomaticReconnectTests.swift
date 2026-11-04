@@ -112,6 +112,7 @@ private final class InheritingManagedSessionSource: ManagedLocationSessionSource
     /// False: behaves like a bridge that never heard of a Clear (only the stamp is left).
     var honoursDiscard = true
     private(set) var discardCount = 0
+    var onReplacedHelperLocationEnded: (@MainActor (String) -> Void)?
     var adoptedHelperID: UUID? { nil }
     var adoptedHelperSessions: [ManagedLocationHelperSession] { [] }
     var hasRecordedHeldSessions: Bool { false }
@@ -666,6 +667,47 @@ final class AutomaticReconnectTests: XCTestCase {
         await settle()
         let applies = await applyCount(fixture.injector)
         XCTAssertEqual(applies, 1, "a later tunnel edge reapplies nothing more")
+    }
+
+    /// Review 2026-11-04 issue 3: another build's helper was stopped (its location ended on
+    /// the phone) and this build's helper did not start. The location reads uncertain with
+    /// the bridge's reason, never held and never silently gone, and nothing is sent; the
+    /// next successful start's tunnel edge reapplies it as after any replacement.
+    func testAFailedLaunchAfterAReplacementShowsTheEndedLocationAsUncertain() async throws {
+        let source = InheritingManagedSessionSource()
+        source.inherit(ManagedLocationHelperSession(
+            deviceIDSHA256: ManagedLocationHelperSession.deviceIDHash(deviceID),
+            requestID: UUID().uuidString, sessionGeneration: 4, physicalTransport: "Network",
+            actualChannel: "usbmuxDirect", endpointClass: "direct",
+            coordinate: ManagedLocationHelperCoordinate(latitude: held.latitude, longitude: held.longitude),
+            acknowledgedAt: 1_789_000_000
+        ))
+        let fixture = makeFixture(managedSource: source)
+        let reportEnded = try XCTUnwrap(source.onReplacedHelperLocationEnded, "AppState listens for the ended location")
+        let text = "The location helper of another PathChanger build was stopped, so the location it held ended"
+
+        reportEnded(text)
+
+        let coordinator = fixture.state.locationSessionCoordinator.state
+        guard case .uncertain(let lastReceipt, _) = coordinator.application else {
+            return XCTFail("expected uncertain, got \(coordinator.application)")
+        }
+        XCTAssertEqual(lastReceipt?.coordinate, held)
+        XCTAssertEqual(coordinator.desiredLocation, held)
+        XCTAssertFalse(coordinator.application.isActive)
+        XCTAssertEqual(fixture.state.statusMessage, text)
+        XCTAssertNotNil(source.inherited, "kept for the next successful start")
+        await settle()
+        let sent = await applyCount(fixture.injector)
+        XCTAssertEqual(sent, 0, "nothing is sent")
+
+        fixture.state.device.onTunnelActiveChanged?(true)
+
+        try await waitUntil("the reapply") { await fixture.injector.pendingApplicationCount() == 1 }
+        let identity = try await readyIdentity(fixture.state)
+        await fixture.injector.releaseNextApplication(session: identity)
+        try await waitUntil("held again") { fixture.state.locationSessionCoordinator.state.application.isActive }
+        XCTAssertEqual(fixture.state.locationSessionCoordinator.state.lastAcknowledgedReceipt?.coordinate, held)
     }
 
     // MARK: A replaced helper's location vs Clear, Stop Tunnel and Move (review 2026-11-03 issue 1)

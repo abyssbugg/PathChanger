@@ -48,12 +48,21 @@ protocol ManagedLocationSessionSource: AnyObject {
     /// Stop Tunnel and an explicit Move supersede what that helper held, whether or not
     /// they reached the phone (review 2026-11-03 reconnect-audit issue 1).
     func discardInheritedHeldSessions()
+
+    /// Called when a launch failed after this app stopped another build's or an orphaned
+    /// helper: the location that helper held has ended on the phone. The text says so.
+    /// The held session stays inherited (see `inheritedHeldSession`).
+    var onReplacedHelperLocationEnded: (@MainActor (String) -> Void)? { get set }
 }
 
 extension ManagedLocationSessionSource {
     func takeInheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? { nil }
     func discardInheritedHeldSessions() {}
+    var onReplacedHelperLocationEnded: (@MainActor (String) -> Void)? {
+        get { nil }
+        set {}
+    }
 }
 
 /// AppState's two counters a held session is as old as: its Clear counter, and the
@@ -751,6 +760,10 @@ final class ManagedLocationHelperController {
     private var lastStderrCap: Date?
     private var launchedProcess: Process?
     private var activeConnection: ManagedLocationHelperConnection?
+    /// The record of a helper from another build this controller stopped, kept until a
+    /// launch succeeds (then handed to that launch's connection) or the bridge takes it
+    /// after a failed launch: its held sessions ended when it was stopped.
+    private(set) var replacedHelperRecordAwaitingLaunch: ManagedLocationHelperRecord?
     /// The parent PID of a process, or nil when it cannot be read (gone). Injected in tests.
     private let parentProcessID: (Int32) -> Int32?
 
@@ -817,6 +830,13 @@ final class ManagedLocationHelperController {
 
     /// The record of the helper this controller launched or adopted, if any.
     var activeRecord: ManagedLocationHelperRecord? { activeConnection?.record }
+
+    /// Hand the stopped helper's record to the caller after a failed launch (nil when none
+    /// is waiting); a later launch then has nothing to attach.
+    func takeReplacedHelperRecordAwaitingLaunch() -> ManagedLocationHelperRecord? {
+        defer { replacedHelperRecordAwaitingLaunch = nil }
+        return replacedHelperRecordAwaitingLaunch
+    }
 
     /// The adopted helper is foreign (see `isForeign`).
     var activeConnectionIsForeign: Bool {
@@ -914,7 +934,6 @@ final class ManagedLocationHelperController {
 
         let token = try paths.prepare(fileManager: fileManager)
         let expectation = try makeExpectation(token: token)
-        var replacedHelperRecord: ManagedLocationHelperRecord?
 
         if fileManager.fileExists(atPath: paths.recordURL.path) {
             let record = try loadRecord()
@@ -922,7 +941,8 @@ final class ManagedLocationHelperController {
                 if let differences = record.buildDifferences(from: expectation), !differences.isEmpty {
                     // Never adopted: stopped, and this build's helper is launched below.
                     try await stopHelperFromAnotherBuild(record, differences: differences, token: token)
-                    replacedHelperRecord = record
+                    // Kept until a launch succeeds: a failed launch must not lose what it held.
+                    replacedHelperRecordAwaitingLaunch = record
                 } else {
                     try record.validateForAdoption(expectation: expectation)
                     let connection = try await authenticate(
@@ -1000,7 +1020,8 @@ final class ManagedLocationHelperController {
                     // connectOrLaunch returning the active connection must not hand its
                     // sessions out again.
                     var launched = connection
-                    launched.replacedHelperRecord = replacedHelperRecord
+                    launched.replacedHelperRecord = replacedHelperRecordAwaitingLaunch
+                    replacedHelperRecordAwaitingLaunch = nil
                     return launched
                 }
                 try await Task.sleep(nanoseconds: 20_000_000)
@@ -1530,6 +1551,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
         case pythonNotFound
         /// The location helper belongs to another PathChanger that is still running (its PID).
         case helperInUseByAnotherPathChanger(Int32)
+        /// This app stopped a helper that held a location (another build's, or an orphan)
+        /// and its own helper then did not start: that location has ended on the phone.
+        /// Carries why the launch failed.
+        case replacedHelperLocationEnded(String)
 
         var errorDescription: String? {
             switch self {
@@ -1555,6 +1580,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 return "Python3 not found in PATH"
             case .helperInUseByAnotherPathChanger(let pid):
                 return ManagedLocationHelperController.helperInUseText(ownerPID: pid)
+            case .replacedHelperLocationEnded(let reason):
+                return "The location helper an earlier PathChanger started was stopped, so the location it held has "
+                    + "ended, and this build's helper did not start (\(reason)). Press Start to try again; the "
+                    + "location is reapplied once the helper runs."
             }
         }
     }
@@ -1604,6 +1633,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
     /// Sessions recovered from a validated managed-helper identity record.
     @Published private(set) var adoptedHelperID: UUID?
     @Published private(set) var adoptedHelperSessions: [ManagedLocationHelperSession] = []
+
+    /// See `ManagedLocationSessionSource.onReplacedHelperLocationEnded` (AppState sets it).
+    var onReplacedHelperLocationEnded: (@MainActor (String) -> Void)?
 
     // Private properties
     private var process: Process?
@@ -1778,8 +1810,34 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             if case let ManagedLocationHelperController.ControllerError.helperInUseByAnotherPathChanger(owner) = error {
                 throw PersistentBridgeError.helperInUseByAnotherPathChanger(owner)
             }
+            if inheritSessionsEndedByAFailedLaunch(controller.takeReplacedHelperRecordAwaitingLaunch()) {
+                throw reportEndedLocation(launchFailure: error)
+            }
             throw PersistentBridgeError.processStartFailed(error.localizedDescription)
         }
+    }
+
+    /// A launch failed after this app stopped `stopped` (another build's or an orphaned
+    /// helper): the location it held has ended on the phone. Its sessions are kept as
+    /// inherited, stamped `.initial` as after a successful replacement, so the next
+    /// successful start reapplies them unless a Clear, Stop or Move of this launch comes
+    /// first. False when it held nothing.
+    private func inheritSessionsEndedByAFailedLaunch(_ stopped: ManagedLocationHelperRecord?) -> Bool {
+        guard let stopped, !stopped.activeSessions.isEmpty else { return false }
+        inheritedHeldSessions = (stopped.helperID, stopped.activeSessions, .initial)
+        return true
+    }
+
+    /// Tell AppState the held location ended (it shows it uncertain) and return the error.
+    private func reportEndedLocation(launchFailure: Error) -> PersistentBridgeError {
+        let ended = PersistentBridgeError.replacedHelperLocationEnded(launchFailure.localizedDescription)
+        Logger.error(
+            "[PersistentBridge] The stopped helper's held location has ended and no helper replaced it: "
+                + LogRedaction.redactingDeviceIdentifiers(launchFailure.localizedDescription),
+            category: .device
+        )
+        onReplacedHelperLocationEnded?(ended.localizedDescription)
+        return ended
     }
 
     func refreshAdoptedHelperSessions() async throws {
@@ -2242,6 +2300,10 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
                 "[PersistentBridge] Replacing the earlier helper failed: \(error.localizedDescription)",
                 category: .device
             )
+            // The orphan was stopped before the launch failed: what it held has ended.
+            if !TunnelProcessTerminator.isAlive(pid: record.pid), inheritSessionsEndedByAFailedLaunch(record) {
+                throw reportEndedLocation(launchFailure: error)
+            }
             throw PersistentBridgeError.processStartFailed(error.localizedDescription)
         }
     }
@@ -2264,6 +2326,8 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
 
     func discardInheritedHeldSessions() {
         inheritedHeldSessions = nil
+        // One a launch has yet to attach is superseded too.
+        _ = helperController?.takeReplacedHelperRecordAwaitingLaunch()
     }
 
     func inheritedHeldSession(for deviceID: String) -> ManagedLocationInheritedSession? {

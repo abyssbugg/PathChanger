@@ -1164,6 +1164,64 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
         }
     }
 
+    // MARK: A launch that fails after another build's helper was stopped (review 2026-11-04 issue 3)
+
+    /// The stopped helper's location has ended on the phone. Its record is kept until a
+    /// launch succeeds, and when the launch fails the bridge keeps the held session
+    /// (stamped `.initial`, as after a successful replacement) and reports the ended
+    /// location, once, instead of dropping it with only "Managed helper unavailable".
+    @MainActor
+    func testAFailedLaunchAfterStoppingAnotherBuildsHelperKeepsItsSessionAndReportsTheLocationEnded() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-launch-fails")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failingBridge = URL(fileURLWithPath: root.path + "-failing-bridge.py")
+        try "import sys\nsys.exit(3)\n".write(to: failingBridge, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: failingBridge) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        let deviceID = "00008130-0011223344556677"
+        let held = heldSession(for: deviceID)
+        try writeRecord(old.record, sessions: [held], bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: failingBridge.path)
+
+        // The controller keeps the stopped helper's record across a failed launch.
+        do {
+            _ = try await controller.connectOrLaunch()
+            XCTFail("the launch fails")
+        } catch {}
+        XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.record.pid), "the other build's helper was stopped")
+        XCTAssertEqual(controller.replacedHelperRecordAwaitingLaunch?.helperID, old.record.helperID)
+        XCTAssertEqual(controller.replacedHelperRecordAwaitingLaunch?.activeSessions, [held])
+
+        let bridge = PersistentLocationBridge(helperController: controller)
+        var reported: [String] = []
+        bridge.onReplacedHelperLocationEnded = { reported.append($0) }
+        for attempt in 1...2 {
+            do {
+                try await bridge.start()
+                XCTFail("attempt \(attempt): the launch fails")
+            } catch {
+                if attempt == 1 {
+                    guard case .replacedHelperLocationEnded? = error as? PersistentLocationBridge.PersistentBridgeError else {
+                        return XCTFail("expected the ended location to be reported, got \(error)")
+                    }
+                    XCTAssertTrue(error.localizedDescription.contains("ended"), error.localizedDescription)
+                }
+            }
+            XCTAssertFalse(bridge.isRunning)
+            let inherited = try XCTUnwrap(bridge.inheritedHeldSession(for: deviceID), "attempt \(attempt): kept")
+            XCTAssertEqual(inherited.helperID, old.record.helperID)
+            XCTAssertEqual(inherited.session, held)
+            XCTAssertEqual(inherited.clearEpoch, 0, "recorded by an earlier launch")
+            XCTAssertEqual(inherited.supersedeGeneration, 0)
+        }
+        XCTAssertEqual(reported.count, 1, "reported once: the second failure ended nothing more")
+        XCTAssertNil(controller.replacedHelperRecordAwaitingLaunch, "the bridge took it")
+    }
+
     func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
         let record = ManagedLocationHelperRecord(
             protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",
