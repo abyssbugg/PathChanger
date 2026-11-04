@@ -49,6 +49,35 @@ private actor DelayedAckInjector: LocationInjecting {
     func events() async -> AsyncStream<LocationBridgeEvent> { AsyncStream { _ in } }
 }
 
+/// Stands in for clicks: every 10 ms a background timer enqueues a block on the main
+/// queue and records how long it waited to run.
+private final class ClickProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waits: [Double] = []
+    private var timer: DispatchSourceTimer?
+
+    var waitsMs: [Double] { lock.withLock { waits } }
+
+    func start() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(10))
+        timer.setEventHandler { [weak self] in
+            let enqueued = DispatchTime.now().uptimeNanoseconds
+            DispatchQueue.main.async {
+                let waited = Double(DispatchTime.now().uptimeNanoseconds - enqueued) / 1_000_000
+                self?.lock.withLock { self?.waits.append(waited) }
+            }
+        }
+        self.timer = timer
+        timer.resume()
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+}
+
 @MainActor
 private final class RenderCounter {
     var renders = 0
@@ -115,6 +144,14 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
     var frameCPUSeconds = 0.0
     var wallSeconds = 0.0
     var idleCPUPerSecond = 0.0
+    /// How long a main-queue block (what a click is) waited during the run, in ms.
+    var clickWaitsMs: [Double] = []
+
+    func clickWait(percentile: Double) -> Double {
+        guard !clickWaitsMs.isEmpty else { return 0 }
+        let sorted = clickWaitsMs.sorted()
+        return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * percentile))]
+    }
 
     /// Main-thread CPU the run added over the idle GUI.
     var addedCPUSeconds: Double { max(0, mainThreadCPUSeconds - idleCPUPerSecond * wallSeconds) }
@@ -125,12 +162,14 @@ struct GUIUpdateLoadSample: CustomStringConvertible {
         String(
             format: "points %d · AppState sends %d (%.2f/point) · probe renders %d (%.2f/point) · " +
                 "presentation builds %d (%.2f/point) · map content builds %d (%.2f/point) · frames with work %d of %d · " +
-                "main-thread CPU %.3f s of %.3f s wall (%.0f%%) · idle %.0f%% · added by the run %.3f s (%.0f%%) · frame CPU %.3f s",
+                "main-thread CPU %.3f s of %.3f s wall (%.0f%%) · idle %.0f%% · added by the run %.3f s (%.0f%%) · frame CPU %.3f s · " +
+                "click wait p50 %.1f ms p95 %.1f ms max %.1f ms (%d probes)",
             acknowledgedPoints, appStateSends, perPoint(appStateSends), probeRenders, perPoint(probeRenders),
             presentationBuilds, perPoint(presentationBuilds), mapContentBuilds, perPoint(mapContentBuilds), framesWithWork, frames,
             mainThreadCPUSeconds, wallSeconds, 100 * mainThreadCPUSeconds / max(wallSeconds, 0.001),
             100 * idleCPUPerSecond, addedCPUSeconds, 100 * addedCPUSeconds / max(wallSeconds, 0.001),
-            frameCPUSeconds
+            frameCPUSeconds,
+            clickWait(percentile: 0.5), clickWait(percentile: 0.95), clickWait(percentile: 1), clickWaitsMs.count
         )
     }
 }
@@ -197,7 +236,10 @@ final class GUIUpdateLoadTests: XCTestCase {
     }
 
     private func record(_ sample: GUIUpdateLoadSample, name: String) {
-        let line = "[GUIBench] \(name): \(sample)"
+        recordLine("[GUIBench] \(name): \(sample)")
+    }
+
+    private func recordLine(_ line: String) {
         print(line)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pathchanger-gui-bench.txt")
         let data = Data((line + "\n").utf8)
@@ -248,6 +290,8 @@ final class GUIUpdateLoadTests: XCTestCase {
         let wallStart = Date()
 
         var finished = false
+        let clicks = ClickProbe()
+        clicks.start()
         let run = Task { @MainActor in
             await state.startSimulation()
             finished = true
@@ -265,6 +309,8 @@ final class GUIUpdateLoadTests: XCTestCase {
             try await Task.sleep(nanoseconds: 16_000_000)
         }
         await run.value
+        clicks.stop()
+        sample.clickWaitsMs = clicks.waitsMs
         hosting.layoutSubtreeIfNeeded()
 
         sample.wallSeconds = Date().timeIntervalSince(wallStart)
@@ -282,6 +328,13 @@ final class GUIUpdateLoadTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             sample.presentationBuilds, sample.acknowledgedPoints * 3 + 10,
             "the presentation was rebuilt on every read: \(sample)"
+        )
+        // SwiftUI renders once per run-loop turn: a step's send and its receipt are two
+        // turns, so about two renders per point. More means something publishes in turns
+        // of its own.
+        XCTAssertLessThanOrEqual(
+            sample.probeRenders, sample.acknowledgedPoints * 3 + 10,
+            "AppState observers re-rendered more often than the run's steps and receipts: \(sample)"
         )
         // The host shows two maps (ContentView's and the Multi-Spot one). Each changes once
         // per acknowledged point (the dot, the trail); a step being sent, the run's
@@ -338,6 +391,35 @@ final class GUIUpdateLoadTests: XCTestCase {
         XCTAssertEqual(LocationStatusPresentation.debugBuildCount - start, 4, "one build per change, plus the fresh one above")
     }
 
+    // MARK: - Forwarding the managers' changes
+
+    /// AppState re-sends every manager's change, synchronously (about 17 per acknowledged
+    /// point in the benchmark). Measured 2026-11-04: a re-send costs a few microseconds,
+    /// and SwiftUI renders once per run-loop turn however many arrive in it (about 2.2
+    /// renders per point), so the count of re-sends is not what loads the main thread;
+    /// this keeps the forwarding complete and synchronous.
+    func testEveryManagersChangeReachesAppStateObserversSynchronously() {
+        let state = AppState(startBackgroundServices: false, locationInjector: FakeLocationInjector())
+        XCTAssertTrue(state.objectWillChange === state.objectWillChange, "AppState has one change publisher")
+        var heard = 0
+        state.objectWillChange.sink { heard += 1 }.store(in: &cancellables)
+        state.simulation.currentLocation = s0
+        XCTAssertEqual(heard, 1, "the simulation's change reaches AppState's observers")
+        state.travelTrail.record(s1, mode: .route, after: s0)
+        XCTAssertEqual(heard, 2, "the trail's change reaches them")
+        state.route.progress = 0.5
+        XCTAssertEqual(heard, 3, "the route's change reaches them")
+        state.locationSessionCoordinator.select(s2, mode: .multiSpot)
+        XCTAssertEqual(heard, 4, "the session's change reaches them, synchronously")
+
+        let sends = 20_000
+        let start = Self.threadCPUSeconds()
+        for _ in 0..<sends { state.simulation.objectWillChange.send() }
+        let perSend = (Self.threadCPUSeconds() - start) * 1_000_000 / Double(sends)
+        recordLine(String(format: "[GUIBench] forwarding: %.2f µs of main-thread CPU per forwarded manager change", perSend))
+        XCTAssertEqual(heard, 4 + sends)
+    }
+
     // MARK: - The main thread stays free
 
     /// Every acknowledged point refreshes the helper connection: it read the token, the
@@ -369,6 +451,55 @@ final class GUIUpdateLoadTests: XCTestCase {
         }
         XCTAssertGreaterThan(fileManager.callCount, 0, "harness: the refresh used the file manager")
         XCTAssertEqual(fileManager.mainThreadCalls, [], "the helper files were read on the main thread")
+    }
+}
+
+/// Main-thread time of the helper refresh every acknowledged point makes, against a real
+/// helper process (no device: the helper only answers its socket).
+@MainActor
+final class HelperRefreshLoadTests: XCTestCase {
+    func testTheHelperRefreshAfterEachPointBarelyUsesTheMainThread() async throws {
+        guard FileManager.default.isExecutableFile(atPath: PythonPathResolver.managedPythonPath) else {
+            throw XCTSkip("Managed Python runtime is unavailable")
+        }
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let bridgeScript = repositoryRoot.appendingPathComponent("scripts/location_bridge.py")
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("pathchanger-refresh-load-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = ManagedLocationHelperController(
+            paths: ManagedLocationHelperPaths(baseDirectory: root),
+            pythonPath: PythonPathResolver.managedPythonPath,
+            bridgePath: bridgeScript.path
+        )
+        let bridge = PersistentLocationBridge(helperController: controller)
+        do {
+            try await bridge.start()
+            try await bridge.refreshAdoptedHelperSessions()
+            let refreshes = 50
+            let cpuStart = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1_000_000_000
+            let wallStart = Date()
+            for _ in 0..<refreshes { try await bridge.refreshAdoptedHelperSessions() }
+            let mainCPU = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1_000_000_000 - cpuStart
+            let wall = Date().timeIntervalSince(wallStart)
+            let line = String(
+                format: "[GUIBench] helper refresh: %d refreshes · main-thread CPU %.2f ms per refresh · wall %.2f ms per refresh",
+                refreshes, mainCPU * 1000 / Double(refreshes), wall * 1000 / Double(refreshes)
+            )
+            print(line)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("pathchanger-gui-bench.txt")
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile(); handle.write(Data((line + "\n").utf8)); try? handle.close()
+            } else {
+                try? Data((line + "\n").utf8).write(to: url)
+            }
+            add(XCTAttachment(string: line))
+        } catch {
+            try? await controller.shutdown()
+            throw error
+        }
+        try? await controller.shutdown()
     }
 }
 
