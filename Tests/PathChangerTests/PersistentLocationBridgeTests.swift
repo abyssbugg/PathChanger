@@ -559,11 +559,15 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
     private static let everyHelperIsOrphaned: (Int32) -> Int32? = { _ in 1 }
 
     private func writeRecord(_ record: ManagedLocationHelperRecord, sessions: [ManagedLocationHelperSession],
+                             protocolVersion: Int? = nil, pid: Int32? = nil, bridgeSHA256: String? = nil,
+                             tokenSHA256: String? = nil,
                              to paths: ManagedLocationHelperPaths) throws {
         let updated = ManagedLocationHelperRecord(
-            protocolVersion: record.protocolVersion, helperID: record.helperID, pid: record.pid,
+            protocolVersion: protocolVersion ?? record.protocolVersion, helperID: record.helperID,
+            pid: pid ?? record.pid,
             socketPath: record.socketPath, pythonPath: record.pythonPath, pythonSHA256: record.pythonSHA256,
-            bridgePath: record.bridgePath, bridgeSHA256: record.bridgeSHA256, tokenSHA256: record.tokenSHA256,
+            bridgePath: record.bridgePath, bridgeSHA256: bridgeSHA256 ?? record.bridgeSHA256,
+            tokenSHA256: tokenSHA256 ?? record.tokenSHA256,
             activeSessions: sessions
         )
         try JSONEncoder().encode(updated).write(to: paths.recordURL, options: .atomic)
@@ -871,6 +875,216 @@ final class ManagedLocationHelperRecordTests: XCTestCase {
             if TunnelProcessTerminator.isAlive(pid: orphan.record.pid) { kill(orphan.record.pid, SIGTERM) }
             throw error
         }
+    }
+
+    // MARK: A helper started by another build (live 2026-11-03 13:27-14:46)
+    //
+    // The app was rebuilt with a changed location_bridge.py while the earlier build's helper
+    // kept running and holding a session. Adoption refused it ("adoption evidence does not
+    // match: bridge_sha256"), so every Start and every Clear failed until a relaunch.
+
+    private static let otherBuildBridgeSHA256 = String(repeating: "0", count: 64)
+
+    @MainActor
+    func testAHelperFromAnotherBuildIsReplacedAndItsHeldSessionInheritedStampedInitial() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        let deviceID = "00008130-0011223344556677"
+        let held = heldSession(for: deviceID)
+        try writeRecord(old.record, sessions: [held], bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let controller = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let bridge = PersistentLocationBridge(helperController: controller)
+        do {
+            try await bridge.start()
+
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.record.pid), "the other build's helper was stopped")
+            XCTAssertTrue(bridge.isRunning)
+            let fresh = try XCTUnwrap(bridge.adoptedHelperID)
+            XCTAssertNotEqual(fresh, old.record.helperID, "its connection is never adopted")
+            XCTAssertEqual(bridge.adoptedHelperSessions, [], "the new helper holds nothing yet")
+            XCTAssertFalse(bridge.hasRecordedHeldSessions)
+            let inherited = try XCTUnwrap(bridge.inheritedHeldSession(for: deviceID))
+            XCTAssertEqual(inherited.helperID, old.record.helperID)
+            XCTAssertEqual(inherited.session, held)
+            XCTAssertEqual(inherited.clearEpoch, 0, "recorded by an earlier launch: older than every Clear of this one")
+            XCTAssertEqual(inherited.supersedeGeneration, 0)
+
+            // Clear goes through the new helper, which answers for itself: it holds no
+            // connection, so the old helper's location ended when it was stopped.
+            let status = await bridge.deviceConnectionStatus(deviceID, transport: .wifi)
+            XCTAssertNotEqual(status, .connected)
+            let closed = await bridge.disconnectDevice(deviceID, transport: .wifi)
+            XCTAssertTrue(closed, "the new helper confirmed it holds no connection")
+            XCTAssertEqual(controller.activeRecord?.helperID, fresh)
+            try await bridge.shutdownHelper()
+        } catch {
+            try? await bridge.shutdownHelper()
+            try? await earlier.shutdown()
+            if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
+    /// A helper on another protocol version is not asked over its socket, and one whose
+    /// socket is gone cannot be: SIGTERM goes only to the PID its record names.
+    @MainActor
+    func testAHelperFromAnotherBuildThatCannotBeAskedToQuitIsTerminatedByItsRecordedPID() async throws {
+        for protocolVersion in [1, 0] {
+            let (paths, bridgeScript, root) = try orphanFixture("other-build-sigterm-\(protocolVersion)")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let earlier = ManagedLocationHelperController(
+                paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+            let old = try await earlier.connectOrLaunch()
+            defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+            try writeRecord(old.record, sessions: [], protocolVersion: protocolVersion,
+                            bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+            if protocolVersion == 1 { try FileManager.default.removeItem(at: paths.socketURL) }
+            let controller = ManagedLocationHelperController(
+                paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+            let bridge = PersistentLocationBridge(helperController: controller)
+            do {
+                try await bridge.start()
+                XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.record.pid), "protocol \(protocolVersion)")
+                XCTAssertTrue(bridge.isRunning)
+                XCTAssertNotEqual(bridge.adoptedHelperID, old.record.helperID)
+                try await bridge.shutdownHelper()
+            } catch {
+                try? await bridge.shutdownHelper()
+                if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+                throw error
+            }
+        }
+    }
+
+    /// The token is what proves the record was written by a helper this user's app launched.
+    @MainActor
+    func testARecordWithAnotherTokenIsStillRefusedAndItsHelperLeftAlone() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-token")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        try writeRecord(old.record, sessions: [], bridgeSHA256: Self.otherBuildBridgeSHA256,
+                        tokenSHA256: String(repeating: "f", count: 64), to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+        do {
+            do {
+                try await bridge.start()
+                XCTFail("an untrusted record is refused")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("token_sha256"), error.localizedDescription)
+            }
+            XCTAssertFalse(bridge.isRunning)
+            XCTAssertTrue(TunnelProcessTerminator.isAlive(pid: old.record.pid), "never signalled")
+            try await earlier.shutdown()
+        } catch {
+            try? await earlier.shutdown()
+            if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
+    /// A record naming a PID whose command line does not serve this helper socket (a
+    /// reused PID, or not a helper at all): refused, and that process is never signalled.
+    @MainActor
+    func testAProcessThatIsNotThisSocketsHelperIsNeverSignalled() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-cmdline")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        let bystander = Process()
+        bystander.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        bystander.arguments = ["120"]
+        try bystander.run()
+        defer { if bystander.isRunning { bystander.terminate(); bystander.waitUntilExit() } }
+        try writeRecord(old.record, sessions: [], pid: bystander.processIdentifier,
+                        bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+        do {
+            do {
+                try await bridge.start()
+                XCTFail("a record whose PID is not this socket's helper is refused")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("not a location helper"), error.localizedDescription)
+            }
+            XCTAssertFalse(bridge.isRunning)
+            XCTAssertTrue(bystander.isRunning, "never signalled")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.recordURL.path), "the record is left as found")
+            try await earlier.shutdown()
+        } catch {
+            try? await earlier.shutdown()
+            if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
+    /// Quit (Clear and Quit) in that state: a bridge that never started stops the other
+    /// build's helper, which ends the location it held.
+    @MainActor
+    func testANeverStartedBridgeStopsAHelperFromAnotherBuild() async throws {
+        let (paths, bridgeScript, root) = try orphanFixture("other-build-quit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let earlier = ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript)
+        let old = try await earlier.connectOrLaunch()
+        defer { if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) } }
+        try writeRecord(old.record, sessions: [heldSession(for: "00008130-0011223344556677")],
+                        bridgeSHA256: Self.otherBuildBridgeSHA256, to: paths)
+        let bridge = PersistentLocationBridge(helperController: ManagedLocationHelperController(
+            paths: paths, pythonPath: PythonPathResolver.managedPythonPath, bridgePath: bridgeScript))
+        do {
+            XCTAssertTrue(bridge.hasRecordedHeldSessions)
+            try await bridge.shutdownHelper()
+            XCTAssertFalse(TunnelProcessTerminator.isAlive(pid: old.record.pid))
+            XCTAssertFalse(bridge.hasRecordedHeldSessions)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.recordURL.path))
+        } catch {
+            if TunnelProcessTerminator.isAlive(pid: old.record.pid) { kill(old.record.pid, SIGTERM) }
+            throw error
+        }
+    }
+
+    func testBuildDifferencesNameOnlyTheBuildFieldsOfATrustedRecord() {
+        let record = ManagedLocationHelperRecord(
+            protocolVersion: 1, helperID: helperID, pid: 4242, socketPath: "/private/helper.sock",
+            pythonPath: "/runtime/bin/python3", pythonSHA256: "python-hash",
+            bridgePath: "/bundle/location_bridge.py", bridgeSHA256: "bridge-hash",
+            tokenSHA256: "token-hash", activeSessions: []
+        )
+        let same = ManagedLocationHelperExpectation(
+            socketPath: record.socketPath, pythonPath: record.pythonPath, pythonSHA256: record.pythonSHA256,
+            bridgePath: record.bridgePath, bridgeSHA256: record.bridgeSHA256, tokenSHA256: record.tokenSHA256
+        )
+        XCTAssertEqual(record.buildDifferences(from: same), [])
+
+        var rebuilt = same
+        rebuilt.bridgeSHA256 = "new-bridge-hash"
+        rebuilt.pythonSHA256 = "new-python-hash"
+        XCTAssertEqual(record.buildDifferences(from: rebuilt), ["python_sha256", "bridge_sha256"])
+
+        let olderProtocol = ManagedLocationHelperRecord(
+            protocolVersion: 0, helperID: helperID, pid: 4242, socketPath: record.socketPath,
+            pythonPath: record.pythonPath, pythonSHA256: record.pythonSHA256, bridgePath: record.bridgePath,
+            bridgeSHA256: record.bridgeSHA256, tokenSHA256: record.tokenSHA256, activeSessions: []
+        )
+        XCTAssertEqual(olderProtocol.buildDifferences(from: same), ["protocol_version"])
+
+        var otherToken = rebuilt
+        otherToken.tokenSHA256 = "other-token"
+        XCTAssertNil(record.buildDifferences(from: otherToken), "another token is not a build difference")
+        var otherSocket = rebuilt
+        otherSocket.socketPath = "/private/other.sock"
+        XCTAssertNil(record.buildDifferences(from: otherSocket), "another socket is not this app's helper")
     }
 
     /// Which helper the app may open a device connection through. An orphan that still

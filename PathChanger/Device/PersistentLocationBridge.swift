@@ -513,16 +513,46 @@ struct ManagedLocationHelperRecord: Codable, Equatable {
         }
     }
 
-    func validateForAdoption(expectation: ManagedLocationHelperExpectation) throws {
-        guard protocolVersion == 1 else { throw AdoptionError.unsupportedProtocol(protocolVersion) }
-        guard pid > 0 else { throw AdoptionError.invalidPID }
-        let evidence: [(String, String, String)] = [
-            ("socket_path", socketPath, expectation.socketPath),
+    /// The protocol this build's helper speaks (scripts/location_bridge.py `protocol_version`).
+    static let supportedProtocolVersion = 1
+
+    /// Nil when the record does not prove it names this app's helper (another socket or
+    /// token, or no signalable PID). Otherwise the fields where the helper's build differs
+    /// from this app's (empty: the same build). A different build is a helper an earlier
+    /// PathChanger started before the app was rebuilt or its runtime upgraded (live
+    /// 2026-11-03 13:27: a changed location_bridge.py refused it on `bridge_sha256`).
+    /// The record's owner and permissions are checked when it is loaded.
+    func buildDifferences(from expectation: ManagedLocationHelperExpectation) -> [String]? {
+        guard pid > 1,
+              socketPath == expectation.socketPath,
+              tokenSHA256 == expectation.tokenSHA256 else {
+            return nil
+        }
+        var differences: [String] = []
+        if protocolVersion != Self.supportedProtocolVersion { differences.append("protocol_version") }
+        let build: [(String, String, String)] = [
             ("python_path", pythonPath, expectation.pythonPath),
             ("python_sha256", pythonSHA256, expectation.pythonSHA256),
             ("bridge_path", bridgePath, expectation.bridgePath),
             ("bridge_sha256", bridgeSHA256, expectation.bridgeSHA256),
+        ]
+        differences += build.filter { $0.1 != $0.2 }.map(\.0)
+        return differences
+    }
+
+    func validateForAdoption(expectation: ManagedLocationHelperExpectation) throws {
+        guard protocolVersion == Self.supportedProtocolVersion else {
+            throw AdoptionError.unsupportedProtocol(protocolVersion)
+        }
+        guard pid > 0 else { throw AdoptionError.invalidPID }
+        // The identity fields first: an untrusted record is reported for what makes it so.
+        let evidence: [(String, String, String)] = [
+            ("socket_path", socketPath, expectation.socketPath),
             ("token_sha256", tokenSHA256, expectation.tokenSHA256),
+            ("python_path", pythonPath, expectation.pythonPath),
+            ("python_sha256", pythonSHA256, expectation.pythonSHA256),
+            ("bridge_path", bridgePath, expectation.bridgePath),
+            ("bridge_sha256", bridgeSHA256, expectation.bridgeSHA256),
         ]
         if let mismatch = evidence.first(where: { $0.1 != $0.2 }) {
             throw AdoptionError.evidenceMismatch(mismatch.0)
@@ -656,6 +686,9 @@ struct ManagedLocationHelperConnection: Sendable {
     let client: ManagedLocationHelperClient
     let record: ManagedLocationHelperRecord
     let launchedNewHelper: Bool
+    /// The record of a helper from another build this launch stopped before starting its
+    /// own (its held sessions ended with it). Only on the connection that launch returned.
+    var replacedHelperRecord: ManagedLocationHelperRecord? = nil
 }
 
 @MainActor
@@ -670,6 +703,8 @@ final class ManagedLocationHelperController {
         case startupTimedOut
         case shutdownTimedOut
         case foreignHelperStillRunning
+        case unverifiedHelperProcess(Int32)
+        case helperFromAnotherBuildStillRunning(Int32)
 
         var errorDescription: String? {
             switch self {
@@ -691,6 +726,11 @@ final class ManagedLocationHelperController {
                 return "Location helper did not shut down before the deadline"
             case .foreignHelperStillRunning:
                 return "The location helper an earlier PathChanger started is still running"
+            case let .unverifiedHelperProcess(pid):
+                return "The location helper record names PID \(pid), which is not a location helper for this "
+                    + "app's socket; it was left alone"
+            case let .helperFromAnotherBuildStillRunning(pid):
+                return "The location helper another PathChanger build started (PID \(pid)) did not stop"
             }
         }
     }
@@ -793,7 +833,7 @@ final class ManagedLocationHelperController {
         // Every managed helper is launched with this socket path; a reused PID is not.
         let outcome = await TunnelProcessTerminator.stop(
             pid: pid,
-            requiredCommandPattern: "--socket \(paths.socketURL.path)",
+            requiredCommandPattern: Self.helperCommandPattern(socketPath: paths.socketURL.path),
             isAlive: { TunnelProcessTerminator.isAlive(pid: pid) }
         )
         Logger.info("[PersistentBridge] Earlier helper PID \(pid): \(outcome)", category: .device)
@@ -841,21 +881,29 @@ final class ManagedLocationHelperController {
 
         let token = try paths.prepare(fileManager: fileManager)
         let expectation = try makeExpectation(token: token)
+        var replacedHelperRecord: ManagedLocationHelperRecord?
 
         if fileManager.fileExists(atPath: paths.recordURL.path) {
             let record = try loadRecord()
             if processIsAlive(record.pid) {
-                try record.validateForAdoption(expectation: expectation)
-                let connection = try await authenticate(
-                    record: record,
-                    token: token,
-                    launchedNewHelper: false
-                )
-                capStderrLogInPlace(of: "adopted")
-                activeConnection = connection
-                return connection
+                if let differences = record.buildDifferences(from: expectation), !differences.isEmpty {
+                    // Never adopted: stopped, and this build's helper is launched below.
+                    try await stopHelperFromAnotherBuild(record, differences: differences, token: token)
+                    replacedHelperRecord = record
+                } else {
+                    try record.validateForAdoption(expectation: expectation)
+                    let connection = try await authenticate(
+                        record: record,
+                        token: token,
+                        launchedNewHelper: false
+                    )
+                    capStderrLogInPlace(of: "adopted")
+                    activeConnection = connection
+                    return connection
+                }
+            } else {
+                try removeStaleArtifacts()
             }
-            try removeStaleArtifacts()
         } else if fileManager.fileExists(atPath: paths.socketURL.path) {
             throw ControllerError.unsafeExistingSocket
         }
@@ -915,7 +963,12 @@ final class ManagedLocationHelperController {
                         launchedNewHelper: true
                     )
                     activeConnection = connection
-                    return connection
+                    // Only this launch's caller learns of the replaced helper: a later
+                    // connectOrLaunch returning the active connection must not hand its
+                    // sessions out again.
+                    var launched = connection
+                    launched.replacedHelperRecord = replacedHelperRecord
+                    return launched
                 }
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
@@ -970,6 +1023,11 @@ final class ManagedLocationHelperController {
                 try removeStaleArtifacts()
                 return
             }
+            if let differences = record.buildDifferences(from: expectation), !differences.isEmpty {
+                // Quit (Clear and Quit) must end a helper another build left holding a location.
+                try await stopHelperFromAnotherBuild(record, differences: differences, token: token)
+                return
+            }
             try record.validateForAdoption(expectation: expectation)
             connection = try await authenticate(
                 record: record,
@@ -978,6 +1036,14 @@ final class ManagedLocationHelperController {
             )
         }
 
+        try await quit(connection)
+        activeConnection = nil
+        launchedProcess = nil
+    }
+
+    /// Ask the helper behind `connection` to quit and wait until it removed its socket and
+    /// identity record.
+    private func quit(_ connection: ManagedLocationHelperConnection) async throws {
         let response: ManagedLocationHelperPingResponse = try await connection.client.send(
             ManagedLocationHelperCommand(cmd: "quit"),
             responseType: ManagedLocationHelperPingResponse.self
@@ -991,13 +1057,75 @@ final class ManagedLocationHelperController {
             let recordExists = fileManager.fileExists(atPath: paths.recordURL.path)
             let socketExists = fileManager.fileExists(atPath: paths.socketURL.path)
             if !recordExists, !socketExists {
-                activeConnection = nil
-                launchedProcess = nil
                 return
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         throw ControllerError.shutdownTimedOut
+    }
+
+    /// Stop a running helper whose record proves it is this app's (same socket and token,
+    /// an owner-only record of this user) but that another build started. Its connection
+    /// is never adopted. Its command line must still serve this socket, as for any signal
+    /// to a recorded helper; otherwise nothing is signalled. A helper on this protocol is
+    /// asked to quit over its socket; if it cannot be asked or does not exit, SIGTERM (then
+    /// SIGKILL) goes only to the validated PID. Stopping it ends any location it held.
+    private func stopHelperFromAnotherBuild(
+        _ record: ManagedLocationHelperRecord,
+        differences: [String],
+        token: String
+    ) async throws {
+        let pid = record.pid
+        guard TunnelProcessTerminator.commandLine(of: pid)?
+            .contains(Self.helperCommandPattern(socketPath: paths.socketURL.path)) == true else {
+            if !processIsAlive(pid) {
+                try removeStaleArtifacts()
+                return
+            }
+            Logger.error(
+                "[PersistentBridge] The location helper record names PID \(pid), whose command line does not serve "
+                    + "this helper socket; refusing it and signalling nothing",
+                category: .device
+            )
+            throw ControllerError.unverifiedHelperProcess(pid)
+        }
+        Logger.info(
+            "[PersistentBridge] The running location helper (PID \(pid)) was started by another PathChanger build "
+                + "(differs in \(differences.joined(separator: ", "))); stopping it and starting this build's helper",
+            category: .device
+        )
+        if record.protocolVersion == ManagedLocationHelperRecord.supportedProtocolVersion {
+            do {
+                let connection = try await authenticate(record: record, token: token, launchedNewHelper: false)
+                try await quit(connection)
+                await waitForExit(pid)
+            } catch {
+                Logger.error(
+                    "[PersistentBridge] The other build's helper did not quit when asked "
+                        + "(\(error.localizedDescription)); terminating its recorded process",
+                    category: .device
+                )
+            }
+        }
+        if processIsAlive(pid) {
+            await terminate(record)
+        }
+        guard !processIsAlive(pid) else {
+            throw ControllerError.helperFromAnotherBuildStillRunning(pid)
+        }
+        try removeStaleArtifacts()
+    }
+
+    /// Every managed helper is launched with this argument pair; a reused PID is not.
+    nonisolated static func helperCommandPattern(socketPath: String) -> String {
+        "--socket \(socketPath)"
+    }
+
+    /// Bounded wait for a helper that was asked to quit (it removes its files first).
+    private func waitForExit(_ pid: Int32) async {
+        for _ in 0..<100 where processIsAlive(pid) {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 
     func currentRecord() throws -> ManagedLocationHelperRecord? {
@@ -1517,7 +1645,14 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             helperConnection = connection
             adoptedHelperID = connection.record.helperID
             adoptedHelperSessions = connection.record.activeSessions
-            let adoptedGeneration = connection.record.activeSessions
+            let replacedSessions = connection.replacedHelperRecord?.activeSessions ?? []
+            if let replaced = connection.replacedHelperRecord, !replaced.activeSessions.isEmpty {
+                // Stopping the other build's helper ended what it held. As for a replaced
+                // orphan, an earlier launch recorded it, so any Clear, Stop or Move of this
+                // launch supersedes it; otherwise the tunnel-live edge reapplies it.
+                inheritedHeldSessions = (replaced.helperID, replaced.activeSessions, .initial)
+            }
+            let adoptedGeneration = (connection.record.activeSessions + replacedSessions)
                 .map(\.sessionGeneration)
                 .max() ?? 0
             processGeneration = max(processGeneration &+ 1, adoptedGeneration &+ 1)
@@ -1525,7 +1660,9 @@ final class PersistentLocationBridge: ObservableObject, ManagedLocationSessionSo
             isRunning = true
             lastError = nil
             Logger.info(
-                connection.launchedNewHelper
+                connection.replacedHelperRecord != nil
+                    ? "[PersistentBridge] Managed helper started (replacing one another build started)"
+                    : connection.launchedNewHelper
                     ? "[PersistentBridge] Managed helper started"
                     : "[PersistentBridge] Managed helper adopted",
                 category: .device
