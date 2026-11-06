@@ -3,7 +3,7 @@
 //  PathChanger
 //
 //  PathChanger offers two connection modes, USB and Wi-Fi, chosen by the user (owner
-//  decision 2026-11-06). Earlier builds stored two settings that could disagree:
+//  decisions 2026-11-06 and 2026-11-07). Earlier builds stored two settings that could disagree:
 //  `connectionMode` (Random, Auto, USB Only, WiFi Only) and `tunnelMode` (Auto,
 //  USB (Lockdown), WiFi Only, Background Daemon). This migration rewrites both to the
 //  same transport before either is read, and records a version marker.
@@ -35,22 +35,22 @@ enum ConnectionSettingsMigration {
         let transport: Transport
     }
 
-    /// The transport a stored pair migrates to (owner rules, 2026-11-06):
-    /// - a Background Daemon tunnel mode becomes Wi-Fi;
-    /// - USB Only and WiFi Only keep their value (the connection mode is the user's
-    ///   explicit choice, so it wins over a disagreeing tunnel mode);
+    /// The transport a stored pair migrates to (owner rules, 2026-11-07):
+    /// - USB Only and WiFi Only are the user's explicit choice and keep their value,
+    ///   whatever the tunnel mode says, Background Daemon included;
     /// - Random becomes the transport it last selected, which it wrote as the tunnel mode
     ///   (USB (Lockdown) or WiFi Only); with no usable tunnel mode, Wi-Fi;
     /// - Auto becomes Wi-Fi;
-    /// - with no connection mode stored, a USB or Wi-Fi tunnel mode decides;
-    /// - nothing stored, or any unknown value, becomes Wi-Fi.
+    /// - a missing or unknown connection mode keeps a legacy USB (Lockdown) tunnel mode,
+    ///   which earlier builds stored on its own;
+    /// - everything else, a fresh install included, becomes Wi-Fi.
     static func transport(connectionMode: String?, tunnelMode: String?) -> Transport {
-        if tunnelMode == "Background Daemon" { return .wifi }
         switch connectionMode {
         case "USB Only": return .usb
         case "WiFi Only": return .wifi
-        case "Random", nil: return lastSelectedTransport(tunnelMode: tunnelMode) ?? .wifi
-        default: return .wifi
+        case "Random": return lastSelectedTransport(tunnelMode: tunnelMode) ?? .wifi
+        case "Auto": return .wifi
+        default: return tunnelMode == Transport.usb.tunnelModeRawValue ? .usb : .wifi
         }
     }
 

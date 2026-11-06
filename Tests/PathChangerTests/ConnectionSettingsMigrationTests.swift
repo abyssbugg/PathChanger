@@ -50,36 +50,50 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
     private static let usbTunnel = "USB (Lockdown)"
     private static let wifiTunnel = "WiFi Only"
 
-    /// Every owner rule, one row each.
-    private let rules: [Row] = [
-        Row(connectionMode: nil, tunnelMode: nil, expected: .wifi, rule: "fresh install"),
-        Row(connectionMode: "Auto", tunnelMode: "Auto", expected: .wifi, rule: "Auto"),
-        Row(connectionMode: "Auto", tunnelMode: nil, expected: .wifi, rule: "Auto without a tunnel mode"),
-        Row(connectionMode: "Auto", tunnelMode: usbTunnel, expected: .wifi, rule: "Auto with a USB tunnel mode"),
-        Row(connectionMode: nil, tunnelMode: "Auto", expected: .wifi, rule: "tunnel Auto only"),
-        Row(connectionMode: "Auto", tunnelMode: "Background Daemon", expected: .wifi, rule: "Daemon"),
-        Row(connectionMode: nil, tunnelMode: "Background Daemon", expected: .wifi, rule: "Daemon only"),
-        Row(connectionMode: usbConnection, tunnelMode: "Background Daemon", expected: .wifi, rule: "Daemon over USB Only"),
-        Row(connectionMode: wifiConnection, tunnelMode: "Background Daemon", expected: .wifi, rule: "Daemon over Wi-Fi Only"),
-        Row(connectionMode: "Random", tunnelMode: usbTunnel, expected: .usb, rule: "Random picked USB"),
-        Row(connectionMode: "Random", tunnelMode: wifiTunnel, expected: .wifi, rule: "Random picked Wi-Fi"),
-        Row(connectionMode: "Random", tunnelMode: nil, expected: .wifi, rule: "Random, no tunnel mode"),
-        Row(connectionMode: "Random", tunnelMode: "Auto", expected: .wifi, rule: "Random, tunnel Auto"),
-        Row(connectionMode: "Random", tunnelMode: "Background Daemon", expected: .wifi, rule: "Random, tunnel Daemon"),
-        Row(connectionMode: "Random", tunnelMode: "Bogus", expected: .wifi, rule: "Random, unknown tunnel mode"),
-        Row(connectionMode: usbConnection, tunnelMode: usbTunnel, expected: .usb, rule: "USB Only kept"),
-        Row(connectionMode: usbConnection, tunnelMode: nil, expected: .usb, rule: "USB Only, no tunnel mode"),
-        Row(connectionMode: usbConnection, tunnelMode: wifiTunnel, expected: .usb, rule: "USB Only wins over a Wi-Fi tunnel mode"),
-        Row(connectionMode: usbConnection, tunnelMode: "Auto", expected: .usb, rule: "USB Only wins over tunnel Auto"),
-        Row(connectionMode: wifiConnection, tunnelMode: wifiTunnel, expected: .wifi, rule: "Wi-Fi Only kept"),
-        Row(connectionMode: wifiConnection, tunnelMode: nil, expected: .wifi, rule: "Wi-Fi Only, no tunnel mode"),
-        Row(connectionMode: wifiConnection, tunnelMode: usbTunnel, expected: .wifi, rule: "Wi-Fi Only wins over a USB tunnel mode"),
-        Row(connectionMode: nil, tunnelMode: usbTunnel, expected: .usb, rule: "only the tunnel mode: USB"),
-        Row(connectionMode: nil, tunnelMode: wifiTunnel, expected: .wifi, rule: "only the tunnel mode: Wi-Fi"),
-        Row(connectionMode: "Bogus", tunnelMode: usbTunnel, expected: .wifi, rule: "unknown connection mode"),
-        Row(connectionMode: nil, tunnelMode: "Bogus", expected: .wifi, rule: "unknown tunnel mode"),
-        Row(connectionMode: "Bogus", tunnelMode: "Bogus", expected: .wifi, rule: "both unknown"),
+    /// Every stored connection mode, and every stored tunnel mode, an earlier build could
+    /// leave (nil: not stored; "Bogus": a value no build ever wrote).
+    private static let connectionModes: [String?] = [nil, usbConnection, wifiConnection, "Random", "Auto", "Bogus"]
+    private static let tunnelModes: [String?] = [nil, usbTunnel, wifiTunnel, "Auto", "Background Daemon", "Bogus"]
+
+    /// The owner's rules (2026-11-07), written out for every pair. Columns follow
+    /// `tunnelModes`: none, USB (Lockdown), WiFi Only, Auto, Background Daemon, Bogus.
+    /// - An explicit USB Only or WiFi Only wins over any tunnel mode, Daemon included.
+    /// - Random becomes the transport it last selected (its tunnel mode); otherwise Wi-Fi.
+    /// - Auto becomes Wi-Fi.
+    /// - A missing or unknown connection mode keeps a legacy USB (Lockdown) tunnel mode;
+    ///   anything else becomes Wi-Fi.
+    private static let expectedByConnectionMode: [String?: [ConnectionSettingsMigration.Transport]] = [
+        nil: [.wifi, .usb, .wifi, .wifi, .wifi, .wifi],
+        usbConnection: [.usb, .usb, .usb, .usb, .usb, .usb],
+        wifiConnection: [.wifi, .wifi, .wifi, .wifi, .wifi, .wifi],
+        "Random": [.wifi, .usb, .wifi, .wifi, .wifi, .wifi],
+        "Auto": [.wifi, .wifi, .wifi, .wifi, .wifi, .wifi],
+        "Bogus": [.wifi, .usb, .wifi, .wifi, .wifi, .wifi],
     ]
+
+    /// Every stored pair, 36 rows.
+    private let rules: [Row] = connectionModes.flatMap { connectionMode in
+        tunnelModes.enumerated().map { column, tunnelMode in
+            Row(connectionMode: connectionMode, tunnelMode: tunnelMode,
+                expected: expectedByConnectionMode[connectionMode]![column],
+                rule: "connectionMode \(connectionMode ?? "none"), tunnelMode \(tunnelMode ?? "none")")
+        }
+    }
+
+    func testTheMatrixCoversEveryStoredPair() {
+        XCTAssertEqual(rules.count, 36)
+        XCTAssertEqual(Set(rules.map(\.rule)).count, 36, "no pair is listed twice")
+        XCTAssertEqual(Self.expectedByConnectionMode.count, Self.connectionModes.count)
+        XCTAssertTrue(Self.expectedByConnectionMode.values.allSatisfy { $0.count == Self.tunnelModes.count })
+    }
+
+    func testTheTransportForEveryStoredPair() {
+        for row in rules {
+            XCTAssertEqual(
+                ConnectionSettingsMigration.transport(connectionMode: row.connectionMode, tunnelMode: row.tunnelMode),
+                row.expected, row.rule)
+        }
+    }
 
     func testEveryRuleWritesTheAgreeingPairAndTheMarker() throws {
         for row in rules {
@@ -142,7 +156,7 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
     /// An older build running beside this one can still write a retired value after the
     /// marker is set; the next launch normalizes it again instead of loading it.
     func testARetiredValueWrittenAfterTheMarkerIsNormalizedAgain() throws {
-        let defaults = try makeDefaults(connectionMode: Self.usbConnection, tunnelMode: "Background Daemon")
+        let defaults = try makeDefaults(connectionMode: "Auto", tunnelMode: "Background Daemon")
         defaults.set(2, forKey: "connectionSettingsVersion")
 
         let outcome = ConnectionSettingsMigration.migrate(defaults, log: { _ in })
@@ -150,6 +164,18 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
         XCTAssertEqual(outcome?.transport, .wifi)
         XCTAssertEqual(defaults.string(forKey: "connectionMode"), Self.wifiConnection)
         XCTAssertEqual(defaults.string(forKey: "tunnelMode"), Self.wifiTunnel)
+    }
+
+    /// An explicit USB choice beside a Daemon tunnel mode an older build wrote stays USB.
+    func testAnExplicitUSBChoiceWinsOverADaemonTunnelModeAfterTheMarker() throws {
+        let defaults = try makeDefaults(connectionMode: Self.usbConnection, tunnelMode: "Background Daemon")
+        defaults.set(2, forKey: "connectionSettingsVersion")
+
+        let outcome = ConnectionSettingsMigration.migrate(defaults, log: { _ in })
+
+        XCTAssertEqual(outcome?.transport, .usb)
+        XCTAssertEqual(defaults.string(forKey: "connectionMode"), Self.usbConnection)
+        XCTAssertEqual(defaults.string(forKey: "tunnelMode"), Self.usbTunnel)
     }
 
     func testAnUnmarkedAgreeingPairOnlyGainsTheMarker() throws {
