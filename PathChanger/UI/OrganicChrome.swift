@@ -127,18 +127,36 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
         tunnel: TunneldManager,
         requiresLocationQuitDecision: Bool
     ) -> ConnectionChoiceChange? {
-        let action = ConnectionChoiceAction.resolve(
-            choice: self,
+        select(
             connectionMode: deviceManager.connectionMode,
             tunnelMode: tunnel.preferredMode,
             tunnelRunning: tunnel.isRunning || tunnel.isStarting,
+            requiresLocationQuitDecision: requiresLocationQuitDecision,
+            apply: { Self.apply($0, deviceManager: deviceManager) }
+        )
+    }
+
+    /// `select` over the settings and tunnel state it reads; `apply` runs only for a
+    /// change that needs no confirmation.
+    func select(
+        connectionMode: DeviceManager.ConnectionMode,
+        tunnelMode: TunnelMode,
+        tunnelRunning: Bool,
+        requiresLocationQuitDecision: Bool,
+        apply: (ConnectionChoiceChange) -> Void
+    ) -> ConnectionChoiceChange? {
+        let action = ConnectionChoiceAction.resolve(
+            choice: self,
+            connectionMode: connectionMode,
+            tunnelMode: tunnelMode,
+            tunnelRunning: tunnelRunning,
             requiresLocationQuitDecision: requiresLocationQuitDecision
         )
         switch action {
         case .none:
             return nil
         case .apply(let change):
-            Self.apply(change, deviceManager: deviceManager)
+            apply(change)
             return nil
         case .confirm(let change):
             return change
@@ -201,10 +219,33 @@ enum ConnectionChoiceAction: Equatable {
 }
 
 /// The dialog a connection choice shows before a switch that ends the held location.
-/// Switch applies the change; Cancel changes nothing.
+/// Switch Now applies the change; Cancel keeps both the saved preference and the
+/// connection carrying the held location (owner decision 2026-11-07).
 struct ConnectionChoiceConfirmation: ViewModifier {
     @Binding var pending: ConnectionChoiceChange?
     let deviceManager: DeviceManager
+
+    enum Response: CaseIterable {
+        case switchNow, cancel
+
+        var title: String {
+            switch self {
+            case .switchNow: return "Switch Now"
+            case .cancel: return "Cancel"
+            }
+        }
+    }
+
+    /// What either button does: the dialog closes, and only Switch Now applies the change.
+    static func respond(
+        _ response: Response,
+        to change: ConnectionChoiceChange,
+        pending: inout ConnectionChoiceChange?,
+        apply: (ConnectionChoiceChange) -> Void
+    ) {
+        pending = nil
+        if response == .switchNow { apply(change) }
+    }
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
@@ -212,11 +253,14 @@ struct ConnectionChoiceConfirmation: ViewModifier {
             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
             presenting: pending
         ) { change in
-            Button("Switch", role: .destructive) {
-                pending = nil
-                ConnectionChoice.apply(change, deviceManager: deviceManager)
+            Button(Response.switchNow.title, role: .destructive) {
+                Self.respond(.switchNow, to: change, pending: &pending) {
+                    ConnectionChoice.apply($0, deviceManager: deviceManager)
+                }
             }
-            Button("Cancel", role: .cancel) { pending = nil }
+            Button(Response.cancel.title, role: .cancel) {
+                Self.respond(.cancel, to: change, pending: &pending) { _ in }
+            }
         } message: { change in
             Text(change.confirmationMessage)
         }

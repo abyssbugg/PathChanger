@@ -1100,6 +1100,76 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .usb, tunnelRunning: true))
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: false))
     }
+
+    // MARK: Confirming or cancelling a switch (owner decision 2026-11-07)
+
+    private func select(
+        _ choice: ConnectionChoice,
+        from current: ConnectionChoice,
+        holdsLocation: Bool,
+        applied: inout [ConnectionChoiceChange]
+    ) -> ConnectionChoiceChange? {
+        var calls: [ConnectionChoiceChange] = []
+        let pending = choice.select(
+            connectionMode: current.connectionMode,
+            tunnelMode: current.tunnelMode,
+            tunnelRunning: true,
+            requiresLocationQuitDecision: holdsLocation,
+            apply: { calls.append($0) }
+        )
+        applied = calls
+        return pending
+    }
+
+    /// Both directions: with a location held, a click changes nothing until confirmed.
+    func testWithALocationHeldAClickAppliesNothingUntilConfirmed() {
+        for (choice, current) in [(ConnectionChoice.usb, ConnectionChoice.wifi), (.wifi, .usb)] {
+            var applied: [ConnectionChoiceChange] = []
+            let pending = select(choice, from: current, holdsLocation: true, applied: &applied)
+
+            XCTAssertEqual(pending, ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true))
+            XCTAssertTrue(applied.isEmpty, "nothing changes before the user answers: \(choice)")
+        }
+    }
+
+    func testWithoutAHeldLocationAClickAppliesAtOnce() {
+        for (choice, current) in [(ConnectionChoice.usb, ConnectionChoice.wifi), (.wifi, .usb)] {
+            var applied: [ConnectionChoiceChange] = []
+            let pending = select(choice, from: current, holdsLocation: false, applied: &applied)
+
+            XCTAssertNil(pending)
+            XCTAssertEqual(applied, [ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true)])
+        }
+    }
+
+    func testCancelKeepsThePreferenceAndTheSession() {
+        let change = ConnectionChoiceChange(choice: .usb, tunnelMode: .usb, restartsTunnel: true)
+        var pending: ConnectionChoiceChange? = change
+        var applied: [ConnectionChoiceChange] = []
+
+        ConnectionChoiceConfirmation.respond(.cancel, to: change, pending: &pending, apply: { applied.append($0) })
+
+        XCTAssertNil(pending, "the dialog closes")
+        XCTAssertTrue(applied.isEmpty, "Cancel changes neither the saved preference nor the connection")
+    }
+
+    func testSwitchNowAppliesTheChangeOnce() {
+        for choice in ConnectionChoice.allCases {
+            let change = ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true)
+            var pending: ConnectionChoiceChange? = change
+            var applied: [ConnectionChoiceChange] = []
+
+            ConnectionChoiceConfirmation.respond(.switchNow, to: change, pending: &pending, apply: { applied.append($0) })
+
+            XCTAssertNil(pending)
+            XCTAssertEqual(applied, [change])
+        }
+    }
+
+    func testTheDialogOffersSwitchNowAndCancel() {
+        XCTAssertEqual(ConnectionChoiceConfirmation.Response.switchNow.title, "Switch Now")
+        XCTAssertEqual(ConnectionChoiceConfirmation.Response.cancel.title, "Cancel")
+    }
 }
 
 // MARK: - Settings presentation (GUI arrangement 2026-11-04)
