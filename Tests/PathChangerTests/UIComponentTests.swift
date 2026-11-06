@@ -1101,7 +1101,7 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: false))
     }
 
-    // MARK: Confirming or cancelling a switch (owner decision 2026-11-07)
+    // MARK: Confirming or cancelling a switch (owner decision 2026-11-06)
 
     private func select(
         _ choice: ConnectionChoice,

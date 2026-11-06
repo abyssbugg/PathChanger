@@ -220,7 +220,7 @@ enum ConnectionChoiceAction: Equatable {
 
 /// The dialog a connection choice shows before a switch that ends the held location.
 /// Switch Now applies the change; Cancel keeps both the saved preference and the
-/// connection carrying the held location (owner decision 2026-11-07).
+/// connection carrying the held location (owner decision 2026-11-06).
 struct ConnectionChoiceConfirmation: ViewModifier {
     @Binding var pending: ConnectionChoiceChange?
     let deviceManager: DeviceManager
