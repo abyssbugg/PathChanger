@@ -453,7 +453,7 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
     private func makeFixture(daemonMode: Bool = false) -> Fixture {
         let injector = FakeLocationInjector()
         let deviceManager = QuietAdvertTestDeviceManager(startBackgroundServices: false)
-        deviceManager.connectionMode = .auto
+        deviceManager.connectionMode = .wifi
         let browser = FakeRemotePairingAdvertBrowser()
         let tunnel = FakeReconnectTunnel()
         if daemonMode { tunnel.preferredMode = .daemon }

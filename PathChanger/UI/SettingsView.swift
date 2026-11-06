@@ -17,6 +17,8 @@ struct SettingsView: View {
     @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = true
     @State private var showDiagnostics: Bool = false
     @State private var confirmTunnelStop = false
+    /// A USB/Wi-Fi switch that ends a held location, waiting for the user's answer.
+    @State private var pendingConnectionChange: ConnectionChoiceChange?
 
     var body: some View {
         Form {
@@ -104,6 +106,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager)
     }
 
     // MARK: - Tunnel Section (Multi-Mode Support)
@@ -115,8 +118,16 @@ struct SettingsView: View {
                 Text("Tunnel Mode")
                     .font(.headline)
 
-                Picker("Mode", selection: $tunneldManager.preferredMode) {
-                    ForEach(TunnelMode.allCases) { mode in
+                // USB or Wi-Fi only (owner decision 2026-11-06). A pick goes through the
+                // connection choice, so both stored settings agree and a switch that ends
+                // a held location asks first.
+                Picker("Mode", selection: Binding(
+                    get: { tunneldManager.preferredMode },
+                    set: { mode in
+                        chooseConnection(mode == .usb ? .usb : .wifi)
+                    }
+                )) {
+                    ForEach([TunnelMode.usb, .wifi]) { mode in
                         HStack {
                             Image(systemName: iconForTunnelMode(mode))
                             Text(mode.rawValue)
@@ -309,7 +320,6 @@ struct SettingsView: View {
 
     private func iconForTunnelMode(_ mode: TunnelMode) -> String {
         switch mode {
-        case .auto: return "sparkles"
         case .usb: return "cable.connector"
         case .wifi: return "wifi"
         case .daemon: return "server.rack"
@@ -328,6 +338,16 @@ struct SettingsView: View {
 
     // MARK: - Connection Mode Section
 
+    /// The window's other connection controls use the same choice: a switch that would
+    /// end a held location asks first; the choice in use changes nothing.
+    private func chooseConnection(_ choice: ConnectionChoice) {
+        pendingConnectionChange = choice.select(
+            deviceManager: appState.deviceManager,
+            tunnel: tunneldManager,
+            requiresLocationQuitDecision: appState.requiresLocationQuitDecision
+        )
+    }
+
     private var connectionModeSection: some View {
         Section("Connection Mode") {
             // Connection Mode Picker
@@ -338,7 +358,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 ForEach(DeviceManager.ConnectionMode.allCases, id: \.self) { mode in
                     Button {
-                        appState.deviceManager.setConnectionMode(mode)
+                        chooseConnection(ConnectionChoice(connectionMode: mode))
                     } label: {
                         VStack(spacing: 6) {
                             Image(systemName: iconForMode(mode))
@@ -391,18 +411,6 @@ struct SettingsView: View {
             }
             .padding(.vertical, 8)
 
-            // Prefer USB Toggle
-            if appState.deviceManager.connectionMode == .auto {
-                Toggle(isOn: $appState.preferUSBConnection) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Prefer USB when available")
-                        Text("Used only in Auto. USB Only and Wi‑Fi Only ignore this.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-
             // Fallback Information
             HStack {
                 Image(systemName: connectionSummaryIcon)
@@ -418,7 +426,7 @@ struct SettingsView: View {
     private var connectionSummaryText: String {
         switch (appState.isUSBConnected, appState.isWiFiTransportAvailable) {
         case (true, true):
-            return "USB and Wi‑Fi are both available. Tap Random, Auto, USB Only, or Wi‑Fi Only — each choice is independent."
+            return "USB and Wi‑Fi are both available. PathChanger uses the one you choose."
         case (true, false):
             return "USB only is available."
         case (false, true):
@@ -446,8 +454,6 @@ struct SettingsView: View {
 
     private func iconForMode(_ mode: DeviceManager.ConnectionMode) -> String {
         switch mode {
-        case .random: return "shuffle"
-        case .auto: return "arrow.triangle.2.circlepath"
         case .usb: return "cable.connector"
         case .wifi: return "wifi"
         }
@@ -455,10 +461,6 @@ struct SettingsView: View {
 
     private func helpForMode(_ mode: DeviceManager.ConnectionMode) -> String {
         switch mode {
-        case .random:
-            return "Pick USB or Wi‑Fi at random when both are available."
-        case .auto:
-            return "Choose the best available path. Prefer USB if that toggle is on."
         case .usb:
             return "Use the cable only. Wi‑Fi is ignored even if it is available."
         case .wifi:

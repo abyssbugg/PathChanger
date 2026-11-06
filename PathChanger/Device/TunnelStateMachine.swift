@@ -708,7 +708,7 @@ final class TunnelStateMachine: ObservableObject {
             }
             context.retryCount += 1
             context.statusMessage = "Attempting recovery (\(context.retryCount)/\(context.maxRetries))..."
-            let mode = context.activeMode ?? .auto
+            let mode = context.activeMode ?? .wifi
             return .success(
                 newState: .starting,
                 actions: [

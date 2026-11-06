@@ -727,7 +727,7 @@ final class DeviceStateManagerTests: XCTestCase {
     }
 
     func testPollInHelperModesDoesNotTreatAStrayDaemonAsTheTunnel() async throws {
-        for mode in [TunnelMode.auto, .usb, .wifi] {
+        for mode in [TunnelMode.usb, .wifi] {
             let tunnel = try await prepareSharedTunnel(mode: mode)
             tunnel.allowDaemonAdoptionForTesting()
             let manager = makeManager(deviceManager: DaemonProcessDeviceManager(startBackgroundServices: false))
@@ -830,7 +830,7 @@ private final class TransportScriptedDeviceManager: DeviceManager {
 
     init() {
         super.init(startBackgroundServices: false)
-        connectionMode = .auto
+        connectionMode = .wifi
     }
 
     override func runPython(arguments: [String], timeout: TimeInterval = 30.0) async throws -> String {
@@ -1023,7 +1023,8 @@ final class BonjourBrowseGateTests: XCTestCase {
 /// Review 2026-11-01 v3 (issue 1): a Move that reopened the helper connection sent the
 /// row's connection type, and a row last merged over USB stays `.usb` until discovery
 /// relabels it (up to 120 s), so after the cable was pulled in Auto mode the helper never
-/// tried its mobdev2 lane. The connect hint follows the connection mode, like Start.
+/// tried its mobdev2 lane. The connect hint follows the connection mode, like Start; since
+/// 2026-11-06 that is USB or Wi-Fi, never a guess from usbmux.
 @MainActor
 final class HelperConnectTransportTests: XCTestCase {
     private let id = "00008130-0011223344556677"
@@ -1040,32 +1041,6 @@ final class HelperConnectTransportTests: XCTestCase {
         await deviceManager.refreshTransportAvailability(browseBonjour: { _, _ in false })
     }
 
-    func testAutoModeAsksForNetworkOnceUsbmuxStopsListingThePhoneOverUSB() async {
-        let deviceManager = TransportScriptedDeviceManager()
-        await refresh(deviceManager, usbmux: usbmuxListing("USB"))
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .usb, "cabled: usbmux direct over USB")
-
-        await refresh(deviceManager, usbmux: "[]") // cable pulled
-        XCTAssertEqual(deviceManager.usbDirectDeviceIds, [id], "precondition: the chip's set still holds it (hysteresis)")
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi,
-                       "the latest listing no longer has it over USB: the helper may try mobdev2")
-    }
-
-    func testAutoModeAsksForNetworkWhenUsbmuxListsThePhoneOnlyOverNetwork() async {
-        let deviceManager = TransportScriptedDeviceManager()
-        await refresh(deviceManager, usbmux: usbmuxListing("Network"))
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
-    }
-
-    func testAnotherPhoneOnUSBDoesNotMakeOursUSB() async {
-        let deviceManager = TransportScriptedDeviceManager()
-        await refresh(deviceManager, usbmux: """
-        [{"ConnectionType": "USB", "Identifier": "00008120-001B000E3E82002F",
-          "UniqueDeviceID": "00008120-001B000E3E82002F"}]
-        """)
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
-    }
-
     func testUSBOnlyModeNeverAsksForNetwork() async {
         let deviceManager = TransportScriptedDeviceManager()
         deviceManager.connectionMode = .usb
@@ -1080,22 +1055,13 @@ final class HelperConnectTransportTests: XCTestCase {
         XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
     }
 
-    func testRandomModeFollowsUsbmuxLikeAuto() async {
-        let deviceManager = TransportScriptedDeviceManager()
-        deviceManager.connectionMode = .random
-        await refresh(deviceManager, usbmux: usbmuxListing("USB"))
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .usb)
-        await refresh(deviceManager, usbmux: "[]")
-        XCTAssertEqual(deviceManager.helperConnectTransport(for: id), .wifi)
-    }
-
     func testAppStateHandsTheBridgeTheModeDerivedConnectHint() {
         // The bridge has no DeviceManager; the composition root wires the hint in.
         let deviceManager = TransportScriptedDeviceManager()
         let usbRow = Device(id: id, displayName: "iPhone", connectionType: .usb)
         withExtendedLifetime(AppState(startBackgroundServices: false, deviceManager: deviceManager)) {
             XCTAssertEqual(PersistentLocationBridge.shared.connectTransport(for: usbRow), .wifi,
-                           "Auto mode, usbmux has not listed it over USB: not the row's .usb")
+                           "Wi-Fi mode: not the row's .usb")
             deviceManager.connectionMode = .usb
             XCTAssertEqual(PersistentLocationBridge.shared.connectTransport(for: usbRow), .usb)
         }

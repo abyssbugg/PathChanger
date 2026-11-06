@@ -102,18 +102,15 @@ final class OrganicDeviceChromeTextTests: XCTestCase {
 
     func testNotReachableAdviceFollowsTheConnectionMode() {
         // Review 2026-11-01 (issue 7): in USB mode an unplugged phone was told to unlock
-        // and stay on Wi-Fi. USB advice names the cable; Wi-Fi advice only in Wi-Fi/Auto.
+        // and stay on Wi-Fi. USB advice names the cable; Wi-Fi advice only in Wi-Fi.
         XCTAssertEqual(
             OrganicDeviceChromeText.reachabilityWord(.notReachable, mode: .usb),
             "not reachable — connect the cable and unlock"
         )
-        for mode in [DeviceManager.ConnectionMode.wifi, .auto, .random] {
-            XCTAssertEqual(
-                OrganicDeviceChromeText.reachabilityWord(.notReachable, mode: mode),
-                "not reachable — unlock iPhone",
-                "\(mode)"
-            )
-        }
+        XCTAssertEqual(
+            OrganicDeviceChromeText.reachabilityWord(.notReachable, mode: .wifi),
+            "not reachable — unlock iPhone"
+        )
     }
 
     func testTheSubtitleNamesVersionAndReachabilityWithoutClaimingTrust() {
@@ -126,20 +123,18 @@ final class OrganicDeviceChromeTextTests: XCTestCase {
             "iOS 27.2 · not reachable — connect the cable and unlock"
         )
         XCTAssertEqual(
-            OrganicDeviceChromeText.subtitle(device: device, reachability: .readyWiFi, mode: .auto),
+            OrganicDeviceChromeText.subtitle(device: device, reachability: .readyWiFi, mode: .wifi),
             "iOS 27.2 · ready on Wi\u{2011}Fi"
         )
         XCTAssertEqual(OrganicDeviceChromeText.subtitle(device: nil, reachability: .notReachable, mode: .wifi), "No iOS device")
     }
 
     func testTheTunnelHelpAsksToUnlockOnlyWhenStoppedAndUnreachable() throws {
-        for mode in [DeviceManager.ConnectionMode.wifi, .auto, .random] {
-            let hint = try XCTUnwrap(
-                OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: false, mode: mode)
-            )
-            XCTAssertTrue(hint.contains("Unlock"), hint)
-            XCTAssertTrue(hint.contains("same Wi\u{2011}Fi"), hint)
-        }
+        let hint = try XCTUnwrap(
+            OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: false, mode: .wifi)
+        )
+        XCTAssertTrue(hint.contains("Unlock"), hint)
+        XCTAssertTrue(hint.contains("same Wi\u{2011}Fi"), hint)
         for mode in DeviceManager.ConnectionMode.allCases {
             XCTAssertNil(OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .notReachable, tunnelRunning: true, mode: mode))
             XCTAssertNil(OrganicDeviceChromeText.unreachableTunnelHelp(reachability: .onNetwork, tunnelRunning: false, mode: mode))
@@ -979,39 +974,53 @@ final class TunnelPillModelTests: XCTestCase {
     }
 }
 
-// MARK: - Connection choice (GUI arrangement 2026-11-04)
+// MARK: - Connection choice (GUI arrangement 2026-11-04; USB and Wi-Fi only 2026-11-06)
 
-/// USB and Wi-Fi are the two choices the window offers; Auto, Random and Background
-/// daemon stay reachable as secondary choices. The control shows the setting in use: in
-/// Auto it used to highlight USB or Wi-Fi from the transport it guessed.
+/// USB and Wi-Fi are the only choices (owner decision 2026-11-06): Auto, Random and
+/// Background daemon are gone from every connection control. The control shows the
+/// setting in use: in Auto it used to highlight USB or Wi-Fi from the transport it guessed.
 final class ConnectionChoiceTests: XCTestCase {
+    func testUSBAndWiFiAreTheOnlyChoices() {
+        XCTAssertEqual(ConnectionChoice.allCases, [.usb, .wifi])
+        XCTAssertEqual(DeviceManager.ConnectionMode.allCases, [.usb, .wifi])
+        XCTAssertEqual(ConnectionChoice.allCases.map(\.connectionMode), [.usb, .wifi])
+        XCTAssertEqual(ConnectionChoice.allCases.map(\.tunnelMode), [.usb, .wifi])
+    }
+
+    func testEachConnectionModeSetsItsOwnTunnelMode() {
+        XCTAssertEqual(DeviceManager.ConnectionMode.usb.tunnelMode, .usb)
+        XCTAssertEqual(DeviceManager.ConnectionMode.wifi.tunnelMode, .wifi)
+    }
+
     func testTheChoiceFollowsTheConnectionModeSetting() {
         XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .usb), .usb)
         XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .wifi), .wifi)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .auto, tunnelMode: .auto), .auto)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .wifi), .random)
     }
 
-    func testBackgroundDaemonIsReadFromTheTunnelMode() {
-        for mode in DeviceManager.ConnectionMode.allCases {
-            XCTAssertEqual(ConnectionChoice.current(connectionMode: mode, tunnelMode: .daemon), .daemon, "\(mode)")
-        }
+    /// The tunnel mode is what Start uses, so it decides what the control shows.
+    func testTheShownChoiceIsTheTunnelModeInUse() {
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .wifi), .wifi)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .usb), .usb)
     }
 
-    func testUSBAndWiFiArePrimaryAndTheRestSecondary() {
-        XCTAssertEqual(ConnectionChoice.primary, [.usb, .wifi])
-        XCTAssertEqual(ConnectionChoice.secondary, [.auto, .random, .daemon])
-        XCTAssertEqual(Set(ConnectionChoice.primary + ConnectionChoice.secondary).count, 5, "every mode stays reachable")
+    /// Background daemon is no longer a choice. A leftover daemon tunnel mode (the
+    /// migration rewrites it; only an older build could write it again) shows the
+    /// connection-mode setting instead of a third segment.
+    func testALeftoverDaemonTunnelModeShowsTheConnectionModeSetting() {
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .daemon), .usb)
+        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .daemon), .wifi)
     }
 
-    func testChoicesReadAsWords() {
+    func testChoicesReadAsWordsAndNameNoRetiredMode() {
         XCTAssertEqual(ConnectionChoice.usb.title, "USB")
         XCTAssertEqual(ConnectionChoice.wifi.title, "Wi\u{2011}Fi")
-        XCTAssertEqual(ConnectionChoice.auto.title, "Auto")
-        XCTAssertEqual(ConnectionChoice.daemon.title, "Background daemon")
-        XCTAssertEqual(ConnectionChoice.daemon.shortTitle, "Daemon")
-        for choice in ConnectionChoice.primary + ConnectionChoice.secondary {
+        for choice in ConnectionChoice.allCases {
             XCTAssertFalse(choice.detail.isEmpty, "\(choice) says what it does")
+            for text in [choice.title, choice.shortTitle, choice.detail] {
+                for retired in ["Auto", "Random", "aemon"] {
+                    XCTAssertFalse(text.contains(retired), "\(choice): \(text)")
+                }
+            }
         }
     }
 
@@ -1022,20 +1031,14 @@ final class ConnectionChoiceTests: XCTestCase {
         connectionMode: DeviceManager.ConnectionMode = .usb,
         tunnelMode: TunnelMode = .usb,
         tunnelRunning: Bool = true,
-        holdsLocation: Bool = true,
-        usbAvailable: Bool = true,
-        wifiAvailable: Bool = true,
-        randomPicksUSB: Bool = true
+        holdsLocation: Bool = true
     ) -> ConnectionChoiceAction {
         ConnectionChoiceAction.resolve(
             choice: choice,
             connectionMode: connectionMode,
             tunnelMode: tunnelMode,
             tunnelRunning: tunnelRunning,
-            requiresLocationQuitDecision: holdsLocation,
-            usbAvailable: usbAvailable,
-            wifiAvailable: wifiAvailable,
-            randomPicksUSB: { randomPicksUSB }
+            requiresLocationQuitDecision: holdsLocation
         )
     }
 
@@ -1049,9 +1052,11 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertEqual(
             expected.confirmationMessage,
             "Switching to Wi\u{2011}Fi restarts the tunnel and ends the location held on the iPhone.")
-        XCTAssertEqual(resolve(.auto), .confirm(ConnectionChoiceChange(choice: .auto, tunnelMode: .auto, restartsTunnel: true)))
-        XCTAssertEqual(resolve(.usb, connectionMode: .wifi, tunnelMode: .wifi),
-                       .confirm(ConnectionChoiceChange(choice: .usb, tunnelMode: .usb, restartsTunnel: true)))
+        let toUSB = ConnectionChoiceChange(choice: .usb, tunnelMode: .usb, restartsTunnel: true)
+        XCTAssertEqual(resolve(.usb, connectionMode: .wifi, tunnelMode: .wifi), .confirm(toUSB))
+        XCTAssertEqual(
+            toUSB.confirmationMessage,
+            "Switching to USB restarts the tunnel and ends the location held on the iPhone.")
     }
 
     func testWithoutAHeldLocationTheSwitchAppliesAsToday() {
@@ -1064,53 +1069,13 @@ final class ConnectionChoiceTests: XCTestCase {
                        .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
     }
 
-    /// Background daemon only sets the tunnel mode; a running tunnel keeps running.
-    func testBackgroundDaemonNeverRestartsSoItNeverAsks() {
-        XCTAssertEqual(resolve(.daemon),
-                       .apply(ConnectionChoiceChange(choice: .daemon, tunnelMode: .daemon, restartsTunnel: false)))
-    }
-
-    /// Random is picked once, before the dialog, so the dialog says what will happen and a
-    /// pick of the transport in use restarts nothing.
-    func testRandomIsPickedBeforeAskingAndAsksOnlyWhenThePickChangesTheTunnel() {
-        XCTAssertEqual(resolve(.random, randomPicksUSB: true),
-                       .apply(ConnectionChoiceChange(choice: .random, tunnelMode: .usb, restartsTunnel: false)))
-        let change = ConnectionChoiceChange(choice: .random, tunnelMode: .wifi, restartsTunnel: true)
-        XCTAssertEqual(resolve(.random, randomPicksUSB: false), .confirm(change))
-        XCTAssertEqual(
-            change.confirmationMessage,
-            "Switching to Random picks Wi\u{2011}Fi, which restarts the tunnel and ends the location held on the iPhone.")
-        // Only one transport available: no coin.
-        XCTAssertEqual(resolve(.random, tunnelMode: .wifi, usbAvailable: false, randomPicksUSB: true),
-                       .apply(ConnectionChoiceChange(choice: .random, tunnelMode: .wifi, restartsTunnel: false)))
-    }
-
-    /// Review 2026-11-04 round 2 issue 5: re-clicking the selected Random segment re-rolled
-    /// USB vs Wi-Fi and, with both available, restarted the tunnel half the time.
-    /// Selecting the choice in use changes nothing.
+    /// Review 2026-11-04 round 2 issue 5: re-clicking the selected segment must not
+    /// restart the tunnel. Selecting the choice in use changes nothing.
     func testSelectingTheChoiceInUseDoesNothing() {
         XCTAssertEqual(resolve(.usb, connectionMode: .usb, tunnelMode: .usb), ConnectionChoiceAction.none)
         XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .wifi), ConnectionChoiceAction.none)
-        XCTAssertEqual(resolve(.auto, connectionMode: .auto, tunnelMode: .auto), ConnectionChoiceAction.none)
-        for picksUSB in [true, false] {
-            XCTAssertEqual(resolve(.random, connectionMode: .random, tunnelMode: .usb, randomPicksUSB: picksUSB),
-                           ConnectionChoiceAction.none, "Random is not re-rolled")
-        }
-        XCTAssertEqual(resolve(.daemon, tunnelMode: .daemon), ConnectionChoiceAction.none)
-    }
-
-    // MARK: The shown choice and Background daemon (review 2026-11-04 round 2 issues 6-7)
-
-    /// The Settings window's Tunnel Mode picker sets the tunnel mode on its own, so the
-    /// connection-mode setting alone could name a transport the tunnel is not using.
-    /// The tunnel mode decides; the setting only tells Random apart.
-    func testTheShownChoiceIsTheTunnelModeInUse() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .wifi), .wifi)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .usb), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .auto, tunnelMode: .usb), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .auto), .auto)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .auto), .auto)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .random, tunnelMode: .usb), .random)
+        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .wifi, holdsLocation: false),
+                       ConnectionChoiceAction.none)
     }
 
     /// Clicking the shown choice while the setting disagrees aligns the setting; the tunnel
@@ -1120,70 +1085,13 @@ final class ConnectionChoiceTests: XCTestCase {
                        .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
     }
 
-    /// Choosing Background daemon only sets the tunnel mode: a running USB or Wi-Fi tunnel
-    /// keeps running, and the daemon is used from the next Start. The picker says so.
-    func testBackgroundDaemonSaysItAppliesAtTheNextStartWhileAnotherTunnelRuns() {
-        XCTAssertEqual(
-            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .usb),
-            "Background daemon applies at the next Start. The USB tunnel keeps running until then.")
-        XCTAssertEqual(
-            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .wifi),
-            "Background daemon applies at the next Start. The Wi\u{2011}Fi tunnel keeps running until then.")
-        XCTAssertEqual(
-            ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: nil),
-            "Background daemon applies at the next Start. The running tunnel keeps running until then.")
-        XCTAssertNil(ConnectionChoice.daemon.nextStartNote(tunnelRunning: false, activeMode: nil))
-        XCTAssertNil(ConnectionChoice.daemon.nextStartNote(tunnelRunning: true, activeMode: .daemon))
-        XCTAssertNil(ConnectionChoice.usb.nextStartNote(tunnelRunning: true, activeMode: .wifi),
-                     "a transport choice restarts the tunnel instead")
-        XCTAssertEqual(ConnectionChoice.daemon.menuTitle(tunnelRunning: true, activeMode: .usb),
-                       "Background daemon (from the next Start)")
-        XCTAssertEqual(ConnectionChoice.daemon.menuTitle(tunnelRunning: false, activeMode: nil), "Background daemon")
-        XCTAssertEqual(ConnectionChoice.auto.menuTitle(tunnelRunning: true, activeMode: .usb), "Auto")
-    }
-
-    /// Review issue 11: choosing Background daemon only sets the tunnel mode, once, and
-    /// leaves the connection-mode setting alone; nothing is left to confirm.
-    @MainActor
-    func testChoosingBackgroundDaemonSetsOnlyTheTunnelModeOnce() {
-        let tunnel = TunneldManager.shared
-        let previousMode = tunnel.preferredMode
-        addTeardownBlock { @MainActor in tunnel.preferredMode = previousMode }
-        tunnel.preferredMode = .usb
-        let deviceManager = DeviceManager(startBackgroundServices: false)
-        let connectionMode = deviceManager.connectionMode
-        var signals = 0
-        let subscription = tunnel.reconnectControlChanges.sink { signals += 1 }
-        defer { subscription.cancel() }
-
-        let pending = ConnectionChoice.daemon.select(
-            deviceManager: deviceManager, tunnel: tunnel, requiresLocationQuitDecision: true)
-
-        XCTAssertNil(pending, "no restart, so nothing to confirm")
-        XCTAssertEqual(tunnel.preferredMode, .daemon)
-        XCTAssertEqual(deviceManager.connectionMode, connectionMode)
-        XCTAssertEqual(signals, 1, "one reconnect control signal for the mode change")
-    }
-
-    /// A repeat click of Background daemon used to send the reconnect control signal again,
-    /// which ends an automatic reconnect.
-    @MainActor
-    func testARepeatClickOfBackgroundDaemonSendsNothing() {
-        let tunnel = TunneldManager.shared
-        let previousMode = tunnel.preferredMode
-        addTeardownBlock { @MainActor in tunnel.preferredMode = previousMode }
-        tunnel.preferredMode = .daemon
-        let deviceManager = DeviceManager(startBackgroundServices: false)
-        var signals = 0
-        let subscription = tunnel.reconnectControlChanges.sink { signals += 1 }
-        defer { subscription.cancel() }
-
-        let pending = ConnectionChoice.daemon.select(
-            deviceManager: deviceManager, tunnel: tunnel, requiresLocationQuitDecision: true)
-
-        XCTAssertNil(pending, "nothing to confirm")
-        XCTAssertEqual(signals, 0, "no reconnect control signal")
-        XCTAssertEqual(tunnel.preferredMode, .daemon)
+    /// Clicking the shown choice over a leftover daemon tunnel mode sets the transport's
+    /// own tunnel mode; a running daemon tunnel restarts, so it asks first.
+    func testClickingTheShownChoiceOverALeftoverDaemonModeSetsTheTransport() {
+        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon),
+                       .confirm(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true)))
+        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon, tunnelRunning: false),
+                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
     }
 
     /// The restart rule is the one `DeviceManager.setConnectionMode` applies.
@@ -1191,12 +1099,6 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertTrue(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: true))
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .usb, tunnelRunning: true))
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: false))
-        XCTAssertEqual(DeviceManager.tunnelMode(for: .usb, usbAvailable: false, wifiAvailable: true), .usb)
-        XCTAssertEqual(DeviceManager.tunnelMode(for: .auto, usbAvailable: true, wifiAvailable: true), .auto)
-        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: false, wifiAvailable: false), .wifi)
-        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: true, wifiAvailable: false), .usb)
-        XCTAssertEqual(DeviceManager.tunnelMode(for: .random, usbAvailable: true, wifiAvailable: true,
-                                                randomPicksUSB: { false }), .wifi)
     }
 }
 

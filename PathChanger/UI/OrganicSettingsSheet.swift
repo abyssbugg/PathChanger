@@ -371,9 +371,9 @@ private struct SettingsConnectionChoiceRow<Row: View>: View {
 
     var body: some View {
         let choice = ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunnel.preferredMode)
-        row("Connect over", choice.detail(tunnelRunning: tunnel.isRunning, activeMode: tunnel.activeMode), AnyView(
+        row("Connect over", choice.detail, AnyView(
             OrganicSegmented(
-                options: ConnectionChoice.primary + ConnectionChoice.secondary,
+                options: ConnectionChoice.allCases,
                 selection: choice,
                 title: { $0.shortTitle },
                 onSelect: { choice in
@@ -387,7 +387,7 @@ private struct SettingsConnectionChoiceRow<Row: View>: View {
             .fixedSize()
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
-            .connectionChoiceConfirmation($pendingChange, deviceManager: deviceManager, tunnel: tunnel)
+            .connectionChoiceConfirmation($pendingChange, deviceManager: deviceManager)
         ))
     }
 }

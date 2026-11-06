@@ -802,11 +802,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
         get { device.isWiFiTransportAvailable }
         set { device.isWiFiTransportAvailable = newValue }
     }
-    var preferUSBConnection: Bool {
-        get { device.preferUSBConnection }
-        set { device.preferUSBConnection = newValue }
-    }
-
     // MARK: Shared Managers
     let simulationEngine: SimulationEngine
     let errorHandler: ErrorHandler

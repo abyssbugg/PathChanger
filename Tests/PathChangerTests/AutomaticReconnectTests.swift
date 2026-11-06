@@ -416,7 +416,7 @@ final class AutomaticReconnectTests: XCTestCase {
     ) -> Fixture {
         let injector = FakeLocationInjector()
         let deviceManager = QuietReconnectDeviceManager(startBackgroundServices: false)
-        deviceManager.connectionMode = .auto
+        deviceManager.connectionMode = .wifi
         let sleeper = ControlledReconnectSleeper()
         let clock = ReconnectTestClock()
         let tunnel = RecordingTunnelQuitController()
@@ -1712,7 +1712,7 @@ final class AutomaticReconnectDeviceStateTests: XCTestCase {
     }
 
     func testTheAwaitedPhoneIsStillPolledAndBrowsedWithNothingSelected() async {
-        let (manager, deviceManager) = manager(mode: .auto)
+        let (manager, deviceManager) = manager(mode: .wifi)
         XCTAssertNil(manager.selectedDevice)
         manager.awaitedReconnectDeviceID = deviceID
 
@@ -1722,18 +1722,16 @@ final class AutomaticReconnectDeviceStateTests: XCTestCase {
         XCTAssertEqual(deviceManager.browseDecisions, [true], "Bonjour is browsed for the awaited phone")
     }
 
-    func testABonjourOnlyPhoneRecoversOverWiFiInWiFiAndAutoModes() async throws {
-        for mode in [DeviceManager.ConnectionMode.wifi, .auto] {
-            let (manager, _) = manager(mode: mode)
-            manager.availableDevices = [phone]
-            manager.networkAdvertisedDeviceIds = [deviceID]
+    func testABonjourOnlyPhoneRecoversOverWiFiInWiFiMode() async throws {
+        let (manager, _) = manager(mode: .wifi)
+        manager.availableDevices = [phone]
+        manager.networkAdvertisedDeviceIds = [deviceID]
 
-            let candidate = try await manager.establishRecoverySession(previous: previous)
+        let candidate = try await manager.establishRecoverySession(previous: previous)
 
-            XCTAssertEqual(candidate.transport, .wifi, "\(mode)")
-            XCTAssertEqual(candidate.generation, 4)
-            XCTAssertEqual(manager.selectedDevice?.id, deviceID)
-        }
+        XCTAssertEqual(candidate.transport, .wifi)
+        XCTAssertEqual(candidate.generation, 4)
+        XCTAssertEqual(manager.selectedDevice?.id, deviceID)
     }
 
     func testABonjourOnlyPhoneDoesNotRecoverInUSBOnlyMode() async {
@@ -1748,7 +1746,7 @@ final class AutomaticReconnectDeviceStateTests: XCTestCase {
     }
 
     func testARememberedPhoneMissingFromTheListRecoversWhenReachable() async throws {
-        let (manager, _) = manager(mode: .auto)
+        let (manager, _) = manager(mode: .wifi)
         manager.selectedDevice = phone
         manager.selectedDevice = nil
         manager.availableDevices = []
@@ -1868,7 +1866,7 @@ final class TunnelAutoReconnectPolicyTests: XCTestCase {
     }
 
     func testEveryHelperModeReconnectsFromErrorOrIdle() {
-        for mode in [TunnelMode.auto, .usb, .wifi] {
+        for mode in [TunnelMode.usb, .wifi] {
             XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: mode, since: 5)), .attempt(deviceID: id))
             XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: mode, tunnel: .idle, since: 5)),
                            .attempt(deviceID: id))

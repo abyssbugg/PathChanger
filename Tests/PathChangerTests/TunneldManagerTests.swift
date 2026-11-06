@@ -12,10 +12,17 @@ import XCTest
 final class TunneldManagerTests: XCTestCase {
 
     var manager: TunneldManager!
+    /// The tunnel mode is stored here, never in the app's own preferences domain, which
+    /// the app-hosted suite shares.
+    private static let settingsSuiteName = "tmp_rovodev.pathchanger.tunneld-tests"
+    private var settings: UserDefaults!
 
     override func setUp() async throws {
         // Note: Using shared singleton - tests may affect each other
         manager = TunneldManager.shared
+        settings = try XCTUnwrap(UserDefaults(suiteName: Self.settingsSuiteName))
+        settings.removePersistentDomain(forName: Self.settingsSuiteName)
+        manager.settings = settings
 
         // Hermetic start: earlier suites (e.g. TunnelHealthMonitorTests) drive the shared
         // state machine into running, whose action starts this manager's health monitor.
@@ -106,6 +113,21 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(message.contains("not reachable over Wi‑Fi"), message)
         XCTAssertTrue(message.contains("Unlock"), message)
         XCTAssertFalse(message.contains("usbmux"), message)
+    }
+
+    /// Owner decision 2026-11-06: no automatic failover. A failed Wi-Fi start never
+    /// tries USB (Auto used to try USB, then Wi-Fi).
+    func testAFailedStartTriesOnlyThePreferredMode() async throws {
+        let connector = try installFakeConnector(mode: .wifi)
+        manager.deviceVisibilityWait = .init(timeout: 0.15, interval: 0.02)
+        connector.connectError = Self.notVisible
+
+        await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
+
+        try await waitUntil { if case .error = self.manager.state { return true }; return false }
+        XCTAssertFalse(connector.connectCalls.isEmpty)
+        XCTAssertTrue(connector.connectCalls.allSatisfy { $0.transport == .wifi }, "\(connector.connectCalls)")
+        XCTAssertEqual(manager.preferredMode, .wifi, "a failed start keeps the user's choice")
     }
 
     // Live 2026-11-02: the phone was unlocked and on the same Wi-Fi (mobdev2 Bonjour
@@ -837,7 +859,7 @@ final class TunneldManagerTests: XCTestCase {
     }
 
     func testHelperModesNeverAdoptARunningDaemon() async throws {
-        for mode in [TunnelMode.auto, .usb, .wifi] {
+        for mode in [TunnelMode.usb, .wifi] {
             _ = try installFakeConnector(mode: mode)
             manager.allowDaemonAdoptionForTesting()
             let calls = installDaemonDetector(returning: .daemon)
@@ -1343,6 +1365,12 @@ final class TunneldManagerTests: XCTestCase {
 
         // Give it time to fully stop
         try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+
+        manager.settings = .standard
+        settings.removePersistentDomain(forName: Self.settingsSuiteName)
+        let file = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Preferences/\(Self.settingsSuiteName).plist")
+        try? FileManager.default.removeItem(at: file)
     }
 
     // MARK: - State Machine Tests
@@ -1399,26 +1427,24 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - Tunnel Mode Tests
 
+    /// USB and Wi-Fi are the tunnel modes the user chooses (owner decision 2026-11-06).
+    /// Background daemon stays in the type until its code is removed, unreachable from
+    /// every connection control.
     func testTunnelModeEnumValues() {
-        XCTAssertEqual(TunnelMode.allCases.count, 4)
-        XCTAssertTrue(TunnelMode.allCases.contains(.auto))
-        XCTAssertTrue(TunnelMode.allCases.contains(.usb))
-        XCTAssertTrue(TunnelMode.allCases.contains(.wifi))
-        XCTAssertTrue(TunnelMode.allCases.contains(.daemon))
+        XCTAssertEqual(TunnelMode.allCases, [.usb, .wifi, .daemon])
+        XCTAssertNil(TunnelMode(rawValue: "Auto"))
     }
 
     func testTunnelModeCommands() {
         XCTAssertEqual(TunnelMode.usb.command, [])
         XCTAssertEqual(TunnelMode.wifi.command, [])
         XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
-        XCTAssertEqual(TunnelMode.auto.command, [])
     }
 
     func testTunnelModeProcessPatterns() {
         XCTAssertEqual(TunnelMode.usb.processPattern, "pymobiledevice3 lockdown start-tunnel")
         XCTAssertEqual(TunnelMode.wifi.processPattern, "pymobiledevice3 remote start-tunnel")
         XCTAssertEqual(TunnelMode.daemon.processPattern, "pymobiledevice3 remote tunneld")
-        XCTAssertEqual(TunnelMode.auto.processPattern, "pymobiledevice3")
     }
 
     // MARK: - Tunnel Info Tests
@@ -1478,15 +1504,17 @@ final class TunneldManagerTests: XCTestCase {
     // MARK: - Preference Persistence Tests
 
     func testPreferredModePersistence() {
-        // Set mode
+        let previousMode = manager.preferredMode
+        let appDomainValue = UserDefaults.standard.string(forKey: "tunnelMode")
+        defer { manager.preferredMode = previousMode }
+
+        manager.preferredMode = .usb
+        XCTAssertEqual(settings.string(forKey: "tunnelMode"), TunnelMode.usb.rawValue)
         manager.preferredMode = .wifi
+        XCTAssertEqual(settings.string(forKey: "tunnelMode"), TunnelMode.wifi.rawValue)
 
-        // Verify persistence
-        let saved = UserDefaults.standard.string(forKey: "tunnelMode")
-        XCTAssertEqual(saved, TunnelMode.wifi.rawValue)
-
-        // Cleanup
-        manager.preferredMode = .auto
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "tunnelMode"), appDomainValue,
+                       "the app's own preferences are untouched")
     }
 
     // MARK: - Stop Tunnel Tests
@@ -1619,10 +1647,6 @@ final class TunneldManagerTests: XCTestCase {
         let implementation = source[start.lowerBound..<end.upperBound]
         XCTAssertTrue(implementation.contains("[weak self, terminationHandler]"))
         XCTAssertFalse(implementation.contains("weak terminationHandler"))
-    }
-
-    func testAutoModeHasNoDirectTunnelCommand() {
-        XCTAssertNil(TunneldManager.arguments(for: .auto))
     }
 
     // MARK: - Process Management Security Tests (SEC-004)
@@ -1904,10 +1928,13 @@ final class TunneldManagerTests: XCTestCase {
         try XCTSkipIf(getuid() == 0, "requires an unprivileged test host")
         let defaults = try isolatedOwnedTunnelDefaults()
         // A root-owned system daemon stands in for a root-owned leftover tunnel: SIGTERM
-        // from this user fails with EPERM. `.auto` skips the command-line check.
+        // from this user fails with EPERM. Its command line is not `remote tunneld`, so
+        // the command-line check is skipped (it used to be skipped by recording `.auto`).
         let rootPID = try rootOwnedDaemonPID()
         let rootStart = try XCTUnwrap(ProcessStartTime.of(pid: rootPID))
-        OwnedTunnelRecord(pid: rootPID, startTime: rootStart, mode: .auto).save(to: defaults)
+        TunneldManager.skipsRecordedTunnelCommandCheckForTesting = true
+        defer { TunneldManager.skipsRecordedTunnelCommandCheckForTesting = false }
+        OwnedTunnelRecord(pid: rootPID, startTime: rootStart, mode: .daemon).save(to: defaults)
         manager.adoptTunnelForTesting(pid: rootPID)
         defer { OwnedTunnelRecord.clear(from: defaults); manager.adoptTunnelForTesting(pid: 0) }
         XCTAssertTrue(manager.adoptedTunnelIsOwnedForTesting)

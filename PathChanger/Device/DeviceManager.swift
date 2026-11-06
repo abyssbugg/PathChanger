@@ -378,11 +378,11 @@ actor SessionController {
 ///
 /// ## Connection Modes
 ///
-/// The manager supports three connection modes:
+/// The user chooses one of two connection modes (owner decision 2026-11-06); there is
+/// no automatic failover between them:
 ///
 /// | Mode | Description |
 /// |------|-------------|
-/// | Auto | Automatically use best available connection |
 /// | USB Only | Only discover USB-connected devices |
 /// | WiFi Only | Only discover WiFi-connected devices |
 ///
@@ -451,7 +451,7 @@ class DeviceManager: ObservableObject {
     @Published var isTunneldRunning: Bool = false
     @Published var isScanning: Bool = false
     @Published var lastError: DeviceError?
-    @Published var connectionMode: ConnectionMode = .auto
+    @Published var connectionMode: ConnectionMode = .wifi
     /// True when usbmux reports a USB attachment. Independent of tunnel state.
     @Published private(set) var usbTransportAvailable: Bool = false
     /// True when usbmux reports a Network/Wi-Fi attachment. Independent of tunnel state.
@@ -470,20 +470,25 @@ class DeviceManager: ObservableObject {
     private var networkAdvertisedMisses: [String: Int] = [:]
     /// Retained UDIDs the next Bonjour observation decides outright (`letTheNextBrowseDecide`).
     private var networkAdvertisedAwaitingFreshObservation: Set<String> = []
-    /// UDIDs the latest usbmux listing reported over USB, without the miss hysteresis
-    /// `usbDirectDeviceIds` applies. Read for the helper connect hint.
-    private var usbmuxListedUSBDeviceIds: Set<String> = []
     /// The Bonjour browse in flight, joined by any overlapping caller so one browse is
     /// one observation (the 120 s discovery and the 15 s transport refresh can overlap).
     private var mobdev2BrowseInFlight: Task<[Device], Never>?
     private let transportMissThreshold: Int = 3
 
     // MARK: Connection Mode
+    /// USB or Wi-Fi, chosen by the user (owner decision 2026-11-06). The raw values are
+    /// the stored ones earlier builds wrote, so a saved choice stays readable.
     enum ConnectionMode: String, CaseIterable {
-        case random = "Random"
-        case auto = "Auto"
         case usb = "USB Only"
         case wifi = "WiFi Only"
+
+        /// The tunnel mode this connection mode sets; the two settings always agree.
+        var tunnelMode: TunnelMode {
+            switch self {
+            case .usb: return .usb
+            case .wifi: return .wifi
+            }
+        }
     }
 
     // MARK: Device Cache (PERF-003)
@@ -847,14 +852,6 @@ class DeviceManager: ObservableObject {
                 mobdev2Devices,
                 directNetworkDevices,
             ]
-        case .auto, .random:
-            rankedSources = [
-                corroboratedKnownWiFiDevices,
-                tunnelDevices,
-                mobdev2Devices,
-                directNetworkDevices,
-                directUSBDevices,
-            ]
         }
 
         var devicesById: [String: Device] = [:]
@@ -1143,16 +1140,13 @@ class DeviceManager: ObservableObject {
     /// The transport hint for opening the location helper's connection to `deviceID`. It
     /// decides whether the helper may try its mobdev2 (Bonjour, Wi-Fi) lane, so it follows
     /// the connection mode, as Start does: USB Only asks for USB and never crosses to
-    /// Wi-Fi; Wi-Fi Only asks for Network; Auto and Random ask for USB only while the
-    /// latest usbmux listing has this phone over USB. The row's type is not used: it stays
-    /// `.usb` until discovery relabels it (up to 120 s after the cable is pulled), and the
-    /// chip's 3-miss USB set would hold it for 30-45 s more (review 2026-11-01 v3).
+    /// Wi-Fi; Wi-Fi Only asks for Network. The row's type is not used: it stays `.usb`
+    /// until discovery relabels it (up to 120 s after the cable is pulled), review
+    /// 2026-11-01 v3.
     func helperConnectTransport(for deviceID: String) -> LocationTransport {
         switch connectionMode {
         case .usb: return .usb
         case .wifi: return .wifi
-        case .auto, .random:
-            return usbmuxListedUSBDeviceIds.contains(deviceID) ? .usb : .wifi
         }
     }
 
@@ -1815,15 +1809,12 @@ class DeviceManager: ObservableObject {
         }
     }
 
-    func setConnectionMode(_ mode: ConnectionMode, tunnelMode resolved: TunnelMode? = nil) {
+    /// Sets the connection mode and the tunnel mode it names, so the two stored settings
+    /// always agree. A changed tunnel mode restarts a running tunnel.
+    func setConnectionMode(_ mode: ConnectionMode) {
         connectionMode = mode
         settings.set(mode.rawValue, forKey: ConnectionSettingsMigration.connectionModeKey)
-        // A caller that asked the user first passes the mode it asked about (Random's pick).
-        let tunnelMode = resolved ?? Self.tunnelMode(
-            for: mode,
-            usbAvailable: usbTransportAvailable,
-            wifiAvailable: wifiTransportAvailable
-        )
+        let tunnelMode = mode.tunnelMode
         Task { @MainActor in
             let manager = TunneldManager.shared
             let previous = manager.preferredMode
@@ -1833,24 +1824,6 @@ class DeviceManager: ObservableObject {
                 await manager.restartTunnel()
             }
             await refreshDevices()
-        }
-    }
-
-    /// The tunnel mode a connection mode sets. Random picks USB or Wi-Fi when both are
-    /// available, otherwise the one that is (Wi-Fi when neither is).
-    nonisolated static func tunnelMode(
-        for mode: ConnectionMode,
-        usbAvailable: Bool,
-        wifiAvailable: Bool,
-        randomPicksUSB: () -> Bool = { Bool.random() }
-    ) -> TunnelMode {
-        switch mode {
-        case .random:
-            if usbAvailable && wifiAvailable { return randomPicksUSB() ? .usb : .wifi }
-            return usbAvailable ? .usb : .wifi
-        case .auto: return .auto
-        case .usb: return .usb
-        case .wifi: return .wifi
         }
     }
 
@@ -1914,7 +1887,6 @@ class DeviceManager: ObservableObject {
             }
         }
 
-        usbmuxListedUSBDeviceIds = observedUSBDeviceIds
         if sawUSB {
             usbTransportMisses = 0
             usbTransportAvailable = true

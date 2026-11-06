@@ -11,8 +11,8 @@ import SwiftUI
 /// device's live reachability. Pure so the wording is testable without a view.
 ///
 /// The connection mode never decides reachability; it only picks the advice for an
-/// unreachable phone: USB-only mode needs the cable, Wi-Fi and Auto (and Random, which
-/// can pick Wi-Fi) need the phone unlocked on this network.
+/// unreachable phone: USB mode needs the cable, Wi-Fi mode needs the phone unlocked on
+/// this network.
 enum OrganicDeviceChromeText {
     private static let wiFi = "Wi\u{2011}Fi"
 
@@ -59,27 +59,29 @@ enum OrganicDeviceChromeText {
     }
 }
 
-/// How PathChanger connects to the phone, as the window offers it: USB or Wi‑Fi first,
-/// Auto, Random and Background daemon as secondary choices. It is the setting in use
-/// (`DeviceManager.connectionMode`, and the tunnel's Background daemon mode), never a
-/// guess of the transport.
+/// How PathChanger connects to the phone: USB or Wi‑Fi, chosen by the user (owner
+/// decision 2026-11-06; Auto, Random and Background daemon are gone). It is the setting
+/// in use, never a guess of the transport.
 enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
-    case usb, wifi, auto, random, daemon
+    case usb, wifi
 
     var id: String { rawValue }
 
-    static let primary: [ConnectionChoice] = [.usb, .wifi]
-    static let secondary: [ConnectionChoice] = [.auto, .random, .daemon]
-
-    /// The choice in use. The tunnel mode decides, because it is what Start uses and the
-    /// Settings window's Tunnel Mode picker sets it on its own; the connection-mode setting
-    /// only tells Random (which sets USB or Wi-Fi) apart (review 2026-11-04 round 2 issue 7).
+    /// The choice in use. The tunnel mode decides, because it is what Start uses. A
+    /// leftover Background daemon tunnel mode (the settings migration rewrites it; only an
+    /// older build could write it again) shows the connection-mode setting.
     static func current(connectionMode: DeviceManager.ConnectionMode, tunnelMode: TunnelMode) -> ConnectionChoice {
         switch tunnelMode {
-        case .daemon: return .daemon
-        case .auto: return .auto
-        case .usb: return connectionMode == .random ? .random : .usb
-        case .wifi: return connectionMode == .random ? .random : .wifi
+        case .usb: return .usb
+        case .wifi: return .wifi
+        case .daemon: return ConnectionChoice(connectionMode: connectionMode)
+        }
+    }
+
+    init(connectionMode: DeviceManager.ConnectionMode) {
+        switch connectionMode {
+        case .usb: self = .usb
+        case .wifi: self = .wifi
         }
     }
 
@@ -87,50 +89,15 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .usb: return "USB"
         case .wifi: return "Wi\u{2011}Fi"
-        case .auto: return "Auto"
-        case .random: return "Random"
-        case .daemon: return "Background daemon"
         }
     }
 
-    var shortTitle: String { self == .daemon ? "Daemon" : title }
-
-    /// Background daemon only sets the tunnel mode: a running USB or Wi-Fi tunnel keeps
-    /// running and the daemon is used from the next Start (review issue 6). Nil for every
-    /// other case.
-    func nextStartNote(tunnelRunning: Bool, activeMode: TunnelMode?) -> String? {
-        guard self == .daemon, tunnelRunning, activeMode != .daemon else { return nil }
-        let running: String
-        switch activeMode {
-        case .usb: running = "The USB tunnel"
-        case .wifi: running = "The Wi\u{2011}Fi tunnel"
-        case .auto: running = "The Auto tunnel"
-        case .daemon, nil: running = "The running tunnel"
-        }
-        return "Background daemon applies at the next Start. \(running) keeps running until then."
-    }
-
-    /// The Other modes menu item: Background daemon says when it takes effect while
-    /// another tunnel runs.
-    func menuTitle(tunnelRunning: Bool, activeMode: TunnelMode?) -> String {
-        nextStartNote(tunnelRunning: tunnelRunning, activeMode: activeMode) == nil
-            ? title : "\(title) (from the next Start)"
-    }
-
-    /// What the picker says under the choice in use: what it does, and for Background
-    /// daemon chosen while another tunnel runs, that it applies at the next Start.
-    func detail(tunnelRunning: Bool, activeMode: TunnelMode?) -> String {
-        guard let note = nextStartNote(tunnelRunning: tunnelRunning, activeMode: activeMode) else { return detail }
-        return "\(detail) \(note)"
-    }
+    var shortTitle: String { title }
 
     var systemImage: String {
         switch self {
         case .usb: return "cable.connector"
         case .wifi: return "wifi"
-        case .auto: return "sparkles"
-        case .random: return "shuffle"
-        case .daemon: return "server.rack"
         }
     }
 
@@ -138,23 +105,19 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .usb: return "Over the cable. Unlock the iPhone and tap Trust once."
         case .wifi: return "Over this Mac's Wi\u{2011}Fi network. Prepare the iPhone for Wi\u{2011}Fi once, over the cable."
-        case .auto: return "USB when the cable is connected, otherwise Wi\u{2011}Fi."
-        case .random: return "USB or Wi\u{2011}Fi, picked at random when both are available."
-        case .daemon: return "A background remote tunneld service finds the iPhone."
         }
     }
 
-    /// The connection mode a transport choice sets; nil for Background daemon, which is a
-    /// tunnel mode only.
-    var connectionMode: DeviceManager.ConnectionMode? {
+    /// The connection mode this choice sets.
+    var connectionMode: DeviceManager.ConnectionMode {
         switch self {
         case .usb: return .usb
         case .wifi: return .wifi
-        case .auto: return .auto
-        case .random: return .random
-        case .daemon: return nil
         }
     }
+
+    /// The tunnel mode this choice sets, the one its connection mode names.
+    var tunnelMode: TunnelMode { connectionMode.tunnelMode }
 
     /// Resolves a click (`ConnectionChoiceAction`) and applies it at once unless it would
     /// end a held location. Returns the change to confirm first; nil when it was applied.
@@ -169,38 +132,30 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
             connectionMode: deviceManager.connectionMode,
             tunnelMode: tunnel.preferredMode,
             tunnelRunning: tunnel.isRunning || tunnel.isStarting,
-            requiresLocationQuitDecision: requiresLocationQuitDecision,
-            usbAvailable: deviceManager.usbTransportAvailable,
-            wifiAvailable: deviceManager.wifiTransportAvailable
+            requiresLocationQuitDecision: requiresLocationQuitDecision
         )
         switch action {
         case .none:
             return nil
         case .apply(let change):
-            Self.apply(change, deviceManager: deviceManager, tunnel: tunnel)
+            Self.apply(change, deviceManager: deviceManager)
             return nil
         case .confirm(let change):
             return change
         }
     }
 
-    /// Applies a resolved change through the same calls the settings use: the connection
-    /// mode (which also sets the tunnel mode, restarting a running tunnel when it changes),
-    /// or the tunnel's Background daemon mode. Nothing is reapplied after a restart; the
-    /// user presses Reapply location.
+    /// Applies a resolved change through the call the settings use: the connection mode,
+    /// which also sets the tunnel mode and restarts a running tunnel when it changes.
+    /// Nothing is reapplied after a restart; the user presses Reapply location.
     @MainActor
-    static func apply(_ change: ConnectionChoiceChange, deviceManager: DeviceManager, tunnel: TunneldManager) {
-        if let mode = change.choice.connectionMode {
-            deviceManager.setConnectionMode(mode, tunnelMode: change.tunnelMode)
-        } else {
-            tunnel.preferredMode = .daemon
-        }
+    static func apply(_ change: ConnectionChoiceChange, deviceManager: DeviceManager) {
+        deviceManager.setConnectionMode(change.choice.connectionMode)
     }
 }
 
-/// A connection choice ready to apply: the tunnel mode it sets (Random's pick is made
-/// once, before any dialog, so the dialog says what will happen) and whether that
-/// restarts the running tunnel.
+/// A connection choice ready to apply: the tunnel mode it sets and whether that restarts
+/// the running tunnel.
 struct ConnectionChoiceChange: Equatable {
     let choice: ConnectionChoice
     let tunnelMode: TunnelMode
@@ -209,12 +164,7 @@ struct ConnectionChoiceChange: Equatable {
     var confirmationTitle: String { "Switch to \(choice.title)?" }
 
     var confirmationMessage: String {
-        let ending = "restarts the tunnel and ends the location held on the iPhone."
-        if choice == .random {
-            let pick = tunnelMode == .usb ? ConnectionChoice.usb.title : ConnectionChoice.wifi.title
-            return "Switching to Random picks \(pick), which \(ending)"
-        }
-        return "Switching to \(choice.title) \(ending)"
+        "Switching to \(choice.title) restarts the tunnel and ends the location held on the iPhone."
     }
 }
 
@@ -223,8 +173,7 @@ struct ConnectionChoiceChange: Equatable {
 /// latches reconnect (AppState treats it as a Stop), so it asks first, as the tunnel
 /// pill's Stop does (review 2026-11-04 round 2 issue 4).
 enum ConnectionChoiceAction: Equatable {
-    /// The choice in use: nothing changes (re-clicking Random used to re-roll the
-    /// transport and restart the tunnel half the time, review issue 5).
+    /// The choice in use: nothing changes.
     case none
     case apply(ConnectionChoiceChange)
     case confirm(ConnectionChoiceChange)
@@ -234,30 +183,19 @@ enum ConnectionChoiceAction: Equatable {
         connectionMode: DeviceManager.ConnectionMode,
         tunnelMode: TunnelMode,
         tunnelRunning: Bool,
-        requiresLocationQuitDecision: Bool,
-        usbAvailable: Bool,
-        wifiAvailable: Bool,
-        randomPicksUSB: () -> Bool = { Bool.random() }
+        requiresLocationQuitDecision: Bool
     ) -> ConnectionChoiceAction {
-        // In use only when the setting agrees too: clicking the shown choice while the
-        // setting disagrees (the Settings window set the tunnel mode) aligns the setting.
-        guard choice != ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunnelMode)
-                || !(choice.connectionMode.map { $0 == connectionMode } ?? true) else {
+        // In use only when both settings agree with it: clicking the shown choice while
+        // one disagrees aligns it.
+        guard choice.connectionMode != connectionMode || choice.tunnelMode != tunnelMode else {
             return .none
         }
-        let change: ConnectionChoiceChange
-        if let mode = choice.connectionMode {
-            let next = DeviceManager.tunnelMode(
-                for: mode, usbAvailable: usbAvailable, wifiAvailable: wifiAvailable, randomPicksUSB: randomPicksUSB)
-            change = ConnectionChoiceChange(
-                choice: choice,
-                tunnelMode: next,
-                restartsTunnel: DeviceManager.switchRestartsTunnel(from: tunnelMode, to: next, tunnelRunning: tunnelRunning)
-            )
-        } else {
-            // Background daemon only sets the tunnel mode; a running tunnel keeps running.
-            change = ConnectionChoiceChange(choice: choice, tunnelMode: .daemon, restartsTunnel: false)
-        }
+        let change = ConnectionChoiceChange(
+            choice: choice,
+            tunnelMode: choice.tunnelMode,
+            restartsTunnel: DeviceManager.switchRestartsTunnel(
+                from: tunnelMode, to: choice.tunnelMode, tunnelRunning: tunnelRunning)
+        )
         return change.restartsTunnel && requiresLocationQuitDecision ? .confirm(change) : .apply(change)
     }
 }
@@ -267,7 +205,6 @@ enum ConnectionChoiceAction: Equatable {
 struct ConnectionChoiceConfirmation: ViewModifier {
     @Binding var pending: ConnectionChoiceChange?
     let deviceManager: DeviceManager
-    let tunnel: TunneldManager
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
@@ -277,7 +214,7 @@ struct ConnectionChoiceConfirmation: ViewModifier {
         ) { change in
             Button("Switch", role: .destructive) {
                 pending = nil
-                ConnectionChoice.apply(change, deviceManager: deviceManager, tunnel: tunnel)
+                ConnectionChoice.apply(change, deviceManager: deviceManager)
             }
             Button("Cancel", role: .cancel) { pending = nil }
         } message: { change in
@@ -289,10 +226,9 @@ struct ConnectionChoiceConfirmation: ViewModifier {
 extension View {
     func connectionChoiceConfirmation(
         _ pending: Binding<ConnectionChoiceChange?>,
-        deviceManager: DeviceManager,
-        tunnel: TunneldManager
+        deviceManager: DeviceManager
     ) -> some View {
-        modifier(ConnectionChoiceConfirmation(pending: pending, deviceManager: deviceManager, tunnel: tunnel))
+        modifier(ConnectionChoiceConfirmation(pending: pending, deviceManager: deviceManager))
     }
 }
 
@@ -460,10 +396,10 @@ struct OrganicTitleBar: View {
 
             Rectangle().fill(Organic.neutral300).frame(width: 1, height: 20)
 
-            // USB and Wi‑Fi up front; a secondary mode in use shows as a third segment.
-            // Never disabled without a phone: the choice decides where to look for one.
+            // USB or Wi‑Fi. Never disabled without a phone: the choice decides where to
+            // look for one.
             OrganicSegmented(
-                options: transportOptions,
+                options: ConnectionChoice.allCases,
                 selection: connectionChoice,
                 height: 28,
                 title: { $0.shortTitle },
@@ -471,8 +407,8 @@ struct OrganicTitleBar: View {
                 onSelect: { choose($0) }
             )
             .fixedSize()
-            .help(connectionChoice.detail(tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode))
-            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: deviceManager, tunnel: tunneldManager)
+            .help(connectionChoice.detail)
+            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: deviceManager)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
         }
@@ -494,12 +430,6 @@ struct OrganicTitleBar: View {
             tunnel: tunneldManager,
             requiresLocationQuitDecision: appState.requiresLocationQuitDecision
         )
-    }
-
-    private var transportOptions: [ConnectionChoice] {
-        ConnectionChoice.primary.contains(connectionChoice)
-            ? ConnectionChoice.primary
-            : ConnectionChoice.primary + [connectionChoice]
     }
 
     private var selectedReachability: DeviceReachability {
@@ -655,8 +585,8 @@ extension OrganicTitleBar: Equatable {
     }
 }
 
-/// The device picker the device button opens: how to connect (USB or Wi‑Fi up front, the
-/// other modes in a menu), one row per phone, and Prepare for Wi‑Fi.
+/// The device picker the device button opens: how to connect (USB or Wi‑Fi), one row
+/// per phone, and Prepare for Wi‑Fi.
 struct OrganicDevicePopover: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var tunneldManager: TunneldManager
@@ -732,10 +662,6 @@ struct OrganicDevicePopover: View {
         ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
     }
 
-    private var choiceDetail: String {
-        let detail = choice.detail(tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode)
-        return ConnectionChoice.primary.contains(choice) ? detail : "Using \(choice.title): \(detail)"
-    }
 
     private func choose(_ option: ConnectionChoice) {
         pendingConnectionChange = option.select(
@@ -747,34 +673,10 @@ struct OrganicDevicePopover: View {
 
     private var connectSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            OrganicGroupHeader(title: "Connect over") {
-                Menu {
-                    ForEach(ConnectionChoice.secondary) { option in
-                        Button {
-                            choose(option)
-                        } label: {
-                            let title = option.menuTitle(
-                                tunnelRunning: tunneldManager.isRunning, activeMode: tunneldManager.activeMode)
-                            if option == choice {
-                                Label(title, systemImage: "checkmark")
-                            } else {
-                                Text(title)
-                            }
-                        }
-                    }
-                } label: {
-                    Text("Other modes")
-                        .font(Organic.body(11, weight: .semibold))
-                        .foregroundStyle(Organic.accent700)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.visible)
-                .fixedSize()
-                .help("Auto, Random or Background daemon")
-            }
+            OrganicGroupHeader(title: "Connect over")
             OrganicSegmented(
-                options: ConnectionChoice.primary,
-                selection: ConnectionChoice.primary.contains(choice) ? choice : nil,
+                options: ConnectionChoice.allCases,
+                selection: choice,
                 height: 34,
                 fillsWidth: true,
                 title: { $0.title },
@@ -783,8 +685,8 @@ struct OrganicDevicePopover: View {
             )
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
-            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager, tunnel: tunneldManager)
-            Text(choiceDetail)
+            .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager)
+            Text(choice.detail)
                 .font(Organic.body(11))
                 .foregroundStyle(Organic.neutral600)
                 .fixedSize(horizontal: false, vertical: true)

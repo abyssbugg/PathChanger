@@ -256,7 +256,7 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
     func testTransportRefreshesClearTheBonjourSetOnlyAfterThreeMisses() async {
         let id = "00008130-0011223344556677"
         let manager = ScriptedPythonDeviceManager()
-        manager.connectionMode = .auto
+        manager.connectionMode = .wifi
         manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
         await manager.refreshTransportAvailability()
         XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
@@ -330,7 +330,7 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         // per real observation. A browse in flight is joined, and its result applied once.
         let ours = "00008130-0011223344556677"
         let manager = ScriptedPythonDeviceManager()
-        manager.connectionMode = .auto
+        manager.connectionMode = .wifi
         manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
         await manager.refreshTransportAvailability()
         XCTAssertEqual(manager.networkAdvertisedDeviceIds, [ours])
@@ -361,7 +361,7 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         // what is shown; when it cannot, only usbmux runs and the Bonjour set is untouched.
         let ours = "00008130-0011223344556677"
         let manager = ScriptedPythonDeviceManager()
-        manager.connectionMode = .auto
+        manager.connectionMode = .wifi
         manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
         await manager.refreshTransportAvailability()
         manager.outputs["bonjour"] = "[]"
@@ -540,27 +540,6 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
     }
 
     @MainActor
-    func testDirectUSBObservationOutranksTunnelMetadataForSameDevice() {
-        let manager = DeviceManager(startBackgroundServices: false)
-        manager.stopAutoRefresh()
-        let id = "00008110-001A000E3E82001E"
-        let usb = Device(id: id, displayName: "USB Device", connectionType: .usb)
-        let tunnel = Device(id: id, displayName: "Tunnel Device", connectionType: .wifi)
-
-        let devices = manager.mergedDiscoverySourcesForTesting(
-            knownWiFiDevices: [],
-            mobdev2Devices: [],
-            usbmuxDevices: [usb],
-            tunnelDevices: [tunnel],
-            mode: .auto
-        )
-
-        XCTAssertEqual(devices.count, 1)
-        XCTAssertEqual(devices.first?.connectionType, .usb)
-        XCTAssertEqual(devices.first?.displayName, "USB Device")
-    }
-
-    @MainActor
     func testExplicitConnectionModeFiltersFinalMergedDeviceList() {
         let manager = DeviceManager(startBackgroundServices: false)
         manager.stopAutoRefresh()
@@ -608,7 +587,7 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
             mobdev2Devices: [],
             usbmuxDevices: [],
             tunnelDevices: [],
-            mode: .auto
+            mode: .wifi
         )
 
         XCTAssertTrue(devices.isEmpty)

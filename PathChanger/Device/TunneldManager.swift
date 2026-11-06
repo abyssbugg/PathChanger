@@ -5,8 +5,8 @@
 //  Unified tunnel management supporting multiple connection methods for capability-compatible iOS
 //  - USB Mode: lockdown start-tunnel (fastest, requires USB)
 //  - WiFi Mode: remote start-tunnel -t wifi (true wireless, no USB needed)
-//  - Daemon Mode: remote tunneld (background service, auto-discovery)
-//  - Auto Mode: Smart selection based on device availability
+//  - Daemon Mode: remote tunneld (background service, auto-discovery); no longer
+//    selectable from the UI (owner decision 2026-11-06), removed in a later change
 //
 
 import Foundation
@@ -39,7 +39,6 @@ enum TunnelStartPolicy {
 ///
 /// | Mode | USB Required | Use Case |
 /// |------|--------------|----------|
-/// | Auto | Varies | Best for most users |
 /// | USB | Yes | Fastest, most reliable |
 /// | WiFi | No | True wireless operation |
 /// | Daemon | No | Background service mode |
@@ -49,10 +48,9 @@ enum TunnelStartPolicy {
 /// ```swift
 /// let manager = TunneldManager()
 /// manager.preferredMode = .wifi  // Set preferred mode
-/// await manager.startTunnel(mode: .auto)  // Auto will respect preference
+/// await manager.startTunnel()  // tries exactly the preferred mode
 /// ```
 enum TunnelMode: String, CaseIterable, Identifiable, Codable {
-    case auto = "Auto"
     case usb = "USB (Lockdown)"
     case wifi = "WiFi Only"
     case daemon = "Background Daemon"
@@ -61,8 +59,6 @@ enum TunnelMode: String, CaseIterable, Identifiable, Codable {
 
     var description: String {
         switch self {
-        case .auto:
-            return "Automatically select best method"
         case .usb:
             return "USB connection held by PathChanger's location helper"
         case .wifi:
@@ -77,7 +73,7 @@ enum TunnelMode: String, CaseIterable, Identifiable, Codable {
     /// `start-tunnel --native` RSD refused the location service on iOS 27.2.
     var command: [String] {
         switch self {
-        case .auto, .usb, .wifi:
+        case .usb, .wifi:
             return []
         case .daemon:
             return ["remote", "tunneld"]
@@ -91,8 +87,6 @@ enum TunnelMode: String, CaseIterable, Identifiable, Codable {
 
     var processPattern: String {
         switch self {
-        case .auto:
-            return "pymobiledevice3" // Match any
         case .usb:
             return "pymobiledevice3 lockdown start-tunnel"
         case .wifi:
@@ -455,7 +449,7 @@ enum TunnelStartupWaiter {
 ///
 /// Starting with iOS 17, Apple requires a secure tunnel for developer services.
 /// This manager provides:
-/// - **Multi-mode support**: USB, WiFi, daemon, and auto modes
+/// - **Multi-mode support**: USB and Wi-Fi (the user's choice), and the legacy daemon
 /// - **Lifecycle management**: Start, stop, and monitor tunnel processes
 /// - **Health monitoring**: Automatic reconnection on connection loss
 /// - **Security**: Process validation and secure subprocess execution
@@ -471,7 +465,7 @@ enum TunnelStartupWaiter {
 ///             Text("Tunnel active")
 ///         } else {
 ///             Button("Start Tunnel") {
-///                 Task { await tunnelManager.startTunnel(mode: .auto) }
+///                 Task { await tunnelManager.startTunnel(mode: .wifi) }
 ///             }
 ///         }
 ///     }
@@ -480,11 +474,11 @@ enum TunnelStartupWaiter {
 ///
 /// ## Tunnel Modes
 ///
-/// The manager supports four connection modes:
+/// The user chooses USB or Wi-Fi; Start tries exactly that mode (no automatic
+/// failover). Background daemon remains in the type but is no longer selectable:
 ///
 /// | Mode | Description | Best For |
 /// |------|-------------|----------|
-/// | Auto | Smart selection based on availability | Most users |
 /// | USB | Fast lockdown tunnel via USB | Development |
 /// | WiFi | True wireless connection | Wireless testing |
 /// | Daemon | Background service | Continuous use |
@@ -690,10 +684,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         "[Tunnel] Gave up waiting for the device on Wi‑Fi: \(LogRedaction.redactingDeviceIdentifiers(detail))"
     }
 
+    /// Where the tunnel mode is stored. Internal so tests use a throwaway suite instead of
+    /// the app's own preferences domain.
+    var settings: UserDefaults = .standard
+
     /// Current tunnel mode (user preference)
-    @Published var preferredMode: TunnelMode = .auto {
+    @Published var preferredMode: TunnelMode = .wifi {
         didSet {
-            UserDefaults.standard.set(preferredMode.rawValue, forKey: "tunnelMode")
+            settings.set(preferredMode.rawValue, forKey: ConnectionSettingsMigration.tunnelModeKey)
             // A switch to Background Daemon ends an automatic reconnect at once.
             reconnectControlSubject.send()
         }
@@ -891,7 +889,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         switch mode {
         case .daemon:
             return ["-m", "pymobiledevice3", "remote", "tunneld"]
-        case .auto, .usb, .wifi:
+        case .usb, .wifi:
             return nil
         }
     }
@@ -926,7 +924,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     private(set) var isDaemonAdoptionSuppressedByStop = false
 
     /// Only Background Daemon mode adopts a running `remote tunneld`, and not after Stop.
-    /// Auto, USB and Wi-Fi use the helper's connection and never fall back to the daemon.
+    /// USB and Wi-Fi use the helper's connection and never fall back to the daemon.
     private var mayAdoptRunningDaemon: Bool {
         preferredMode == .daemon && !isDaemonAdoptionSuppressedByStop
     }
@@ -964,7 +962,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         stateMachine.send(.connectionEstablished(info: adopted))
     }
 
-    /// Start tunnel with preferred mode (with auto-fallback)
+    /// Start the tunnel in the preferred mode. There is no fallback to another mode.
     func startTunnel(deviceId: String? = nil) async {
         await startTunnel(deviceId: deviceId, visibilityWait: deviceVisibilityWait)
     }
@@ -990,28 +988,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         lastError = nil
         lastStartDeviceId = deviceId
 
-        let modesToTry: [TunnelMode]
-
-        if preferredMode == .auto {
-            // Auto: USB when cabled, else Wi-Fi, both through the helper connection.
-            // The daemon is not an automatic fallback: it would replace the real
-            // Wi-Fi failure reason with an unrelated one.
-            modesToTry = [.usb, .wifi]
-        } else {
-            // Specific mode requested
-            modesToTry = [preferredMode]
-        }
-
-        guard let firstMode = modesToTry.first else {
-            return
-        }
+        let mode = preferredMode
 
         // Reserve startup synchronously before the first suspension point.
-        guard case .success = stateMachine.send(.startRequested(mode: firstMode)) else {
+        guard case .success = stateMachine.send(.startRequested(mode: mode)) else {
             return
         }
 
-        if !firstMode.usesHelperConnection, let runningMode = await detectRunningTunnel() {
+        if !mode.usesHelperConnection, let runningMode = await detectRunningTunnel() {
             await parseRsdInfo()
             if let existingInfo = stateMachine.currentContext.tunnelInfo ?? tunnelInfo, existingInfo.isUsable {
                 guard stateMachine.currentState == .starting else {
@@ -1036,81 +1020,55 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
             return
         }
 
-        for (index, mode) in modesToTry.enumerated() {
-            if index > 0 {
-                guard case .success = stateMachine.send(.startRequested(mode: mode)) else {
-                    return
-                }
+        Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
+
+        if mode.usesHelperConnection {
+            if await connectHelper(mode: mode, deviceId: deviceId, wait: visibilityWait) {
+                return
             }
+            guard stateMachine.currentState == .starting else { return }
+            stateMachine.send(.errorOccurred(lastError ?? "Failed to connect to the device"))
+            return
+        }
 
-            Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
+        let outcome = await attemptStart(mode: mode, deviceId: deviceId)
 
-            if mode.usesHelperConnection {
-                if await connectHelper(mode: mode, deviceId: deviceId, wait: visibilityWait) {
-                    return
-                }
-                guard stateMachine.currentState == .starting else { return }
-                if preferredMode != .auto || index == modesToTry.count - 1 {
-                    stateMachine.send(.errorOccurred(lastError ?? "Failed to connect to the device"))
-                    return
-                }
-                Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
-                stateMachine.reset()
-                continue
+        if case .cancelled = outcome {
+            if stateMachine.currentState == .starting {
+                stateMachine.send(.errorOccurred(lastError ?? "Administrator access required"))
             }
+            return
+        }
 
-            let outcome = await attemptStart(mode: mode, deviceId: deviceId)
+        if case .started(let pid) = outcome {
+            let startupTimeout = min(AppSettings.shared.tunnelTimeout, 30)
+            let info = await TunnelStartupWaiter.wait(
+                timeout: startupTimeout,
+                processIsRunning: { self.isProcessRunning(pid: pid) },
+                readInfo: {
+                    await self.parseRsdInfo()
+                    return self.stateMachine.currentContext.tunnelInfo ?? self.tunnelInfo
+                }
+            )
 
-            if case .cancelled = outcome {
-                if stateMachine.currentState == .starting {
-                    stateMachine.send(.errorOccurred(lastError ?? "Administrator access required"))
+            guard stateMachine.currentState == .starting else { return }
+            guard let info else {
+                if isProcessRunning(pid: pid) {
+                    lastError = "Tunnel did not provide a usable RSD endpoint within \(Int(startupTimeout)) seconds"
+                    stateMachine.send(.errorOccurred(lastError!))
+                } else {
+                    await checkLogForErrors(mode: mode)
+                    lastError = lastError ?? "Tunnel process exited before the connection was established"
+                    stateMachine.send(.processExited(pid: pid))
                 }
                 return
             }
+            stateMachine.send(.connectionEstablished(info: info))
+            return
+        }
 
-            if case .started(let pid) = outcome {
-                let startupTimeout = min(AppSettings.shared.tunnelTimeout, 30)
-                let info = await TunnelStartupWaiter.wait(
-                    timeout: startupTimeout,
-                    processIsRunning: { self.isProcessRunning(pid: pid) },
-                    readInfo: {
-                        await self.parseRsdInfo()
-                        return self.stateMachine.currentContext.tunnelInfo ?? self.tunnelInfo
-                    }
-                )
-
-                guard stateMachine.currentState == .starting else { return }
-                guard let info else {
-                    if isProcessRunning(pid: pid) {
-                        lastError = "Tunnel did not provide a usable RSD endpoint within \(Int(startupTimeout)) seconds"
-                        stateMachine.send(.errorOccurred(lastError!))
-                    } else {
-                        await checkLogForErrors(mode: mode)
-                        lastError = lastError ?? "Tunnel process exited before the connection was established"
-                        stateMachine.send(.processExited(pid: pid))
-                    }
-                    return
-                }
-                stateMachine.send(.connectionEstablished(info: info))
-                return
-            }
-
-            // If not auto mode, don't try other modes
-            if preferredMode != .auto {
-                if stateMachine.currentState == .starting {
-                    stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
-                }
-                break
-            }
-
-            if index < modesToTry.count - 1 {
-                Logger.debug("Mode \(mode.rawValue) failed, trying next...", category: .device)
-                stateMachine.reset()
-            } else if stateMachine.currentState == .starting {
-                stateMachine.send(.errorOccurred(
-                    lastError ?? "Failed to start tunnel. Ensure device is connected and trusted."
-                ))
-            }
+        if stateMachine.currentState == .starting {
+            stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
         }
     }
 
@@ -1328,11 +1286,21 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         adoptedOwnedTunnel = record
     }
 
+#if DEBUG
+    /// Test seam: a root-owned stand-in process for a leftover tunnel cannot have the
+    /// daemon's command line, so the quit-failure test skips that one check.
+    static var skipsRecordedTunnelCommandCheckForTesting = false
+#endif
+
     private static func stopRecordedTunnel(_ record: OwnedTunnelRecord) async -> TunnelProcessTerminator.Outcome {
-        await TunnelProcessTerminator.stop(
+        var requiredCommandPattern: String? = record.mode.processPattern
+#if DEBUG
+        if skipsRecordedTunnelCommandCheckForTesting { requiredCommandPattern = nil }
+#endif
+        return await TunnelProcessTerminator.stop(
             pid: record.pid,
             expectedStartTime: record.startTime,
-            requiredCommandPattern: record.mode == .auto ? nil : record.mode.processPattern,
+            requiredCommandPattern: requiredCommandPattern,
             isAlive: { record.isLive }
         )
     }
@@ -1469,7 +1437,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         }
         if mode == .usb {
             guard await usbmuxReportsUSB() else {
-                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — pick Wi‑Fi Only to use it."
+                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — choose Wi‑Fi to use it."
                 return false
             }
         }
@@ -1657,7 +1625,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         if mode == .usb {
             let usbVisible = await usbmuxReportsUSB()
             if !usbVisible {
-                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — pick Wi‑Fi Only to use it."
+                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — choose Wi‑Fi to use it."
                 return .failed
             }
         }
@@ -1751,8 +1719,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
 
     /// Parse RSD address and port from tunnel log
     private func parseRsdInfo() async {
-        let mode = activeMode ?? stateMachine.currentContext.activeMode
-        guard mode != nil else { return }
+        guard let mode = activeMode ?? stateMachine.currentContext.activeMode else { return }
 
         do {
             // Give log file time to be written
@@ -1786,7 +1753,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
             if let address = rsdAddress, isValidRsdAddress(address), let port = rsdPort, isValidRsdPort(port) {
                 // Get process ID from state machine context
                 let processId = stateMachine.currentContext.activeProcessIds.first
-                let tunnelMode = mode ?? .auto
+                let tunnelMode = mode
 
                 tunnelInfo = TunnelInfo(
                     rsdAddress: address,
