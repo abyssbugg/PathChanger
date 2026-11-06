@@ -582,12 +582,13 @@ final class SimulationMapCanvasEqualityTests: XCTestCase {
         trailSegments: [[LocationCoordinate]] = [[LocationCoordinate(latitude: 35.0, longitude: 139.0)]],
         routeStops: [LocationCoordinate] = [LocationCoordinate(latitude: 35.1, longitude: 139.1)],
         mapStyle: MapStyleType = .standard,
+        mapLayer: MapLayerConfiguration = .default,
         cameraPosition: MapCameraPosition = .automatic
     ) -> SimulationMapCanvas {
         SimulationMapCanvas(
             marker: marker, mode: mode, legs: legs, trailSegments: trailSegments, routeStops: routeStops,
-            mapStyle: mapStyle, cameraPosition: cameraPosition, position: .constant(cameraPosition),
-            onCameraChangeEnd: { _ in }, onTap: { _ in }, onRemoveStop: { _ in }
+            mapStyle: mapStyle, mapLayer: mapLayer, cameraPosition: cameraPosition, position: .constant(cameraPosition),
+            onCameraChangeEnd: { _, _ in }, onTap: { _ in }, onRemoveStop: { _ in }
         )
     }
 
@@ -613,6 +614,7 @@ final class SimulationMapCanvasEqualityTests: XCTestCase {
             ("trail", canvas(trailSegments: [[LocationCoordinate(latitude: 35.0, longitude: 139.0), moved]])),
             ("stops", canvas(routeStops: [moved])),
             ("map style", canvas(mapStyle: .satellite)),
+            ("map layer", canvas(mapLayer: MapLayerConfiguration(elevation3D: true, showsTraffic: true, showsPlaces: false))),
             ("camera position", canvas(cameraPosition: .region(MKCoordinateRegion(
                 center: moved.clLocationCoordinate2D,
                 span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))))),

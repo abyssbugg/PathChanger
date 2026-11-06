@@ -30,12 +30,27 @@ struct SimulationView: View {
     )
     @AppStorage("keepLocationCentered") private var keepCentered: Bool = true
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
+    // The map layers (MapKit Phase 1, 2026-11-06): 3D elevation is opt-in, traffic is
+    // off, places are on. Each persists separately.
+    @AppStorage(MapLayerConfiguration.elevationKey) private var mapElevation3D: Bool = false
+    @AppStorage(MapLayerConfiguration.trafficKey) private var mapShowsTraffic: Bool = false
+    @AppStorage(MapLayerConfiguration.placesKey) private var mapShowsPlaces: Bool = true
+    @State private var followMode: MapFollowMode = .following
+    /// The camera MapKit last reported: the source of truth for preserving distance,
+    /// heading and pitch across recenters and zooms. nil until the first camera change.
+    @State private var lastKnownCamera: MapCameraState?
+    /// Syncs the persisted base style into the binding once per launch: the binding
+    /// lives in ContentView, which initializes it to Standard on every launch.
+    private static var didSyncBaseStyleThisLaunch = false
+
+    private var mapLayer: MapLayerConfiguration {
+        MapLayerConfiguration(elevation3D: mapElevation3D, showsTraffic: mapShowsTraffic, showsPlaces: mapShowsPlaces)
+    }
 
     var body: some View {
         ZStack {
             mapView
                 .toolbar(.hidden)
-                .mapControlVisibility(.hidden)
                 .clipped()
 
             VStack {
@@ -61,6 +76,13 @@ struct SimulationView: View {
         .onAppear {
             appState.activeMode = mode
             appState.placeNameResolver?.update(for: appState.locationPresentation.appliedCoordinate)
+            if !Self.didSyncBaseStyleThisLaunch {
+                Self.didSyncBaseStyleThisLaunch = true
+                if let stored = MapLayerConfiguration.readBaseStyle(from: .standard) {
+                    mapStyle = stored
+                }
+                followMode = keepCentered ? .following : .off
+            }
         }
         .onChange(of: mode) { _, newMode in
             appState.activeMode = newMode
@@ -78,6 +100,18 @@ struct SimulationView: View {
         .onChange(of: appState.locationPresentation.desiredCoordinate) { _, newLocation in
             guard let location = newLocation, !appState.locationPresentation.isMovementActive else { return }
             follow(location, animated: true)
+        }
+        // A camera the user moved themselves pauses following: MapKit marks the position
+        // positionedByUser, which programmatic writes never do.
+        .onChange(of: position) { _, newPosition in
+            if newPosition.positionedByUser {
+                followMode = followMode.afterUserMovedCamera()
+            }
+        }
+        // Every style source (the on-map menu and ContentView's cycling) lands here, so
+        // the persisted base style never disagrees with what is on screen.
+        .onChange(of: mapStyle) { _, newStyle in
+            MapLayerConfiguration.writeBaseStyle(newStyle, to: .standard)
         }
         .fileImporter(
             isPresented: $appState.showRouteImport,
@@ -98,9 +132,13 @@ struct SimulationView: View {
             trailSegments: showsRoute ? appState.travelTrail.segments(for: mode).filter { $0.count >= 2 } : [],
             routeStops: showsRoute ? appState.currentRoute : [],
             mapStyle: mapStyle,
+            mapLayer: mapLayer,
             cameraPosition: position,
             position: $position,
-            onCameraChangeEnd: { region in currentRegion = region },
+            onCameraChangeEnd: { region, camera in
+                currentRegion = region
+                lastKnownCamera = camera
+            },
             onTap: { coordinate in handleMapTap(at: coordinate) },
             onRemoveStop: { index in appState.removeRouteWaypoint(at: index) }
         )
@@ -147,39 +185,41 @@ struct SimulationView: View {
         appState.locationPresentation.isMovementActive || appState.isMovementEngineRunning
     }
 
-    /// Keeps the point on screen at the user's zoom; the camera moves only when the point
-    /// leaves the middle of the visible map. `currentRegion` follows so zoom buttons zoom
-    /// around the new centre.
+    /// Keeps the spoofed point on screen at the user's zoom, tilt and rotation; the
+    /// camera moves only when the point leaves the middle of the visible map
+    /// (PRODUCT_REQUIREMENTS 3.5, owner decision 2026-11-02; pitch and heading are
+    /// preserved since MapKit Phase 1, 2026-11-06). `currentRegion` follows so the
+    /// dead-zone check and the zoom buttons work from the new centre.
     private func follow(_ location: LocationCoordinate, animated: Bool) {
+        guard followMode.isFollowing else { return }
         let point = location.clLocationCoordinate2D
         guard MapFollow.needsRecentering(point, in: currentRegion) else { return }
-        let region = MapFollow.region(centeredOn: point, keeping: currentRegion)
-        currentRegion = region
-        if animated {
-            withAnimation { position = .region(region) }
+        if let camera = lastKnownCamera, !camera.isEffectivelyFlat {
+            let moved = camera.moved(to: point)
+            lastKnownCamera = moved
+            currentRegion.center = point
+            apply(moved.cameraPosition, animated: animated)
         } else {
-            position = .region(region)
+            let region = MapFollow.region(centeredOn: point, keeping: currentRegion)
+            currentRegion = region
+            apply(.region(region), animated: animated)
+        }
+    }
+
+    private func apply(_ newPosition: MapCameraPosition, animated: Bool) {
+        if animated {
+            withAnimation { position = newPosition }
+        } else {
+            position = newPosition
         }
     }
 
     private var zoomStack: some View {
         VStack(spacing: 7) {
-            Text(scaleLabel)
-                .font(Organic.body(10, weight: .bold))
-                .foregroundStyle(Organic.neutral700)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(Organic.neutral100.opacity(0.86))
-                .overlay(Capsule().stroke(Organic.neutral300, lineWidth: 1))
-                .clipShape(Capsule())
+            mapLayerMenu
 
             Button {
-                if let location = appState.locationPresentation.appliedCoordinate ?? appState.locationPresentation.desiredCoordinate {
-                    position = .region(MKCoordinateRegion(
-                        center: location.clLocationCoordinate2D,
-                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                    ))
-                }
+                centerOnDevice()
             } label: {
                 Image(systemName: "dot.viewfinder")
                     .font(.system(size: 14, weight: .semibold))
@@ -228,20 +268,89 @@ struct SimulationView: View {
         .fixedSize()
     }
 
-    private var scaleLabel: String {
-        let meters = currentRegion.span.latitudeDelta * 111_000 * 0.18
-        if meters >= 1000 {
-            return String(format: "%.0f km", meters / 1000)
+    /// The on-map style and layer menu (MapKit Phase 1, 2026-11-06): the base style,
+    /// the optional layers, and the follow preference. Traffic and places are shown but
+    /// disabled on Satellite imagery, where MapKit has no parameters for them.
+    private var mapLayerMenu: some View {
+        Menu {
+            Picker("Map style", selection: $mapStyle) {
+                ForEach(MapStyleType.allCases) { style in
+                    Text(style.rawValue).tag(style)
+                }
+            }
+            .pickerStyle(.inline)
+            Section("Layers") {
+                Toggle("3D Terrain", isOn: $mapElevation3D)
+                Toggle("Traffic", isOn: $mapShowsTraffic)
+                    .disabled(!MapLayerConfiguration.supportsTraffic(mapStyle))
+                Toggle("Places", isOn: $mapShowsPlaces)
+                    .disabled(!MapLayerConfiguration.supportsPlaces(mapStyle))
+            }
+            Toggle("Keep the point centered", isOn: Binding(
+                get: { keepCentered && followMode != .off },
+                set: { on in
+                    keepCentered = on
+                    followMode = on ? .following : .off
+                }
+            ))
+        } label: {
+            Image(systemName: "square.3.layers.3d")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Organic.neutral700)
+                .frame(width: 36, height: 36)
+                .background(Organic.neutral100)
+                .clipShape(RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Organic.radiusSM, style: .continuous)
+                        .stroke(Organic.neutral300, lineWidth: 1)
+                )
+                .shadow(color: Organic.shadow.opacity(0.08), radius: 3, y: 1)
         }
-        return "\(max(10, Int(meters.rounded()))) m"
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 36, height: 36)
+        .help("Map style and layers")
+        .accessibilityLabel("Map style and layers")
+        .accessibilityIdentifier("map.styleAndLayers")
     }
 
     private func zoom(_ factor: Double) {
-        let center = currentRegion.center
-        let span = MapZoom.scaled(currentRegion.span, factor: factor)
-        let region = MKCoordinateRegion(center: center, span: span)
-        currentRegion = region
-        position = .region(region)
+        if let camera = lastKnownCamera, !camera.isEffectivelyFlat {
+            // A pitched or rotated camera zooms by distance, keeping heading and pitch.
+            let zoomed = camera.zoomed(byFactor: factor)
+            lastKnownCamera = zoomed
+            currentRegion = MKCoordinateRegion(
+                center: zoomed.centerCoordinate,
+                span: MapZoom.scaled(currentRegion.span, factor: factor)
+            )
+            position = zoomed.cameraPosition
+        } else {
+            let center = currentRegion.center
+            let span = MapZoom.scaled(currentRegion.span, factor: factor)
+            let region = MKCoordinateRegion(center: center, span: span)
+            currentRegion = region
+            position = .region(region)
+        }
+    }
+
+    /// The center button: resumes following and moves onto the spoofed point, keeping
+    /// the user's zoom, tilt and rotation (MapKit Phase 1, 2026-11-06; it used to force
+    /// a 0.01° span, which threw the zoom away).
+    private func centerOnDevice() {
+        guard let location = appState.locationPresentation.appliedCoordinate
+                ?? appState.locationPresentation.desiredCoordinate else { return }
+        keepCentered = true
+        followMode = followMode.afterCenterPressed
+        let point = location.clLocationCoordinate2D
+        if let camera = lastKnownCamera, !camera.isEffectivelyFlat {
+            let moved = camera.moved(to: point)
+            lastKnownCamera = moved
+            withAnimation { position = moved.cameraPosition }
+        } else {
+            let region = MapFollow.region(centeredOn: point, keeping: currentRegion)
+            currentRegion = region
+            withAnimation { position = .region(region) }
+        }
     }
 
     private func handleMapTap(at coordinate: CLLocationCoordinate2D) {
@@ -294,11 +403,13 @@ struct SimulationMapCanvas: View, Equatable {
     let trailSegments: [[LocationCoordinate]]
     let routeStops: [LocationCoordinate]
     let mapStyle: MapStyleType
+    /// The optional layers (3D, traffic, places) on top of the base style.
+    let mapLayer: MapLayerConfiguration
     /// The camera position this canvas was built with: the binding alone always reads the
     /// current value, so it cannot tell a moved camera apart.
     let cameraPosition: MapCameraPosition
     @Binding var position: MapCameraPosition
-    let onCameraChangeEnd: (MKCoordinateRegion) -> Void
+    let onCameraChangeEnd: (MKCoordinateRegion, MapCameraState) -> Void
     let onTap: (CLLocationCoordinate2D) -> Void
     let onRemoveStop: (Int) -> Void
 
@@ -310,7 +421,8 @@ struct SimulationMapCanvas: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.marker == rhs.marker && lhs.mode == rhs.mode && lhs.legs == rhs.legs
             && lhs.trailSegments == rhs.trailSegments && lhs.routeStops == rhs.routeStops
-            && lhs.mapStyle == rhs.mapStyle && lhs.cameraPosition == rhs.cameraPosition
+            && lhs.mapStyle == rhs.mapStyle && lhs.mapLayer == rhs.mapLayer
+            && lhs.cameraPosition == rhs.cameraPosition
     }
 
     var body: some View {
@@ -390,10 +502,16 @@ struct SimulationMapCanvas: View, Equatable {
                     }
                 }
             }
-            .mapStyle(mapStyle.style)
-            .mapControlVisibility(.hidden)
+            .mapStyle(mapLayer.mapStyle(for: mapStyle))
+            .mapControls {
+                MapCompass()
+                MapPitchSlider()
+                MapScaleView()
+            }
             .onMapCameraChange(frequency: .onEnd) { context in
-                onCameraChangeEnd(context.region)
+                // MapKit always reports the current camera with a change
+                // (MapCameraUpdateContext.camera is not optional).
+                onCameraChangeEnd(context.region, MapCameraState(context.camera))
             }
             .onTapGesture { screenPoint in
                 if let coordinate = proxy.convert(screenPoint, from: .local) {
@@ -466,6 +584,186 @@ enum MapFollow {
     }
 }
 
+/// The camera facts a recenter or zoom must preserve: distance, heading and pitch
+/// (MapKit Phase 1, 2026-11-06). Captured from `MapCameraUpdateContext.camera`, which
+/// MapKit reports after every camera change.
+struct MapCameraState: Equatable {
+    let centerCoordinate: CLLocationCoordinate2D
+    let distance: Double
+    let heading: Double
+    let pitch: Double
+
+    /// CLLocationCoordinate2D is not Equatable, so the comparison is written out.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.centerCoordinate.latitude == rhs.centerCoordinate.latitude
+            && lhs.centerCoordinate.longitude == rhs.centerCoordinate.longitude
+            && lhs.distance == rhs.distance
+            && lhs.heading == rhs.heading
+            && lhs.pitch == rhs.pitch
+    }
+
+    /// Distance bounds mirroring `MapZoom`'s span clamps (0.0008°–80° of latitude is
+    /// about 89 m – 8,880 km), so both zoom paths enforce the same envelope.
+    static let minDistance: Double = MapZoom.minDelta * 111_000
+    static let maxDistance: Double = MapZoom.maxDelta * 111_000
+
+    init(centerCoordinate: CLLocationCoordinate2D, distance: Double, heading: Double = 0, pitch: Double = 0) {
+        self.centerCoordinate = centerCoordinate
+        self.distance = distance
+        self.heading = heading
+        self.pitch = pitch
+    }
+
+    /// The camera MapKit reported after a change.
+    init(_ camera: MapCamera) {
+        self.init(
+            centerCoordinate: camera.centerCoordinate,
+            distance: camera.distance,
+            heading: camera.heading,
+            pitch: camera.pitch
+        )
+    }
+
+    /// The same framing over a new point: distance, heading and pitch are kept.
+    func moved(to newCenter: CLLocationCoordinate2D) -> MapCameraState {
+        MapCameraState(centerCoordinate: newCenter, distance: distance, heading: heading, pitch: pitch)
+    }
+
+    /// The camera zoomed by `factor`, the same direction as `MapZoom.scaled` (below 1
+    /// zooms in), clamped to the distance bounds.
+    func zoomed(byFactor factor: Double) -> MapCameraState {
+        MapCameraState(
+            centerCoordinate: centerCoordinate,
+            distance: min(Self.maxDistance, max(Self.minDistance, distance * factor)),
+            heading: heading,
+            pitch: pitch
+        )
+    }
+
+    /// Whether this camera is indistinguishable from the flat, north-up view the region
+    /// path produces. A flat camera keeps using the region path, so users who never
+    /// tilt or rotate see exactly the pre-Phase-1 behavior.
+    var isEffectivelyFlat: Bool {
+        pitch < 0.5 && abs(heading.truncatingRemainder(dividingBy: 360)) < 0.5
+    }
+
+    var cameraPosition: MapCameraPosition {
+        .camera(MapCamera(centerCoordinate: centerCoordinate, distance: distance, heading: heading, pitch: pitch))
+    }
+}
+
+/// The follow switch's three states (MapKit Phase 1, 2026-11-06): following tracks the
+/// spoofed point; a user drag pauses it so exploring the map is never fought; off stops
+/// the camera from moving on its own. The persisted keepLocationCentered preference is
+/// the off state's storage.
+enum MapFollowMode: Equatable {
+    case following
+    case pausedByUser
+    case off
+
+    /// After the user moved the map themselves: following pauses; paused and off stay.
+    func afterUserMovedCamera() -> MapFollowMode {
+        self == .following ? .pausedByUser : self
+    }
+
+    /// The center button always resumes following.
+    var afterCenterPressed: MapFollowMode { .following }
+
+    /// Whether automatic recenters act in this mode.
+    var isFollowing: Bool { self == .following }
+}
+
+/// The decisions one base style plus the layer switches produce, in plain Equatable
+/// fields (MapKit's MapStyle is not Equatable, and its Elevation and StandardEmphasis
+/// enums are not either). Standard always renders with MapKit's muted emphasis — the
+/// app's fixed look — which lives in `MapLayerConfiguration.mapStyle(for:)`.
+struct MapStyleRecipe: Equatable {
+    var base: MapStyleType
+    /// Realistic 3D elevation when true, flat otherwise.
+    var elevationIsRealistic: Bool
+    var showsPlaces: Bool
+    var showsTraffic: Bool
+}
+
+/// The map layers on top of the base style: realistic 3D elevation, traffic and places,
+/// each persisted separately (defaults: 3D off — it is opt-in; traffic off; places on).
+/// Satellite imagery has no traffic or place parameters, so those two layers report
+/// themselves unavailable there and the recipe drops them.
+struct MapLayerConfiguration: Equatable {
+    var elevation3D: Bool
+    var showsTraffic: Bool
+    var showsPlaces: Bool
+
+    static let `default` = MapLayerConfiguration(elevation3D: false, showsTraffic: false, showsPlaces: true)
+    static let elevationKey = "mapElevation3D"
+    static let trafficKey = "mapShowsTraffic"
+    static let placesKey = "mapShowsPlaces"
+    /// The persisted base style; the on-map menu and ContentView's cycling both land
+    /// here through SimulationView's onChange(of: mapStyle).
+    static let baseStyleKey = "mapBaseStyle"
+
+    /// Whether the base style can show traffic at all.
+    static func supportsTraffic(_ base: MapStyleType) -> Bool { base != .satellite }
+
+    /// Whether the base style can show places at all.
+    static func supportsPlaces(_ base: MapStyleType) -> Bool { base != .satellite }
+
+    func styleRecipe(for base: MapStyleType) -> MapStyleRecipe {
+        MapStyleRecipe(
+            base: base,
+            elevationIsRealistic: elevation3D,
+            showsPlaces: Self.supportsPlaces(base) && showsPlaces,
+            showsTraffic: Self.supportsTraffic(base) && showsTraffic
+        )
+    }
+
+    func mapStyle(for base: MapStyleType) -> MapStyle {
+        let recipe = styleRecipe(for: base)
+        let elevation: MapStyle.Elevation = recipe.elevationIsRealistic ? .realistic : .flat
+        switch recipe.base {
+        case .standard:
+            return .standard(
+                elevation: elevation,
+                emphasis: .muted,
+                pointsOfInterest: recipe.showsPlaces ? .all : .excludingAll,
+                showsTraffic: recipe.showsTraffic
+            )
+        case .hybrid:
+            return .hybrid(
+                elevation: elevation,
+                pointsOfInterest: recipe.showsPlaces ? .all : .excludingAll,
+                showsTraffic: recipe.showsTraffic
+            )
+        case .satellite:
+            return .imagery(elevation: elevation)
+        }
+    }
+
+    func write(to defaults: UserDefaults) {
+        defaults.set(elevation3D, forKey: Self.elevationKey)
+        defaults.set(showsTraffic, forKey: Self.trafficKey)
+        defaults.set(showsPlaces, forKey: Self.placesKey)
+    }
+
+    static func read(from defaults: UserDefaults) -> MapLayerConfiguration {
+        MapLayerConfiguration(
+            elevation3D: defaults.object(forKey: elevationKey) as? Bool ?? false,
+            showsTraffic: defaults.object(forKey: trafficKey) as? Bool ?? false,
+            showsPlaces: defaults.object(forKey: placesKey) as? Bool ?? true
+        )
+    }
+
+    static func writeBaseStyle(_ style: MapStyleType, to defaults: UserDefaults) {
+        defaults.set(style.rawValue, forKey: baseStyleKey)
+    }
+
+    /// The stored base style, or nil when nothing usable is stored (first launch, or an
+    /// unknown value from another build).
+    static func readBaseStyle(from defaults: UserDefaults) -> MapStyleType? {
+        MapStyleType(rawValue: defaults.string(forKey: baseStyleKey) ?? "")
+    }
+}
+
 /// The place or street name of the spoofed location, above its coordinates. Shows
 /// nothing while no name is known.
 private struct PlaceNameLabel: View {
@@ -496,14 +794,8 @@ enum MapStyleType: String, CaseIterable, Identifiable {
     case hybrid = "Hybrid"
 
     var id: String { rawValue }
-
-    var style: MapStyle {
-        switch self {
-        case .standard: return .standard(elevation: .flat, emphasis: .muted)
-        case .satellite: return .imagery
-        case .hybrid: return .hybrid
-        }
-    }
+    // The MapStyle each case produces comes from MapLayerConfiguration.mapStyle(for:),
+    // which layers 3D elevation, traffic and places on top of the base style.
 }
 
 enum RouteType: String {
