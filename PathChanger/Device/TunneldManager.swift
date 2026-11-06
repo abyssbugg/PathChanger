@@ -802,8 +802,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         ensureLogDirectoryExists()
 
         // Load saved preference
-        if let savedMode = UserDefaults.standard.string(forKey: "tunnelMode"),
-           let mode = TunnelMode(rawValue: savedMode) {
+        if let mode = Self.loadPreferredMode(from: .standard) {
             preferredMode = mode
         }
 
@@ -822,6 +821,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         // App-exit cleanup is AppDelegate.applicationWillTerminate -> stopTunnelBeforeExit()
         // (synchronous). The observer that used to live here only enqueued a Task that
         // never ran before exit().
+    }
+
+    /// The stored tunnel mode, read only after the connection settings migration has
+    /// rewritten both stored settings to one transport.
+    nonisolated static func loadPreferredMode(from settings: UserDefaults) -> TunnelMode? {
+        ConnectionSettingsMigration.prepare(settings)
+        return settings.string(forKey: ConnectionSettingsMigration.tunnelModeKey)
+            .flatMap(TunnelMode.init(rawValue:))
     }
 
     /// Handle actions emitted by the state machine

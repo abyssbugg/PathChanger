@@ -534,10 +534,14 @@ class DeviceManager: ObservableObject {
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
     private var tunnelStateObserver: AnyCancellable?
 
+    /// Where the connection mode is stored. Injectable so tests never write the app's
+    /// own preferences domain.
+    private let settings: UserDefaults
+
     // MARK: Initialization
-    init(startBackgroundServices: Bool = true) {
-        if let raw = UserDefaults.standard.string(forKey: "connectionMode"),
-           let saved = ConnectionMode(rawValue: raw) {
+    init(startBackgroundServices: Bool = true, settings: UserDefaults = .standard) {
+        self.settings = settings
+        if let saved = Self.loadConnectionMode(from: settings) {
             connectionMode = saved
         }
         guard startBackgroundServices else { return }
@@ -547,6 +551,14 @@ class DeviceManager: ObservableObject {
             await refreshDevices()
             startAutoRefresh()
         }
+    }
+
+    /// The stored connection mode, read only after the connection settings migration
+    /// has rewritten both stored settings to one transport.
+    static func loadConnectionMode(from settings: UserDefaults) -> ConnectionMode? {
+        ConnectionSettingsMigration.prepare(settings)
+        return settings.string(forKey: ConnectionSettingsMigration.connectionModeKey)
+            .flatMap(ConnectionMode.init(rawValue:))
     }
 
     /// Whether live usbmux reports the device over USB or Network — exactly when
@@ -1805,7 +1817,7 @@ class DeviceManager: ObservableObject {
 
     func setConnectionMode(_ mode: ConnectionMode, tunnelMode resolved: TunnelMode? = nil) {
         connectionMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: "connectionMode")
+        settings.set(mode.rawValue, forKey: ConnectionSettingsMigration.connectionModeKey)
         // A caller that asked the user first passes the mode it asked about (Random's pick).
         let tunnelMode = resolved ?? Self.tunnelMode(
             for: mode,
