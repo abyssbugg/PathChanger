@@ -3,7 +3,7 @@
 //  PathChanger
 //
 //  PathChanger offers two connection modes, USB and Wi-Fi, chosen by the user (owner
-//  decisions 2026-11-06 and 2026-11-06). Earlier builds stored two settings that could disagree:
+//  decisions 2026-11-06). Earlier builds stored two settings that could disagree:
 //  `connectionMode` (Random, Auto, USB Only, WiFi Only) and `tunnelMode` (Auto,
 //  USB (Lockdown), WiFi Only, Background Daemon). This migration rewrites both to the
 //  same transport before either is read, and records a version marker.
