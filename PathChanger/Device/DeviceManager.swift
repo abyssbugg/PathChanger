@@ -539,12 +539,12 @@ class DeviceManager: ObservableObject {
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
     private var tunnelStateObserver: AnyCancellable?
 
-    /// Where the connection mode is stored. Injectable so tests never write the app's
-    /// own preferences domain.
-    private let settings: UserDefaults
+    /// Where the connection mode is stored (`ConnectionSettingsMigration.defaultStore`
+    /// unless injected), so tests never write the app's own preferences domain.
+    let settings: UserDefaults
 
     // MARK: Initialization
-    init(startBackgroundServices: Bool = true, settings: UserDefaults = .standard) {
+    init(startBackgroundServices: Bool = true, settings: UserDefaults = ConnectionSettingsMigration.defaultStore) {
         self.settings = settings
         if let saved = Self.loadConnectionMode(from: settings) {
             connectionMode = saved

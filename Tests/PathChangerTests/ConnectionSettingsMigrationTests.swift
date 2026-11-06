@@ -223,6 +223,40 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "connectionMode"), Self.wifiConnection)
     }
 
+    // MARK: The default store under the test host
+
+    /// Tests that set the shared tunnel manager's mode (directly, or through
+    /// `DeviceManager.setConnectionMode`) used to write the app's own preferences domain,
+    /// which the app-hosted suite shares with the running app.
+    func testUnderTheTestHostTheDefaultStoreIsNotTheAppDomain() {
+        XCTAssertTrue(AppRuntimeEnvironment.isHostingTests)
+        XCTAssertFalse(ConnectionSettingsMigration.defaultStore === UserDefaults.standard)
+        XCTAssertTrue(ConnectionSettingsMigration.defaultStore === ConnectionSettingsMigration.defaultStore,
+                      "one store for the whole test process")
+    }
+
+    func testTheProductionDefaultStoreIsTheAppDomain() {
+        XCTAssertTrue(ConnectionSettingsMigration.defaultStore(isHostingTests: false) === UserDefaults.standard)
+    }
+
+    func testTheSharedTunnelManagerAndANewDeviceManagerUseTheDefaultStore() {
+        XCTAssertTrue(TunneldManager.shared.settings === ConnectionSettingsMigration.defaultStore)
+        XCTAssertTrue(DeviceManager(startBackgroundServices: false).settings === ConnectionSettingsMigration.defaultStore)
+    }
+
+    func testSettingTheSharedTunnelModeLeavesTheAppDomainUnchanged() {
+        let tunnel = TunneldManager.shared
+        let previous = tunnel.preferredMode
+        let appDomainValue = UserDefaults.standard.string(forKey: "tunnelMode")
+        defer { tunnel.preferredMode = previous }
+
+        tunnel.preferredMode = previous == .usb ? .wifi : .usb
+
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "tunnelMode"), appDomainValue)
+        XCTAssertEqual(ConnectionSettingsMigration.defaultStore.string(forKey: "tunnelMode"),
+                       tunnel.preferredMode.rawValue)
+    }
+
     // MARK: Wiring: each manager migrates before it reads its key
 
     func testDeviceManagerMigratesBeforeReadingTheConnectionMode() throws {

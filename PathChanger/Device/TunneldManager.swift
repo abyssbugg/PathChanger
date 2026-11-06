@@ -684,9 +684,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         "[Tunnel] Gave up waiting for the device on Wi‑Fi: \(LogRedaction.redactingDeviceIdentifiers(detail))"
     }
 
-    /// Where the tunnel mode is stored. Internal so tests use a throwaway suite instead of
-    /// the app's own preferences domain.
-    var settings: UserDefaults = .standard
+    /// Where the tunnel mode is stored (`ConnectionSettingsMigration.defaultStore`: never
+    /// the app's own preferences domain inside the test host). Internal so a test can use
+    /// its own throwaway suite.
+    var settings: UserDefaults = ConnectionSettingsMigration.defaultStore
 
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .wifi {
@@ -800,7 +801,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         ensureLogDirectoryExists()
 
         // Load saved preference
-        if let mode = Self.loadPreferredMode(from: .standard) {
+        if let mode = Self.loadPreferredMode(from: settings) {
             preferredMode = mode
         }
 

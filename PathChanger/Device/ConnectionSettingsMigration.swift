@@ -17,6 +17,23 @@ enum ConnectionSettingsMigration {
     static let versionKey = "connectionSettingsVersion"
     static let currentVersion = 2
 
+    /// Where the connection settings live: the app's own preferences domain, except in
+    /// the app-hosted test process, which shares that domain with the running app. There
+    /// it is one throwaway suite, emptied when the process first uses it, so a test that
+    /// sets the shared tunnel manager's mode never writes the user's preference.
+    static let defaultStore: UserDefaults = defaultStore(isHostingTests: AppRuntimeEnvironment.isHostingTests)
+
+    static let testHostSuiteName = "com.pathchanger.app.test-host"
+
+    static func defaultStore(isHostingTests: Bool) -> UserDefaults {
+        guard isHostingTests else { return .standard }
+        guard let store = UserDefaults(suiteName: testHostSuiteName) else {
+            preconditionFailure("the test-host suite name is not a valid UserDefaults suite")
+        }
+        store.removePersistentDomain(forName: testHostSuiteName)
+        return store
+    }
+
     /// The transport both settings name after the migration.
     enum Transport: Equatable {
         case usb

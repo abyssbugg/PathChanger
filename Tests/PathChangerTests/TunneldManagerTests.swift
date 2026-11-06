@@ -1366,7 +1366,7 @@ final class TunneldManagerTests: XCTestCase {
         // Give it time to fully stop
         try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
 
-        manager.settings = .standard
+        manager.settings = ConnectionSettingsMigration.defaultStore
         settings.removePersistentDomain(forName: Self.settingsSuiteName)
         let file = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Preferences/\(Self.settingsSuiteName).plist")
