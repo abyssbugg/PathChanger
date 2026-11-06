@@ -154,8 +154,8 @@ class OnboardingViewModel: ObservableObject {
     }
 
     func completeOnboarding() {
-        UserDefaults.standard.set(true, forKey: "onboardingCompleted")
-        UserDefaults.standard.set(Date(), forKey: "onboardingCompletedDate")
+        AppPreferences.store.set(true, forKey: "onboardingCompleted")
+        AppPreferences.store.set(Date(), forKey: "onboardingCompletedDate")
     }
 }
 

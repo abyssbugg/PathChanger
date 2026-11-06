@@ -242,7 +242,7 @@ class TelemetryService: ObservableObject {
     func setOptIn(_ enabled: Bool) {
         let previousState = isOptedIn
         isOptedIn = enabled
-        UserDefaults.standard.set(enabled, forKey: TelemetryConfig.optInKey)
+        AppPreferences.store.set(enabled, forKey: TelemetryConfig.optInKey)
 
         if enabled && !previousState {
             // Just opted in - start collecting
@@ -260,7 +260,7 @@ class TelemetryService: ObservableObject {
 
     /// Check if user has made a preference decision
     var hasUserDecided: Bool {
-        UserDefaults.standard.object(forKey: TelemetryConfig.optInKey) != nil
+        AppPreferences.store.object(forKey: TelemetryConfig.optInKey) != nil
     }
 
     // MARK: Event Tracking
@@ -351,7 +351,7 @@ class TelemetryService: ObservableObject {
             try? FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
         }
 
-        UserDefaults.standard.removeObject(forKey: TelemetryConfig.lastUploadKey)
+        AppPreferences.store.removeObject(forKey: TelemetryConfig.lastUploadKey)
 
         Logger.info("All telemetry data cleared", category: .general)
     }
@@ -402,7 +402,7 @@ class TelemetryService: ObservableObject {
     // MARK: Persistence
 
     private func loadOptInPreference() {
-        isOptedIn = UserDefaults.standard.bool(forKey: TelemetryConfig.optInKey)
+        isOptedIn = AppPreferences.store.bool(forKey: TelemetryConfig.optInKey)
     }
 
     private func loadPersistedData() {

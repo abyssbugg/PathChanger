@@ -560,7 +560,7 @@ class CloudSyncManager: ObservableObject {
     // MARK: - Private Methods
 
     private func loadSettings() {
-        if let data = UserDefaults.standard.data(forKey: "CloudSyncSettings"),
+        if let data = AppPreferences.store.data(forKey: "CloudSyncSettings"),
            let decoded = try? JSONDecoder().decode(CloudSyncSettings.self, from: data) {
             settings = decoded
         }
@@ -568,12 +568,12 @@ class CloudSyncManager: ObservableObject {
 
     private func saveSettings() {
         if let encoded = try? JSONEncoder().encode(settings) {
-            UserDefaults.standard.set(encoded, forKey: "CloudSyncSettings")
+            AppPreferences.store.set(encoded, forKey: "CloudSyncSettings")
         }
     }
 
     private func loadMetadata() {
-        if let data = UserDefaults.standard.data(forKey: "SyncMetadata"),
+        if let data = AppPreferences.store.data(forKey: "SyncMetadata"),
            let decoded = try? JSONDecoder().decode(SyncMetadata.self, from: data) {
             metadata = decoded
         }
@@ -581,7 +581,7 @@ class CloudSyncManager: ObservableObject {
 
     private func saveMetadata() {
         if let encoded = try? JSONEncoder().encode(metadata) {
-            UserDefaults.standard.set(encoded, forKey: "SyncMetadata")
+            AppPreferences.store.set(encoded, forKey: "SyncMetadata")
         }
     }
 

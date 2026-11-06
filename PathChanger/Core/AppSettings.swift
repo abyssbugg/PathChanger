@@ -26,7 +26,7 @@ class AppSettings: ObservableObject {
         }
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults = AppPreferences.store
 
     // MARK: - Timeout Settings (SEC-02 Fix)
 

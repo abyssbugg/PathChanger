@@ -684,10 +684,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         "[Tunnel] Gave up waiting for the device on Wi‑Fi: \(LogRedaction.redactingDeviceIdentifiers(detail))"
     }
 
-    /// Where the tunnel mode is stored (`ConnectionSettingsMigration.defaultStore`: never
+    /// Where the tunnel mode is stored (`AppPreferences.store`: never
     /// the app's own preferences domain inside the test host). Internal so a test can use
     /// its own throwaway suite.
-    var settings: UserDefaults = ConnectionSettingsMigration.defaultStore
+    var settings: UserDefaults = AppPreferences.store
 
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .wifi {
@@ -902,7 +902,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
             return
         }
 
-        let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
+        let userEnabled = AppPreferences.store.object(forKey: "autoStartTunneld") as? Bool ?? true
         guard userEnabled else {
             Logger.debug("Skipping tunnel auto-start: user disabled it in Settings", category: .device)
             return
@@ -1162,7 +1162,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     // MARK: - Quit Teardown
 
     /// Where the owned-tunnel record persists. Internal so tests use an isolated suite.
-    var ownedTunnelDefaults: UserDefaults = .standard
+    var ownedTunnelDefaults: UserDefaults = AppPreferences.store
 
     /// The PathChanger-started tunnel adopted from an earlier session (PID + start time
     /// matched the persisted record). Nil for tunnels started by anything else.
@@ -2023,7 +2023,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
                     )
                     return
                 }
-                let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
+                let userEnabled = AppPreferences.store.object(forKey: "autoStartTunneld") as? Bool ?? true
                 guard userEnabled else { return }
                 Logger.error(
                     "Tunnel process is gone — waiting for explicit user restart",

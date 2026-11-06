@@ -43,7 +43,7 @@ class LocationFavoritesManager: ObservableObject {
     private let maxRecents = 14
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = AppPreferences.store) {
         self.defaults = defaults
         loadFavorites()
         let hadStoredPlaces = loadPlaces()

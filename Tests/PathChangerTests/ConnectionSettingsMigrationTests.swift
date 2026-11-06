@@ -55,7 +55,7 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
     private static let connectionModes: [String?] = [nil, usbConnection, wifiConnection, "Random", "Auto", "Bogus"]
     private static let tunnelModes: [String?] = [nil, usbTunnel, wifiTunnel, "Auto", "Background Daemon", "Bogus"]
 
-    /// The owner's rules (2026-11-07), written out for every pair. Columns follow
+    /// The owner's rules (2026-11-06), written out for every pair. Columns follow
     /// `tunnelModes`: none, USB (Lockdown), WiFi Only, Auto, Background Daemon, Bogus.
     /// - An explicit USB Only or WiFi Only wins over any tunnel mode, Daemon included.
     /// - Random becomes the transport it last selected (its tunnel mode); otherwise Wi-Fi.
@@ -230,18 +230,17 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
     /// which the app-hosted suite shares with the running app.
     func testUnderTheTestHostTheDefaultStoreIsNotTheAppDomain() {
         XCTAssertTrue(AppRuntimeEnvironment.isHostingTests)
-        XCTAssertFalse(ConnectionSettingsMigration.defaultStore === UserDefaults.standard)
-        XCTAssertTrue(ConnectionSettingsMigration.defaultStore === ConnectionSettingsMigration.defaultStore,
-                      "one store for the whole test process")
+        XCTAssertFalse(AppPreferences.store === UserDefaults.standard)
+        XCTAssertTrue(AppPreferences.store === AppPreferences.store, "one store for the whole test process")
     }
 
     func testTheProductionDefaultStoreIsTheAppDomain() {
-        XCTAssertTrue(ConnectionSettingsMigration.defaultStore(isHostingTests: false) === UserDefaults.standard)
+        XCTAssertTrue(AppPreferences.store(isHostingTests: false) === UserDefaults.standard)
     }
 
     func testTheSharedTunnelManagerAndANewDeviceManagerUseTheDefaultStore() {
-        XCTAssertTrue(TunneldManager.shared.settings === ConnectionSettingsMigration.defaultStore)
-        XCTAssertTrue(DeviceManager(startBackgroundServices: false).settings === ConnectionSettingsMigration.defaultStore)
+        XCTAssertTrue(TunneldManager.shared.settings === AppPreferences.store)
+        XCTAssertTrue(DeviceManager(startBackgroundServices: false).settings === AppPreferences.store)
     }
 
     func testSettingTheSharedTunnelModeLeavesTheAppDomainUnchanged() {
@@ -253,8 +252,7 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
         tunnel.preferredMode = previous == .usb ? .wifi : .usb
 
         XCTAssertEqual(UserDefaults.standard.string(forKey: "tunnelMode"), appDomainValue)
-        XCTAssertEqual(ConnectionSettingsMigration.defaultStore.string(forKey: "tunnelMode"),
-                       tunnel.preferredMode.rawValue)
+        XCTAssertEqual(AppPreferences.store.string(forKey: "tunnelMode"), tunnel.preferredMode.rawValue)
     }
 
     // MARK: Wiring: each manager migrates before it reads its key
@@ -289,5 +287,61 @@ final class ConnectionSettingsMigrationTests: XCTestCase {
         let defaults = try makeDefaults(connectionMode: Self.usbConnection, tunnelMode: "Auto")
 
         XCTAssertEqual(TunneldManager.loadPreferredMode(from: defaults), .usb)
+    }
+}
+
+/// The 2026-11-06 full-suite gate found tests still writing the running app's own
+/// preferences (CloudSyncSettings, SyncMetadata, multiDeviceGroups) through production
+/// code that named `UserDefaults.standard` directly. Every preference now goes through
+/// `AppPreferences.store`; this scan keeps it that way.
+final class PreferencesStoreSourceTests: XCTestCase {
+    private var sourceRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("PathChanger")
+    }
+
+    /// The only lines allowed to name the app's own domain: the store itself, and the
+    /// migration's refusal to touch it from a test host.
+    private static let allowed: Set<String> = [
+        "Core/AppPreferences.swift",
+        "Device/ConnectionSettingsMigration.swift",
+    ]
+
+    func testNoProductionFileNamesTheStandardDomain() throws {
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sourceRoot, includingPropertiesForKeys: nil))
+        var offenders: [String] = []
+        for case let url as URL in files where url.pathExtension == "swift" {
+            let relative = String(url.path.dropFirst(sourceRoot.path.count + 1))
+            guard !Self.allowed.contains(relative) else { continue }
+            let source = try String(contentsOf: url, encoding: .utf8)
+            for (index, line) in source.components(separatedBy: "\n").enumerated()
+            where Self.namesTheStandardDomain(line) {
+                offenders.append("\(relative):\(index + 1)")
+            }
+        }
+        XCTAssertEqual(offenders, [], "use AppPreferences.store")
+    }
+
+    /// `UserDefaults.standard`, or `.standard` where the type is UserDefaults.
+    private static func namesTheStandardDomain(_ line: String) -> Bool {
+        guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { return false }
+        return line.contains("UserDefaults.standard")
+            || line.range(of: #"UserDefaults\s*=\s*\.standard\b"#, options: .regularExpression) != nil
+    }
+
+    func testTheScanCatchesBothSpellings() {
+        XCTAssertTrue(Self.namesTheStandardDomain("let d = UserDefaults.standard"))
+        XCTAssertTrue(Self.namesTheStandardDomain("init(defaults: UserDefaults = .standard) {"))
+        XCTAssertFalse(Self.namesTheStandardDomain("// UserDefaults.standard"))
+        XCTAssertFalse(Self.namesTheStandardDomain("var wait: DeviceVisibilityWait = .standard"))
+    }
+
+    /// `@AppStorage` reads the environment's store; both scenes set it.
+    func testBothScenesUseThePreferencesStoreForAppStorage() throws {
+        let app = try String(contentsOf: sourceRoot.appendingPathComponent("PathChangerApp.swift"), encoding: .utf8)
+        XCTAssertEqual(app.components(separatedBy: ".defaultAppStorage(AppPreferences.store)").count - 1, 2)
     }
 }

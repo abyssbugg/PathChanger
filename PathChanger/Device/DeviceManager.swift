@@ -539,12 +539,12 @@ class DeviceManager: ObservableObject {
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
     private var tunnelStateObserver: AnyCancellable?
 
-    /// Where the connection mode is stored (`ConnectionSettingsMigration.defaultStore`
+    /// Where the connection mode is stored (`AppPreferences.store`
     /// unless injected), so tests never write the app's own preferences domain.
     let settings: UserDefaults
 
     // MARK: Initialization
-    init(startBackgroundServices: Bool = true, settings: UserDefaults = ConnectionSettingsMigration.defaultStore) {
+    init(startBackgroundServices: Bool = true, settings: UserDefaults = AppPreferences.store) {
         self.settings = settings
         if let saved = Self.loadConnectionMode(from: settings) {
             connectionMode = saved
@@ -640,7 +640,7 @@ class DeviceManager: ObservableObject {
         }
 
         try await preparationService.prepareWiFi(deviceId: device.id)
-        UserDefaults.standard.set(device.id, forKey: "lastPreparedDeviceUDID")
+        AppPreferences.store.set(device.id, forKey: "lastPreparedDeviceUDID")
 
         await refreshTransportAvailability()
         await refreshDevices()

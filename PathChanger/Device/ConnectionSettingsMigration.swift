@@ -3,7 +3,7 @@
 //  PathChanger
 //
 //  PathChanger offers two connection modes, USB and Wi-Fi, chosen by the user (owner
-//  decisions 2026-11-06 and 2026-11-07). Earlier builds stored two settings that could disagree:
+//  decisions 2026-11-06 and 2026-11-06). Earlier builds stored two settings that could disagree:
 //  `connectionMode` (Random, Auto, USB Only, WiFi Only) and `tunnelMode` (Auto,
 //  USB (Lockdown), WiFi Only, Background Daemon). This migration rewrites both to the
 //  same transport before either is read, and records a version marker.
@@ -16,23 +16,6 @@ enum ConnectionSettingsMigration {
     static let tunnelModeKey = "tunnelMode"
     static let versionKey = "connectionSettingsVersion"
     static let currentVersion = 2
-
-    /// Where the connection settings live: the app's own preferences domain, except in
-    /// the app-hosted test process, which shares that domain with the running app. There
-    /// it is one throwaway suite, emptied when the process first uses it, so a test that
-    /// sets the shared tunnel manager's mode never writes the user's preference.
-    static let defaultStore: UserDefaults = defaultStore(isHostingTests: AppRuntimeEnvironment.isHostingTests)
-
-    static let testHostSuiteName = "com.pathchanger.app.test-host"
-
-    static func defaultStore(isHostingTests: Bool) -> UserDefaults {
-        guard isHostingTests else { return .standard }
-        guard let store = UserDefaults(suiteName: testHostSuiteName) else {
-            preconditionFailure("the test-host suite name is not a valid UserDefaults suite")
-        }
-        store.removePersistentDomain(forName: testHostSuiteName)
-        return store
-    }
 
     /// The transport both settings name after the migration.
     enum Transport: Equatable {
@@ -52,7 +35,7 @@ enum ConnectionSettingsMigration {
         let transport: Transport
     }
 
-    /// The transport a stored pair migrates to (owner rules, 2026-11-07):
+    /// The transport a stored pair migrates to (owner rules, 2026-11-06):
     /// - USB Only and WiFi Only are the user's explicit choice and keep their value,
     ///   whatever the tunnel mode says, Background Daemon included;
     /// - Random becomes the transport it last selected, which it wrote as the tunnel mode

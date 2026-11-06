@@ -247,6 +247,7 @@ struct PathChangerApp: App {
                 ContentView()
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
+                    .defaultAppStorage(AppPreferences.store)
                     .frame(minWidth: 1100, minHeight: 740)
                     .onAppear {
                         appDelegate.terminationHandler = appState
@@ -331,6 +332,7 @@ struct PathChangerApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
+                .defaultAppStorage(AppPreferences.store)
         }
     }
 
@@ -1233,7 +1235,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             .store(in: &cancellables)
 
         // Check if onboarding is needed
-        let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
+        let onboardingCompleted = AppPreferences.store.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
 
         guard effectiveBackgroundServices || usesScriptedInjector else {
@@ -1356,7 +1358,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
 
         // Final fallback: a previously prepared device UDID from Wi‑Fi bootstrap.
-        if let preparedUDID = UserDefaults.standard.string(forKey: "lastPreparedDeviceUDID"),
+        if let preparedUDID = AppPreferences.store.string(forKey: "lastPreparedDeviceUDID"),
            ArgumentSanitizer.isValidDeviceUDID(preparedUDID) {
             return preparedUDID
         }

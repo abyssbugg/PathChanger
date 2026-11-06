@@ -1366,7 +1366,7 @@ final class TunneldManagerTests: XCTestCase {
         // Give it time to fully stop
         try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
 
-        manager.settings = ConnectionSettingsMigration.defaultStore
+        manager.settings = AppPreferences.store
         settings.removePersistentDomain(forName: Self.settingsSuiteName)
         let file = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Preferences/\(Self.settingsSuiteName).plist")
@@ -1980,13 +1980,18 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertNil(ProcessStartTime.of(pid: Int32.max))
     }
 
+    /// One fixed suite, emptied before each use: a suite per test left one plist behind in
+    /// ~/Library/Preferences for every test of every run (932 by 2026-11-06).
+    private static let ownedTunnelSuiteName = "tmp_rovodev.pathchanger.owned-tunnel-tests"
+
     private func isolatedOwnedTunnelDefaults() throws -> UserDefaults {
-        let suite = "com.pathchanger.tests.ownedtunnel.\(UUID().uuidString)"
+        let suite = Self.ownedTunnelSuiteName
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
         manager.ownedTunnelDefaults = defaults
         addTeardownBlock { @MainActor [weak self] in
             defaults.removePersistentDomain(forName: suite)
-            self?.manager.ownedTunnelDefaults = .standard
+            self?.manager.ownedTunnelDefaults = AppPreferences.store
         }
         return defaults
     }
