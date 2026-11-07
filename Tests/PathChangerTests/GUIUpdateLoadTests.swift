@@ -130,6 +130,11 @@ private struct BenchHost: View {
         }
         .environmentObject(appState)
         .environmentObject(TunneldManager.shared)
+        // The benchmark never depends on the user's real preferences: every @AppStorage
+        // under this host (map style, layers, follow, coordinates overlay) reads the
+        // application's shared store, which the app-hosted test process replaces with a
+        // throwaway suite (review 2026-11-07).
+        .defaultAppStorage(AppPreferences.store)
     }
 }
 
