@@ -238,7 +238,7 @@ Current disposition:
 
 ### 7.2 USB
 
-- USB should be preferred when it is healthy and supports the required developer service.
+- USB is a fully supported Preferred Connection (§7.5); it is not the default.
 - Cable removal must stop movement, preserve desired location, and mark the applied state uncertain if session health is lost.
 - Reconnection must rediscover the same device, rebuild the service/session, and reapply the desired coordinate before reporting active.
 - No stale USB flag may override live service failure.
@@ -252,12 +252,31 @@ Current disposition:
 - Automatic reconnect (owner decision 2026-11-02): when the phone becomes reachable again after a connection loss the user did not cause (not after Stop Tunnel), PathChanger reopens the helper's unprivileged device connection and reapplies the held desired coordinate without waiting for Start. This never elevates privileges, never starts a privileged tunnel or daemon, stays cancelable, and reports reconnecting until the reapplication is acknowledged.
 - Wi-Fi availability must not be inferred from a paired placeholder alone.
 - Controls (owner decision 2026-11-03): the tunnel status pill and Settings own the tunnel (Start, Reconnect tunnel, Stop Reconnecting, Stop); Reconnect tunnel never stops a live tunnel. The location area offers only Reapply location, which reapplies the held location over the live connection and never starts, restarts or stops the tunnel.
-- A connection-mode switch that would restart a tunnel holding a location asks first and changes nothing on Cancel (owner request 2026-11-04: the GUI must not end a spoof as a side effect).
+- A connection-mode switch that would restart a tunnel holding a location asks first and changes nothing on Cancel (owner request 2026-11-04: the GUI must not end a spoof as a side effect). The dialog offers Switch Now and Cancel; Cancel keeps the saved preference, the active connection and the held location (owner decision 2026-11-06). Prepare for Wi-Fi switches through the same dialog.
 - A location helper left running by an earlier PathChanger launch is replaced before a device connection is opened through it (macOS stops letting it use the local network once the app that started it exits), and a Clear, Stop or Move of the current launch supersedes the location it held. A helper whose PathChanger is still running is never replaced or stopped by another instance.
 
 ### 7.4 Transport failover
 
 Automatic USB/Wi-Fi failover is allowed only when it preserves identity and desired state. A failover is successful only after the new channel acknowledges reapplication of the desired coordinate. Until then, the GUI reports reconnecting or uncertain, never active.
+
+Recovery order (owner decision 2026-11-06): after an unexpected drop, PathChanger first retries the Preferred Connection (§7.5) within a bounded retry policy, and only then tries the alternate transport. Both directions (Wi-Fi then USB, USB then Wi-Fi) are equally required. Recovery never rewrites the saved Preferred Connection, never requests administrator privileges, never runs two location injections on one device at once, and reports the transport actually carrying the session. The retry limits, the failback policy and their implementation follow the recovery design the owner approves; until then the existing recovery code stays in place.
+
+### 7.5 Preferred Connection (owner decisions 2026-11-06)
+
+- The user chooses exactly one **Preferred Connection**: **Wi-Fi** (the default for a new installation or an unreadable saved value) or **USB**. Auto, Random and Background Daemon are no longer user choices.
+- The Preferred Connection changes only when the user changes it. The **active connection** is the transport actually carrying the location session; it may differ from the preference during fallback, and the GUI reports it truthfully.
+- Saved settings from earlier builds migrate once, before either is read:
+
+| Saved connection mode | Saved tunnel mode | Preferred Connection |
+|---|---|---|
+| USB Only | any value, Background Daemon included | USB |
+| WiFi Only | any value, Background Daemon included | Wi-Fi |
+| Random | USB (Lockdown) | USB |
+| Random | WiFi Only | Wi-Fi |
+| Random | anything else, or none | Wi-Fi |
+| Auto | any value | Wi-Fi |
+| missing or unknown | USB (Lockdown) | USB |
+| missing or unknown | anything else, or none | Wi-Fi |
 
 ## 8. pymobiledevice3 and connection-layer contract
 
