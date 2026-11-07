@@ -1218,10 +1218,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
         Publishers.CombineLatest3(device.$usbDirectDeviceIds, device.$wifiDirectDeviceIds, device.$networkAdvertisedDeviceIds)
             .sink { [weak self] usb, wifi, bonjour in
                 guard let self else { return }
+                // USB mode leaves out a Bonjour-only sighting (`reconnectVisibleDeviceIDs`).
+                let visible = DeviceManager.reconnectVisibleDeviceIDs(
+                    usb: usb, network: wifi, bonjour: bonjour, mode: self.deviceManager.connectionMode)
                 // The tunnel reconnect watches the same live sources for the remembered phone.
-                self.tunnelAutoReconnector.noteVisibleDevices(usb.union(wifi).union(bonjour))
-                guard let awaited = self.device.awaitedReconnectDeviceID,
-                      usb.contains(awaited) || wifi.contains(awaited) || bonjour.contains(awaited) else { return }
+                self.tunnelAutoReconnector.noteVisibleDevices(visible)
+                guard let awaited = self.device.awaitedReconnectDeviceID, visible.contains(awaited) else { return }
                 self.automaticReconnectWaiter.signalReachable()
             }
             .store(in: &cancellables)
@@ -3724,9 +3726,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {
-        device.usbDirectDeviceIds.contains(deviceID)
-            || device.wifiDirectDeviceIds.contains(deviceID)
-            || device.networkAdvertisedDeviceIds.contains(deviceID)
+        DeviceManager.reconnectVisibleDeviceIDs(
+            usb: device.usbDirectDeviceIds, network: device.wifiDirectDeviceIds,
+            bonjour: device.networkAdvertisedDeviceIds, mode: deviceManager.connectionMode
+        ).contains(deviceID)
     }
 
     // MARK: RemotePairing advert hint (live 2026-11-03)

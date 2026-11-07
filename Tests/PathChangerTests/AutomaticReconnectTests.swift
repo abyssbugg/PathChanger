@@ -1017,6 +1017,35 @@ final class AutomaticReconnectTests: XCTestCase {
         XCTAssertTrue(fixture.state.locationSessionCoordinator.state.application.isActive)
     }
 
+    /// USB preferred (owner decision 2026-11-06; until Part C): Bonjour now runs in USB
+    /// mode, but a phone seen only by Bonjour must not wake the reconnect, which would
+    /// retry USB in vain. A USB sighting still does.
+    func testInUSBModeABonjourOnlySightingDoesNotTriggerTheReconnect() async throws {
+        let fixture = makeFixture()
+        fixture.deviceManager.connectionMode = .usb
+        try seedHeldLocation(fixture)
+        losePhone(fixture)
+        try await waitUntil("the fallback timer") { await fixture.sleeper.pendingCount() == 1 }
+
+        fixture.state.device.networkAdvertisedDeviceIds = [deviceID]
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // A futile attempt fails before any application (no USB path) and queues a backoff
+        // wait; none may run.
+        let waits = await fixture.sleeper.recordedRequests()
+        XCTAssertEqual(waits.count, 1, "no reconnect attempt from a Bonjour-only sighting in USB mode")
+        let pending = await fixture.injector.pendingApplicationCount()
+        XCTAssertEqual(pending, 0)
+        XCTAssertTrue(fixture.state.isAwaitingAutomaticReconnect, "still waiting for the phone")
+
+        fixture.state.device.usbDirectDeviceIds = [deviceID]
+        try await waitUntil("the reapply over USB") { await fixture.injector.pendingApplicationCount() == 1 }
+        let identity = try await readyIdentity(fixture.state)
+        XCTAssertEqual(identity.transport, .usb, "USB stays the transport")
+        await fixture.injector.releaseNextApplication(session: identity)
+        try await waitUntil("reconnected") { !fixture.state.isAwaitingAutomaticReconnect }
+    }
+
     func testFailedBurstsAreRateLimitedWithBackoff() async throws {
         let fixture = makeFixture()
         try seedHeldLocation(fixture)

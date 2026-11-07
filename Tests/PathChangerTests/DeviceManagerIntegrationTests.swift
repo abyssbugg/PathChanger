@@ -269,20 +269,96 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
     }
 
+    /// Owner decision 2026-11-06: the Preferred Connection is not an exclusive transport
+    /// restriction. USB mode browses mobdev2 Bonjour too, so Wi-Fi visibility stays known
+    /// for recovery and the device chip.
     @MainActor
-    func testUSBOnlyModeSkipsTheBrowseAndHoldsNoBonjourEvidence() async {
+    func testUSBModeBrowsesBonjourAndRecordsWhatItAdvertises() async {
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .usb
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+
+        await manager.refreshTransportAvailability()
+
+        XCTAssertEqual(Set(manager.subcommands), ["usbmux", "bonjour"])
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, ["00008130-0011223344556677"])
+    }
+
+    @MainActor
+    func testUSBModeKeepsTheBrowseThrottle() async {
+        let manager = ScriptedPythonDeviceManager()
+        manager.connectionMode = .usb
+        manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
+
+        await manager.refreshTransportAvailability(browseBonjour: { _, _ in false })
+
+        XCTAssertEqual(manager.subcommands, ["usbmux"], "a refresh the throttle skips browses nothing")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
+    }
+
+    @MainActor
+    func testSwitchingToUSBKeepsTheBonjourEvidence() async {
         let manager = ScriptedPythonDeviceManager()
         manager.connectionMode = .wifi
         manager.outputs = ["usbmux": "[]", "bonjour": Self.mobdev2Output]
         await manager.refreshTransportAvailability()
-        XCTAssertFalse(manager.networkAdvertisedDeviceIds.isEmpty)
 
         manager.connectionMode = .usb
         manager.subcommands = []
         await manager.refreshTransportAvailability()
 
-        XCTAssertEqual(manager.subcommands, ["usbmux"], "USB-only mode never browses Bonjour")
-        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [])
+        XCTAssertEqual(Set(manager.subcommands), ["usbmux", "bonjour"])
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, ["00008130-0011223344556677"])
+    }
+
+    @MainActor
+    func testUSBModeAppliesABonjourResultAndItsHysteresis() {
+        let id = "00008130-0011223344556677"
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.connectionMode = .usb
+
+        let devices = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+
+        XCTAssertEqual(devices.map(\.id), [id])
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id])
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [id], "two misses keep it, as in Wi-Fi mode")
+        manager.letTheNextBrowseDecide(id)
+        _ = manager.applyMobdev2ObservationForTesting("[]")
+        XCTAssertEqual(manager.networkAdvertisedDeviceIds, [], "the marked miss drops it in USB mode too")
+    }
+
+    /// Discovery is complete, but USB stays the transport: the helper is asked for USB,
+    /// and the USB-mode device list still ranks only USB rows (pairing records and Bonjour
+    /// rows are not offered as rows in USB mode; unchanged by the discovery fix).
+    @MainActor
+    func testUSBModeStillConnectsOverUSBAndListsUSBRows() {
+        let manager = DeviceManager(startBackgroundServices: false)
+        manager.connectionMode = .usb
+        _ = manager.applyMobdev2ObservationForTesting(Self.mobdev2Output)
+        XCTAssertEqual(manager.helperConnectTransport(for: "00008130-0011223344556677"), .usb)
+
+        let usb = Device(id: "00008110-001A000E3E82001E", displayName: "USB Device", connectionType: .usb)
+        let paired = Device(id: "00008130-0011223344556677", displayName: "Paired iOS Device", connectionType: .wifi)
+        let rows = manager.mergedDiscoverySourcesForTesting(
+            knownWiFiDevices: [paired], mobdev2Devices: [paired], usbmuxDevices: [usb],
+            tunnelDevices: [], mode: .usb
+        )
+        XCTAssertEqual(rows.map(\.id), [usb.id])
+    }
+
+    /// Until Part C, automatic reconnect in USB mode must not count a phone seen only by
+    /// Bonjour: the helper connects over USB there, so it would retry USB in vain.
+    func testReconnectVisibilityLeavesOutBonjourOnlySightingsInUSBMode() {
+        let usb: Set<String> = ["usb-phone"], network: Set<String> = ["network-phone"]
+        let bonjour: Set<String> = ["bonjour-phone", "usb-phone"]
+        XCTAssertEqual(
+            DeviceManager.reconnectVisibleDeviceIDs(usb: usb, network: network, bonjour: bonjour, mode: .usb),
+            ["usb-phone", "network-phone"])
+        XCTAssertEqual(
+            DeviceManager.reconnectVisibleDeviceIDs(usb: usb, network: network, bonjour: bonjour, mode: .wifi),
+            ["usb-phone", "network-phone", "bonjour-phone"], "Wi-Fi mode unchanged")
     }
 
     /// The same browse shape advertising only a coworker's phone on the shared Wi-Fi.

@@ -737,7 +737,7 @@ class DeviceManager: ObservableObject {
         let usbAttempt = await usbDevicesTask
         let mobdev2Devices = await mobdev2DevicesTask
         let tunnelDevices = await tunnelDevicesTask
-        let knownWiFiDevices = connectionMode == .usb ? [] : discoverKnownRemotePairingDevices()
+        let knownWiFiDevices = discoverKnownRemotePairingDevices()
 
         let discoveredDevices = mergeDiscoverySources(
             knownWiFiDevices: knownWiFiDevices,
@@ -1034,12 +1034,10 @@ class DeviceManager: ObservableObject {
     ///
     /// This is independent of usbmux and is the supported pymobiledevice3 bridge for devices
     /// visible to CoreDevice/FlowDeck while usbmux has not created a Network entry.
+    /// It runs in USB mode too (owner decision 2026-11-06): the Preferred Connection is
+    /// not an exclusive transport restriction, and Wi-Fi visibility must stay known.
     private func discoverMobdev2Devices() async -> [Device] {
-        guard connectionMode != .usb else {
-            clearMobdev2Observation()
-            return []
-        }
-        return await observeMobdev2()
+        await observeMobdev2()
     }
 
     /// One Bonjour observation: browse once and apply the result once. A caller that
@@ -1083,13 +1081,8 @@ class DeviceManager: ObservableObject {
     /// UDID it did not see (the run was empty, failed, or saw only other devices) counts a
     /// miss, and only `transportMissThreshold` misses in a row drop it. A UDID marked by
     /// `letTheNextBrowseDecide` is dropped by its first miss instead, and this run consumes
-    /// every mark. A result that arrives after the user switched to USB-only is discarded.
-    /// Returns this run's devices, not the retained set.
+    /// every mark. Returns this run's devices, not the retained set.
     private func applyMobdev2Observation(_ output: String?) -> [Device] {
-        guard connectionMode != .usb else {
-            clearMobdev2Observation()
-            return []
-        }
         let devices = output.map { parseDeviceListJSON($0, connectionType: .wifi) } ?? []
         let seen = Set(devices.map(\.id))
         var retained = networkAdvertisedDeviceIds
@@ -1113,13 +1106,6 @@ class DeviceManager: ObservableObject {
         return devices
     }
 
-    /// USB-only mode browses nothing, so it holds no Bonjour evidence.
-    private func clearMobdev2Observation() {
-        networkAdvertisedMisses = [:]
-        networkAdvertisedAwaitingFreshObservation = []
-        networkAdvertisedDeviceIds = []
-    }
-
     #if DEBUG
     func applyMobdev2ObservationForTesting(_ output: String?) -> [Device] {
         applyMobdev2Observation(output)
@@ -1131,11 +1117,27 @@ class DeviceManager: ObservableObject {
     /// transport browse resumes for the selected device after skipped refreshes, during
     /// which its entry aged only on the 120 s discovery browse (review 2026-11-01 v3).
     func letTheNextBrowseDecide(_ deviceID: String) {
-        guard connectionMode != .usb else { return }
         networkAdvertisedAwaitingFreshObservation.insert(deviceID)
     }
 
     // MARK: Helper connect hint
+
+    /// The phones automatic reconnect counts as visible again. In USB mode a phone seen
+    /// only by mobdev2 Bonjour is left out (owner decision 2026-11-06, until the Part C
+    /// recovery design): the helper connects over USB there (`helperConnectTransport`), so
+    /// counting it would start USB attempts that cannot succeed.
+    nonisolated static func reconnectVisibleDeviceIDs(
+        usb: Set<String>,
+        network: Set<String>,
+        bonjour: Set<String>,
+        mode: ConnectionMode
+    ) -> Set<String> {
+        let direct = usb.union(network)
+        switch mode {
+        case .usb: return direct
+        case .wifi: return direct.union(bonjour)
+        }
+    }
 
     /// The transport hint for opening the location helper's connection to `deviceID`. It
     /// decides whether the helper may try its mobdev2 (Bonjour, Wi-Fi) lane, so it follows
@@ -1834,7 +1836,7 @@ class DeviceManager: ObservableObject {
     }
 
     /// Refresh every live transport source on the same cadence: usbmux (USB and Network
-    /// sets) first, then, outside USB-only mode, the mobdev2 Bonjour set when
+    /// sets) first, then, in either connection mode, the mobdev2 Bonjour set when
     /// `browseBonjour` says this refresh's usbmux result leaves it something to decide.
     /// usbmux is applied before the ~5 s browse starts, so the browse never delays it, and
     /// the browse decision reads fresh usbmux sets rather than the previous refresh's.
@@ -1843,10 +1845,6 @@ class DeviceManager: ObservableObject {
         browseBonjour shouldBrowse: (_ usbmuxUSB: Set<String>, _ usbmuxNetwork: Set<String>) -> Bool = { _, _ in true }
     ) async {
         await refreshUsbmuxTransport()
-        guard connectionMode != .usb else {
-            clearMobdev2Observation()
-            return
-        }
         guard shouldBrowse(usbDirectDeviceIds, wifiDirectDeviceIds) else { return }
         _ = await observeMobdev2()
     }
