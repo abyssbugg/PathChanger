@@ -995,7 +995,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         deviceManager: DeviceManager? = nil,
         ddiPreparerFactory: ((DeviceManager) -> DeveloperDiskImagePreparer)? = nil,
         tunnelQuitController: (any TunnelQuitControlling)? = nil,
-        stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : .standard,
+        stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : AppPreferences.store,
         roadRouter: (any RoadRouting)? = nil,
         placeNameResolver: PlaceNameResolver? = nil,
         automaticReconnect: AutomaticReconnectEnvironment? = nil,
