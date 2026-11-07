@@ -201,19 +201,22 @@ final class MapFollowModeTests: XCTestCase {
 /// the persisted base style. Preference round trips use isolated suites only; the
 /// user's real preferences are never touched.
 final class MapLayerConfigurationTests: XCTestCase {
-    private var suiteName: String!
+    /// One fixed suite for every run: a UUID name created a plist per run (932 stray
+    /// files once accumulated that way). The suite is cleared before and after each
+    /// test, so values never leak between tests and no file survives the run.
+    private static let suiteName = "com.pathchanger.tests.maplayer"
     private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()
-        suiteName = "test.maplayer.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        defaults = UserDefaults(suiteName: Self.suiteName)
+        defaults.removePersistentDomain(forName: Self.suiteName)
+        defaults = UserDefaults(suiteName: Self.suiteName)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults.removePersistentDomain(forName: Self.suiteName)
         defaults = nil
-        suiteName = nil
         super.tearDown()
     }
 
