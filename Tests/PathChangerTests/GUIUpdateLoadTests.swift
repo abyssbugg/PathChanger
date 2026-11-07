@@ -274,6 +274,27 @@ final class GUIUpdateLoadTests: XCTestCase {
     /// The mounted GUI during a real-time 5 Hz Multi-Spot run, laid out at 60 frames a
     /// second.
     func testAMultiSpotRunRebuildsThePresentationAndTheMapsOnlyForWhatTheyShow() async throws {
+        try await runHostedMultiSpotBenchmark(named: "hosted 5 Hz Multi-Spot run")
+    }
+
+    /// The same measured run with the map's 3D elevation and Traffic layers enabled
+    /// (owner ask 2026-11-07): the SwiftUI rebuild cost of the richer style, not a GPU
+    /// measurement. The layer keys go into the application's shared store — which the
+    /// bench host maps to a throwaway suite — before the view mounts, and are removed
+    /// afterwards.
+    func testAMultiSpotRunWith3DElevationAndTrafficLayers() async throws {
+        AppPreferences.store.set(true, forKey: "mapElevation3D")
+        AppPreferences.store.set(true, forKey: "mapShowsTraffic")
+        defer {
+            AppPreferences.store.removeObject(forKey: "mapElevation3D")
+            AppPreferences.store.removeObject(forKey: "mapShowsTraffic")
+        }
+        try await runHostedMultiSpotBenchmark(named: "hosted 5 Hz Multi-Spot run (3D+Traffic)")
+    }
+
+    /// The benchmark body both hosted runs share; `label` distinguishes the artifact
+    /// lines.
+    private func runHostedMultiSpotBenchmark(named label: String) async throws {
         let injector = DelayedAckInjector(roundTrip: 0.03)
         let state = makeRouteState(injector: injector, realTime: true)
         let counter = RenderCounter()
@@ -340,7 +361,7 @@ final class GUIUpdateLoadTests: XCTestCase {
         sample.titleBarRenders = GUIRenderCounts.titleBar - rendersAtStart.1
         sample.modeCardRenders = GUIRenderCounts.modeCard - rendersAtStart.2
         sample.statusPanelRenders = GUIRenderCounts.statusPanel - rendersAtStart.3
-        record(sample, name: "hosted 5 Hz Multi-Spot run")
+        record(sample, name: label)
 
         XCTAssertEqual(state.currentLocation, s2, "harness: the run reached its last stop")
         XCTAssertGreaterThan(sample.acknowledgedPoints, 15, "harness: the run sent many points")
