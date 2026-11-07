@@ -67,14 +67,11 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
-    /// The choice in use. The tunnel mode decides, because it is what Start uses. A
-    /// leftover Background daemon tunnel mode (the settings migration rewrites it; only an
-    /// older build could write it again) shows the connection-mode setting.
-    static func current(connectionMode: DeviceManager.ConnectionMode, tunnelMode: TunnelMode) -> ConnectionChoice {
+    /// The choice in use. The tunnel mode decides, because it is what Start uses.
+    static func current(tunnelMode: TunnelMode) -> ConnectionChoice {
         switch tunnelMode {
         case .usb: return .usb
         case .wifi: return .wifi
-        case .daemon: return ConnectionChoice(connectionMode: connectionMode)
         }
     }
 
@@ -464,7 +461,7 @@ struct OrganicTitleBar: View {
     }
 
     private var connectionChoice: ConnectionChoice {
-        ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunneldManager.preferredMode)
+        ConnectionChoice.current(tunnelMode: tunneldManager.preferredMode)
     }
 
     /// Whether a location is held is read when the choice is pressed, as for the pill.
@@ -699,7 +696,7 @@ struct OrganicDevicePopover: View {
     }
 
     private var choice: ConnectionChoice {
-        ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
+        ConnectionChoice.current(tunnelMode: tunneldManager.preferredMode)
     }
 
 

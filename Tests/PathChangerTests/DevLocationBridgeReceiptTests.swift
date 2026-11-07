@@ -5,7 +5,7 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
     func testDirectAndRSDClassificationRetainsPhysicalTransport() {
         let usb = LocationConnectionArguments.describe(
             deviceId: "device", physicalTransport: .usb,
-            isDaemonTunneld: false, rsdAddress: nil, rsdPort: nil
+            rsdAddress: nil, rsdPort: nil
         )
         XCTAssertEqual(usb.arguments, ["--udid", "device"])
         XCTAssertEqual(usb.transport, .usb)
@@ -13,7 +13,7 @@ final class DevLocationBridgeReceiptTests: XCTestCase {
 
         let rsd = LocationConnectionArguments.describe(
             deviceId: "device", physicalTransport: .wifi,
-            isDaemonTunneld: false, rsdAddress: "fd00::1", rsdPort: 49155
+            rsdAddress: "fd00::1", rsdPort: 49155
         )
         XCTAssertEqual(rsd.arguments, ["--rsd", "fd00::1", "49155"])
         XCTAssertEqual(rsd.transport, .wifi)

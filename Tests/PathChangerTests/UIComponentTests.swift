@@ -1022,22 +1022,8 @@ final class ConnectionChoiceTests: XCTestCase {
     }
 
     func testTheChoiceFollowsTheConnectionModeSetting() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .usb), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .wifi), .wifi)
-    }
-
-    /// The tunnel mode is what Start uses, so it decides what the control shows.
-    func testTheShownChoiceIsTheTunnelModeInUse() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .wifi), .wifi)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .usb), .usb)
-    }
-
-    /// Background daemon is no longer a choice. A leftover daemon tunnel mode (the
-    /// migration rewrites it; only an older build could write it again) shows the
-    /// connection-mode setting instead of a third segment.
-    func testALeftoverDaemonTunnelModeShowsTheConnectionModeSetting() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .daemon), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .daemon), .wifi)
+        XCTAssertEqual(ConnectionChoice.current(tunnelMode: .usb), .usb)
+        XCTAssertEqual(ConnectionChoice.current(tunnelMode: .wifi), .wifi)
     }
 
     func testChoicesReadAsWordsAndNameNoRetiredMode() {
@@ -1111,15 +1097,6 @@ final class ConnectionChoiceTests: XCTestCase {
     /// mode is unchanged, so nothing restarts and nothing asks.
     func testClickingTheShownChoiceAlignsADisagreeingSettingWithoutARestart() {
         XCTAssertEqual(resolve(.wifi, connectionMode: .usb, tunnelMode: .wifi),
-                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
-    }
-
-    /// Clicking the shown choice over a leftover daemon tunnel mode sets the transport's
-    /// own tunnel mode; a running daemon tunnel restarts, so it asks first.
-    func testClickingTheShownChoiceOverALeftoverDaemonModeSetsTheTransport() {
-        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon),
-                       .confirm(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true)))
-        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon, tunnelRunning: false),
                        .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
     }
 

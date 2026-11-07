@@ -119,12 +119,6 @@ enum AppConstants {
         /// Default port for tunnel connections
         static let defaultPort: Int = 49152
 
-        /// Tunneld HTTP API port (used by pymobiledevice3 remote tunneld)
-        static let tunneldAPIPort: Int = 49151
-
-        /// Base URL for tunneld HTTP API
-        static var tunneldAPIEndpoint: String { "http://127.0.0.1:\(tunneldAPIPort)/" }
-
         /// Maximum port range for tunnel connections
         static let maxPort: Int = 65535
 
@@ -310,7 +304,6 @@ enum SecurityConstants {
         "--rsd",
         "--udid",
         "-t",
-        "--tunnel",
         "--help",
         "-h"
     ]

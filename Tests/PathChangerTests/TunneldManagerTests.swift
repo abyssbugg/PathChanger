@@ -35,18 +35,6 @@ final class TunneldManagerTests: XCTestCase {
         }
     }
 
-    func testTunnelCommandsTargetSelectedDeviceWhenProvided() {
-        let udid = "00000000-0000000000000001"
-
-        // USB and Wi-Fi no longer launch a tunnel process: the managed helper owns
-        // the device connection (Option A, 2026-11-01). Only the daemon is a process.
-        XCTAssertNil(TunneldManager.arguments(for: .usb, deviceId: udid))
-        XCTAssertNil(TunneldManager.arguments(for: .wifi, deviceId: udid))
-        XCTAssertEqual(TunneldManager.arguments(for: .daemon, deviceId: udid), [
-            "-m", "pymobiledevice3", "remote", "tunneld",
-        ])
-    }
-
     // MARK: - Helper-owned device connection (Option A)
 
     func testStartTunnelOpensTheHelperConnectionForTheSelectedDevice() async throws {
@@ -540,30 +528,6 @@ final class TunneldManagerTests: XCTestCase {
         try await waitUntil { self.manager.state == .idle }
     }
 
-    func testHelperStartIsNotOverwrittenByAStaleTunnelLog() async throws {
-        // Live review finding: processLaunched ran parseRsdInfo, which replaced the
-        // helper connection with a dead `--rsd` from an old tunnel.log ~500 ms later.
-        let connector = try installFakeConnector(mode: .wifi)
-        let log = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pathchanger-stale-tunnel-\(UUID().uuidString).log")
-        try "Use the follow connection option:\n--rsd fd8b:e285:f321::1 55823\n"
-            .write(to: log, atomically: true, encoding: .utf8)
-        manager.tunnelLogPathOverride = log.path
-        defer {
-            manager.tunnelLogPathOverride = nil
-            try? FileManager.default.removeItem(at: log)
-        }
-        let udid = "00008130-000C5144019A001C"
-        await manager.startTunnel(deviceId: udid)
-        try await waitUntil { self.manager.state == .running }
-
-        try await Task.sleep(nanoseconds: 900_000_000)
-
-        XCTAssertEqual(manager.tunnelInfo?.channel, .helperUserspace)
-        XCTAssertNil(manager.getRsdInfo(for: udid))
-        _ = connector
-    }
-
     func testStartWorksAgainAfterAFailedStart() async throws {
         // "Start-from-.error dead-end": the state machine had no error -> starting
         // transition, so Start silently did nothing after any failure.
@@ -613,21 +577,6 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertNil(manager.pendingHelperStop(for: "00008130-0000000000000000"))
     }
 
-    func testDaemonStopClosesTheHelperConnectionThatCarriesTheLocation() async throws {
-        let connector = try installFakeConnector(mode: .daemon)
-        connector.activeLocationDeviceId = "00008130-000C5144019A001C"
-        let mirror = Mirror(reflecting: manager as TunneldManager)
-        let stateMachine = try XCTUnwrap(mirror.children.first(where: { $0.label == "stateMachine" })?.value as? TunnelStateMachine)
-        stateMachine.send(.externalTunnelDetected(mode: .daemon))
-        try await waitUntil { self.manager.state == .running }
-
-        manager.stopTunnel()
-        let pending = try XCTUnwrap(manager.pendingHelperStop(for: "00008130-000C5144019A001C"))
-        _ = await pending.value
-
-        XCTAssertEqual(connector.disconnectCalls.map(\.deviceId), ["00008130-000C5144019A001C"])
-    }
-
     func testReplacedHelperConnectionIsReportedSoTheLocationIsReapplied() async throws {
         // connect_device replacing a stalled connection ends any location held on it.
         let connector = try installFakeConnector(mode: .wifi)
@@ -640,16 +589,6 @@ final class TunneldManagerTests: XCTestCase {
         try await waitUntil { self.manager.state == .running }
 
         XCTAssertEqual(replacedDevices, ["00008130-000C5144019A001C"])
-    }
-
-    func testDaemonModeNeverAdoptsTheHelperConnection() async throws {
-        let connector = try installFakeConnector(mode: .daemon)
-        connector.status = .connected
-
-        await manager.adoptHelperConnectionIfPresent(deviceId: "00008130-000C5144019A001C", transport: .wifi)
-
-        XCTAssertEqual(manager.state, .idle)
-        XCTAssertTrue(connector.statusCalls.isEmpty)
     }
 
     func testFailedHealthProbeMakesTheNextMoveReconnectFirst() async throws {
@@ -679,9 +618,9 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(helper.isUsable)
         XCTAssertFalse(helper.exposesRSDEndpoint)
 
-        let daemon = TunnelInfo(rsdAddress: "fd00::1", rsdPort: 58783, mode: .daemon,
-                                interface: "utun9", processId: 7)
-        XCTAssertTrue(daemon.exposesRSDEndpoint)
+        let external = TunnelInfo(rsdAddress: "fd00::1", rsdPort: 58783, mode: .wifi,
+                                  interface: "utun9", processId: 7)
+        XCTAssertTrue(external.exposesRSDEndpoint)
     }
 
     // MARK: - Reconnect never stops a live tunnel; automatic reconnect (live 2026-11-03)
@@ -720,7 +659,7 @@ final class TunneldManagerTests: XCTestCase {
 
     func testAutomaticStartWaitsOnlyBrieflyForAnAbsentPhone() async throws {
         let connector = try installFakeConnector(mode: .wifi)
-        manager.allowDaemonAdoptionForTesting() // no Stop since the loss
+        manager.liftStopLatch() // no Stop since the loss
         manager.deviceVisibilityWait = .init(timeout: 30, interval: 0.02)
         manager.automaticDeviceVisibilityWait = .init(timeout: 0.1, interval: 0.02)
         connector.connectError = Self.notVisible
@@ -763,21 +702,17 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertEqual(manager.lifecycleState, .idle)
         XCTAssertEqual(announcements, 1)
 
-        manager.preferredMode = .daemon
+        let previous = manager.preferredMode
+        manager.preferredMode = previous == .usb ? .wifi : .usb
         XCTAssertEqual(announcements, 2)
-        manager.preferredMode = .wifi
+        manager.preferredMode = previous
     }
 
-    func testAutomaticStartNeverRunsAfterStopOrInDaemonMode() async throws {
+    func testAutomaticStartNeverRunsAfterStop() async throws {
         let connector = try installFakeConnector(mode: .wifi)
         let udid = "00008130-000C5144019A001C"
         XCTAssertTrue(manager.isStoppedByUser, "setup pressed Stop")
 
-        await manager.startTunnelAutomatically(deviceId: udid)
-        XCTAssertEqual(manager.lifecycleState, .idle)
-
-        manager.allowDaemonAdoptionForTesting()
-        manager.preferredMode = .daemon
         await manager.startTunnelAutomatically(deviceId: udid)
         XCTAssertEqual(manager.lifecycleState, .idle)
         XCTAssertTrue(connector.connectCalls.isEmpty)
@@ -827,7 +762,7 @@ final class TunneldManagerTests: XCTestCase {
         addTeardownBlock { @MainActor [weak self] in
             guard let self else { return }
             self.manager.stopTunnel()
-            self.manager.allowDaemonAdoptionForTesting() // later suites start unlatched
+            self.manager.liftStopLatch() // later suites start unlatched
             self.manager.deviceConnector = nil
             self.manager.preferredMode = previousMode
             self.manager.deviceVisibilityWait = .standard
@@ -839,70 +774,16 @@ final class TunneldManagerTests: XCTestCase {
         return connector
     }
 
-    // MARK: - Daemon adoption gates (review 2026-11-01, lane C)
-
-    // The pgrep probe for `remote tunneld` now really runs. Adoption must follow the
-    // user's choice: only Background Daemon mode adopts a daemon, and never after Stop.
-
-    final class DetectorCalls { var count = 0 }
-
-    private func installDaemonDetector(returning mode: TunnelMode?) -> DetectorCalls {
-        let calls = DetectorCalls()
-        manager.runningTunnelDetectorForTesting = { calls.count += 1; return mode }
-        manager.tunnelLogPathOverride = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tmp_rovodev_no_tunnel_\(UUID().uuidString).log").path
-        addTeardownBlock { @MainActor [weak self] in
-            self?.manager.runningTunnelDetectorForTesting = nil
-            self?.manager.tunnelLogPathOverride = nil
-        }
-        return calls
-    }
-
-    func testHelperModesNeverAdoptARunningDaemon() async throws {
-        for mode in [TunnelMode.usb, .wifi] {
-            _ = try installFakeConnector(mode: mode)
-            manager.allowDaemonAdoptionForTesting()
-            let calls = installDaemonDetector(returning: .daemon)
-
-            await manager.adoptRunningTunnelIfPresent()
-
-            XCTAssertEqual(manager.state, .idle, "\(mode.rawValue) adopted a daemon")
-            XCTAssertEqual(calls.count, 0, "\(mode.rawValue) probed for a daemon")
-        }
-    }
-
-    func testStopKeepsARunningDaemonFromBeingAdoptedAgain() async throws {
-        _ = try installFakeConnector(mode: .daemon)
-        manager.allowDaemonAdoptionForTesting()
-        let calls = installDaemonDetector(returning: .daemon)
-
-        manager.stopTunnel()
-        try await waitUntil { self.manager.state == .idle }
-        await manager.adoptRunningTunnelIfPresent()
-
-        XCTAssertEqual(manager.state, .idle)
-        XCTAssertEqual(calls.count, 0)
-    }
-
-    func testDaemonModeStillLooksForADaemonWhenNotStopped() async throws {
-        _ = try installFakeConnector(mode: .daemon)
-        manager.allowDaemonAdoptionForTesting()
-        let calls = installDaemonDetector(returning: nil)
-
-        await manager.adoptRunningTunnelIfPresent()
-
-        XCTAssertEqual(calls.count, 1)
-        XCTAssertEqual(manager.state, .idle)
-    }
+    // MARK: - The Stop latch
 
     func testExplicitStartClearsTheStopLatch() async throws {
         _ = try installFakeConnector(mode: .wifi) // stops first, like a user Stop
-        XCTAssertTrue(manager.isDaemonAdoptionSuppressedByStop)
+        XCTAssertTrue(manager.isStoppedByUser)
 
         await manager.startTunnel(deviceId: "00008130-000C5144019A001C")
 
         try await waitUntil { self.manager.state == .running }
-        XCTAssertFalse(manager.isDaemonAdoptionSuppressedByStop)
+        XCTAssertFalse(manager.isStoppedByUser)
     }
 
     private func waitUntil(
@@ -1280,47 +1161,6 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(usable.isUsable)
     }
 
-    func testStartupWaitsUntilUsableTunnelInfoArrives() async {
-        let expected = TunnelInfo(
-            rsdAddress: "fd00::1",
-            rsdPort: 58783,
-            mode: .wifi,
-            interface: "utun9",
-            processId: 42
-        )
-        var attempts = 0
-
-        let result = await TunnelStartupWaiter.wait(
-            timeout: 1,
-            pollInterval: 0.01,
-            processIsRunning: { true },
-            readInfo: {
-                attempts += 1
-                return attempts >= 3 ? expected : nil
-            }
-        )
-
-        XCTAssertEqual(result, expected)
-        XCTAssertGreaterThanOrEqual(attempts, 3)
-    }
-
-    func testStartupStopsWaitingWhenProcessExits() async {
-        var reads = 0
-
-        let result = await TunnelStartupWaiter.wait(
-            timeout: 1,
-            pollInterval: 0.01,
-            processIsRunning: { false },
-            readInfo: {
-                reads += 1
-                return nil
-            }
-        )
-
-        XCTAssertNil(result)
-        XCTAssertEqual(reads, 0)
-    }
-
     func testDeadTunnelProcessClearsRunningState() async throws {
         // Drive the manager's real state machine without launching or elevating anything.
         // The fake PID cannot exist, so TunnelHealthMonitor will report three consecutive
@@ -1381,19 +1221,6 @@ final class TunneldManagerTests: XCTestCase {
         XCTAssertTrue(TunnelStartPolicy.mayElevate(for: .explicitUserAction))
     }
 
-    func testAutoStartAllowedOutsideTests() {
-        XCTAssertTrue(TunneldManager.shouldAutoStart(environment: [:]))
-    }
-
-    func testAutoStartDisabledForXCTestHost() {
-        XCTAssertFalse(TunneldManager.shouldAutoStart(environment: [
-            "XCTestConfigurationFilePath": "/tmp/PathChangerTests.xctestconfiguration",
-        ]))
-        XCTAssertFalse(TunneldManager.shouldAutoStart(environment: [
-            "XCTestBundlePath": "/tmp/PathChangerTests.xctest",
-        ]))
-    }
-
     func testInitialStateIsIdle() {
         let state = manager.state
         XCTAssertEqual(state, .idle)
@@ -1427,24 +1254,18 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - Tunnel Mode Tests
 
-    /// USB and Wi-Fi are the tunnel modes the user chooses (owner decision 2026-11-06).
-    /// Background daemon stays in the type until its code is removed, unreachable from
-    /// every connection control.
+    /// USB and Wi-Fi are the only tunnel modes (owner decisions 2026-11-06; Background
+    /// Daemon removed). A retired stored value decodes to nothing; the settings migration
+    /// rewrites it before either manager reads it.
     func testTunnelModeEnumValues() {
-        XCTAssertEqual(TunnelMode.allCases, [.usb, .wifi, .daemon])
+        XCTAssertEqual(TunnelMode.allCases, [.usb, .wifi])
         XCTAssertNil(TunnelMode(rawValue: "Auto"))
-    }
-
-    func testTunnelModeCommands() {
-        XCTAssertEqual(TunnelMode.usb.command, [])
-        XCTAssertEqual(TunnelMode.wifi.command, [])
-        XCTAssertEqual(TunnelMode.daemon.command, ["remote", "tunneld"])
+        XCTAssertNil(TunnelMode(rawValue: "Background Daemon"))
     }
 
     func testTunnelModeProcessPatterns() {
         XCTAssertEqual(TunnelMode.usb.processPattern, "pymobiledevice3 lockdown start-tunnel")
         XCTAssertEqual(TunnelMode.wifi.processPattern, "pymobiledevice3 remote start-tunnel")
-        XCTAssertEqual(TunnelMode.daemon.processPattern, "pymobiledevice3 remote tunneld")
     }
 
     // MARK: - Tunnel Info Tests
@@ -1573,14 +1394,6 @@ final class TunneldManagerTests: XCTestCase {
 
     // MARK: - Tunnel Command Tests
 
-    func testTunnelCommandsUseFixedArguments() {
-        XCTAssertNil(TunneldManager.arguments(for: .usb))
-        XCTAssertNil(TunneldManager.arguments(for: .wifi))
-        XCTAssertEqual(TunneldManager.arguments(for: .daemon), [
-            "-m", "pymobiledevice3", "remote", "tunneld",
-        ])
-    }
-
     func testNativeTunnelLaunchDoesNotInvokeAdministratorShell() async throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1590,12 +1403,8 @@ final class TunneldManagerTests: XCTestCase {
             contentsOf: repositoryRoot.appendingPathComponent("PathChanger/Device/TunneldManager.swift"),
             encoding: .utf8
         )
-        guard let start = source.range(of: "private func attemptStart"),
-              let end = source.range(of: "private func checkLogForErrors", range: start.upperBound..<source.endIndex) else {
-            return XCTFail("Unable to isolate attemptStart implementation")
-        }
-        let implementation = source[start.lowerBound..<end.lowerBound]
-        XCTAssertFalse(implementation.contains("runAdministratorShell"))
+        // No mode launches a tunnel process since Background Daemon was removed.
+        XCTAssertFalse(source.contains("runAdministratorShell"))
         XCTAssertFalse(source.contains("\"start-tunnel\", \"--native\""),
                        "the --native tunnel refused the location service; it must not be launched")
     }
@@ -1928,13 +1737,13 @@ final class TunneldManagerTests: XCTestCase {
         try XCTSkipIf(getuid() == 0, "requires an unprivileged test host")
         let defaults = try isolatedOwnedTunnelDefaults()
         // A root-owned system daemon stands in for a root-owned leftover tunnel: SIGTERM
-        // from this user fails with EPERM. Its command line is not `remote tunneld`, so
-        // the command-line check is skipped (it used to be skipped by recording `.auto`).
+        // from this user fails with EPERM. Its command line is not a tunnel's, so the
+        // command-line check is skipped.
         let rootPID = try rootOwnedDaemonPID()
         let rootStart = try XCTUnwrap(ProcessStartTime.of(pid: rootPID))
         TunneldManager.skipsRecordedTunnelCommandCheckForTesting = true
         defer { TunneldManager.skipsRecordedTunnelCommandCheckForTesting = false }
-        OwnedTunnelRecord(pid: rootPID, startTime: rootStart, mode: .daemon).save(to: defaults)
+        OwnedTunnelRecord(pid: rootPID, startTime: rootStart, mode: .wifi).save(to: defaults)
         manager.adoptTunnelForTesting(pid: rootPID)
         defer { OwnedTunnelRecord.clear(from: defaults); manager.adoptTunnelForTesting(pid: 0) }
         XCTAssertTrue(manager.adoptedTunnelIsOwnedForTesting)

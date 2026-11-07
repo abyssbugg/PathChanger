@@ -14,7 +14,6 @@ struct SettingsView: View {
     @AppStorage("refreshInterval") private var refreshInterval: Double = 5.0
     @AppStorage("defaultMapStyle") private var defaultMapStyle: String = "standard"
     @AppStorage("showCoordinatesOnMap") private var showCoordinatesOnMap: Bool = true
-    @AppStorage("autoStartTunneld") private var autoStartTunneld: Bool = true
     @State private var showDiagnostics: Bool = false
     @State private var confirmTunnelStop = false
     /// A USB/Wi-Fi switch that ends a held location, waiting for the user's answer.
@@ -53,7 +52,7 @@ struct SettingsView: View {
                 Toggle("Show coordinates overlay", isOn: $showCoordinatesOnMap)
             }
 
-            // Enhanced tunneld section with auto-management
+            // Tunnel section
             tunneldSection
 
             // Advanced Settings
@@ -254,16 +253,6 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
             }
 
-            // Auto-start toggle
-            Toggle(isOn: $autoStartTunneld) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Auto-start tunnel on app launch")
-                    Text("Automatically manages the tunnel lifecycle")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-
             // Error display
             if let error = tunneldManager.lastError {
                 HStack(alignment: .top, spacing: 8) {
@@ -297,15 +286,6 @@ struct SettingsView: View {
                 }
 
                 Label {
-                    Text("Daemon mode: Background service, auto-discovers devices")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } icon: {
-                    Image(systemName: "server.rack")
-                        .foregroundColor(.blue)
-                }
-
-                Label {
                     Text("Runs with your user account")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -322,7 +302,6 @@ struct SettingsView: View {
         switch mode {
         case .usb: return "cable.connector"
         case .wifi: return "wifi"
-        case .daemon: return "server.rack"
         }
     }
 

@@ -10,7 +10,7 @@
 //  The pure rules live here; AppState owns the waiting task. Reconnecting goes only
 //  through the location helper's unprivileged path (the recovery burst reapplies via
 //  the injector, which opens the helper's device connection). It never starts or
-//  restarts a tunnel or daemon, never elevates, and never lifts a Stop's command block.
+//  restarts a tunnel process, never elevates, and never lifts a Stop's command block.
 //
 
 import Foundation
@@ -21,8 +21,6 @@ enum AutoReconnectPolicy {
     struct Inputs: Equatable {
         /// Off under test hosts and previews: derives from `AppRuntimeEnvironment`.
         var isEnabled: Bool
-        /// Auto, USB and Wi-Fi modes use the helper's connection; Background Daemon does not.
-        var usesHelperConnection: Bool
         /// Stop Tunnel or Clear since the last Start, Move or Reconnect.
         var isLatchedByUser: Bool
         /// A Clear is running or unconfirmed.
@@ -36,7 +34,6 @@ enum AutoReconnectPolicy {
 
     enum Refusal: Equatable {
         case disabled
-        case daemonMode
         case stoppedByUser
         case clearPending
         /// No acknowledged location is held and lost. After a successful Clear the last
@@ -54,7 +51,6 @@ enum AutoReconnectPolicy {
 
     static func evaluate(_ inputs: Inputs) -> Decision {
         guard inputs.isEnabled else { return .refuse(.disabled) }
-        guard inputs.usesHelperConnection else { return .refuse(.daemonMode) }
         guard !inputs.isLatchedByUser else { return .refuse(.stoppedByUser) }
         guard !inputs.hasClearPending else { return .refuse(.clearPending) }
         switch inputs.application {
@@ -100,17 +96,15 @@ enum AutoReconnectSchedule {
 /// What the waiting task depends on, injectable for tests.
 struct AutomaticReconnectEnvironment {
     var isEnabled: Bool
-    var usesHelperConnection: @MainActor () -> Bool
     var sleeper: any RecoverySleeping
     var now: @MainActor () -> Date
     /// The strategy for each burst; nil uses the reliability manager's, like the first one.
     var burstStrategy: ReconnectionStrategy?
 
-    /// Production: only helper modes, real time.
+    /// Production: real time.
     static func live(isEnabled: Bool) -> AutomaticReconnectEnvironment {
         AutomaticReconnectEnvironment(
             isEnabled: isEnabled,
-            usesHelperConnection: { TunneldManager.shared.preferredMode.usesHelperConnection },
             sleeper: TaskRecoverySleeper(),
             now: { Date() },
             burstStrategy: nil
@@ -301,7 +295,6 @@ enum TunnelAutoReconnectPolicy {
 
     enum Refusal: Equatable {
         case disabled
-        case daemonMode
         case stoppedByUser
         case connected
         case noDevice
@@ -322,7 +315,6 @@ enum TunnelAutoReconnectPolicy {
 
     static func evaluate(_ inputs: Inputs) -> Decision {
         guard inputs.isEnabled else { return .stop(.disabled) }
-        guard inputs.mode.usesHelperConnection else { return .stop(.daemonMode) }
         guard !inputs.isStoppedByUser else { return .stop(.stoppedByUser) }
         switch inputs.tunnel {
         case .running:
@@ -364,8 +356,7 @@ struct TunnelAutoReconnectEnvironment {
 }
 
 /// Reopens the tunnel after it left running for a reason the user did not cause (a health
-/// failure or a lost phone), until it is live again, the user stops it, or the mode changes
-/// to Background Daemon. Attempts go through `startTunnelAutomatically`, which opens only
+/// failure or a lost phone), until it is live again or the user stops it. Attempts go through `startTunnelAutomatically`, which opens only
 /// the helper's unprivileged connection and never elevates.
 @MainActor
 final class TunnelAutoReconnector: ObservableObject {

@@ -49,46 +49,6 @@ final class DeviceManagerIntegrationTests: XCTestCase {
         Logger.info("✅ Device discovery completed in \(String(format: "%.2f", duration))s with \(devices.count) device(s)", category: .device)
     }
 
-    func testTunnelStatusCheck() async throws {
-        /// Test tunnel status detection
-        let startTime = Date()
-
-        await deviceManager.checkTunneldStatus()
-
-        let duration = Date().timeIntervalSince(startTime)
-        let isTunneldRunning = await MainActor.run { deviceManager.isTunneldRunning }
-
-        // Should complete quickly
-        XCTAssertLessThan(duration, 5.0, "Tunnel status check should complete within 5 seconds")
-
-        Logger.info("✅ Tunnel status check: \(isTunneldRunning ? "running" : "not running") (took \(String(format: "%.2f", duration))s)", category: .device)
-    }
-
-    func testDeviceSelectionFlow() async throws {
-        /// Test selecting a device and checking connection state
-        // First discover devices
-        await deviceManager.refreshDevices()
-
-        // Try to select first device if available
-        let device = await MainActor.run { deviceManager.devices.first }
-
-        if let device = device {
-            do {
-                try await deviceManager.connect(to: device)
-                let isConnected = await MainActor.run { deviceManager.isConnected }
-                let selectedDeviceId = await MainActor.run { deviceManager.selectedDevice?.id }
-
-                XCTAssertTrue(isConnected, "Should be connected after connection attempt")
-                XCTAssertEqual(selectedDeviceId, device.id)
-            } catch {
-                // Connection might fail if device not available, which is OK
-                Logger.debug("Connection attempt failed (expected if device not available): \(error)", category: .device)
-            }
-        } else {
-            Logger.info("ℹ️ No devices available for connection test", category: .device)
-        }
-    }
-
     // MARK: - Error Handling Tests
 
     func testGracefulHandlingOfMissingPython() async throws {
@@ -141,7 +101,6 @@ final class DeviceManagerIntegrationTests: XCTestCase {
         /// Test that repeated refreshes don't cause crashes or memory leaks
         for i in 0..<5 {
             await deviceManager.refreshDevices()
-            await deviceManager.checkTunneldStatus()
 
             Logger.debug("Refresh cycle \(i + 1)/5 completed", category: .device)
 
@@ -342,8 +301,7 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         let usb = Device(id: "00008110-001A000E3E82001E", displayName: "USB Device", connectionType: .usb)
         let paired = Device(id: "00008130-0011223344556677", displayName: "Paired iOS Device", connectionType: .wifi)
         let rows = manager.mergedDiscoverySourcesForTesting(
-            knownWiFiDevices: [paired], mobdev2Devices: [paired], usbmuxDevices: [usb],
-            tunnelDevices: [], mode: .usb
+            knownWiFiDevices: [paired], mobdev2Devices: [paired], usbmuxDevices: [usb], mode: .usb
         )
         XCTAssertEqual(rows.map(\.id), [usb.id])
     }
@@ -465,128 +423,6 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
         XCTAssertTrue(lines[1].hasPrefix("[Tunnel] Gave up waiting for the device on Wi‑Fi"), lines[1])
     }
 
-    func testTheTunneldAPIIsQueriedOnlyWhileTheDaemonRuns() {
-        // Live 2026-11-01: every discovery poll asked 127.0.0.1:49151 although no
-        // `remote tunneld` was running (the helper owns the connection), logging
-        // "Failed to query tunneld API" every few seconds.
-        XCTAssertFalse(DeviceManager.shouldQueryTunneldAPI(daemonRunning: false))
-        XCTAssertTrue(DeviceManager.shouldQueryTunneldAPI(daemonRunning: true))
-    }
-
-    /// A fake `pgrep -f`: matches the pattern (as pgrep does, a regular expression)
-    /// against a fixed process table and records every request, so no process spawns.
-    @MainActor
-    private final class ProcessTableProbe {
-        var commandLines: [String]
-        private(set) var requests: [(executable: String, arguments: [String])] = []
-
-        init(_ commandLines: [String]) {
-            self.commandLines = commandLines
-        }
-
-        func list(_ executable: String, _ arguments: [String]) throws -> String {
-            requests.append((executable, arguments))
-            guard executable == "/usr/bin/pgrep",
-                  arguments.count == 2, arguments[0] == "-f" else {
-                // A relative or unexpected executable fails exactly as Process.run does.
-                throw CocoaError(.fileNoSuchFile)
-            }
-            let pattern = arguments[1]
-            return commandLines.enumerated()
-                .filter { $0.element.range(of: pattern, options: .regularExpression) != nil }
-                .map { "\(4000 + $0.offset)\n" }
-                .joined()
-        }
-    }
-
-    private static let strayStartTunnel =
-        "/Users/me/Library/Application Support/PathChanger/runtime/location/bin/python3 -m pymobiledevice3 remote start-tunnel --native"
-    private static let tunneldDaemon =
-        "/Users/me/Library/Application Support/PathChanger/runtime/location/bin/python3 -m pymobiledevice3 remote tunneld"
-
-    @MainActor
-    private func makeManager(probe: ProcessTableProbe, apiFetches: (() -> Void)? = nil) -> DeviceManager {
-        let manager = DeviceManager(startBackgroundServices: false)
-        manager.processListing = { executable, arguments in
-            try probe.list(executable, arguments)
-        }
-        manager.tunneldAPIFetch = { url in
-            apiFetches?()
-            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (Data("{}".utf8), response)
-        }
-        return manager
-    }
-
-    @MainActor
-    func testTunnelStatusProbeAsksForTheAbsolutePgrep() async {
-        // URL(fileURLWithPath: "pgrep") resolves against the app's working directory,
-        // so a relative probe never ran and its catch reported "no tunnel".
-        let probe = ProcessTableProbe([])
-        let manager = makeManager(probe: probe)
-
-        await manager.checkTunneldStatus()
-
-        XCTAssertFalse(probe.requests.isEmpty)
-        XCTAssertEqual(Set(probe.requests.map(\.executable)), ["/usr/bin/pgrep"])
-    }
-
-    @MainActor
-    func testAStrayStartTunnelProcessAloneDoesNotReportATunnelRunning() async {
-        // Option A launches no start-tunnel, and a leftover one is never adopted;
-        // counting it made readiness claim a tunnel nothing could use.
-        let probe = ProcessTableProbe([Self.strayStartTunnel])
-        let manager = makeManager(probe: probe)
-
-        await manager.checkTunneldStatus()
-
-        XCTAssertFalse(manager.isTunneldRunning)
-        XCTAssertFalse(manager.isTunneldDaemonRunning)
-    }
-
-    @MainActor
-    func testARunningTunneldDaemonReportsTheTunnelRunning() async {
-        let probe = ProcessTableProbe([Self.tunneldDaemon])
-        let manager = makeManager(probe: probe)
-
-        await manager.checkTunneldStatus()
-
-        XCTAssertTrue(manager.isTunneldRunning)
-        XCTAssertTrue(manager.isTunneldDaemonRunning)
-    }
-
-    @MainActor
-    func testDiscoverySkipsTheTunneldAPIWhenNoDaemonRuns() async {
-        let probe = ProcessTableProbe([Self.strayStartTunnel])
-        var fetches = 0
-        let manager = makeManager(probe: probe, apiFetches: { fetches += 1 })
-
-        let devices = await manager.discoverTunneldAPIDevicesForTesting()
-
-        XCTAssertTrue(devices.isEmpty)
-        XCTAssertEqual(fetches, 0)
-        XCTAssertEqual(probe.requests.count, 1, "one live daemon probe per discovery pass")
-    }
-
-    @MainActor
-    func testDiscoveryQueriesTheTunneldAPIForADaemonStartedSinceTheLastStatusPoll() async {
-        // The 5 s status poll saw no daemon; the daemon started afterwards. Discovery
-        // must not wait for the next poll to ask its API.
-        let probe = ProcessTableProbe([])
-        var fetches = 0
-        let manager = makeManager(probe: probe, apiFetches: { fetches += 1 })
-        await manager.checkTunneldStatus()
-        XCTAssertFalse(manager.isTunneldDaemonRunning)
-        probe.commandLines = [Self.tunneldDaemon]
-        let requestsBeforeDiscovery = probe.requests.count
-
-        _ = await manager.discoverTunneldAPIDevicesForTesting()
-
-        XCTAssertEqual(fetches, 1)
-        XCTAssertEqual(probe.requests.count - requestsBeforeDiscovery, 1, "one live daemon probe per discovery pass")
-        XCTAssertTrue(manager.isTunneldDaemonRunning)
-    }
-
     @MainActor
     func testDuplicatePhysicalFingerprintsDoNotTrapOrCollapseDistinctUDIDs() {
         let manager = DeviceManager(startBackgroundServices: false)
@@ -634,14 +470,12 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
             knownWiFiDevices: [wifi],
             mobdev2Devices: [wifi],
             usbmuxDevices: [usb, wifi],
-            tunnelDevices: [wifi],
             mode: .usb
         )
         let wifiOnly = manager.mergedDiscoverySourcesForTesting(
             knownWiFiDevices: [wifi],
             mobdev2Devices: [wifi],
             usbmuxDevices: [usb, wifi],
-            tunnelDevices: [wifi],
             mode: .wifi
         )
 
@@ -662,7 +496,6 @@ final class DeviceDiscoveryReconciliationTests: XCTestCase {
             knownWiFiDevices: [remembered],
             mobdev2Devices: [],
             usbmuxDevices: [],
-            tunnelDevices: [],
             mode: .wifi
         )
 

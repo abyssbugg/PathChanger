@@ -432,67 +432,6 @@ struct ConnectionStatusBanner: View {
     }
 }
 
-// MARK: - Tunneld Status View
-
-struct TunneldStatusView: View {
-    let isRunning: Bool
-    let onStartRequest: () -> Void
-
-    var body: some View {
-        HStack {
-            Circle()
-                .fill(isRunning ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
-
-            Text(isRunning ? "tunneld running" : "tunneld not running")
-                .font(.caption)
-
-            if !isRunning {
-                Button("Start") {
-                    onStartRequest()
-                }
-                .buttonStyle(.link)
-                .font(.caption)
-            }
-        }
-    }
-}
-
-// MARK: - Start Tunneld Sheet
-
-struct StartTunneldSheet: View {
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 48))
-                .foregroundColor(.blue)
-
-            Text("Start tunneld")
-                .font(.headline)
-
-            Text("The selected provider requires an RSD-capable tunnel to inject location.")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-
-            Text("Use Start Tunnel in PathChanger. The selected Python runs with your user account.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-
-            Button("Done") {
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(24)
-        .frame(width: 400)
-    }
-
-}
-
 // MARK: - Developer Mode Guide Sheet
 
 struct DeveloperModeGuideSheet: View {

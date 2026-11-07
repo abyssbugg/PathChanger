@@ -58,9 +58,6 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
     /// Timeout waiting for connection
     case connectionTimeout
 
-    /// External detection found tunnel already running
-    case externalTunnelDetected(mode: TunnelMode)
-
     var description: String {
         switch self {
         case .startRequested(let mode):
@@ -83,8 +80,6 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return "recoveryAttempted"
         case .connectionTimeout:
             return "connectionTimeout"
-        case .externalTunnelDetected(let mode):
-            return "externalTunnelDetected(\(mode.rawValue))"
         }
     }
 
@@ -111,8 +106,6 @@ enum TunnelEvent: Equatable, CustomStringConvertible {
             return true
         case (.connectionTimeout, .connectionTimeout):
             return true
-        case (.externalTunnelDetected(let m1), .externalTunnelDetected(let m2)):
-            return m1 == m2
         default:
             return false
         }
@@ -202,9 +195,6 @@ enum TunnelAction: Equatable, CustomStringConvertible {
     /// Terminate tracked processes
     case terminateProcesses
 
-    /// Parse RSD info from logs
-    case parseRsdInfo
-
     /// Start health monitoring
     case startHealthMonitor
 
@@ -229,8 +219,6 @@ enum TunnelAction: Equatable, CustomStringConvertible {
             return "launchProcess(\(mode.rawValue))"
         case .terminateProcesses:
             return "terminateProcesses"
-        case .parseRsdInfo:
-            return "parseRsdInfo"
         case .startHealthMonitor:
             return "startHealthMonitor"
         case .stopHealthMonitor:
@@ -275,7 +263,7 @@ enum TunnelAction: Equatable, CustomStringConvertible {
 /// ▼                                                    │
 /// idle ─────────────────────┐                          │
 ///  │                        │                          │
-///  │ startRequested         │ externalTunnelDetected   │
+///  │ startRequested         │                          │
 ///  ▼                        │                          │
 /// starting ─────────────────┼──────────────────────────┤
 ///  │  │                     │                          │
@@ -504,19 +492,6 @@ final class TunnelStateMachine: ObservableObject {
                 ]
             )
 
-        case (.idle, .externalTunnelDetected(let mode)):
-            context.activeMode = mode
-            context.statusMessage = "Tunnel already running (\(mode.rawValue))"
-            return .success(
-                newState: .running,
-                actions: [
-                    .logTransition(from: .idle, to: .running, event: event),
-                    .notifyStateChange(state: .running),
-                    .parseRsdInfo,
-                    .startHealthMonitor
-                ]
-            )
-
         // MARK: From Starting
         case (.starting, .processLaunched(let pid)):
             if let pid = pid {
@@ -524,12 +499,7 @@ final class TunnelStateMachine: ObservableObject {
             }
             context.statusMessage = "Process launched, establishing connection..."
             // Stay in starting until connection is established
-            return .success(
-                newState: .starting,
-                actions: [
-                    .parseRsdInfo
-                ]
-            )
+            return .success(newState: .starting, actions: [])
 
         case (.starting, .processExited(let pid)):
             context.removeProcess(pid)
@@ -540,19 +510,6 @@ final class TunnelStateMachine: ObservableObject {
                 newState: .error(message),
                 actions: [
                     .notifyStateChange(state: .error(message))
-                ]
-            )
-
-        case (.starting, .externalTunnelDetected(let mode)):
-            context.activeMode = mode
-            context.activeProcessIds.removeAll()
-            context.statusMessage = "Tunnel already running (\(mode.rawValue))"
-            return .success(
-                newState: .running,
-                actions: [
-                    .notifyStateChange(state: .running),
-                    .parseRsdInfo,
-                    .startHealthMonitor
                 ]
             )
 

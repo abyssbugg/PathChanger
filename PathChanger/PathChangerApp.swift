@@ -3572,7 +3572,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let state = locationSessionCoordinator.state
         return AutoReconnectPolicy.evaluate(AutoReconnectPolicy.Inputs(
             isEnabled: automaticReconnect.isEnabled,
-            usesHelperConnection: automaticReconnect.usesHelperConnection(),
             isLatchedByUser: isAutomaticReconnectLatchedByUser,
             hasClearPending: !canBeginLocationOperation,
             application: state.application,

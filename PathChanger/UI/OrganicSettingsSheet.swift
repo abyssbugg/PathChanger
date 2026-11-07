@@ -370,7 +370,7 @@ private struct SettingsConnectionChoiceRow<Row: View>: View {
     @State private var pendingChange: ConnectionChoiceChange?
 
     var body: some View {
-        let choice = ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunnel.preferredMode)
+        let choice = ConnectionChoice.current(tunnelMode: tunnel.preferredMode)
         row("Connect over", choice.detail, AnyView(
             OrganicSegmented(
                 options: ConnectionChoice.allCases,

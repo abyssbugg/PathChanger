@@ -4,8 +4,8 @@
 //
 //  How to talk to DVT after a tunnel is up.
 //  directly reachable (usbmux USB/Network) → --udid UDID (pymobiledevice3 self-tunnels)
-//  not directly reachable + lockdown/wifi start-tunnel → --rsd HOST PORT
-//  remote tunneld daemon     → --tunnel UDID
+//  an external RSD endpoint recorded for the device → --rsd HOST PORT
+//  (the remote tunneld daemon's --tunnel UDID was removed with daemon mode, 2026-11-06)
 //
 
 import Foundation
@@ -19,15 +19,11 @@ struct LocationConnectionDescriptor: Equatable, Sendable {
 enum LocationConnectionArguments {
     static func make(
         deviceId: String,
-        isDaemonTunneld: Bool,
         rsdAddress: String?,
         rsdPort: Int?
     ) -> [String] {
-        if isDaemonTunneld {
-            return ["--tunnel", deviceId]
-        }
-        // Only an external RSD endpoint (daemon mode) reaches here; the helper's
-        // in-process connection is never exposed, so USB/Wi-Fi fall through to --udid.
+        // The helper's in-process connection is never exposed, so USB/Wi-Fi use --udid
+        // unless an external RSD endpoint is recorded.
         // Single tunnel owner (2026-11-01): a usable app tunnel (TunneldManager) is
         // the one channel for every DVT command, so GUI connection truth and the
         // injection lane can never diverge. The 2026-10-24 "DVT port refused"
@@ -46,20 +42,18 @@ enum LocationConnectionArguments {
         LocationConnectionDescriptor(
             arguments: arguments,
             transport: physicalTransport,
-            endpointClass: ["--rsd", "--tunnel"].contains(arguments.first) ? .remoteServiceDiscovery : .direct
+            endpointClass: arguments.first == "--rsd" ? .remoteServiceDiscovery : .direct
         )
     }
 
     static func describe(
         deviceId: String,
         physicalTransport: LocationTransport,
-        isDaemonTunneld: Bool,
         rsdAddress: String?,
         rsdPort: Int?
     ) -> LocationConnectionDescriptor {
         let arguments = make(
             deviceId: deviceId,
-            isDaemonTunneld: isDaemonTunneld,
             rsdAddress: rsdAddress,
             rsdPort: rsdPort
         )

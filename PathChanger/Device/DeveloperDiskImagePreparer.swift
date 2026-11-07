@@ -40,7 +40,7 @@ struct HelperDiskImageChannel: Sendable {
     let status: @Sendable (String) async -> HelperDiskImageStatus
     let mount: @Sendable (String) async -> HelperDiskImageMountResult
     /// Opens the helper's unprivileged device connection (the path Start and every Move
-    /// use); true when it is open. Nil, or false in Background Daemon mode: never opened.
+    /// use); true when it is open. Nil: never opened.
     let connect: (@Sendable (String) async -> Bool)?
 
     init(
@@ -104,8 +104,7 @@ actor DeveloperDiskImagePreparer {
     /// current connection mode at each usbmux miss: USB-only never crosses to Wi-Fi.
     /// The helper channel is the shared location helper, asked with the same transport
     /// hint its connection was opened with. Its status and mount never start the helper;
-    /// its connect opens the helper's unprivileged connection like Move does, only in the
-    /// helper modes (never in Background Daemon mode).
+    /// its connect opens the helper's unprivileged connection like Move does.
     static func live(deviceManager: DeviceManager) -> DeveloperDiskImagePreparer {
         DeveloperDiskImagePreparer(
             runner: { command in
@@ -124,7 +123,6 @@ actor DeveloperDiskImagePreparer {
                         deviceId: udid, transport: deviceManager.helperConnectTransport(for: udid))
                 },
                 connect: { @MainActor udid in
-                    guard TunneldManager.shared.preferredMode.usesHelperConnection else { return false }
                     return await PersistentLocationBridge.shared.openDeviceConnectionForDiskImage(
                         udid, transport: deviceManager.helperConnectTransport(for: udid))
                 }

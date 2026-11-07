@@ -391,16 +391,6 @@ actor SessionController {
 /// await deviceManager.refreshDevices()
 /// ```
 ///
-/// ## Tunnel Management
-///
-/// For capability-compatible iOS devices, a tunnel is required for location simulation:
-///
-/// ```swift
-/// if !deviceManager.isTunneldRunning {
-///     // Show PathChanger's tunnel controls.
-/// }
-/// ```
-///
 /// ## Cache Management
 ///
 /// Access cache statistics and manage cache lifecycle:
@@ -426,7 +416,6 @@ actor SessionController {
 /// - ``devices``
 /// - ``selectedDevice``
 /// - ``connectionState``
-/// - ``isTunneldRunning``
 /// - ``isScanning``
 /// - ``lastError``
 /// - ``connectionMode``
@@ -434,8 +423,6 @@ actor SessionController {
 /// ### Device Discovery
 ///
 /// - ``refreshDevices()``
-/// - ``selectDevice(_:)``
-/// - ``checkTunneldStatus()``
 ///
 /// ### Cache Management
 ///
@@ -448,7 +435,6 @@ class DeviceManager: ObservableObject {
     @Published var devices: [Device] = []
     @Published var selectedDevice: Device?
     @Published var connectionState: DeviceConnectionState = .disconnected
-    @Published var isTunneldRunning: Bool = false
     @Published var isScanning: Bool = false
     @Published var lastError: DeviceError?
     @Published var connectionMode: ConnectionMode = .wifi
@@ -515,10 +501,6 @@ class DeviceManager: ObservableObject {
         var succeeded: Bool { errorMessage == nil }
     }
 
-    // MARK: Debouncing for UI Stability
-    private var lastTunnelStateChange: Date = Date.distantPast
-    private var stateDebounceInterval: TimeInterval { AppConstants.Tunnel.stateDebounceInterval }
-
     // MARK: Tool Paths - Now unified to pymobiledevice3
     private var python3Path: String { PythonPathResolver.path }
 
@@ -529,11 +511,6 @@ class DeviceManager: ObservableObject {
             throw DeviceError.commandFailed("Device manager is unavailable")
         }
         return try await self.runCommand(executable, arguments: arguments)
-    }
-
-    /// Fetches the tunneld HTTP API. Injectable so discovery tests never touch the network.
-    var tunneldAPIFetch: (URL) async throws -> (Data, URLResponse) = { url in
-        try await URLSession.shared.data(from: url)
     }
 
     // MARK: Tunnel State Observation (Task 31: Cache Race Condition Fix)
@@ -552,7 +529,6 @@ class DeviceManager: ObservableObject {
         guard startBackgroundServices else { return }
         setupTunnelStateObserver()
         Task {
-            await checkTunneldStatus()
             await refreshDevices()
             startAutoRefresh()
         }
@@ -615,7 +591,6 @@ class DeviceManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(autoRefreshInterval * 1_000_000_000))
                 if !Task.isCancelled {
                     await refreshDevices()
-                    await checkTunneldStatus()
                 }
             }
         }
@@ -663,53 +638,6 @@ class DeviceManager: ObservableObject {
         await deviceCache.invalidateAll()
     }
 
-    // MARK: Debounced State Updates
-
-    private func updateTunnelRunning(_ newValue: Bool) {
-        let now = Date()
-        guard now.timeIntervalSince(lastTunnelStateChange) >= stateDebounceInterval else { return }
-
-        if isTunneldRunning != newValue {
-            isTunneldRunning = newValue
-            lastTunnelStateChange = now
-        }
-    }
-
-    // MARK: Tunnel Status
-    /// Report whether a `pymobiledevice3 remote tunneld` daemon is running.
-    ///
-    /// Only the daemon counts. Since Option A (2026-11-01) the app launches no
-    /// `start-tunnel` process: the managed location helper owns USB/Wi-Fi connections,
-    /// and a leftover `start-tunnel` from an older build is never adopted
-    /// (`TunneldManager.detectRunningTunnel`), so counting one reported a tunnel
-    /// nothing could use.
-    func checkTunneldStatus() async {
-        updateTunnelRunning(await probeTunneldDaemon())
-    }
-
-    /// Whether `pymobiledevice3 remote tunneld` was running at the last probe.
-    private(set) var isTunneldDaemonRunning = false
-
-    /// One live process probe for the daemon. The executable path is absolute:
-    /// `Process` resolves a relative `URL(fileURLWithPath:)` against the working
-    /// directory (`/` for the app), so a bare "pgrep" never ran.
-    private func probeTunneldDaemon() async -> Bool {
-        let output = try? await processListing(
-            "/usr/bin/pgrep",
-            ["-f", TunnelMode.daemon.processPattern]
-        )
-        let running = !(output ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        isTunneldDaemonRunning = running
-        return running
-    }
-
-    /// Discovery asks the tunneld HTTP API only while the daemon runs; otherwise every
-    /// poll logged "Failed to query tunneld API" (live 2026-11-01, Option A: the location
-    /// helper owns the connection and no daemon runs).
-    nonisolated static func shouldQueryTunneldAPI(daemonRunning: Bool) -> Bool {
-        daemonRunning
-    }
-
     // MARK: Device Discovery - Unified pymobiledevice3
     func refreshDevices() async {
         latestRefreshGeneration &+= 1
@@ -732,24 +660,20 @@ class DeviceManager: ObservableObject {
         // Discover devices from multiple sources in parallel
         async let usbDevicesTask = discoverUSBDevices()
         async let mobdev2DevicesTask = discoverMobdev2Devices()
-        async let tunnelDevicesTask = discoverTunneldAPIDevices()
 
         let usbAttempt = await usbDevicesTask
         let mobdev2Devices = await mobdev2DevicesTask
-        let tunnelDevices = await tunnelDevicesTask
         let knownWiFiDevices = discoverKnownRemotePairingDevices()
 
         let discoveredDevices = mergeDiscoverySources(
             knownWiFiDevices: knownWiFiDevices,
             mobdev2Devices: mobdev2Devices,
             usbmuxDevices: usbAttempt.devices,
-            tunnelDevices: tunnelDevices,
             mode: connectionMode
         )
         let rawDeviceCount = knownWiFiDevices.count
             + mobdev2Devices.count
             + usbAttempt.devices.count
-            + tunnelDevices.count
         Logger.debug(
             "Device discovery collapsed \(rawDeviceCount) raw entries to \(discoveredDevices.count) canonical device(s)",
             category: .device
@@ -830,13 +754,12 @@ class DeviceManager: ObservableObject {
         knownWiFiDevices: [Device],
         mobdev2Devices: [Device],
         usbmuxDevices: [Device],
-        tunnelDevices: [Device],
         mode: ConnectionMode
     ) -> [Device] {
         let directUSBDevices = usbmuxDevices.filter { $0.connectionType == .usb }
         let directNetworkDevices = usbmuxDevices.filter { $0.connectionType == .wifi }
         let liveDeviceIds = Set(
-            (mobdev2Devices + usbmuxDevices + tunnelDevices).map(\.id)
+            (mobdev2Devices + usbmuxDevices).map(\.id)
         )
         let corroboratedKnownWiFiDevices = knownWiFiDevices.filter {
             liveDeviceIds.contains($0.id)
@@ -848,7 +771,6 @@ class DeviceManager: ObservableObject {
         case .wifi:
             rankedSources = [
                 corroboratedKnownWiFiDevices,
-                tunnelDevices,
                 mobdev2Devices,
                 directNetworkDevices,
             ]
@@ -876,14 +798,12 @@ class DeviceManager: ObservableObject {
         knownWiFiDevices: [Device],
         mobdev2Devices: [Device],
         usbmuxDevices: [Device],
-        tunnelDevices: [Device],
         mode: ConnectionMode
     ) -> [Device] {
         mergeDiscoverySources(
             knownWiFiDevices: knownWiFiDevices,
             mobdev2Devices: mobdev2Devices,
             usbmuxDevices: usbmuxDevices,
-            tunnelDevices: tunnelDevices,
             mode: mode
         )
     }
@@ -1271,148 +1191,6 @@ class DeviceManager: ObservableObject {
         }
     }
 
-    // MARK: Tunneld API Device Discovery
-    private var tunneldAPIEndpoint: String { AppConstants.Tunnel.tunneldAPIEndpoint }
-
-    private func discoverTunneldAPIDevices() async -> [Device] {
-        // Probe live, once per pass: the status poll's answer can be seconds old, and a
-        // daemon that just started (the .running observer refreshes at once) was skipped.
-        let daemonRunning = await probeTunneldDaemon()
-        guard Self.shouldQueryTunneldAPI(daemonRunning: daemonRunning),
-              let url = URL(string: tunneldAPIEndpoint) else { return [] }
-
-        do {
-            let (data, response) = try await tunneldAPIFetch(url)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                Logger.debug("Tunneld API returned non-200 status", category: .device)
-                return []
-            }
-
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: [[String: Any]]] else {
-                Logger.debug("Tunneld API returned invalid JSON format", category: .device)
-                return []
-            }
-
-            Logger.debug("Tunneld API returned \(json.count) device(s)", category: .device)
-
-            // Fetch device info for all UDIDs in parallel with caching (PERF-003)
-            var fetchTasks: [Task<Device, Never>] = []
-
-            for udid in json.keys {
-                let task = Task {
-                    // Check cache first (PERF-003)
-                    if let cachedDevice = await self.deviceCache.getCachedDevice(udid: udid) {
-                        // Return cached device with WiFi connection type
-                        return Device(
-                            id: cachedDevice.id,
-                            displayName: cachedDevice.displayName,
-                            connectionType: .wifi,
-                            productType: cachedDevice.productType,
-                            productVersion: cachedDevice.productVersion,
-                            deviceName: cachedDevice.deviceName
-                        )
-                    }
-
-                    // Cache miss - fetch detailed info
-                    if let device = await self.fetchDeviceInfoViaTunnel(udid: udid) {
-                        // Cache the device info
-                        await self.deviceCache.cacheDevice(device, source: .tunnel)
-                        return device
-                    } else {
-                        // Fallback to basic device with just UDID
-                        return Device(
-                            id: udid,
-                            displayName: "iOS Device (Tunnel)",
-                            connectionType: .wifi,
-                            productType: nil,
-                            productVersion: nil,
-                            deviceName: nil
-                        )
-                    }
-                }
-                fetchTasks.append(task)
-            }
-
-            // Collect all results
-            var devices: [Device] = []
-            for task in fetchTasks {
-                let device = await task.value
-                if !device.id.isEmpty {
-                    devices.append(device)
-                }
-            }
-
-            Logger.info("✅ Discovered \(devices.count) device(s) via Tunneld API", category: .device)
-            return devices
-        } catch {
-            Logger.debug("Failed to query tunneld API: \(error.localizedDescription)", category: .device)
-            return []
-        }
-    }
-
-    #if DEBUG
-    func discoverTunneldAPIDevicesForTesting() async -> [Device] {
-        await discoverTunneldAPIDevices()
-    }
-    #endif
-
-    private func fetchDeviceInfoViaTunnel(udid: String) async -> Device? {
-        do {
-            let output = try await runPython(arguments: [
-                "-m", "pymobiledevice3",
-                "lockdown", "info",
-                "--tunnel", udid
-            ], timeout: 10.0)
-
-            var info: [String: String] = [:]
-            for line in output.split(separator: "\n") {
-                let parts = line.split(separator: ":", maxSplits: 1)
-                if parts.count == 2 {
-                    let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                    let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    info[key] = value
-                }
-            }
-
-            let deviceName = info["DeviceName"] ?? "iOS Device"
-            let productType = info["ProductType"]
-            let productVersion = info["ProductVersion"]
-            let deviceClass = info["DeviceClass"]
-
-            let displayName: String
-            if deviceName == "iPhone" || deviceName == "iPad" || deviceName == "iOS Device" {
-                let modelName = productType.map { Device.modelNameFrom(productType: $0) } ?? deviceClass ?? deviceName
-                if let version = productVersion {
-                    displayName = "\(modelName) (iOS \(version))"
-                } else {
-                    displayName = modelName
-                }
-            } else {
-                if let version = productVersion {
-                    displayName = "\(deviceName) (iOS \(version))"
-                } else {
-                    displayName = deviceName
-                }
-            }
-
-            Logger.debug("Fetched device info via tunnel: \(displayName) [\(udid)]", category: .device)
-
-            return Device(
-                id: udid,
-                displayName: displayName,
-                connectionType: .wifi,
-                productType: productType,
-                productVersion: productVersion,
-                deviceName: deviceName
-            )
-        } catch {
-            Logger.debug("Failed to fetch device info via tunnel for \(udid): \(error)", category: .device)
-            return nil
-        }
-    }
-
     private func parseDeviceListJSON(_ output: String, connectionType: ConnectionType) -> [Device] {
         var devices: [Device] = []
 
@@ -1495,140 +1273,7 @@ class DeviceManager: ObservableObject {
         return devices
     }
 
-    private func extractUDID(from text: String) -> String? {
-        // UDID is typically 40 hex chars (old) or 25 chars with dashes (new format)
-        let patterns = [
-            "[0-9a-fA-F]{40}",  // Old format
-            "[0-9a-fA-F]{8}-[0-9a-fA-F]{16}"  // New format (00008xxx-xxxxxxxxxxxx)
-        ]
-
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-               let range = Range(match.range, in: text) {
-                return String(text[range])
-            }
-        }
-        return nil
-    }
-
-    // MARK: WiFi/Tunneld Device Discovery
-    private func discoverTunneldDevices() async -> [Device] {
-        do {
-            // Use pymobiledevice3 remote browse to find tunneld devices
-            let output = try await runPython(arguments: [
-                "-m", "pymobiledevice3",
-                "remote", "browse"
-            ], timeout: 5.0)
-
-            // Try JSON parsing first
-            let jsonDevices = parseDeviceListJSON(output, connectionType: ConnectionType.wifi)
-            if !jsonDevices.isEmpty {
-                return jsonDevices
-            }
-
-            // Fallback to text parsing for older versions
-            return parseTextDeviceList(output, connectionType: ConnectionType.wifi)
-        } catch {
-            return []
-        }
-    }
-
-    private func parseTextDeviceList(_ output: String, connectionType: ConnectionType) -> [Device] {
-        var devices: [Device] = []
-        let lines = output.components(separatedBy: .newlines)
-
-        for line in lines {
-            if let udid = extractUDID(from: line) {
-                // Avoid duplicates
-                if !devices.contains(where: { $0.id == udid }) {
-                    let device = Device(
-                        id: udid,
-                        displayName: "iOS Device (\(connectionType == .wifi ? "WiFi" : "USB"))",
-                        connectionType: connectionType,
-                        productType: nil,
-                        productVersion: nil,
-                        deviceName: nil
-                    )
-                    devices.append(device)
-                }
-            }
-        }
-
-        return devices
-    }
-
-    // MARK: Device Info (pymobiledevice3 lockdown info)
-    private func getDeviceInfo(udid: String, viaUSB: Bool) async -> Device? {
-        do {
-            let args: [String]
-            if !viaUSB && isTunneldRunning {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", udid]
-            } else {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", udid]
-            }
-
-            let output = try await runPython(arguments: args, timeout: 10.0)
-
-            var info: [String: String] = [:]
-            for line in output.split(separator: "\n") {
-                let parts = line.split(separator: ":", maxSplits: 1)
-                if parts.count == 2 {
-                    let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
-                    let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                    info[key] = value
-                }
-            }
-
-            let deviceName = info["DeviceName"] ?? info["DeviceClass"] ?? "iOS Device"
-            let productType = info["ProductType"]
-            let productVersion = info["ProductVersion"]
-
-            return Device(
-                id: udid,
-                displayName: "\(deviceName) (\(productVersion ?? "Unknown"))",
-                connectionType: viaUSB ? .usb : .wifi,
-                productType: productType,
-                productVersion: productVersion,
-                deviceName: deviceName
-            )
-        } catch {
-            return nil
-        }
-    }
-
     // MARK: Connection Management
-    func connect(to device: Device) async throws {
-        connectionState = .connecting
-
-        // Check if tunneld is running for capability-compatible iOS
-        await checkTunneldStatus()
-
-        // For WiFi devices, tunneld must be running
-        if device.connectionType == .wifi && !isTunneldRunning {
-            connectionState = .error("tunneld not running")
-            throw DeviceError.tunneldNotRunning
-        }
-
-        // Verify device is reachable via pymobiledevice3
-        do {
-            let args: [String]
-            if device.connectionType == .wifi && isTunneldRunning {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--tunnel", device.id, "-k", "ProductVersion"]
-            } else {
-                args = ["-m", "pymobiledevice3", "lockdown", "info", "--udid", device.id, "-k", "ProductVersion"]
-            }
-
-            _ = try await runPython(arguments: args, timeout: 10.0)
-            selectedDevice = device
-            connectionState = .connected
-            try await sessionController.startSession(with: device)
-        } catch {
-            connectionState = .error("Connection failed")
-            throw DeviceError.connectionFailed(error.localizedDescription)
-        }
-    }
-
     func disconnect() async {
         await sessionController.endSession()
         connectionState = .disconnected
@@ -1801,14 +1446,6 @@ class DeviceManager: ObservableObject {
 
     var isConnected: Bool {
         connectionState.isConnected
-    }
-
-    func selectDevice(_ device: Device) async {
-        do {
-            try await connect(to: device)
-        } catch {
-            lastError = error as? DeviceError ?? .connectionFailed(error.localizedDescription)
-        }
     }
 
     /// Sets the connection mode and the tunnel mode it names, so the two stored settings

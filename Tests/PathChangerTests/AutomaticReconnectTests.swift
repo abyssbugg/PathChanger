@@ -218,13 +218,12 @@ final class AutomaticReconnectPolicyTests: XCTestCase {
     )
 
     private func inputs(
-        enabled: Bool = true, helper: Bool = true, latched: Bool = false, clearPending: Bool = false,
+        enabled: Bool = true, latched: Bool = false, clearPending: Bool = false,
         application: LocationApplicationPhase? = nil, receipt hasReceipt: Bool = true,
         awaited: String?? = .none, selected: String? = nil
     ) -> AutoReconnectPolicy.Inputs {
         AutoReconnectPolicy.Inputs(
             isEnabled: enabled,
-            usesHelperConnection: helper,
             isLatchedByUser: latched,
             hasClearPending: clearPending,
             application: application ?? .uncertain(lastReceipt: receipt, reason: "lost"),
@@ -242,7 +241,6 @@ final class AutomaticReconnectPolicyTests: XCTestCase {
 
     func testEveryRefusalHasItsReason() {
         XCTAssertEqual(AutoReconnectPolicy.evaluate(inputs(enabled: false)), .refuse(.disabled))
-        XCTAssertEqual(AutoReconnectPolicy.evaluate(inputs(helper: false)), .refuse(.daemonMode))
         XCTAssertEqual(AutoReconnectPolicy.evaluate(inputs(latched: true)), .refuse(.stoppedByUser))
         XCTAssertEqual(AutoReconnectPolicy.evaluate(inputs(clearPending: true)), .refuse(.clearPending))
         // After a successful Clear the last point is only staged: desired, no receipt, idle.
@@ -409,7 +407,6 @@ final class AutomaticReconnectTests: XCTestCase {
     }
 
     private func makeFixture(
-        usesHelper: Bool = true,
         managedSource: (any ManagedLocationSessionSource)? = nil,
         ddiRunner: (([String]) async throws -> String)? = nil,
         tunnelReconnect: FakeReconnectTunnel? = nil
@@ -431,7 +428,6 @@ final class AutomaticReconnectTests: XCTestCase {
             tunnelQuitController: tunnel,
             automaticReconnect: AutomaticReconnectEnvironment(
                 isEnabled: true,
-                usesHelperConnection: { usesHelper },
                 sleeper: sleeper,
                 now: { clock.now },
                 burstStrategy: oneAttempt
@@ -1280,19 +1276,6 @@ final class AutomaticReconnectTests: XCTestCase {
         await move.value
     }
 
-    func testDaemonModeNeverReconnectsAutomatically() async throws {
-        let fixture = makeFixture(usesHelper: false)
-        try seedHeldLocation(fixture)
-        losePhone(fixture)
-        fixture.state.device.wifiDirectDeviceIds = [deviceID]
-        await settle()
-        XCTAssertFalse(fixture.state.isAwaitingAutomaticReconnect)
-        let observed448 = await applyCount(fixture.injector)
-        XCTAssertEqual(observed448, 0)
-        let observed449 = await fixture.sleeper.recordedRequests()
-        XCTAssertEqual(observed449, [])
-    }
-
     func testAStagedPointAfterASuccessfulClearIsNeverSentAutomatically() async throws {
         let fixture = makeFixture()
         try seedHeldLocation(fixture)
@@ -1881,7 +1864,6 @@ final class TunnelAutoReconnectPolicyTests: XCTestCase {
 
     func testEveryRefusalHasItsReason() {
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(enabled: false)), .stop(.disabled))
-        XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(mode: .daemon)), .stop(.daemonMode))
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(stopped: true)), .stop(.stoppedByUser))
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(tunnel: .running)), .stop(.connected))
         XCTAssertEqual(TunnelAutoReconnectPolicy.evaluate(inputs(device: .some(nil))), .stop(.noDevice))
@@ -2088,20 +2070,6 @@ final class TunnelAutoReconnectorTests: XCTestCase {
         XCTAssertEqual(requests, [])
     }
 
-    func testDaemonModeNeverReconnectsTheTunnel() async {
-        let tunnel = FakeReconnectTunnel()
-        tunnel.preferredMode = .daemon
-        let (reconnector, sleeper, _) = makeReconnector(tunnel)
-        tunnel.state = .running
-        tunnel.state = .error("Tunnel process exited")
-        reconnector.noteVisibleDevices([udid])
-        await settle()
-        XCTAssertFalse(reconnector.isReconnecting)
-        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
-        let requests = await sleeper.recordedRequests()
-        XCTAssertEqual(requests, [])
-    }
-
     func testDisabledUnderTestHostsAndPreviews() async {
         let tunnel = FakeReconnectTunnel()
         let (reconnector, _, _) = makeReconnector(tunnel, enabled: false)
@@ -2147,25 +2115,8 @@ final class TunnelAutoReconnectorTests: XCTestCase {
         XCTAssertTrue(tunnel.automaticStarts.isEmpty)
     }
 
-    // Review 2026-11-03 issue 8: a switch to Background Daemon or a Stop the state machine
+    // Review 2026-11-03 issue 8: a Stop the state machine
     // ignores did not wake the loop, so "Reconnecting…" stayed up for the rest of the wait.
-
-    func testSwitchingToDaemonModeEndsReconnectingAtOnce() async throws {
-        let tunnel = FakeReconnectTunnel()
-        let (reconnector, sleeper, clock) = makeReconnector(tunnel)
-        tunnel.state = .running
-        tunnel.state = .error("Health check failed")
-        try await waitUntil("the periodic wait") { await sleeper.pendingCount() == 1 }
-
-        tunnel.preferredMode = .daemon
-
-        XCTAssertFalse(reconnector.isReconnecting, "the label clears at once, not after the 5-30 s wait")
-        try await waitUntil("the wait cancelled") { await sleeper.pendingCount() == 0 }
-        clock.now += 60
-        reconnector.noteVisibleDevices([udid])
-        await settle()
-        XCTAssertTrue(tunnel.automaticStarts.isEmpty)
-    }
 
     func testAStopTheStateMachineIgnoresStillEndsReconnectingAtOnce() async throws {
         let tunnel = FakeReconnectTunnel()

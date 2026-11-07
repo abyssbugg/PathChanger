@@ -362,16 +362,7 @@ final class DeviceStateManager: ObservableObject {
 
     /// Poll tunnel and transport availability.
     func checkTunneldStatus() async {
-        await deviceManager.checkTunneldStatus()
         let tunnelManager = TunneldManager.shared
-        if deviceManager.isTunneldRunning && !tunnelManager.isRunning {
-            // Only auto-adopt from a neutral state. If adoption previously failed and put
-            // the manager in `.error`, retrying here every poll causes a visible
-            // "Connecting…" loop without a new privileged launch.
-            if case .idle = tunnelManager.state {
-                await tunnelManager.adoptRunningTunnelIfPresent()
-            }
-        }
         // A connection the location helper already holds (opened by Move, or kept by
         // Preserve and Quit) is the tunnel: report it rather than "stopped".
         if !tunnelManager.isRunning, !tunnelManager.isStarting, let selectedDevice {
@@ -387,9 +378,7 @@ final class DeviceStateManager: ObservableObject {
         usbDirectDeviceIds = deviceManager.usbDirectDeviceIds
         wifiDirectDeviceIds = deviceManager.wifiDirectDeviceIds
         networkAdvertisedDeviceIds = deviceManager.networkAdvertisedDeviceIds
-        // Readiness follows the tunnel manager, never a bare process: a `remote tunneld`
-        // the user did not choose (or just stopped) is not a connection (invariant 2).
-        // The process probe above only decides whether adoption is worth trying.
+        // Readiness follows the tunnel manager, never a bare process (invariant 2).
         updateTunnelRunning(tunnelManager.isRunning)
 
         if tunnelManager.isRunning {
