@@ -153,6 +153,13 @@ CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
 PRODUCT_REQUIREMENTS.md: 27c0dd42d5e1f267f564ebe58f9a0ba1ce0ed39a688857ca7f015c5e14f987f8
 ```
 
+Re-recorded 2026-11-06 after the owner's USB/Wi-Fi-only, Preferred Connection, migration, recovery-order, Switch Now / Cancel and Prepare for Wi-Fi decisions in `PRODUCT_REQUIREMENTS.md` §7.2–7.5:
+
+```text
+CLAUDE.md: fad8b540239316d7e0e801dd4f3804934d87a1f5594a61d1c47248da685b56c5
+PRODUCT_REQUIREMENTS.md: 9e814e080a5b6b6f639676d035ad4252fc0d3f8737d827b52c598200e652cfa7
+```
+
 - [x] **Step 2: Create a global documentation worktree**
 
 Use the normalized `main` as the base:
