@@ -96,6 +96,24 @@ private struct RenderProbe: View {
     }
 }
 
+/// The bench host must keep routing every `@AppStorage` it mounts to the application's
+/// shared preference store: without `.defaultAppStorage`, the app-hosted test process
+/// would read and write the user's real preferences (review 2026-11-07).
+final class BenchHostStoreTests: XCTestCase {
+    func testTheBenchHostReadsTheSharedPreferenceStore() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath), encoding: .utf8)
+        let benchStart = try XCTUnwrap(source.range(of: "private struct BenchHost"), "BenchHost not found")
+        let after = source[benchStart.lowerBound...]
+        let scopeEnd = after.range(of: "\nstruct ")?.lowerBound ?? after.endIndex
+        let benchBody = String(after[..<scopeEnd])
+
+        XCTAssertTrue(
+            benchBody.contains(".defaultAppStorage(AppPreferences.store)"),
+            "BenchHost lost its shared-store routing; benchmarks would read the user's real preferences"
+        )
+    }
+}
+
 /// The owner's screen during the measured run: the whole window, plus the map and the
 /// mode card in Multi-Spot (ContentView opens in Teleport with the card closed).
 private struct BenchHost: View {
@@ -280,14 +298,20 @@ final class GUIUpdateLoadTests: XCTestCase {
     /// The same measured run with the map's 3D elevation and Traffic layers enabled
     /// (owner ask 2026-11-07): the SwiftUI rebuild cost of the richer style, not a GPU
     /// measurement. The layer keys go into the application's shared store — which the
-    /// bench host maps to a throwaway suite — before the view mounts, and are removed
-    /// afterwards.
+    /// bench host maps to a throwaway suite — before the view mounts, are asserted back
+    /// so a wrong configuration fails instead of silently measuring the flat map, and
+    /// are removed afterwards.
     func testAMultiSpotRunWith3DElevationAndTrafficLayers() async throws {
-        AppPreferences.store.set(true, forKey: "mapElevation3D")
-        AppPreferences.store.set(true, forKey: "mapShowsTraffic")
+        AppPreferences.store.set(true, forKey: MapLayerConfiguration.elevationKey)
+        AppPreferences.store.set(true, forKey: MapLayerConfiguration.trafficKey)
         defer {
-            AppPreferences.store.removeObject(forKey: "mapElevation3D")
-            AppPreferences.store.removeObject(forKey: "mapShowsTraffic")
+            AppPreferences.store.removeObject(forKey: MapLayerConfiguration.elevationKey)
+            AppPreferences.store.removeObject(forKey: MapLayerConfiguration.trafficKey)
+        }
+        guard AppPreferences.store.bool(forKey: MapLayerConfiguration.elevationKey),
+              AppPreferences.store.bool(forKey: MapLayerConfiguration.trafficKey) else {
+            XCTFail("the 3D and Traffic preferences did not stick; the run would measure the flat map")
+            return
         }
         try await runHostedMultiSpotBenchmark(named: "hosted 5 Hz Multi-Spot run (3D+Traffic)")
     }
