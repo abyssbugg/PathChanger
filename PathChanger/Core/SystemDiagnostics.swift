@@ -233,7 +233,7 @@ struct SystemDiagnostics {
             return DiagnosticResult(
                 name: name,
                 status: .success,
-                message: "Background daemon RSD endpoint \(info.rsdAddress):\(info.rsdPort)",
+                message: "RSD endpoint \(info.rsdAddress):\(info.rsdPort)",
                 recoveryAction: nil
             )
         }

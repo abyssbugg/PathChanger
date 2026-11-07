@@ -6,7 +6,6 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: false,
                 rsdAddress: "fddf:4f3f:cd60::1",
                 rsdPort: 52569
             ),
@@ -14,23 +13,10 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         )
     }
 
-    func testDaemonUsesTunnelFlag() {
-        XCTAssertEqual(
-            LocationConnectionArguments.make(
-                deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: true,
-                rsdAddress: "fddf:4f3f:cd60::1",
-                rsdPort: 52569
-            ),
-            ["--tunnel", "00000000-0000000000000001"]
-        )
-    }
-
     func testFallbackToUdidWhenNoRsd() {
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: false,
                 rsdAddress: nil,
                 rsdPort: nil
             ),
@@ -46,7 +32,6 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: false,
                 rsdAddress: "fddf:4f3f:cd60::1",
                 rsdPort: 52569
             ),
@@ -58,23 +43,10 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         XCTAssertEqual(
             LocationConnectionArguments.make(
                 deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: false,
                 rsdAddress: nil,
                 rsdPort: nil
             ),
             ["--udid", "00000000-0000000000000001"]
-        )
-    }
-
-    func testDaemonTunnelStillPreferredOverRsd() {
-        XCTAssertEqual(
-            LocationConnectionArguments.make(
-                deviceId: "00000000-0000000000000001",
-                isDaemonTunneld: true,
-                rsdAddress: "fddf:4f3f:cd60::1",
-                rsdPort: 52569
-            ),
-            ["--tunnel", "00000000-0000000000000001"]
         )
     }
 
@@ -85,10 +57,6 @@ final class LocationConnectionArgumentsTests: XCTestCase {
         )
         XCTAssertEqual(
             LocationConnectionArguments.classify(arguments: ["--rsd", "host", "1234"], physicalTransport: .wifi).endpointClass,
-            .remoteServiceDiscovery
-        )
-        XCTAssertEqual(
-            LocationConnectionArguments.classify(arguments: ["--tunnel", "device"], physicalTransport: .wifi).endpointClass,
             .remoteServiceDiscovery
         )
     }

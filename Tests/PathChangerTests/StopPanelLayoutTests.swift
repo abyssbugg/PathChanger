@@ -599,7 +599,8 @@ final class GUIArrangementSnapshotTests: XCTestCase {
         /// The pill for this phase with a selected phone (the flags `TunnelPillModel` reads).
         var model: TunnelPillModel {
             TunnelPillModel.resolve(
-                isRunning: phase == .live, isWaitingForDevice: phase == .waitingForDevice,
+                isRunning: phase == .live, requiresLocationQuitDecision: false,
+                isWaitingForDevice: phase == .waitingForDevice,
                 isStarting: phase == .connecting || phase == .waitingForDevice,
                 isError: phase == .error || phase == .reconnecting,
                 isAutoReconnecting: phase == .reconnecting, hasSelectedDevice: true

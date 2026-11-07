@@ -272,3 +272,96 @@ final class DevicePreparationService: ObservableObject {
         }
     }
 }
+
+// MARK: - Prepare for Wi-Fi
+
+/// Prepare for Wi-Fi in two steps (owner decision 2026-11-06): with a location held, the
+/// user answers before anything touches the phone. The pairing commands talk to the
+/// iPhone over the cable, and nothing yet shows that they leave a location held over USB
+/// intact, so they run only after Switch Now (or Prepare Now). Cancel runs nothing: no
+/// pairing, no preference change, no tunnel restart, no helper operation.
+enum WiFiPreparation {
+    /// The dialog shown before a preparation that could end a held location.
+    struct Confirmation: Equatable {
+        /// USB is preferred, so the preparation ends by switching to Wi-Fi.
+        let switchesToWiFi: Bool
+
+        var title: String { switchesToWiFi ? "Switch to Wi\u{2011}Fi?" : "Prepare for Wi\u{2011}Fi?" }
+
+        var message: String {
+            switchesToWiFi
+                ? "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, then switches to Wi\u{2011}Fi. "
+                    + "Either step can end the location held on the iPhone."
+                : "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, which can end the location held on the iPhone."
+        }
+
+        var confirmTitle: String {
+            switchesToWiFi ? ConnectionChoiceConfirmation.Response.switchNow.title : "Prepare Now"
+        }
+    }
+
+    /// What a click on Prepare for Wi-Fi does first. Deciding it runs nothing.
+    enum Request: Equatable {
+        case confirm(Confirmation)
+        case run(switchesToWiFi: Bool)
+    }
+
+    static func request(isLocationHeld: Bool, preferredChoice: ConnectionChoice) -> Request {
+        let switchesToWiFi = preferredChoice != .wifi
+        return isLocationHeld ? .confirm(Confirmation(switchesToWiFi: switchesToWiFi)) : .run(switchesToWiFi: switchesToWiFi)
+    }
+
+    /// What either button does: the dialog closes, and only the confirm button runs it.
+    static func respond(
+        _ response: ConnectionChoiceConfirmation.Response,
+        to confirmation: Confirmation,
+        pending: inout Confirmation?,
+        run: (Confirmation) -> Void
+    ) {
+        pending = nil
+        if response == .switchNow { run(confirmation) }
+    }
+
+    /// The steps a confirmed (or unneeded-confirmation) preparation performs, in order.
+    struct Operations {
+        /// `lockdown wifi-connections` and `remotepairing --pair` over the cable.
+        var pair: () async throws -> Void
+        /// Make Wi-Fi the Preferred Connection (restarts a running USB connection).
+        var switchToWiFi: () -> Void
+        /// Rediscover the phone on its transports.
+        var refresh: () async -> Void
+    }
+
+    enum Outcome: Equatable {
+        case prepared(switchedToWiFi: Bool)
+        case failed(message: String)
+    }
+
+    /// Pairs, then switches (only when asked), then refreshes. A failed pairing stops
+    /// there: nothing switches.
+    @MainActor
+    static func run(switchesToWiFi: Bool, operations: Operations) async -> Outcome {
+        do {
+            try await operations.pair()
+        } catch {
+            return .failed(message: error.localizedDescription)
+        }
+        if switchesToWiFi { operations.switchToWiFi() }
+        await operations.refresh()
+        return .prepared(switchedToWiFi: switchesToWiFi)
+    }
+
+    /// Says what happened to the pairing and the preference, never that Wi-Fi is live:
+    /// the tunnel pill reports the connection once it is established.
+    static func status(for outcome: Outcome) -> String {
+        switch outcome {
+        case .prepared(switchedToWiFi: true):
+            return "Wi\u{2011}Fi pairing ready. Wi\u{2011}Fi is now the preferred connection; "
+                + "keep the cable in until the tunnel is live over Wi\u{2011}Fi."
+        case .prepared(switchedToWiFi: false):
+            return "Wi\u{2011}Fi pairing ready."
+        case .failed(let message):
+            return "Wi\u{2011}Fi preparation failed: \(message)"
+        }
+    }
+}

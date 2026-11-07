@@ -98,22 +98,6 @@ final class TunnelStateMachineTests: XCTestCase {
         }
     }
 
-    func testIdleToRunningOnExternalDetected() {
-        let result = stateMachine.send(.externalTunnelDetected(mode: .daemon))
-
-        if case .success(let newState, let actions) = result {
-            XCTAssertEqual(newState, .running)
-            XCTAssertEqual(stateMachine.currentState, .running)
-            XCTAssertTrue(stateMachine.isActive)
-            XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
-
-            // Should start health monitor
-            XCTAssertTrue(actions.contains(.startHealthMonitor))
-        } else {
-            XCTFail("Expected success transition")
-        }
-    }
-
     func testIdleIgnoresStopRequested() {
         let result = stateMachine.send(.stopRequested)
 
@@ -164,20 +148,6 @@ final class TunnelStateMachineTests: XCTestCase {
         }
     }
 
-    func testStartingAdoptsExternallyDetectedTunnel() {
-        stateMachine.send(.startRequested(mode: .usb))
-
-        let result = stateMachine.send(.externalTunnelDetected(mode: .daemon))
-
-        if case .success(let newState, _) = result {
-            XCTAssertEqual(newState, .running)
-            XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
-            XCTAssertTrue(stateMachine.currentContext.activeProcessIds.isEmpty)
-        } else {
-            XCTFail("Expected success transition")
-        }
-    }
-
     func testStartingToRunningOnConnectionEstablished() {
         stateMachine.send(.startRequested(mode: .usb))
 
@@ -223,7 +193,7 @@ final class TunnelStateMachineTests: XCTestCase {
     }
 
     func testStartingToErrorOnConnectionTimeout() {
-        stateMachine.send(.startRequested(mode: .daemon))
+        stateMachine.send(.startRequested(mode: .wifi))
 
         let result = stateMachine.send(.connectionTimeout)
 
@@ -467,8 +437,8 @@ final class TunnelStateMachineTests: XCTestCase {
     // MARK: - Context Tests
 
     func testContextTracksActiveMode() {
-        stateMachine.send(.startRequested(mode: .daemon))
-        XCTAssertEqual(stateMachine.currentContext.activeMode, .daemon)
+        stateMachine.send(.startRequested(mode: .usb))
+        XCTAssertEqual(stateMachine.currentContext.activeMode, .usb)
     }
 
     func testContextClearsOnReset() {

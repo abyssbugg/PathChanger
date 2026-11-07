@@ -8,12 +8,23 @@ import XCTest
 
 final class PrivilegedTunnelCommandTests: XCTestCase {
 
-    func testAllowedArgumentListsMatchFixedTunnelModes() {
-        // USB/Wi-Fi connections belong to the managed helper (Option A); the only
-        // tunnel process left is the daemon.
-        XCTAssertEqual(PrivilegedTunnelCommand.allowedArgumentLists, [
-            ["-m", "pymobiledevice3", "remote", "tunneld"],
-        ])
+    /// A stand-in allowlist entry. Production allows nothing (below); the boundary's
+    /// quoting, HOME and target checks stay covered against this fixture.
+    private static let fixtureArguments = ["-m", "pymobiledevice3", "remote", "tunneld"]
+    private static let fixtureAllowlist = [fixtureArguments]
+
+    /// USB/Wi-Fi connections belong to the managed helper (Option A) and Background
+    /// Daemon was removed (2026-11-06): no argv may be started with elevation.
+    func testProductionAllowsNothingToStartElevated() {
+        XCTAssertEqual(PrivilegedTunnelCommand.allowedArgumentLists, [])
+        let result = PrivilegedTunnelCommand.startShellCommand(
+            pythonPath: PythonPathResolver.managedPythonPath,
+            arguments: Self.fixtureArguments,
+            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+        )
+        guard case .failure(.unapprovedArguments) = result else {
+            return XCTFail("the retired daemon argv must not be approved")
+        }
     }
 
     func testStartCommandRejectsTheRetiredNativeTunnel() {
@@ -24,7 +35,8 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
             let result = PrivilegedTunnelCommand.startShellCommand(
                 pythonPath: PythonPathResolver.managedPythonPath,
                 arguments: arguments,
-                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log",
+                allowing: Self.fixtureAllowlist
             )
             guard case .failure(.unapprovedArguments) = result else {
                 return XCTFail("the --native tunnel must not be approved: \(arguments)")
@@ -40,7 +52,8 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
                 "-m", "pymobiledevice3", "remote", "tunneld",
                 "--udid", udid,
             ],
-            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .success(let command) = result else {
@@ -56,7 +69,8 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
                 "-m", "pymobiledevice3", "remote", "tunneld",
                 "--udid", "not-a-udid",
             ],
-            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+            logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .failure(.unapprovedArguments) = result else {
@@ -67,8 +81,9 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandQuotesManagedPythonAndLog() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
-            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
-            logFilePath: "/Users/datamatics/Library/Logs/PathChanger/tunnel.log"
+            arguments: Self.fixtureArguments,
+            logFilePath: "/Users/datamatics/Library/Logs/PathChanger/tunnel.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .success(let command) = result else {
@@ -84,11 +99,12 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     }
 
     func testEveryElevatedTunnelCommandPreservesPairingRecordHome() {
-        for arguments in PrivilegedTunnelCommand.allowedArgumentLists {
+        for arguments in Self.fixtureAllowlist {
             let result = PrivilegedTunnelCommand.startShellCommand(
                 pythonPath: PythonPathResolver.managedPythonPath,
                 arguments: arguments,
-                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log"
+                logFilePath: "/Users/test/Library/Logs/PathChanger/tunnel.log",
+                allowing: Self.fixtureAllowlist
             )
 
             guard case .success(let command) = result else {
@@ -105,8 +121,9 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandRejectsUnknownPython() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: "/Users/datamatics/.pyenv/shims/python3",
-            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
-            logFilePath: "/tmp/tunnel.log"
+            arguments: Self.fixtureArguments,
+            logFilePath: "/tmp/tunnel.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .failure(.unapprovedPythonPath(let path)) = result else {
@@ -119,7 +136,8 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
             arguments: ["-m", "pip", "install", "--upgrade", "pymobiledevice3"],
-            logFilePath: "/tmp/tunnel.log"
+            logFilePath: "/tmp/tunnel.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .failure(.unapprovedArguments) = result else {
@@ -130,8 +148,9 @@ final class PrivilegedTunnelCommandTests: XCTestCase {
     func testStartCommandRejectsShellMetacharactersInPath() {
         let result = PrivilegedTunnelCommand.startShellCommand(
             pythonPath: PythonPathResolver.managedPythonPath,
-            arguments: ["-m", "pymobiledevice3", "remote", "tunneld"],
-            logFilePath: "/tmp/tunnel'.log"
+            arguments: Self.fixtureArguments,
+            logFilePath: "/tmp/tunnel'.log",
+            allowing: Self.fixtureAllowlist
         )
 
         guard case .failure(.unsafePath) = result else {

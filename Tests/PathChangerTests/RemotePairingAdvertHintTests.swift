@@ -450,13 +450,12 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         let injector: FakeLocationInjector
     }
 
-    private func makeFixture(daemonMode: Bool = false) -> Fixture {
+    private func makeFixture() -> Fixture {
         let injector = FakeLocationInjector()
         let deviceManager = QuietAdvertTestDeviceManager(startBackgroundServices: false)
         deviceManager.connectionMode = .wifi
         let browser = FakeRemotePairingAdvertBrowser()
         let tunnel = FakeReconnectTunnel()
-        if daemonMode { tunnel.preferredMode = .daemon }
         let tunnelSleeper = ControlledReconnectSleeper()
         let locationSleeper = ControlledReconnectSleeper()
         let browseRestartSleeper = ControlledReconnectSleeper()
@@ -469,7 +468,6 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
             tunnelQuitController: AdvertTestQuitController(),
             automaticReconnect: AutomaticReconnectEnvironment(
                 isEnabled: true,
-                usesHelperConnection: { !daemonMode },
                 sleeper: locationSleeper,
                 now: { clock.now },
                 burstStrategy: oneAttempt
@@ -605,22 +603,6 @@ final class RemotePairingAdvertBrowserLifecycleTests: XCTestCase {
         XCTAssertFalse(fixture.browser.isBrowsing)
         XCTAssertEqual(fixture.browser.startCount, 1)
         XCTAssertTrue(fixture.tunnel.automaticStarts.isEmpty)
-    }
-
-    func testDaemonModeNeverBrowsesAndAnAdvertChangesNothing() async throws {
-        let fixture = makeFixture(daemonMode: true)
-        try seedHeldLocation(fixture)
-        losePhone(fixture)
-        loseTunnel(fixture)
-        await settle()
-
-        XCTAssertFalse(fixture.state.isAwaitingAutomaticReconnect)
-        XCTAssertFalse(fixture.state.isTunnelAutoReconnecting)
-        XCTAssertEqual(fixture.browser.startCount, 0)
-        fixture.state.tunnelAutoReconnector.noteRemotePairingAdvert()
-        await settle()
-        XCTAssertTrue(fixture.tunnel.automaticStarts.isEmpty)
-        XCTAssertEqual(fixture.deviceManager.refreshCount, 0, "no burst")
     }
 
     func testAnAdvertWakesTheLocationWaitButIsNotVisibility() async throws {

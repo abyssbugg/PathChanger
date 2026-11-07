@@ -2224,4 +2224,122 @@ final class AppStateSimulationTests: XCTestCase {
         }
         XCTAssertEqual(state.locationReapplyAvailability, .available, "now the location area can reapply")
     }
+
+    // MARK: Prepare for Wi-Fi asks before it touches the phone (owner decision 2026-11-06)
+
+    private final class WiFiPreparationRecorder {
+        var calls: [String] = []
+        var pairError: Error?
+
+        func operations(for device: Device) -> WiFiPreparation.Operations {
+            WiFiPreparation.Operations(
+                pair: { [self] in
+                    calls.append("pair \(device.id)")
+                    if let pairError { throw pairError }
+                },
+                switchToWiFi: { [self] in calls.append("switch to Wi-Fi") },
+                refresh: { [self] in calls.append("refresh") }
+            )
+        }
+    }
+
+    /// A USB-preferred phone on the cable; the Preferred Connection is the connection mode.
+    private func wifiPreparationState(
+        holdsLocation: Bool,
+        recorder: WiFiPreparationRecorder,
+        preferred: DeviceManager.ConnectionMode = .usb
+    ) -> AppState {
+        let source = FakeManagedLocationSessionSource(helperID: nil, sessions: [])
+        source.hasRecordedHeldSessions = holdsLocation
+        let state = AppState(startBackgroundServices: false, managedLocationSessionSource: source)
+        state.deviceManager.connectionMode = preferred
+        state.wifiPreparationOperations = { recorder.operations(for: $0) }
+        state.selectDevice(Device(
+            id: "00008130-0011223344556677", displayName: "Test Device", connectionType: .usb,
+            productType: "iPhone17,1", productVersion: "27.0"
+        ))
+        return state
+    }
+
+    func testWithALocationHeldPrepareForWiFiRunsNothingBeforeTheUserConfirms() async {
+        let recorder = WiFiPreparationRecorder()
+        let state = wifiPreparationState(holdsLocation: true, recorder: recorder)
+        let statusBefore = state.statusMessage
+
+        let confirmation = await state.prepareSelectedDeviceForWiFi()
+
+        XCTAssertNotNil(confirmation, "the dialog is shown first")
+        XCTAssertEqual(recorder.calls, [], "no pairing, no switch, no refresh before the answer")
+        XCTAssertEqual(state.statusMessage, statusBefore)
+    }
+
+    func testCancelLeavesThePhoneThePreferenceAndTheConnectionUntouched() async throws {
+        let recorder = WiFiPreparationRecorder()
+        let state = wifiPreparationState(holdsLocation: true, recorder: recorder)
+        let modeBefore = state.deviceManager.connectionMode
+        var pending = await state.prepareSelectedDeviceForWiFi()
+        let confirmation = try XCTUnwrap(pending)
+
+        WiFiPreparation.respond(.cancel, to: confirmation, pending: &pending) { _ in
+            XCTFail("Cancel runs nothing")
+        }
+
+        XCTAssertNil(pending, "the dialog closes")
+        XCTAssertEqual(recorder.calls, [])
+        XCTAssertEqual(state.deviceManager.connectionMode, modeBefore)
+    }
+
+    func testSwitchNowPairsFirstAndThenSwitches() async throws {
+        let recorder = WiFiPreparationRecorder()
+        let state = wifiPreparationState(holdsLocation: true, recorder: recorder)
+        let requested = await state.prepareSelectedDeviceForWiFi()
+        let confirmation = try XCTUnwrap(requested)
+        XCTAssertTrue(confirmation.switchesToWiFi, "USB is preferred, so Switch Now also switches")
+
+        await state.confirmWiFiPreparation(confirmation)
+
+        XCTAssertEqual(recorder.calls, ["pair 00008130-0011223344556677", "switch to Wi-Fi", "refresh"])
+        XCTAssertEqual(state.statusMessage, WiFiPreparation.status(for: .prepared(switchedToWiFi: true)))
+    }
+
+    func testWithoutAHeldLocationPrepareForWiFiRunsAtOnce() async {
+        let recorder = WiFiPreparationRecorder()
+        let state = wifiPreparationState(holdsLocation: false, recorder: recorder)
+
+        let confirmation = await state.prepareSelectedDeviceForWiFi()
+
+        XCTAssertNil(confirmation)
+        XCTAssertEqual(recorder.calls.first, "pair 00008130-0011223344556677")
+        XCTAssertEqual(recorder.calls.last, "refresh")
+    }
+
+    /// Already Wi-Fi preferred: the pairing still talks to the phone over the cable, so a
+    /// held location still asks first, and nothing switches.
+    func testWithWiFiPreferredAHeldLocationStillAsksAndNothingSwitches() async throws {
+        let recorder = WiFiPreparationRecorder()
+        let state = wifiPreparationState(holdsLocation: true, recorder: recorder, preferred: .wifi)
+        let requested = await state.prepareSelectedDeviceForWiFi()
+        let confirmation = try XCTUnwrap(requested)
+        XCTAssertFalse(confirmation.switchesToWiFi)
+        XCTAssertEqual(recorder.calls, [])
+
+        await state.confirmWiFiPreparation(confirmation)
+
+        XCTAssertEqual(recorder.calls, ["pair 00008130-0011223344556677", "refresh"])
+        XCTAssertEqual(state.statusMessage, WiFiPreparation.status(for: .prepared(switchedToWiFi: false)))
+    }
+
+    func testAFailedPairingNeitherSwitchesNorClaimsWiFi() async throws {
+        struct PairingFailed: LocalizedError { var errorDescription: String? { "the iPhone refused pairing" } }
+        let recorder = WiFiPreparationRecorder()
+        recorder.pairError = PairingFailed()
+        let state = wifiPreparationState(holdsLocation: true, recorder: recorder)
+        let requested = await state.prepareSelectedDeviceForWiFi()
+        let confirmation = try XCTUnwrap(requested)
+
+        await state.confirmWiFiPreparation(confirmation)
+
+        XCTAssertEqual(recorder.calls, ["pair 00008130-0011223344556677"], "no switch and no refresh after a failure")
+        XCTAssertEqual(state.statusMessage, "Wi\u{2011}Fi preparation failed: the iPhone refused pairing")
+    }
 }

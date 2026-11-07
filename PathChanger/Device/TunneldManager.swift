@@ -2,11 +2,9 @@
 //  TunneldManager.swift
 //  PathChanger
 //
-//  Unified tunnel management supporting multiple connection methods for capability-compatible iOS
-//  - USB Mode: lockdown start-tunnel (fastest, requires USB)
-//  - WiFi Mode: remote start-tunnel -t wifi (true wireless, no USB needed)
-//  - Daemon Mode: remote tunneld (background service, auto-discovery); no longer
-//    selectable from the UI (owner decision 2026-11-06), removed in a later change
+//  The device connection lifecycle. USB and Wi-Fi (the user's Preferred Connection) are
+//  both the managed location helper's unprivileged connection (Option A, 2026-11-01);
+//  Background Daemon mode was removed 2026-11-06.
 //
 
 import Foundation
@@ -39,9 +37,8 @@ enum TunnelStartPolicy {
 ///
 /// | Mode | USB Required | Use Case |
 /// |------|--------------|----------|
-/// | USB | Yes | Fastest, most reliable |
-/// | WiFi | No | True wireless operation |
-/// | Daemon | No | Background service mode |
+/// | USB | Yes | Over the cable |
+/// | WiFi | No | Over this Mac's Wi-Fi network (the default) |
 ///
 /// ## Example
 ///
@@ -53,7 +50,6 @@ enum TunnelStartPolicy {
 enum TunnelMode: String, CaseIterable, Identifiable, Codable {
     case usb = "USB (Lockdown)"
     case wifi = "WiFi Only"
-    case daemon = "Background Daemon"
 
     var id: String { rawValue }
 
@@ -63,36 +59,18 @@ enum TunnelMode: String, CaseIterable, Identifiable, Codable {
             return "USB connection held by PathChanger's location helper"
         case .wifi:
             return "Wi-Fi connection held by PathChanger's location helper"
-        case .daemon:
-            return "Background daemon (remote tunneld)"
         }
     }
 
-    /// Process command for modes that run a tunnel process. USB and Wi-Fi have none:
-    /// the managed helper owns that connection (Option A, 2026-11-01) because the
-    /// `start-tunnel --native` RSD refused the location service on iOS 27.2.
-    var command: [String] {
-        switch self {
-        case .usb, .wifi:
-            return []
-        case .daemon:
-            return ["remote", "tunneld"]
-        }
-    }
-
-    /// True for modes whose connection is the managed helper's userspace tunnel.
-    var usesHelperConnection: Bool {
-        self != .daemon
-    }
-
+    /// The tunnel process an earlier PathChanger build ran for this mode. Both modes now
+    /// use the managed helper's connection (Option A, 2026-11-01) and start no process;
+    /// a recorded tunnel from an older build is stopped only when its command matches.
     var processPattern: String {
         switch self {
         case .usb:
             return "pymobiledevice3 lockdown start-tunnel"
         case .wifi:
             return "pymobiledevice3 remote start-tunnel"
-        case .daemon:
-            return "pymobiledevice3 remote tunneld"
         }
     }
 }
@@ -164,7 +142,8 @@ enum TunnelState: Equatable {
 
 /// How the app reaches the device for developer services.
 enum TunnelChannel: Equatable, Sendable {
-    /// An OS-reachable RSD endpoint published by a tunnel process (daemon mode).
+    /// An OS-reachable RSD endpoint published by a tunnel process (none is started now;
+    /// kept for endpoints recorded by earlier builds).
     case rsdEndpoint
     /// The managed helper's in-process pymobiledevice3 userspace tunnel. Its RSD is
     /// reachable only inside the helper, so it is never handed to other processes.
@@ -414,29 +393,6 @@ enum TunnelProcessTerminator {
     }
 }
 
-@MainActor
-enum TunnelStartupWaiter {
-
-    /// Poll until a usable RSD endpoint appears, the process exits, or the timeout expires.
-    static func wait(
-        timeout: TimeInterval,
-        pollInterval: TimeInterval = 0.25,
-        processIsRunning: () -> Bool,
-        readInfo: () async -> TunnelInfo?
-    ) async -> TunnelInfo? {
-        let deadline = Date().addingTimeInterval(timeout)
-
-        while processIsRunning() {
-            if let info = await readInfo(), info.isUsable {
-                return info
-            }
-            guard Date() < deadline else { return nil }
-            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
-        }
-        return nil
-    }
-}
-
 // MARK: - Tunneld Manager
 
 /// Manages the pymobiledevice3 tunnel lifecycle for capability-compatible iOS device communication.
@@ -449,7 +405,7 @@ enum TunnelStartupWaiter {
 ///
 /// Starting with iOS 17, Apple requires a secure tunnel for developer services.
 /// This manager provides:
-/// - **Multi-mode support**: USB and Wi-Fi (the user's choice), and the legacy daemon
+/// - **Two modes**: USB and Wi-Fi, the user's Preferred Connection
 /// - **Lifecycle management**: Start, stop, and monitor tunnel processes
 /// - **Health monitoring**: Automatic reconnection on connection loss
 /// - **Security**: Process validation and secure subprocess execution
@@ -474,14 +430,12 @@ enum TunnelStartupWaiter {
 ///
 /// ## Tunnel Modes
 ///
-/// The user chooses USB or Wi-Fi; Start tries exactly that mode (no automatic
-/// failover). Background daemon remains in the type but is no longer selectable:
+/// The user chooses USB or Wi-Fi; Start tries exactly that mode:
 ///
-/// | Mode | Description | Best For |
-/// |------|-------------|----------|
-/// | USB | Fast lockdown tunnel via USB | Development |
-/// | WiFi | True wireless connection | Wireless testing |
-/// | Daemon | Background service | Continuous use |
+/// | Mode | Description |
+/// |------|-------------|
+/// | USB | The helper's connection over the cable |
+/// | WiFi | The helper's connection over this Mac's Wi-Fi network |
 ///
 /// ## Security Considerations
 ///
@@ -546,7 +500,6 @@ enum TunnelStartupWaiter {
 /// ### Tunnel Information
 ///
 /// - ``tunnelInfo``
-/// - ``deviceTunnelInfo``
 ///
 /// ### Lifecycle Control
 ///
@@ -684,15 +637,16 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         "[Tunnel] Gave up waiting for the device on Wi‑Fi: \(LogRedaction.redactingDeviceIdentifiers(detail))"
     }
 
-    /// Where the tunnel mode is stored. Internal so tests use a throwaway suite instead of
-    /// the app's own preferences domain.
-    var settings: UserDefaults = .standard
+    /// Where the tunnel mode is stored (`AppPreferences.store`: never
+    /// the app's own preferences domain inside the test host). Internal so a test can use
+    /// its own throwaway suite.
+    var settings: UserDefaults = AppPreferences.store
 
     /// Current tunnel mode (user preference)
     @Published var preferredMode: TunnelMode = .wifi {
         didSet {
             settings.set(preferredMode.rawValue, forKey: ConnectionSettingsMigration.tunnelModeKey)
-            // A switch to Background Daemon ends an automatic reconnect at once.
+            // A mode switch restarts an automatic reconnect's decision at once.
             reconnectControlSubject.send()
         }
     }
@@ -706,11 +660,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     /// RSD connection info for device communication (legacy - first device)
     @Published var tunnelInfo: TunnelInfo?
 
-    /// RSD connection info per device UDID (queried from tunneld HTTP API)
-    @Published var deviceTunnelInfo: [String: TunnelInfo] = [:]
-
-    /// Tunneld HTTP API endpoint (when using remote tunneld)
-    private var tunneldAPIEndpoint: String { AppConstants.Tunnel.tunneldAPIEndpoint }
 
     // MARK: Private Properties
     private var tunneldProcess: Process?
@@ -761,21 +710,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         get { stateMachine.currentContext.activeProcessIds }
     }
 
-#if DEBUG
-    /// Test seam: read a planted tunnel log instead of the user's real one.
-    var tunnelLogPathOverride: String?
-#endif
-
-    /// Log file in ~/Library/Logs/PathChanger (more secure than /tmp)
-    private var logFilePath: String {
-#if DEBUG
-        if let tunnelLogPathOverride { return tunnelLogPathOverride }
-#endif
-        let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
-            .first!.appendingPathComponent("Logs/PathChanger").path
-        return "\(logsDir)/tunnel.log"
-    }
-
     /// Ensure log directory exists
     private func ensureLogDirectoryExists() {
         let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
@@ -800,7 +734,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         ensureLogDirectoryExists()
 
         // Load saved preference
-        if let mode = Self.loadPreferredMode(from: .standard) {
+        if let mode = Self.loadPreferredMode(from: settings) {
             preferredMode = mode
         }
 
@@ -833,18 +767,12 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     private func handleStateMachineAction(_ action: TunnelAction) async {
         switch action {
         case .launchProcess:
-            // The actual process launch is still handled by attemptStart
-            // This is just a notification that launch should happen
+            // No mode launches a tunnel process; only a recorded one from an earlier
+            // build is ever stopped (`stopRecordedTunnel`).
             break
 
         case .terminateProcesses:
             terminateOwnedTunnelProcess()
-
-        case .parseRsdInfo:
-            // Only a tunnel process publishes an RSD in tunnel.log. For the helper
-            // connection, parsing would replace it with a stale `--rsd` from an old log.
-            guard !(stateMachine.currentContext.activeMode?.usesHelperConnection ?? false) else { return }
-            await parseRsdInfo()
 
         case .startHealthMonitor:
             startMonitoring()
@@ -877,90 +805,10 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
 
     // MARK: - Public API
 
-    static func shouldAutoStart(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        AppRuntimeEnvironment.allowsAutomaticStartup(environment: environment)
-    }
-
-    nonisolated static func arguments(for mode: TunnelMode, deviceId: String? = nil) -> [String]? {
-        // Only the daemon runs a tunnel process. USB and Wi-Fi connections belong to
-        // the managed helper (Option A, 2026-11-01).
-        switch mode {
-        case .daemon:
-            return ["-m", "pymobiledevice3", "remote", "tunneld"]
-        case .usb, .wifi:
-            return nil
-        }
-    }
-
-    /// Start tunnel automatically - called on app launch
-    func autoStart(deviceId: String? = nil) async {
-        guard Self.shouldAutoStart() else {
-            Logger.debug("Skipping tunnel auto-start: automatic startup is disallowed", category: .device)
-            return
-        }
-
-        let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
-        guard userEnabled else {
-            Logger.debug("Skipping tunnel auto-start: user disabled it in Settings", category: .device)
-            return
-        }
-
-        // First check if any tunnel is already running
-        if mayAdoptRunningDaemon, let runningMode = await detectRunningTunnel() {
-            resolveAdoptedOwnership(pid: await discoverPid(for: runningMode))
-            stateMachine.send(.externalTunnelDetected(mode: runningMode))
-            return
-        }
-
-        // Try to start tunnel with preferred mode
-        await startTunnel(deviceId: deviceId)
-    }
-
-    /// Set by Stop, cleared only by an explicit Start: a `remote tunneld` that survives
-    /// Stop (one PathChanger did not launch is detached, never signalled) must not be
-    /// adopted again by the status poll behind the user's back.
-    private(set) var isDaemonAdoptionSuppressedByStop = false
-
-    /// Only Background Daemon mode adopts a running `remote tunneld`, and not after Stop.
-    /// USB and Wi-Fi use the helper's connection and never fall back to the daemon.
-    private var mayAdoptRunningDaemon: Bool {
-        preferredMode == .daemon && !isDaemonAdoptionSuppressedByStop
-    }
-
-    /// Adopt a tunnel process that survived an app relaunch without requesting elevation.
-    ///
-    /// The RSD tunnel is a root-owned child and can outlive the UI process. Discovery and
-    /// log parsing are read-only; if both process and usable endpoint exist, rebuild the
-    /// state-machine context so all DVT commands use `--rsd` immediately.
-    func adoptRunningTunnelIfPresent() async {
-        guard case .idle = state else { return }
-        guard mayAdoptRunningDaemon else { return }
-        guard let mode = await detectRunningTunnel() else { return }
-
-        stateMachine.reset()
-        guard case .success = stateMachine.send(.startRequested(mode: mode)) else { return }
-
-        await parseRsdInfo()
-        let pid = await discoverPid(for: mode)
-
-        guard let parsed = tunnelInfo, parsed.isUsable else {
-            stateMachine.send(.errorOccurred("Existing tunnel has no usable RSD endpoint"))
-            return
-        }
-
-        let adopted = TunnelInfo(
-            rsdAddress: parsed.rsdAddress,
-            rsdPort: parsed.rsdPort,
-            mode: mode,
-            interface: parsed.interface,
-            processId: pid
-        )
-        tunnelInfo = adopted
-        resolveAdoptedOwnership(pid: pid)
-        stateMachine.send(.connectionEstablished(info: adopted))
-    }
+    /// Set by Stop Tunnel; cleared only by an explicit Start or Move. While set, neither
+    /// the location nor the tunnel reconnects automatically (`startTunnelAutomatically`,
+    /// `TunnelAutoReconnector`, `AutomaticReconnectPolicy`).
+    private(set) var isStoppedByUser = false
 
     /// Start the tunnel in the preferred mode. There is no fallback to another mode.
     func startTunnel(deviceId: String? = nil) async {
@@ -968,8 +816,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     }
 
     private func startTunnel(deviceId: String?, visibilityWait: DeviceVisibilityWait) async {
-        // An explicit Start is the only thing that lifts Stop's hold on daemon adoption.
-        isDaemonAdoptionSuppressedByStop = false
+        // An explicit Start (or Move) is the only thing that lifts Stop's hold.
+        isStoppedByUser = false
         // An explicit Start after a failure begins again: the state machine has no
         // error -> starting transition, so Start used to do nothing at all.
         if case .error = stateMachine.currentState {
@@ -995,81 +843,14 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
             return
         }
 
-        if !mode.usesHelperConnection, let runningMode = await detectRunningTunnel() {
-            await parseRsdInfo()
-            if let existingInfo = stateMachine.currentContext.tunnelInfo ?? tunnelInfo, existingInfo.isUsable {
-                guard stateMachine.currentState == .starting else {
-                    return
-                }
-                Logger.info(
-                    "Adopting existing \(runningMode.rawValue) tunnel with usable endpoint",
-                    category: .device
-                )
-                resolveAdoptedOwnership(pid: await discoverPid(for: runningMode))
-                stateMachine.send(.externalTunnelDetected(mode: runningMode))
-                return
-            }
-            Logger.error(
-                "Detected existing \(runningMode.rawValue) process without usable RSD endpoint; attempting fresh start",
-                category: .device
-            )
-        }
-
-        // Another caller or a stop request may have changed the reserved state.
-        guard stateMachine.currentState == .starting else {
-            return
-        }
-
         Logger.info("Attempting tunnel mode: \(mode.rawValue)", category: .device)
 
-        if mode.usesHelperConnection {
-            if await connectHelper(mode: mode, deviceId: deviceId, wait: visibilityWait) {
-                return
-            }
-            guard stateMachine.currentState == .starting else { return }
-            stateMachine.send(.errorOccurred(lastError ?? "Failed to connect to the device"))
+        // Both modes are the managed helper's unprivileged connection (Option A).
+        if await connectHelper(mode: mode, deviceId: deviceId, wait: visibilityWait) {
             return
         }
-
-        let outcome = await attemptStart(mode: mode, deviceId: deviceId)
-
-        if case .cancelled = outcome {
-            if stateMachine.currentState == .starting {
-                stateMachine.send(.errorOccurred(lastError ?? "Administrator access required"))
-            }
-            return
-        }
-
-        if case .started(let pid) = outcome {
-            let startupTimeout = min(AppSettings.shared.tunnelTimeout, 30)
-            let info = await TunnelStartupWaiter.wait(
-                timeout: startupTimeout,
-                processIsRunning: { self.isProcessRunning(pid: pid) },
-                readInfo: {
-                    await self.parseRsdInfo()
-                    return self.stateMachine.currentContext.tunnelInfo ?? self.tunnelInfo
-                }
-            )
-
-            guard stateMachine.currentState == .starting else { return }
-            guard let info else {
-                if isProcessRunning(pid: pid) {
-                    lastError = "Tunnel did not provide a usable RSD endpoint within \(Int(startupTimeout)) seconds"
-                    stateMachine.send(.errorOccurred(lastError!))
-                } else {
-                    await checkLogForErrors(mode: mode)
-                    lastError = lastError ?? "Tunnel process exited before the connection was established"
-                    stateMachine.send(.processExited(pid: pid))
-                }
-                return
-            }
-            stateMachine.send(.connectionEstablished(info: info))
-            return
-        }
-
-        if stateMachine.currentState == .starting {
-            stateMachine.send(.errorOccurred(lastError ?? "Failed to start tunnel"))
-        }
+        guard stateMachine.currentState == .starting else { return }
+        stateMachine.send(.errorOccurred(lastError ?? "Failed to connect to the device"))
     }
 
     /// Start tunnel with specific mode
@@ -1088,7 +869,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
 
     /// Stop the tunnel
     func stopTunnel() {
-        isDaemonAdoptionSuppressedByStop = true
+        isStoppedByUser = true
         stopTunnel(disconnectHelper: true)
         // From idle the state machine ignores the Stop: the reconnect learns of it here.
         reconnectControlSubject.send()
@@ -1101,14 +882,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         isWaitingForDevice = false
 
         // The helper connection has no process here; closing it is the stop. It ends
-        // any location held over it (the Stop button confirms that first). In daemon
-        // mode the location also rides the helper's connection, so it closes too.
-        let daemonLocationDevice = (stateMachine.currentContext.activeMode ?? activeMode) == .daemon
-            ? (lastStartDeviceId ?? connector.activeLocationDeviceId)
-            : nil
-        let helperToClose = currentHelperConnection
-            ?? daemonLocationDevice.map { (deviceId: $0, transport: LocationTransport.wifi) }
-        if disconnectHelper, let helper = helperToClose {
+        // any location held over it (the Stop button confirms that first).
+        if disconnectHelper, let helper = currentHelperConnection {
             let connector = connector
             // Block first, synchronously: an update dequeued after this point must not
             // reopen the connection the Stop is closing.
@@ -1161,7 +936,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     // MARK: - Quit Teardown
 
     /// Where the owned-tunnel record persists. Internal so tests use an isolated suite.
-    var ownedTunnelDefaults: UserDefaults = .standard
+    var ownedTunnelDefaults: UserDefaults = AppPreferences.store
 
     /// The PathChanger-started tunnel adopted from an earlier session (PID + start time
     /// matched the persisted record). Nil for tunnels started by anything else.
@@ -1287,8 +1062,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     }
 
 #if DEBUG
-    /// Test seam: a root-owned stand-in process for a leftover tunnel cannot have the
-    /// daemon's command line, so the quit-failure test skips that one check.
+    /// Test seam: a root-owned stand-in process for a leftover tunnel cannot have a real
+    /// tunnel's command line, so the quit-failure test skips that one check.
     static var skipsRecordedTunnelCommandCheckForTesting = false
 #endif
 
@@ -1321,13 +1096,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     var adoptedTunnelIsOwnedForTesting: Bool { adoptedOwnedTunnel != nil }
     var hasOwnedTunnelProcessForTesting: Bool { tunneldProcess != nil }
 
-    /// Test seam: replaces the `pgrep` probe for a running `remote tunneld`.
-    var runningTunnelDetectorForTesting: (() async -> TunnelMode?)?
-
-    /// Test seam: forget an earlier Stop so a test can isolate the mode gate.
-    func allowDaemonAdoptionForTesting() {
-        isDaemonAdoptionSuppressedByStop = false
-    }
 #endif
 
     /// Restart tunnel
@@ -1347,8 +1115,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         stateMachine.$state.eraseToAnyPublisher()
     }
 
-    var isStoppedByUser: Bool { isDaemonAdoptionSuppressedByStop }
-
     var reconnectDeviceId: String? { lastStartDeviceId ?? currentHelperConnection?.deviceId }
 
     var reconnectControlChanges: AnyPublisher<Void, Never> {
@@ -1358,8 +1124,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     /// Move is an explicit user action: it lifts Stop Tunnel's latch like Start does, so a
     /// later loss reconnects the tunnel as well as the location (review 2026-11-03 issue 7).
     func liftStopLatch() {
-        guard isDaemonAdoptionSuppressedByStop else { return }
-        isDaemonAdoptionSuppressedByStop = false
+        guard isStoppedByUser else { return }
+        isStoppedByUser = false
         Logger.info("[Tunnel] Move lifted the Stop latch", category: .device)
         reconnectControlSubject.send()
     }
@@ -1368,8 +1134,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     /// only from idle or error, with the short visibility wait. It opens the helper's
     /// unprivileged connection like Start, so it never elevates.
     func startTunnelAutomatically(deviceId: String) async {
-        guard preferredMode.usesHelperConnection,
-              !isDaemonAdoptionSuppressedByStop,
+        guard !isStoppedByUser,
               ArgumentSanitizer.isValidDeviceUDID(deviceId) else { return }
         switch stateMachine.currentState {
         case .idle, .error:
@@ -1546,9 +1311,7 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     func adoptHelperConnectionIfPresent(deviceId: String, transport: LocationTransport) async {
         // A Stop's disconnect may still be in flight; never re-adopt what it is closing.
         _ = await helperStop?.task.value
-        // Daemon mode is a different connection; never report the helper's as it.
-        guard preferredMode.usesHelperConnection,
-              Self.mayAdoptHelperConnection(from: stateMachine.currentState),
+        guard Self.mayAdoptHelperConnection(from: stateMachine.currentState),
               ArgumentSanitizer.isValidDeviceUDID(deviceId),
               let helperPID = connector.helperProcessIdentifierIfRunning() else {
             return
@@ -1591,273 +1354,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
 
     // MARK: - Private Methods
 
-    /// Detect which tunnel mode is currently running
-    private func detectRunningTunnel() async -> TunnelMode? {
-        // USB/Wi-Fi tunnel processes are no longer started (Option A); a leftover
-        // `start-tunnel --native` from an older build is not adopted.
-        #if DEBUG
-        if let runningTunnelDetectorForTesting {
-            return await runningTunnelDetectorForTesting()
-        }
-        #endif
-        for mode in [TunnelMode.daemon] {
-            do {
-                let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
-                if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return mode
-                }
-            } catch {
-                continue
-            }
-        }
-        return nil
-    }
-
-    private enum PrivilegedStartOutcome {
-        case started(Int32)
-        case failed
-        case cancelled
-    }
-
-    /// Start a native user-space tunnel directly from the managed runtime.
-    /// Arguments are fixed by `arguments(for:deviceId:)`; no shell or elevation is used.
-    private func attemptStart(mode: TunnelMode, deviceId: String?) async -> PrivilegedStartOutcome {
-        if mode == .usb {
-            let usbVisible = await usbmuxReportsUSB()
-            if !usbVisible {
-                lastError = "USB is not visible to this Mac. Use a data cable, unlock the phone, and tap Trust. Wi‑Fi is still available — choose Wi‑Fi to use it."
-                return .failed
-            }
-        }
-
-        guard let arguments = Self.arguments(for: mode, deviceId: deviceId) else {
-            return .failed
-        }
-        guard PythonPathResolver.isAvailable else {
-            lastError = "Managed Python is not available at \(python3Path)"
-            return .failed
-        }
-
-        ensureLogDirectoryExists()
-        try? FileManager.default.removeItem(atPath: logFilePath)
-        guard FileManager.default.createFile(atPath: logFilePath, contents: nil),
-              let logHandle = FileHandle(forWritingAtPath: logFilePath) else {
-            lastError = "Unable to create tunnel log"
-            return .failed
-        }
-        defer { try? logHandle.close() }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: python3Path)
-        process.arguments = arguments
-        process.environment = ProcessEnvironment.configured()
-        process.standardOutput = logHandle
-        process.standardError = logHandle
-
-        do {
-            try process.run()
-        } catch {
-            lastError = "Failed to start \(mode.rawValue) tunnel: \(error.localizedDescription)"
-            return .failed
-        }
-
-        tunneldProcess = process
-        let pid = process.processIdentifier
-        recordOwnedTunnel(pid: pid, mode: mode)
-        stateMachine.send(.processLaunched(pid: pid))
-
-        let waitTime: TimeInterval = mode == .daemon ? 4.0 : 3.0
-        try? await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
-
-        guard process.isRunning && isProcessRunning(pid: pid) else {
-            await checkLogForErrors(mode: mode)
-            if lastError == nil {
-                lastError = "\(mode.rawValue) tunnel exited after launch"
-            }
-            tunneldProcess = nil
-            stateMachine.send(.processExited(pid: pid))
-            return .failed
-        }
-
-        return .started(pid)
-    }
-
-    private func discoverPid(for mode: TunnelMode) async -> Int32? {
-        do {
-            let output = try await runCommand("/usr/bin/pgrep", arguments: ["-f", mode.processPattern])
-            let pids = output.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-            // Prefer the tunnel PathChanger itself launched when it is among the matches.
-            if let recorded = OwnedTunnelRecord.load(from: ownedTunnelDefaults)?.pid, pids.contains(recorded) {
-                return recorded
-            }
-            return pids.first { $0 > 1 }
-        } catch {
-            return nil
-        }
-    }
-
-    /// Check log file for specific error messages
-    private func checkLogForErrors(mode: TunnelMode) async {
-        guard let logContent = try? String(contentsOfFile: logFilePath, encoding: .utf8) else {
-            return
-        }
-
-        if logContent.contains("requires root privileges") {
-            lastError = "Tunnel start still needs administrator access."
-        } else if logContent.contains("No device connected") || logContent.contains("DeviceNotFoundError") {
-            lastError = "No device found. Connect device via USB first."
-        } else if logContent.contains("not paired") || logContent.contains("PairingError") {
-            lastError = "Device not paired. Trust this computer on your device."
-        } else if logContent.contains("Developer Mode") {
-            lastError = "Developer Mode required. Enable in Settings > Privacy & Security."
-        } else if logContent.contains("timeout") || logContent.contains("timed out") {
-            lastError = "Connection timed out. Check device and network."
-        } else if mode == .wifi && logContent.contains("No remotepairing devices") {
-            lastError = "No WiFi devices found. Ensure device is on same network."
-        }
-    }
-
-    /// Parse RSD address and port from tunnel log
-    private func parseRsdInfo() async {
-        guard let mode = activeMode ?? stateMachine.currentContext.activeMode else { return }
-
-        do {
-            // Give log file time to be written
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            let logContent = try String(contentsOfFile: logFilePath, encoding: .utf8)
-
-            // Try multiple parsing strategies in order of preference
-            var rsdAddress: String?
-            var rsdPort: Int?
-            var interface: String?
-
-            // Strategy 1: Parse "--rsd" hint line (most reliable)
-            (rsdAddress, rsdPort) = parseRsdHintLine(from: logContent)
-
-            // Strategy 2: Parse from structured log lines
-            if rsdAddress == nil || rsdPort == nil {
-                (rsdAddress, rsdPort, interface) = parseStructuredLogLines(from: logContent)
-            }
-
-            // Strategy 3: Parse from JSON output if available
-            if rsdAddress == nil || rsdPort == nil {
-                if let result = try? parseJsonOutput(from: logContent) {
-                    rsdAddress = result.address
-                    rsdPort = result.port
-                    interface = result.interface
-                }
-            }
-
-            // Validate parsed values
-            if let address = rsdAddress, isValidRsdAddress(address), let port = rsdPort, isValidRsdPort(port) {
-                // Get process ID from state machine context
-                let processId = stateMachine.currentContext.activeProcessIds.first
-                let tunnelMode = mode
-
-                tunnelInfo = TunnelInfo(
-                    rsdAddress: address,
-                    rsdPort: port,
-                    mode: tunnelMode,
-                    interface: interface,
-                    processId: processId
-                )
-                Logger.info("✅ Parsed tunnel info: \(address):\(port) (PID: \(processId?.description ?? "unknown"))", category: .device)
-            } else {
-                Logger.error("⚠️ Failed to parse valid RSD address/port from log", category: .device)
-                if let address = rsdAddress {
-                    Logger.debug("  Parsed address '\(address)' - validation: \(isValidRsdAddress(address) ? "valid" : "invalid")", category: .device)
-                }
-                if let port = rsdPort {
-                    Logger.debug("  Parsed port \(port) - validation: \(isValidRsdPort(port) ? "valid" : "invalid")", category: .device)
-                }
-            }
-
-            // Also query the tunneld HTTP API for per-device RSD info
-            await queryTunneldAPI()
-        } catch {
-            Logger.debug("Could not read tunnel log: \(error.localizedDescription)", category: .device)
-            // Still try the HTTP API even if log parsing fails
-            await queryTunneldAPI()
-        }
-    }
-
-    /// Parse RSD info from "--rsd" hint line (most reliable format)
-    private func parseRsdHintLine(from content: String) -> (address: String?, port: Int?) {
-        let lines = content.components(separatedBy: .newlines)
-        var last: (String, Int)?
-        for line in lines {
-            if line.contains("--rsd") {
-                let parts = line.components(separatedBy: .whitespaces)
-                if let rsdIndex = parts.firstIndex(of: "--rsd"),
-                   rsdIndex + 2 < parts.count {
-                    let address = parts[rsdIndex + 1]
-                    if let port = Int(parts[rsdIndex + 2]) {
-                        last = (address, port)
-                    }
-                }
-            }
-        }
-        if let last {
-            Logger.debug("📍 Parsed latest RSD from hint line: \(last.0):\(last.1)", category: .device)
-            return (last.0, last.1)
-        }
-        return (nil, nil)
-    }
-
-    /// Parse RSD info from structured log lines
-    private func parseStructuredLogLines(from content: String) -> (address: String?, port: Int?, interface: String?) {
-        let lines = content.components(separatedBy: .newlines)
-        var rsdAddress: String?
-        var rsdPort: Int?
-        var interface: String?
-
-        for line in lines {
-            // Parse Interface
-            if line.contains("Interface:") && interface == nil {
-                let parts = line.components(separatedBy: ":").map { $0.trimmingCharacters(in: .whitespaces) }
-                if parts.count >= 2 {
-                    interface = parts[1]
-                }
-            }
-
-            // Parse RSD Address (multiple formats supported) — keep last
-            if line.contains("RSD Address:") || line.contains("address:") {
-                let parts = line.components(separatedBy: ":").dropFirst().joined(separator: ":")
-                    .trimmingCharacters(in: .whitespaces)
-                let addressCandidates = parts.components(separatedBy: .whitespaces)
-                for candidate in addressCandidates {
-                    if isValidRsdAddress(candidate) {
-                        rsdAddress = candidate
-                        Logger.debug("📍 Parsed RSD address from log: \(candidate)", category: .device)
-                        break
-                    }
-                }
-            }
-
-            // Parse RSD Port (multiple formats supported) — keep last
-            if line.contains("RSD Port:") || line.contains("port:") || line.contains("Port:") {
-                let parts = line.components(separatedBy: .whitespaces)
-                // Look from the end backwards for a valid port number
-                for part in parts.reversed() {
-                    let cleanPart = part.trimmingCharacters(in: .punctuationCharacters)
-                    if let port = Int(cleanPart), isValidRsdPort(port) {
-                        rsdPort = port
-                        Logger.debug("📍 Parsed RSD port from log: \(port)", category: .device)
-                        break
-                    }
-                }
-            }
-
-            // Early exit if we found both
-            if rsdAddress != nil && rsdPort != nil {
-                break
-            }
-        }
-
-        return (rsdAddress, rsdPort, interface)
-    }
-
     /// Parse RSD info from JSON output if available
     private func parseJsonOutput(from content: String) throws -> (address: String?, port: Int?, interface: String?) {
         // Try to find and parse JSON in the log
@@ -1879,62 +1375,11 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
         return (nil, nil, nil)
     }
 
-    /// Validate RSD address format (IPv4, IPv6, or hostname)
-    private func isValidRsdAddress(_ address: String) -> Bool {
-        let trimmed = address.trimmingCharacters(in: .whitespaces)
-
-        // Check for IPv4 format
-        let ipv4Pattern = #"^(\d{1,3}\.){3}\d{1,3}$"#
-        if let ipv4Regex = try? NSRegularExpression(pattern: ipv4Pattern) {
-            if ipv4Regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) != nil {
-                // Validate each octet is 0-255
-                let octets = trimmed.split(separator: ".").compactMap { Int($0) }
-                if octets.count == 4 && octets.allSatisfy({ $0 >= 0 && $0 <= 255 }) {
-                    return true
-                }
-            }
-        }
-
-        // Check for IPv6 format (simplified)
-        if trimmed.contains(":") && trimmed.count > 5 {
-            return true // Accept common IPv6 format
-        }
-
-        // Check for localhost variations
-        if trimmed == "localhost" || trimmed == "127.0.0.1" || trimmed == "::1" {
-            return true
-        }
-
-        return false
-    }
-
-    /// Validate RSD port range (1-65535)
-    private func isValidRsdPort(_ port: Int) -> Bool {
-        return port > 0 && port <= 65535
-    }
-
-    /// Query the tunneld HTTP API to get RSD info for all connected devices
-    /// API returns: {"UDID": [{"tunnel-address": "...", "tunnel-port": ..., "interface": "..."}], ...}
-    private func queryTunneldAPI() async {
-        guard let url = URL(string: tunneldAPIEndpoint) else { return }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if try JSONSerialization.jsonObject(with: data) is [String: Any] {
-                // Process API response (simplified - see extended implementation)
-                Logger.debug("📍 Successfully queried tunneld API", category: .device)
-            }
-        } catch {
-            Logger.debug("Could not query tunneld API: \(error.localizedDescription)", category: .device)
-        }
-    }
-
     /// Connection flags for DVT / simulate-location after a tunnel is up.
     func locationConnectionArguments(for deviceId: String) -> [String] {
         let info = getRsdInfo(for: deviceId)
         return LocationConnectionArguments.make(
             deviceId: deviceId,
-            isDaemonTunneld: activeMode == .daemon,
             rsdAddress: info?.rsdAddress,
             rsdPort: info?.rsdPort
         )
@@ -1945,16 +1390,8 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
     func getRsdInfo(for deviceId: String) -> TunnelInfo? {
         // Only endpoints other processes may dial. The helper's in-process tunnel is
         // never handed out: CLI paths then target the device with `--udid`.
-        if let info = deviceTunnelInfo[deviceId], info.exposesRSDEndpoint {
-            return info
-        }
         guard let info = tunnelInfo, info.exposesRSDEndpoint else { return nil }
         return info
-    }
-
-    /// Refresh device RSD info from tunneld API
-    func refreshDeviceRsdInfo() async {
-        await queryTunneldAPI()
     }
 
     // MARK: - Process Management (Security Hardened)
@@ -2022,8 +1459,6 @@ class TunneldManager: ObservableObject, TunnelQuitControlling, TunnelReconnectCo
                     )
                     return
                 }
-                let userEnabled = UserDefaults.standard.object(forKey: "autoStartTunneld") as? Bool ?? true
-                guard userEnabled else { return }
                 Logger.error(
                     "Tunnel process is gone — waiting for explicit user restart",
                     category: .device
@@ -2240,9 +1675,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             Organic.registerFonts()
-            if TunnelStartPolicy.mayElevate(for: .applicationLaunch) {
-                await TunneldManager.shared.autoStart()
-            }
         }
     }
 

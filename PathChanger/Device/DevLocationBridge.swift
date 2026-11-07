@@ -44,7 +44,7 @@ struct SubprocessCommandValidator {
         // Location simulation commands
         "developer", "dvt", "simulate-location", "set", "clear",
         // Tunnel management commands
-        "lockdown", "start-tunnel", "tunneld",
+        "lockdown", "start-tunnel",
         // Device listing commands
         "usbmux", "list", "remote", "ls"
     ]
@@ -52,7 +52,6 @@ struct SubprocessCommandValidator {
     /// Allowed command-line flags (only flags we actually use)
     private static let allowedFlags: Set<String> = [
         "-m",           // Python module flag
-        "--tunnel",     // Use tunneld for connection
         "--udid",       // Target device by UDID
         "--rsd",        // Remote Service Discovery address
         "--no-color",   // Disable colored output
@@ -579,7 +578,7 @@ enum ClearAcknowledgementCheck: Equatable, Sendable {
 ///
 /// This actor provides thread-safe location injection with built-in rate limiting,
 /// request queuing, and comprehensive error handling. It supports both USB and WiFi
-/// connections through the tunneld service.
+/// connections.
 ///
 /// ## Usage Example
 ///
@@ -597,9 +596,8 @@ enum ClearAcknowledgementCheck: Equatable, Sendable {
 ///
 /// ## Connection Modes
 ///
-/// - **USB Mode**: Uses `--udid` flag for direct USB connection
-/// - **WiFi Mode**: Uses `--rsd` with tunnel address from TunneldManager
-/// - **Tunnel Mode**: Uses `--tunnel` when tunneld service is running
+/// - **Direct**: `--udid` whenever usbmux lists the device over USB or Network
+/// - **RSD**: `--rsd` with an external endpoint recorded by TunneldManager
 ///
 /// ## Performance Modes
 ///
@@ -974,7 +972,7 @@ actor DevLocationBridge: LocationInjecting {
     }
 
     static func connectionRequiresTunnel(_ arguments: [String]) -> Bool {
-        arguments.contains("--rsd") || arguments.contains("--tunnel")
+        arguments.contains("--rsd")
     }
 
     // MARK: - Public API
@@ -1413,7 +1411,7 @@ actor DevLocationBridge: LocationInjecting {
     private func performPreflight(for device: Device) async throws {
         // A `ConnectionType.wifi` device may be a Network transport reported directly by
         // usbmux. That path supports DVT with `--udid` and requires no RemoteXPC tunnel.
-        // Do not hard-block it here; `buildDvtArguments` selects RSD/tunneld when valid
+        // Do not hard-block it here; `buildDvtArguments` selects RSD when valid
         // tunnel info exists and otherwise falls back to the verified direct `--udid` path.
 
         do {

@@ -76,6 +76,6 @@ python3 -m pymobiledevice3 version
 
 ### Tunnel Connection Failed
 
-- For iOS 17.4+, the app requires administrator privileges
-- Enter your macOS password when prompted
-- Ensure no other tunneld process is running
+- PathChanger connects without administrator privileges; it never asks for your password
+- Keep the iPhone unlocked; over Wi-Fi it must be on the same network as this Mac
+- Prepare the iPhone for Wi-Fi once over the cable (Prepare for Wi-Fi)

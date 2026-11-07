@@ -145,7 +145,6 @@
 "tunnel.restart" = "Restart Tunnel";
 "tunnel.modeUSB" = "USB Mode";
 "tunnel.modeWiFi" = "WiFi Mode";
-"tunnel.modeDaemon" = "Daemon Mode";
 
 // MARK: - Errors
 "error.title" = "Error";

@@ -358,12 +358,12 @@ class MultiDeviceCoordinator: ObservableObject {
 
     private func saveGroups() {
         if let data = try? JSONEncoder().encode(groups) {
-            UserDefaults.standard.set(data, forKey: persistenceKey)
+            AppPreferences.store.set(data, forKey: persistenceKey)
         }
     }
 
     private func loadGroups() {
-        if let data = UserDefaults.standard.data(forKey: persistenceKey),
+        if let data = AppPreferences.store.data(forKey: persistenceKey),
            let decoded = try? JSONDecoder().decode([DeviceGroup].self, from: data) {
             groups = decoded
         }

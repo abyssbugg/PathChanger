@@ -2,9 +2,11 @@
 //  PrivilegedTunnelCommand.swift
 //  PathChanger
 //
-//  Builds the only shell commands allowed to run with administrator privileges:
-//  start-tunnel / tunneld, and stop of PIDs we launched. Detect, install, and
-//  device list stay unprivileged.
+//  Builds the only shell commands allowed to run with administrator privileges, and
+//  stop of PIDs we launched. Detect, install, and device list stay unprivileged.
+//  Since Background Daemon mode was removed (2026-11-06) no tunnel mode runs a process,
+//  so the start allowlist is empty: nothing may be started with elevation. The boundary
+//  stays the only place elevation may go through (AGENTS.md locked decision 6).
 //
 
 import Foundation
@@ -30,16 +32,17 @@ enum PrivilegedTunnelCommand {
         }
     }
 
-    /// Exact argv lists that may be launched with administrator privileges.
-    static let allowedArgumentLists: [[String]] = TunnelMode.allCases.compactMap {
-        TunneldManager.arguments(for: $0)
-    }
+    /// Exact argv lists that may be launched with administrator privileges: none.
+    static let allowedArgumentLists: [[String]] = []
 
     static func isApprovedPythonPath(_ path: String) -> Bool {
         PythonPathResolver.candidatePaths.contains(path)
     }
 
-    static func isApprovedArgumentList(_ arguments: [String]) -> Bool {
+    static func isApprovedArgumentList(
+        _ arguments: [String],
+        allowing allowedArgumentLists: [[String]] = allowedArgumentLists
+    ) -> Bool {
         if allowedArgumentLists.contains(arguments) {
             return true
         }
@@ -55,15 +58,18 @@ enum PrivilegedTunnelCommand {
     }
 
     /// Start command. stdout of the shell is the new PID (`echo $!`).
+    /// `allowing` is the start allowlist; only tests pass another, to keep the quoting,
+    /// HOME and target checks covered while production allows nothing.
     static func startShellCommand(
         pythonPath: String,
         arguments: [String],
-        logFilePath: String
+        logFilePath: String,
+        allowing allowedArgumentLists: [[String]] = allowedArgumentLists
     ) -> Result<String, ValidationError> {
         guard isApprovedPythonPath(pythonPath) else {
             return .failure(.unapprovedPythonPath(pythonPath))
         }
-        guard isApprovedArgumentList(arguments) else {
+        guard isApprovedArgumentList(arguments, allowing: allowedArgumentLists) else {
             return .failure(.unapprovedArguments(arguments))
         }
         guard let quotedPython = posixSingleQuote(pythonPath) else {

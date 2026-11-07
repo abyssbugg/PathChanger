@@ -557,7 +557,7 @@ class SessionPersistence {
     private let userDefaults: UserDefaults
     private let sessionKey = "PathChanger.lastSession"
 
-    init(userDefaults: UserDefaults = .standard) {
+    init(userDefaults: UserDefaults = AppPreferences.store) {
         self.userDefaults = userDefaults
     }
 

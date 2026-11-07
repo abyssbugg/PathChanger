@@ -19,7 +19,8 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
             "set", "--rsd", "fd00::1", "58783",
         ]))
-        XCTAssertTrue(DevLocationBridge.connectionRequiresTunnel([
+        // The daemon's --tunnel flag is gone (2026-11-06); it no longer marks a dependency.
+        XCTAssertFalse(DevLocationBridge.connectionRequiresTunnel([
             "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
             "set", "--tunnel", "00000000-0000000000000001",
         ]))
@@ -276,9 +277,16 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
 
     // MARK: - SubprocessCommandValidator Tests
 
+    /// The remote tunneld daemon's `--tunnel` flag left with daemon mode (2026-11-06).
+    func testTheRetiredDaemonTunnelFlagIsRejected() {
+        let args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set",
+                    "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.6762", "139.6503"]
+        XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(args))
+    }
+
     func testValidCommandStructure() {
         // Valid location set command
-        let setLocationArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.6762", "139.6503"]
+        let setLocationArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--udid", "00008030001234567890123456789012345678ab", "--", "35.6762", "139.6503"]
         XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(setLocationArgs))
 
         // Valid location clear command
@@ -286,7 +294,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
         XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(clearArgs))
 
         // Valid DVT list command
-        let listArgs = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--tunnel", "00008030001234567890123456789012345678ab"]
+        let listArgs = ["-m", "pymobiledevice3", "developer", "dvt", "ls", "--udid", "00008030001234567890123456789012345678ab"]
         XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(listArgs))
     }
 
@@ -335,7 +343,7 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
     func testCommandInjectionViaCoordinatesBlocked() {
         // Even though ArgumentSanitizer would catch this, validator adds defense-in-depth
         // Non-numeric data after -- should be blocked if it's not a valid data type
-        let injectionAttempt = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.6762; rm -rf /", "139.6503"]
+        let injectionAttempt = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--udid", "00008030001234567890123456789012345678ab", "--", "35.6762; rm -rf /", "139.6503"]
         XCTAssertThrowsError(try SubprocessCommandValidator.validateCommandStructure(injectionAttempt)) { error in
             XCTAssertTrue(error is CommandValidationError)
         }
@@ -371,19 +379,19 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
 
     func testNegativeCoordinatesAllowed() {
         // Negative coordinates must work (they're valid GPS coordinates)
-        let negativeCoordArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "-33.8688", "151.2093"]
+        let negativeCoordArgs = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--udid", "00008030001234567890123456789012345678ab", "--", "-33.8688", "151.2093"]
         XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(negativeCoordArgs))
     }
 
     func testAllAllowedFlagsAreAccepted() {
         // Test each allowed flag is accepted
-        let flags = ["-m", "--tunnel", "--udid", "--rsd", "--no-color", "--", "-h", "--help"]
+        let flags = ["-m", "--udid", "--rsd", "--no-color", "--", "-h", "--help"]
         for flag in flags {
             let args: [String]
             if flag == "-m" {
                 args = ["-m", "pymobiledevice3", "developer", "dvt", "ls"]
             } else if flag == "--" {
-                args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.0", "139.0"]
+                args = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location", "set", "--udid", "00008030001234567890123456789012345678ab", "--", "35.0", "139.0"]
             } else {
                 args = ["-m", "pymobiledevice3", "developer", "dvt", "ls", flag, "00008030001234567890123456789012345678ab"]
             }
@@ -398,16 +406,16 @@ final class DevLocationBridgeSecurityTests: XCTestCase {
             // Build a minimal valid command with this subcommand
             var args = ["-m", "pymobiledevice3"]
             if cmd == "developer" || cmd == "dvt" {
-                args.append(contentsOf: ["developer", "dvt", "ls", "--tunnel", "00008030001234567890123456789012345678ab"])
+                args.append(contentsOf: ["developer", "dvt", "ls", "--udid", "00008030001234567890123456789012345678ab"])
             } else if cmd == "simulate-location" {
-                args.append(contentsOf: ["developer", "dvt", "simulate-location", "set", "--tunnel", "00008030001234567890123456789012345678ab", "--", "35.0", "139.0"])
+                args.append(contentsOf: ["developer", "dvt", "simulate-location", "set", "--udid", "00008030001234567890123456789012345678ab", "--", "35.0", "139.0"])
             } else if cmd == "set" || cmd == "clear" {
-                args.append(contentsOf: ["developer", "dvt", "simulate-location", cmd, "--tunnel", "00008030001234567890123456789012345678ab"])
+                args.append(contentsOf: ["developer", "dvt", "simulate-location", cmd, "--udid", "00008030001234567890123456789012345678ab"])
                 if cmd == "set" {
                     args.append(contentsOf: ["--", "35.0", "139.0"])
                 }
             } else if cmd == "ls" {
-                args.append(contentsOf: ["developer", "dvt", "ls", "--tunnel", "00008030001234567890123456789012345678ab"])
+                args.append(contentsOf: ["developer", "dvt", "ls", "--udid", "00008030001234567890123456789012345678ab"])
             }
             XCTAssertNoThrow(try SubprocessCommandValidator.validateCommandStructure(args), "Subcommand \(cmd) should be allowed")
         }

@@ -247,6 +247,7 @@ struct PathChangerApp: App {
                 ContentView()
                     .environmentObject(appState)
                     .environmentObject(tunneldManager)
+                    .defaultAppStorage(AppPreferences.store)
                     .frame(minWidth: 1100, minHeight: 740)
                     .onAppear {
                         appDelegate.terminationHandler = appState
@@ -331,6 +332,7 @@ struct PathChangerApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
+                .defaultAppStorage(AppPreferences.store)
         }
     }
 
@@ -1216,10 +1218,12 @@ class AppState: ObservableObject, LocationTerminationHandling {
         Publishers.CombineLatest3(device.$usbDirectDeviceIds, device.$wifiDirectDeviceIds, device.$networkAdvertisedDeviceIds)
             .sink { [weak self] usb, wifi, bonjour in
                 guard let self else { return }
+                // USB mode leaves out a Bonjour-only sighting (`reconnectVisibleDeviceIDs`).
+                let visible = DeviceManager.reconnectVisibleDeviceIDs(
+                    usb: usb, network: wifi, bonjour: bonjour, mode: self.deviceManager.connectionMode)
                 // The tunnel reconnect watches the same live sources for the remembered phone.
-                self.tunnelAutoReconnector.noteVisibleDevices(usb.union(wifi).union(bonjour))
-                guard let awaited = self.device.awaitedReconnectDeviceID,
-                      usb.contains(awaited) || wifi.contains(awaited) || bonjour.contains(awaited) else { return }
+                self.tunnelAutoReconnector.noteVisibleDevices(visible)
+                guard let awaited = self.device.awaitedReconnectDeviceID, visible.contains(awaited) else { return }
                 self.automaticReconnectWaiter.signalReachable()
             }
             .store(in: &cancellables)
@@ -1233,7 +1237,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
             .store(in: &cancellables)
 
         // Check if onboarding is needed
-        let onboardingCompleted = UserDefaults.standard.bool(forKey: "onboardingCompleted")
+        let onboardingCompleted = AppPreferences.store.bool(forKey: "onboardingCompleted")
         self.showOnboarding = !onboardingCompleted
 
         guard effectiveBackgroundServices || usesScriptedInjector else {
@@ -1295,23 +1299,50 @@ class AppState: ObservableObject, LocationTerminationHandling {
         device.selectDevice(selected)
     }
 
-    /// Prepare the selected trusted USB device for cold-start Wi-Fi discovery.
-    func prepareSelectedDeviceForWiFi() async {
+    /// Prepare for Wi-Fi (`WiFiPreparation`). With a location held nothing runs yet: the
+    /// confirmation is returned for the device popover's dialog, and only
+    /// `confirmWiFiPreparation` pairs and switches. Without one it runs at once.
+    func prepareSelectedDeviceForWiFi() async -> WiFiPreparation.Confirmation? {
+        guard selectedDevice != nil else {
+            statusMessage = "Connect and select an iOS device first"
+            return nil
+        }
+        switch WiFiPreparation.request(
+            isLocationHeld: requiresLocationQuitDecision,
+            preferredChoice: ConnectionChoice(connectionMode: deviceManager.connectionMode)
+        ) {
+        case .confirm(let confirmation):
+            return confirmation
+        case .run(let switchesToWiFi):
+            await runWiFiPreparation(switchesToWiFi: switchesToWiFi)
+            return nil
+        }
+    }
+
+    /// Switch Now (or Prepare Now) in the Prepare for Wi-Fi dialog.
+    func confirmWiFiPreparation(_ confirmation: WiFiPreparation.Confirmation) async {
+        await runWiFiPreparation(switchesToWiFi: confirmation.switchesToWiFi)
+    }
+
+    /// The preparation's steps. Internal so tests record them instead of touching a phone.
+    var wifiPreparationOperations: ((Device) -> WiFiPreparation.Operations)?
+
+    private func runWiFiPreparation(switchesToWiFi: Bool) async {
         guard let selectedDevice else {
             statusMessage = "Connect and select an iOS device first"
             return
         }
-
+        let operations = wifiPreparationOperations?(selectedDevice) ?? WiFiPreparation.Operations(
+            pair: { [deviceManager] in try await deviceManager.prepareWiFi(for: selectedDevice) },
+            switchToWiFi: { [deviceManager] in deviceManager.setConnectionMode(.wifi) },
+            refresh: { [weak self] in await self?.refreshDevices() }
+        )
         statusMessage = "Enabling Wi-Fi connections…"
-        do {
-            try await deviceManager.prepareWiFi(for: selectedDevice)
-            deviceManager.setConnectionMode(.wifi)
-            statusMessage = "Wi-Fi pairing ready — the cable can now be disconnected"
-            await refreshDevices()
-        } catch {
-            errorHandler.handle(error, context: "Prepare Wi-Fi")
-            statusMessage = error.localizedDescription
+        let outcome = await WiFiPreparation.run(switchesToWiFi: switchesToWiFi, operations: operations)
+        if case .failed(let message) = outcome {
+            errorHandler.handle(DeviceError.connectionFailed(message), context: "Prepare Wi-Fi")
         }
+        statusMessage = WiFiPreparation.status(for: outcome)
     }
 
     /// Start the selected tunnel mode against the selected device, when available.
@@ -1356,7 +1387,7 @@ class AppState: ObservableObject, LocationTerminationHandling {
         }
 
         // Final fallback: a previously prepared device UDID from Wi‑Fi bootstrap.
-        if let preparedUDID = UserDefaults.standard.string(forKey: "lastPreparedDeviceUDID"),
+        if let preparedUDID = AppPreferences.store.string(forKey: "lastPreparedDeviceUDID"),
            ArgumentSanitizer.isValidDeviceUDID(preparedUDID) {
             return preparedUDID
         }
@@ -3541,7 +3572,6 @@ class AppState: ObservableObject, LocationTerminationHandling {
         let state = locationSessionCoordinator.state
         return AutoReconnectPolicy.evaluate(AutoReconnectPolicy.Inputs(
             isEnabled: automaticReconnect.isEnabled,
-            usesHelperConnection: automaticReconnect.usesHelperConnection(),
             isLatchedByUser: isAutomaticReconnectLatchedByUser,
             hasClearPending: !canBeginLocationOperation,
             application: state.application,
@@ -3695,9 +3725,10 @@ class AppState: ObservableObject, LocationTerminationHandling {
     }
 
     private func isAwaitedDeviceVisible(_ deviceID: String) -> Bool {
-        device.usbDirectDeviceIds.contains(deviceID)
-            || device.wifiDirectDeviceIds.contains(deviceID)
-            || device.networkAdvertisedDeviceIds.contains(deviceID)
+        DeviceManager.reconnectVisibleDeviceIDs(
+            usb: device.usbDirectDeviceIds, network: device.wifiDirectDeviceIds,
+            bonjour: device.networkAdvertisedDeviceIds, mode: deviceManager.connectionMode
+        ).contains(deviceID)
     }
 
     // MARK: RemotePairing advert hint (live 2026-11-03)

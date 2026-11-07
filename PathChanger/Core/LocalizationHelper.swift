@@ -187,7 +187,6 @@ enum L10n {
         static let restart = LocalizedStringKey("tunnel.restart")
         static let modeUSB = LocalizedStringKey("tunnel.modeUSB")
         static let modeWiFi = LocalizedStringKey("tunnel.modeWiFi")
-        static let modeDaemon = LocalizedStringKey("tunnel.modeDaemon")
     }
 
     // MARK: - Errors

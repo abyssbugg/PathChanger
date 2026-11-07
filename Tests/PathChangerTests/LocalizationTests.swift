@@ -158,7 +158,6 @@ final class LocalizationTests: XCTestCase {
         XCTAssertNotNil(L10n.Tunnel.restart)
         XCTAssertNotNil(L10n.Tunnel.modeUSB)
         XCTAssertNotNil(L10n.Tunnel.modeWiFi)
-        XCTAssertNotNil(L10n.Tunnel.modeDaemon)
     }
 
     func testErrorNamespaceExists() {

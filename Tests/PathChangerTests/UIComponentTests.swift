@@ -902,12 +902,41 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
 final class TunnelPillModelTests: XCTestCase {
     private func model(
         running: Bool = false, waiting: Bool = false, starting: Bool = false,
-        error: Bool = false, reconnecting: Bool = false, device: Bool = true
+        error: Bool = false, reconnecting: Bool = false, device: Bool = true, holdsLocation: Bool = false
     ) -> TunnelPillModel {
         TunnelPillModel.resolve(
-            isRunning: running, isWaitingForDevice: waiting, isStarting: starting,
-            isError: error, isAutoReconnecting: reconnecting, hasSelectedDevice: device
+            isRunning: running, requiresLocationQuitDecision: holdsLocation, isWaitingForDevice: waiting,
+            isStarting: starting, isError: error, isAutoReconnecting: reconnecting, hasSelectedDevice: device
         )
+    }
+
+    // MARK: A held location (review D1, 2026-11-06)
+
+    /// The model used to resolve its action with no location held, so `.stop` stood in
+    /// for `.confirmStop` whenever a location was held; a caller acting on it would skip
+    /// the Stop confirmation. It now reads the real state.
+    func testALiveTunnelHoldingALocationConfirmsStop() {
+        XCTAssertEqual(model(running: true, holdsLocation: true).action, .confirmStop)
+        XCTAssertEqual(model(running: true, holdsLocation: false).action, .stop)
+    }
+
+    func testAHeldLocationChangesNeitherTheWordsNorTheLabel() {
+        let held = model(running: true, holdsLocation: true)
+        let free = model(running: true, holdsLocation: false)
+        XCTAssertEqual(held.actionText, free.actionText)
+        XCTAssertEqual(held.accessibilityLabel, free.accessibilityLabel)
+        XCTAssertEqual(held.statusText, free.statusText)
+    }
+
+    /// The title bar resolves the click once, through the model it shows.
+    func testTheTitleBarActsOnTheModelItShows() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("PathChanger/UI/OrganicChrome.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(source.contains("switch tunnelPillModel.action {"))
+        XCTAssertFalse(source.contains("TunnelPillAction.resolve("), "no second resolution beside the model")
+        XCTAssertTrue(source.contains("requiresLocationQuitDecision: appState.requiresLocationQuitDecision,\n            isWaitingForDevice: tunneldManager.isWaitingForDevice"))
     }
 
     func testALiveTunnelSaysLiveAndOffersStop() {
@@ -993,22 +1022,8 @@ final class ConnectionChoiceTests: XCTestCase {
     }
 
     func testTheChoiceFollowsTheConnectionModeSetting() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .usb), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .wifi), .wifi)
-    }
-
-    /// The tunnel mode is what Start uses, so it decides what the control shows.
-    func testTheShownChoiceIsTheTunnelModeInUse() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .wifi), .wifi)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .usb), .usb)
-    }
-
-    /// Background daemon is no longer a choice. A leftover daemon tunnel mode (the
-    /// migration rewrites it; only an older build could write it again) shows the
-    /// connection-mode setting instead of a third segment.
-    func testALeftoverDaemonTunnelModeShowsTheConnectionModeSetting() {
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .usb, tunnelMode: .daemon), .usb)
-        XCTAssertEqual(ConnectionChoice.current(connectionMode: .wifi, tunnelMode: .daemon), .wifi)
+        XCTAssertEqual(ConnectionChoice.current(tunnelMode: .usb), .usb)
+        XCTAssertEqual(ConnectionChoice.current(tunnelMode: .wifi), .wifi)
     }
 
     func testChoicesReadAsWordsAndNameNoRetiredMode() {
@@ -1085,20 +1100,132 @@ final class ConnectionChoiceTests: XCTestCase {
                        .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
     }
 
-    /// Clicking the shown choice over a leftover daemon tunnel mode sets the transport's
-    /// own tunnel mode; a running daemon tunnel restarts, so it asks first.
-    func testClickingTheShownChoiceOverALeftoverDaemonModeSetsTheTransport() {
-        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon),
-                       .confirm(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true)))
-        XCTAssertEqual(resolve(.wifi, connectionMode: .wifi, tunnelMode: .daemon, tunnelRunning: false),
-                       .apply(ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: false)))
-    }
-
     /// The restart rule is the one `DeviceManager.setConnectionMode` applies.
     func testTheTunnelRestartsOnlyWhenItsModeChanges() {
         XCTAssertTrue(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: true))
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .usb, tunnelRunning: true))
         XCTAssertFalse(DeviceManager.switchRestartsTunnel(from: .usb, to: .wifi, tunnelRunning: false))
+    }
+
+    // MARK: Confirming or cancelling a switch (owner decision 2026-11-06)
+
+    private func select(
+        _ choice: ConnectionChoice,
+        from current: ConnectionChoice,
+        holdsLocation: Bool,
+        applied: inout [ConnectionChoiceChange]
+    ) -> ConnectionChoiceChange? {
+        var calls: [ConnectionChoiceChange] = []
+        let pending = choice.select(
+            connectionMode: current.connectionMode,
+            tunnelMode: current.tunnelMode,
+            tunnelRunning: true,
+            requiresLocationQuitDecision: holdsLocation,
+            apply: { calls.append($0) }
+        )
+        applied = calls
+        return pending
+    }
+
+    /// Both directions: with a location held, a click changes nothing until confirmed.
+    func testWithALocationHeldAClickAppliesNothingUntilConfirmed() {
+        for (choice, current) in [(ConnectionChoice.usb, ConnectionChoice.wifi), (.wifi, .usb)] {
+            var applied: [ConnectionChoiceChange] = []
+            let pending = select(choice, from: current, holdsLocation: true, applied: &applied)
+
+            XCTAssertEqual(pending, ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true))
+            XCTAssertTrue(applied.isEmpty, "nothing changes before the user answers: \(choice)")
+        }
+    }
+
+    func testWithoutAHeldLocationAClickAppliesAtOnce() {
+        for (choice, current) in [(ConnectionChoice.usb, ConnectionChoice.wifi), (.wifi, .usb)] {
+            var applied: [ConnectionChoiceChange] = []
+            let pending = select(choice, from: current, holdsLocation: false, applied: &applied)
+
+            XCTAssertNil(pending)
+            XCTAssertEqual(applied, [ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true)])
+        }
+    }
+
+    func testCancelKeepsThePreferenceAndTheSession() {
+        let change = ConnectionChoiceChange(choice: .usb, tunnelMode: .usb, restartsTunnel: true)
+        var pending: ConnectionChoiceChange? = change
+        var applied: [ConnectionChoiceChange] = []
+
+        ConnectionChoiceConfirmation.respond(.cancel, to: change, pending: &pending, apply: { applied.append($0) })
+
+        XCTAssertNil(pending, "the dialog closes")
+        XCTAssertTrue(applied.isEmpty, "Cancel changes neither the saved preference nor the connection")
+    }
+
+    func testSwitchNowAppliesTheChangeOnce() {
+        for choice in ConnectionChoice.allCases {
+            let change = ConnectionChoiceChange(choice: choice, tunnelMode: choice.tunnelMode, restartsTunnel: true)
+            var pending: ConnectionChoiceChange? = change
+            var applied: [ConnectionChoiceChange] = []
+
+            ConnectionChoiceConfirmation.respond(.switchNow, to: change, pending: &pending, apply: { applied.append($0) })
+
+            XCTAssertNil(pending)
+            XCTAssertEqual(applied, [change])
+        }
+    }
+
+    func testTheDialogOffersSwitchNowAndCancel() {
+        XCTAssertEqual(ConnectionChoiceConfirmation.Response.switchNow.title, "Switch Now")
+        XCTAssertEqual(ConnectionChoiceConfirmation.Response.cancel.title, "Cancel")
+    }
+
+    // MARK: Prepare for Wi-Fi (owner decision 2026-11-06)
+
+    /// With a location held the user answers before anything runs; without one the
+    /// preparation runs at once. Either way it switches only when USB is preferred.
+    func testThePreparationRequestFollowsTheHeldLocationAndThePreference() {
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: true, preferredChoice: .usb),
+                       .confirm(WiFiPreparation.Confirmation(switchesToWiFi: true)))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: true, preferredChoice: .wifi),
+                       .confirm(WiFiPreparation.Confirmation(switchesToWiFi: false)))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: false, preferredChoice: .usb), .run(switchesToWiFi: true))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: false, preferredChoice: .wifi), .run(switchesToWiFi: false))
+    }
+
+    func testTheConfirmationSaysPairingCanEndTheHeldLocation() {
+        let switching = WiFiPreparation.Confirmation(switchesToWiFi: true)
+        XCTAssertEqual(switching.title, "Switch to Wi\u{2011}Fi?")
+        XCTAssertEqual(switching.confirmTitle, "Switch Now")
+        XCTAssertEqual(switching.message,
+                       "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, then switches to Wi\u{2011}Fi. "
+                       + "Either step can end the location held on the iPhone.")
+        let pairingOnly = WiFiPreparation.Confirmation(switchesToWiFi: false)
+        XCTAssertEqual(pairingOnly.title, "Prepare for Wi\u{2011}Fi?")
+        XCTAssertEqual(pairingOnly.confirmTitle, "Prepare Now")
+        XCTAssertEqual(pairingOnly.message,
+                       "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, which can end the location held on the iPhone.")
+    }
+
+    func testSwitchNowRunsThePreparationOnceAndCancelRunsNothing() {
+        let confirmation = WiFiPreparation.Confirmation(switchesToWiFi: true)
+        var pending: WiFiPreparation.Confirmation? = confirmation
+        var runs: [WiFiPreparation.Confirmation] = []
+        WiFiPreparation.respond(.cancel, to: confirmation, pending: &pending) { runs.append($0) }
+        XCTAssertNil(pending)
+        XCTAssertEqual(runs, [])
+
+        pending = confirmation
+        WiFiPreparation.respond(.switchNow, to: confirmation, pending: &pending) { runs.append($0) }
+        XCTAssertNil(pending)
+        XCTAssertEqual(runs, [confirmation])
+    }
+
+    /// The status reports the pairing and the preference, never a live Wi-Fi connection:
+    /// the tunnel pill says when that is established.
+    func testTheStatusNeverClaimsWiFiIsActive() {
+        XCTAssertEqual(WiFiPreparation.status(for: .prepared(switchedToWiFi: true)),
+                       "Wi\u{2011}Fi pairing ready. Wi\u{2011}Fi is now the preferred connection; "
+                       + "keep the cable in until the tunnel is live over Wi\u{2011}Fi.")
+        XCTAssertEqual(WiFiPreparation.status(for: .prepared(switchedToWiFi: false)), "Wi\u{2011}Fi pairing ready.")
+        XCTAssertEqual(WiFiPreparation.status(for: .failed(message: "no cable")), "Wi\u{2011}Fi preparation failed: no cable")
     }
 }
 

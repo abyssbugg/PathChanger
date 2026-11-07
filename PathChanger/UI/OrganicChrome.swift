@@ -67,14 +67,11 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
-    /// The choice in use. The tunnel mode decides, because it is what Start uses. A
-    /// leftover Background daemon tunnel mode (the settings migration rewrites it; only an
-    /// older build could write it again) shows the connection-mode setting.
-    static func current(connectionMode: DeviceManager.ConnectionMode, tunnelMode: TunnelMode) -> ConnectionChoice {
+    /// The choice in use. The tunnel mode decides, because it is what Start uses.
+    static func current(tunnelMode: TunnelMode) -> ConnectionChoice {
         switch tunnelMode {
         case .usb: return .usb
         case .wifi: return .wifi
-        case .daemon: return ConnectionChoice(connectionMode: connectionMode)
         }
     }
 
@@ -127,18 +124,36 @@ enum ConnectionChoice: String, CaseIterable, Identifiable, Hashable {
         tunnel: TunneldManager,
         requiresLocationQuitDecision: Bool
     ) -> ConnectionChoiceChange? {
-        let action = ConnectionChoiceAction.resolve(
-            choice: self,
+        select(
             connectionMode: deviceManager.connectionMode,
             tunnelMode: tunnel.preferredMode,
             tunnelRunning: tunnel.isRunning || tunnel.isStarting,
+            requiresLocationQuitDecision: requiresLocationQuitDecision,
+            apply: { Self.apply($0, deviceManager: deviceManager) }
+        )
+    }
+
+    /// `select` over the settings and tunnel state it reads; `apply` runs only for a
+    /// change that needs no confirmation.
+    func select(
+        connectionMode: DeviceManager.ConnectionMode,
+        tunnelMode: TunnelMode,
+        tunnelRunning: Bool,
+        requiresLocationQuitDecision: Bool,
+        apply: (ConnectionChoiceChange) -> Void
+    ) -> ConnectionChoiceChange? {
+        let action = ConnectionChoiceAction.resolve(
+            choice: self,
+            connectionMode: connectionMode,
+            tunnelMode: tunnelMode,
+            tunnelRunning: tunnelRunning,
             requiresLocationQuitDecision: requiresLocationQuitDecision
         )
         switch action {
         case .none:
             return nil
         case .apply(let change):
-            Self.apply(change, deviceManager: deviceManager)
+            apply(change)
             return nil
         case .confirm(let change):
             return change
@@ -201,10 +216,33 @@ enum ConnectionChoiceAction: Equatable {
 }
 
 /// The dialog a connection choice shows before a switch that ends the held location.
-/// Switch applies the change; Cancel changes nothing.
+/// Switch Now applies the change; Cancel keeps both the saved preference and the
+/// connection carrying the held location (owner decision 2026-11-06).
 struct ConnectionChoiceConfirmation: ViewModifier {
     @Binding var pending: ConnectionChoiceChange?
     let deviceManager: DeviceManager
+
+    enum Response: CaseIterable {
+        case switchNow, cancel
+
+        var title: String {
+            switch self {
+            case .switchNow: return "Switch Now"
+            case .cancel: return "Cancel"
+            }
+        }
+    }
+
+    /// What either button does: the dialog closes, and only Switch Now applies the change.
+    static func respond(
+        _ response: Response,
+        to change: ConnectionChoiceChange,
+        pending: inout ConnectionChoiceChange?,
+        apply: (ConnectionChoiceChange) -> Void
+    ) {
+        pending = nil
+        if response == .switchNow { apply(change) }
+    }
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
@@ -212,11 +250,14 @@ struct ConnectionChoiceConfirmation: ViewModifier {
             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
             presenting: pending
         ) { change in
-            Button("Switch", role: .destructive) {
-                pending = nil
-                ConnectionChoice.apply(change, deviceManager: deviceManager)
+            Button(Response.switchNow.title, role: .destructive) {
+                Self.respond(.switchNow, to: change, pending: &pending) {
+                    ConnectionChoice.apply($0, deviceManager: deviceManager)
+                }
             }
-            Button("Cancel", role: .cancel) { pending = nil }
+            Button(Response.cancel.title, role: .cancel) {
+                Self.respond(.cancel, to: change, pending: &pending) { _ in }
+            }
         } message: { change in
             Text(change.confirmationMessage)
         }
@@ -420,7 +461,7 @@ struct OrganicTitleBar: View {
     }
 
     private var connectionChoice: ConnectionChoice {
-        ConnectionChoice.current(connectionMode: deviceManager.connectionMode, tunnelMode: tunneldManager.preferredMode)
+        ConnectionChoice.current(tunnelMode: tunneldManager.preferredMode)
     }
 
     /// Whether a location is held is read when the choice is pressed, as for the pill.
@@ -438,14 +479,8 @@ struct OrganicTitleBar: View {
 
     private var tunnelButton: some View {
         Button {
-            switch TunnelPillAction.resolve(
-                isRunning: tunneldManager.isRunning,
-                requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
-                isWaitingForDevice: tunneldManager.isWaitingForDevice,
-                isStarting: tunneldManager.isStarting,
-                isAutoReconnecting: appState.isTunnelAutoReconnecting,
-                isError: isTunnelError
-            ) {
+            // Computed from live state at the click, as the face it shows.
+            switch tunnelPillModel.action {
             case .confirmStop:
                 confirmTunnelStop = true
             case .stop:
@@ -532,6 +567,7 @@ struct OrganicTitleBar: View {
     private var tunnelPillModel: TunnelPillModel {
         TunnelPillModel.resolve(
             isRunning: tunneldManager.isRunning,
+            requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
             isWaitingForDevice: tunneldManager.isWaitingForDevice,
             isStarting: tunneldManager.isStarting,
             isError: isTunnelError,
@@ -594,6 +630,7 @@ struct OrganicDevicePopover: View {
     let connectionMode: DeviceManager.ConnectionMode
     var onRefresh: () -> Void = {}
     @State private var pendingConnectionChange: ConnectionChoiceChange?
+    @State private var pendingWiFiPreparation: WiFiPreparation.Confirmation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -606,7 +643,7 @@ struct OrganicDevicePopover: View {
                 .padding(6)
             divider
             Button {
-                Task { await appState.prepareSelectedDeviceForWiFi() }
+                Task { pendingWiFiPreparation = await appState.prepareSelectedDeviceForWiFi() }
             } label: {
                 Label("Prepare for Wi\u{2011}Fi…", systemImage: "wifi")
                     .font(Organic.body(12, weight: .bold))
@@ -659,7 +696,7 @@ struct OrganicDevicePopover: View {
     }
 
     private var choice: ConnectionChoice {
-        ConnectionChoice.current(connectionMode: connectionMode, tunnelMode: tunneldManager.preferredMode)
+        ConnectionChoice.current(tunnelMode: tunneldManager.preferredMode)
     }
 
 
@@ -686,6 +723,23 @@ struct OrganicDevicePopover: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
             .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager)
+            .confirmationDialog(
+                pendingWiFiPreparation?.title ?? "",
+                isPresented: Binding(get: { pendingWiFiPreparation != nil },
+                                     set: { if !$0 { pendingWiFiPreparation = nil } }),
+                presenting: pendingWiFiPreparation
+            ) { confirmation in
+                Button(confirmation.confirmTitle, role: .destructive) {
+                    WiFiPreparation.respond(.switchNow, to: confirmation, pending: &pendingWiFiPreparation) { confirmed in
+                        Task { await appState.confirmWiFiPreparation(confirmed) }
+                    }
+                }
+                Button(ConnectionChoiceConfirmation.Response.cancel.title, role: .cancel) {
+                    WiFiPreparation.respond(.cancel, to: confirmation, pending: &pendingWiFiPreparation) { _ in }
+                }
+            } message: { confirmation in
+                Text(confirmation.message)
+            }
             Text(choice.detail)
                 .font(Organic.body(11))
                 .foregroundStyle(Organic.neutral600)
