@@ -98,17 +98,43 @@ private struct RenderProbe: View {
 
 /// The bench host must keep routing every `@AppStorage` it mounts to the application's
 /// shared preference store: without `.defaultAppStorage`, the app-hosted test process
-/// would read and write the user's real preferences (review 2026-11-07).
+/// would read and write the user's real preferences (review 2026-11-07; hardened after
+/// the main agent's review found the first version could match its own text instead of
+/// the real declaration).
 final class BenchHostStoreTests: XCTestCase {
     func testTheBenchHostReadsTheSharedPreferenceStore() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath), encoding: .utf8)
-        let benchStart = try XCTUnwrap(source.range(of: "private struct BenchHost"), "BenchHost not found")
-        let after = source[benchStart.lowerBound...]
-        let scopeEnd = after.range(of: "\nstruct ")?.lowerBound ?? after.endIndex
-        let benchBody = String(after[..<scopeEnd])
+        // Both markers are built from pieces so this test's own source never contains
+        // them: an unconstructed match could find this file's own text rather than the
+        // real BenchHost declaration.
+        let declaration = "private struct " + "BenchHost" + ": View {"
+        let needle = ".defaultAppStorage(" + "AppPreferences.store" + ")"
+        let declarationStart = try XCTUnwrap(source.range(of: declaration), "the BenchHost declaration moved or was renamed")
+
+        // The body is exactly the declaration's brace-balanced text: no boundary-name
+        // fallback that could silently grow the scope to include this test's assertions.
+        var depth = 1
+        var bodyEnd = source.endIndex
+        var closed = false
+        var index = declarationStart.upperBound
+        while index < source.endIndex {
+            let character = source[index]
+            if character == "{" { depth += 1 }
+            if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    bodyEnd = source.index(after: index)
+                    closed = true
+                    break
+                }
+            }
+            index = source.index(after: index)
+        }
+        XCTAssertTrue(closed, "the BenchHost declaration's braces never closed; the body could not be isolated")
+        let body = String(source[declarationStart.upperBound..<bodyEnd])
 
         XCTAssertTrue(
-            benchBody.contains(".defaultAppStorage(AppPreferences.store)"),
+            body.contains(needle),
             "BenchHost lost its shared-store routing; benchmarks would read the user's real preferences"
         )
     }
