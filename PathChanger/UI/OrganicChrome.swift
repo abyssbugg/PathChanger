@@ -650,7 +650,7 @@ struct OrganicDevicePopover: View {
                 .padding(6)
             divider
             Button {
-                Task { await appState.prepareSelectedDeviceForWiFi() }
+                Task { pendingConnectionChange = await appState.prepareSelectedDeviceForWiFi() }
             } label: {
                 Label("Prepare for Wi\u{2011}Fi…", systemImage: "wifi")
                     .font(Organic.body(12, weight: .bold))

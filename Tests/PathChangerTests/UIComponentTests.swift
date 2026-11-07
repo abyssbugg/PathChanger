@@ -1170,6 +1170,53 @@ final class ConnectionChoiceTests: XCTestCase {
         XCTAssertEqual(ConnectionChoiceConfirmation.Response.switchNow.title, "Switch Now")
         XCTAssertEqual(ConnectionChoiceConfirmation.Response.cancel.title, "Cancel")
     }
+
+    // MARK: Prepare for Wi-Fi (owner decision 2026-11-06)
+
+    /// Prepare for Wi-Fi used to set the Wi-Fi preference outright, restarting a USB
+    /// connection that held a location without asking. It now switches through
+    /// `ConnectionChoice.select`, so a held location gets the Switch Now dialog.
+    func testPrepareForWiFiSwitchesThroughTheConnectionChoice() throws {
+        let body = try Self.functionBody(named: "func prepareSelectedDeviceForWiFi()", in: "PathChangerApp.swift")
+        XCTAssertFalse(body.contains("setConnectionMode"), "no switch that skips the confirmation")
+        XCTAssertTrue(body.contains("ConnectionChoice.wifi.select("))
+        XCTAssertTrue(body.contains("requiresLocationQuitDecision: requiresLocationQuitDecision"))
+    }
+
+    func testThePopoverShowsTheSwitchPrepareForWiFiReturns() throws {
+        let source = try Self.source("UI/OrganicChrome.swift")
+        XCTAssertTrue(source.contains("pendingConnectionChange = await appState.prepareSelectedDeviceForWiFi()"))
+    }
+
+    func testPrepareForWiFiOverAUSBHeldLocationAsksBeforeSwitching() {
+        var applied: [ConnectionChoiceChange] = []
+        let pending = select(.wifi, from: .usb, holdsLocation: true, applied: &applied)
+
+        XCTAssertEqual(pending, ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true))
+        XCTAssertTrue(applied.isEmpty)
+    }
+
+    func testThePreparedStatusSaysWhetherTheSwitchWaitsForTheUser() {
+        XCTAssertEqual(AppState.wifiPreparedStatus(switchPending: false),
+                       "Wi-Fi pairing ready — the cable can now be disconnected")
+        XCTAssertEqual(AppState.wifiPreparedStatus(switchPending: true),
+                       "Wi\u{2011}Fi pairing ready. The location stays on USB until you switch to Wi\u{2011}Fi.")
+    }
+
+    private static func source(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent("PathChanger/\(relativePath)"), encoding: .utf8)
+    }
+
+    /// The text from `signature` to the next line that closes a member at the same indent.
+    private static func functionBody(named signature: String, in relativePath: String) throws -> String {
+        let source = try source(relativePath)
+        let start = try XCTUnwrap(source.range(of: signature), "\(signature) not found")
+        let rest = source[start.lowerBound...]
+        let end = rest.range(of: "\n    }\n")?.upperBound ?? rest.endIndex
+        return String(rest[..<end])
+    }
 }
 
 // MARK: - Settings presentation (GUI arrangement 2026-11-04)

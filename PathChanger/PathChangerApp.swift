@@ -1297,23 +1297,39 @@ class AppState: ObservableObject, LocationTerminationHandling {
         device.selectDevice(selected)
     }
 
-    /// Prepare the selected trusted USB device for cold-start Wi-Fi discovery.
-    func prepareSelectedDeviceForWiFi() async {
+    /// Prepare the selected trusted USB device for cold-start Wi-Fi discovery, then switch
+    /// to Wi-Fi through the connection choice: a switch that would end a held location is
+    /// returned for the Switch Now dialog instead of applied (owner decision 2026-11-06),
+    /// so Cancel keeps the preference, the connection and the location.
+    @discardableResult
+    func prepareSelectedDeviceForWiFi() async -> ConnectionChoiceChange? {
         guard let selectedDevice else {
             statusMessage = "Connect and select an iOS device first"
-            return
+            return nil
         }
 
         statusMessage = "Enabling Wi-Fi connections…"
         do {
             try await deviceManager.prepareWiFi(for: selectedDevice)
-            deviceManager.setConnectionMode(.wifi)
-            statusMessage = "Wi-Fi pairing ready — the cable can now be disconnected"
+            let pending = ConnectionChoice.wifi.select(
+                deviceManager: deviceManager,
+                tunnel: TunneldManager.shared,
+                requiresLocationQuitDecision: requiresLocationQuitDecision
+            )
+            statusMessage = Self.wifiPreparedStatus(switchPending: pending != nil)
             await refreshDevices()
+            return pending
         } catch {
             errorHandler.handle(error, context: "Prepare Wi-Fi")
             statusMessage = error.localizedDescription
+            return nil
         }
+    }
+
+    nonisolated static func wifiPreparedStatus(switchPending: Bool) -> String {
+        switchPending
+            ? "Wi\u{2011}Fi pairing ready. The location stays on USB until you switch to Wi\u{2011}Fi."
+            : "Wi-Fi pairing ready — the cable can now be disconnected"
     }
 
     /// Start the selected tunnel mode against the selected device, when available.
