@@ -482,14 +482,8 @@ struct OrganicTitleBar: View {
 
     private var tunnelButton: some View {
         Button {
-            switch TunnelPillAction.resolve(
-                isRunning: tunneldManager.isRunning,
-                requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
-                isWaitingForDevice: tunneldManager.isWaitingForDevice,
-                isStarting: tunneldManager.isStarting,
-                isAutoReconnecting: appState.isTunnelAutoReconnecting,
-                isError: isTunnelError
-            ) {
+            // Computed from live state at the click, as the face it shows.
+            switch tunnelPillModel.action {
             case .confirmStop:
                 confirmTunnelStop = true
             case .stop:
@@ -576,6 +570,7 @@ struct OrganicTitleBar: View {
     private var tunnelPillModel: TunnelPillModel {
         TunnelPillModel.resolve(
             isRunning: tunneldManager.isRunning,
+            requiresLocationQuitDecision: appState.requiresLocationQuitDecision,
             isWaitingForDevice: tunneldManager.isWaitingForDevice,
             isStarting: tunneldManager.isStarting,
             isError: isTunnelError,

@@ -185,8 +185,9 @@ enum TunnelPillPhase: Equatable {
 }
 
 /// What the tunnel pill shows: where the tunnel stands (`statusText`) and, apart from it,
-/// what a click does (`actionText`). The click itself is resolved when it happens
-/// (`TunnelPillAction`), so a location held over the tunnel still asks before Stop.
+/// what a click does (`actionText`, `action`). The title bar builds the model from live
+/// state on every render and acts on its `action`, so a location held over the tunnel
+/// still asks before Stop (`.confirmStop`).
 struct TunnelPillModel: Equatable {
     let phase: TunnelPillPhase
     let action: TunnelPillAction
@@ -195,6 +196,7 @@ struct TunnelPillModel: Equatable {
 
     static func resolve(
         isRunning: Bool,
+        requiresLocationQuitDecision: Bool,
         isWaitingForDevice: Bool,
         isStarting: Bool,
         isError: Bool,
@@ -207,7 +209,8 @@ struct TunnelPillModel: Equatable {
                 isError: isError, isAutoReconnecting: isAutoReconnecting
             ),
             action: TunnelPillAction.resolve(
-                isRunning: isRunning, requiresLocationQuitDecision: false, isWaitingForDevice: isWaitingForDevice,
+                isRunning: isRunning, requiresLocationQuitDecision: requiresLocationQuitDecision,
+                isWaitingForDevice: isWaitingForDevice,
                 isStarting: isStarting, isAutoReconnecting: isAutoReconnecting, isError: isError
             ),
             isEnabled: TunnelPillAction.isEnabled(

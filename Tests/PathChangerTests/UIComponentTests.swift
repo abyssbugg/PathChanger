@@ -902,12 +902,41 @@ final class LegacyLocationSemanticsPresentationTests: XCTestCase {
 final class TunnelPillModelTests: XCTestCase {
     private func model(
         running: Bool = false, waiting: Bool = false, starting: Bool = false,
-        error: Bool = false, reconnecting: Bool = false, device: Bool = true
+        error: Bool = false, reconnecting: Bool = false, device: Bool = true, holdsLocation: Bool = false
     ) -> TunnelPillModel {
         TunnelPillModel.resolve(
-            isRunning: running, isWaitingForDevice: waiting, isStarting: starting,
-            isError: error, isAutoReconnecting: reconnecting, hasSelectedDevice: device
+            isRunning: running, requiresLocationQuitDecision: holdsLocation, isWaitingForDevice: waiting,
+            isStarting: starting, isError: error, isAutoReconnecting: reconnecting, hasSelectedDevice: device
         )
+    }
+
+    // MARK: A held location (review D1, 2026-11-06)
+
+    /// The model used to resolve its action with no location held, so `.stop` stood in
+    /// for `.confirmStop` whenever a location was held; a caller acting on it would skip
+    /// the Stop confirmation. It now reads the real state.
+    func testALiveTunnelHoldingALocationConfirmsStop() {
+        XCTAssertEqual(model(running: true, holdsLocation: true).action, .confirmStop)
+        XCTAssertEqual(model(running: true, holdsLocation: false).action, .stop)
+    }
+
+    func testAHeldLocationChangesNeitherTheWordsNorTheLabel() {
+        let held = model(running: true, holdsLocation: true)
+        let free = model(running: true, holdsLocation: false)
+        XCTAssertEqual(held.actionText, free.actionText)
+        XCTAssertEqual(held.accessibilityLabel, free.accessibilityLabel)
+        XCTAssertEqual(held.statusText, free.statusText)
+    }
+
+    /// The title bar resolves the click once, through the model it shows.
+    func testTheTitleBarActsOnTheModelItShows() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("PathChanger/UI/OrganicChrome.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(source.contains("switch tunnelPillModel.action {"))
+        XCTAssertFalse(source.contains("TunnelPillAction.resolve("), "no second resolution beside the model")
+        XCTAssertTrue(source.contains("requiresLocationQuitDecision: appState.requiresLocationQuitDecision,\n            isWaitingForDevice: tunneldManager.isWaitingForDevice"))
     }
 
     func testALiveTunnelSaysLiveAndOffersStop() {
