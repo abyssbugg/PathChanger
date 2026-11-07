@@ -209,9 +209,10 @@ final class MapLayerConfigurationTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        // One creation; removing the persistent domain clears the values in place, so
+        // the suite is empty for the test and deleted after it.
         defaults = UserDefaults(suiteName: Self.suiteName)
         defaults.removePersistentDomain(forName: Self.suiteName)
-        defaults = UserDefaults(suiteName: Self.suiteName)
     }
 
     override func tearDown() {
