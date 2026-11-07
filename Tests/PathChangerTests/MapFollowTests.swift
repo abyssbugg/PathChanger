@@ -324,9 +324,45 @@ final class MapLayerConfigurationTests: XCTestCase {
                        "the injected suite carries the value; the app's own domain stays untouched")
     }
 
-    private static func viewSource(_ relativePath: String) throws -> String {
+    fileprivate static func viewSource(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+}
+
+/// Audit finding 3 (2026-11-07): follow-state reconciliation is separated from the
+/// once-per-launch style synchronization. The persisted preference forces Off and
+/// resumes Following; a manual pause survives a reappearance while the preference
+/// stays on; and a staged or selected point never moves the camera while follow is
+/// Paused or Off (the only camera mover, `follow(_:animated:)`, is mode-guarded).
+final class MapFollowReconcileTests: XCTestCase {
+    func testThePreferenceForcesFollowOff() {
+        XCTAssertEqual(MapFollowMode.following.reconciledWithPreference(false), .off)
+        XCTAssertEqual(MapFollowMode.pausedByUser.reconciledWithPreference(false), .off)
+        XCTAssertEqual(MapFollowMode.off.reconciledWithPreference(false), .off)
+    }
+
+    func testTurningThePreferenceBackOnResumesFollowingFromOff() {
+        XCTAssertEqual(MapFollowMode.off.reconciledWithPreference(true), .following)
+    }
+
+    func testAManualPauseSurvivesAReappearanceWhileThePreferenceStaysOn() {
+        XCTAssertEqual(MapFollowMode.pausedByUser.reconciledWithPreference(true), .pausedByUser)
+    }
+
+    func testFollowingStaysFollowingWhileThePreferenceIsOn() {
+        XCTAssertEqual(MapFollowMode.following.reconciledWithPreference(true), .following)
+    }
+
+    /// The reconciliation is the view's own follow wiring, and staging a point cannot
+    /// recenter while Paused or Off because the mover is guarded by `isFollowing`.
+    func testTheViewReconcilesOnAppearAndGuardsItsCameraMover() throws {
+        let source = try MapLayerConfigurationTests.viewSource("PathChanger/UI/SimulationView.swift")
+
+        XCTAssertTrue(source.contains("followMode = followMode.reconciledWithPreference(keepCentered)"),
+                      "every appearance reconciles the follow state with the preference")
+        XCTAssertTrue(source.contains("followMode.isFollowing else { return }"),
+                      "the camera mover refuses to act while follow is Paused or Off")
     }
 }

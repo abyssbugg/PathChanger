@@ -76,12 +76,16 @@ struct SimulationView: View {
         .onAppear {
             appState.activeMode = mode
             appState.placeNameResolver?.update(for: appState.locationPresentation.appliedCoordinate)
+            // Follow state reconciles with the persisted preference on every appearance,
+            // separate from the style sync below: a preference changed while the map was
+            // away takes effect, and a manual pause survives while the preference is on
+            // (audit finding 3, 2026-11-07).
+            followMode = followMode.reconciledWithPreference(keepCentered)
             if !Self.didSyncBaseStyleThisLaunch {
                 Self.didSyncBaseStyleThisLaunch = true
                 if let stored = MapLayerConfiguration.readBaseStyle(from: AppPreferences.store) {
                     mapStyle = stored
                 }
-                followMode = keepCentered ? .following : .off
             }
         }
         .onChange(of: mode) { _, newMode in
@@ -112,6 +116,11 @@ struct SimulationView: View {
         // the persisted base style never disagrees with what is on screen.
         .onChange(of: mapStyle) { _, newStyle in
             MapLayerConfiguration.writeBaseStyle(newStyle, to: AppPreferences.store)
+        }
+        // The preference changing under the map (the unified Settings panel owns a
+        // control for it) reconciles the follow state the same way an appearance does.
+        .onChange(of: keepCentered) { _, newValue in
+            followMode = followMode.reconciledWithPreference(newValue)
         }
         .fileImporter(
             isPresented: $appState.showRouteImport,
@@ -671,6 +680,15 @@ enum MapFollowMode: Equatable {
 
     /// Whether automatic recenters act in this mode.
     var isFollowing: Bool { self == .following }
+
+    /// The mode after the map (re)appears or the persisted preference changes (audit
+    /// finding 3, 2026-11-07): the preference forces Off, turning it back on resumes
+    /// Following from Off, and a manual pause survives a reappearance while the
+    /// preference stays on. Deliberately separate from the once-per-launch style sync.
+    func reconciledWithPreference(_ keepCentered: Bool) -> MapFollowMode {
+        if !keepCentered { return .off }
+        return self == .off ? .following : self
+    }
 }
 
 /// The decisions one base style plus the layer switches produce, in plain Equatable
