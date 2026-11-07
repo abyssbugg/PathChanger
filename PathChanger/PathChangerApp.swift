@@ -1297,39 +1297,50 @@ class AppState: ObservableObject, LocationTerminationHandling {
         device.selectDevice(selected)
     }
 
-    /// Prepare the selected trusted USB device for cold-start Wi-Fi discovery, then switch
-    /// to Wi-Fi through the connection choice: a switch that would end a held location is
-    /// returned for the Switch Now dialog instead of applied (owner decision 2026-11-06),
-    /// so Cancel keeps the preference, the connection and the location.
-    @discardableResult
-    func prepareSelectedDeviceForWiFi() async -> ConnectionChoiceChange? {
-        guard let selectedDevice else {
+    /// Prepare for Wi-Fi (`WiFiPreparation`). With a location held nothing runs yet: the
+    /// confirmation is returned for the device popover's dialog, and only
+    /// `confirmWiFiPreparation` pairs and switches. Without one it runs at once.
+    func prepareSelectedDeviceForWiFi() async -> WiFiPreparation.Confirmation? {
+        guard selectedDevice != nil else {
             statusMessage = "Connect and select an iOS device first"
             return nil
         }
-
-        statusMessage = "Enabling Wi-Fi connections…"
-        do {
-            try await deviceManager.prepareWiFi(for: selectedDevice)
-            let pending = ConnectionChoice.wifi.select(
-                deviceManager: deviceManager,
-                tunnel: TunneldManager.shared,
-                requiresLocationQuitDecision: requiresLocationQuitDecision
-            )
-            statusMessage = Self.wifiPreparedStatus(switchPending: pending != nil)
-            await refreshDevices()
-            return pending
-        } catch {
-            errorHandler.handle(error, context: "Prepare Wi-Fi")
-            statusMessage = error.localizedDescription
+        switch WiFiPreparation.request(
+            isLocationHeld: requiresLocationQuitDecision,
+            preferredChoice: ConnectionChoice(connectionMode: deviceManager.connectionMode)
+        ) {
+        case .confirm(let confirmation):
+            return confirmation
+        case .run(let switchesToWiFi):
+            await runWiFiPreparation(switchesToWiFi: switchesToWiFi)
             return nil
         }
     }
 
-    nonisolated static func wifiPreparedStatus(switchPending: Bool) -> String {
-        switchPending
-            ? "Wi\u{2011}Fi pairing ready. The location stays on USB until you switch to Wi\u{2011}Fi."
-            : "Wi-Fi pairing ready — the cable can now be disconnected"
+    /// Switch Now (or Prepare Now) in the Prepare for Wi-Fi dialog.
+    func confirmWiFiPreparation(_ confirmation: WiFiPreparation.Confirmation) async {
+        await runWiFiPreparation(switchesToWiFi: confirmation.switchesToWiFi)
+    }
+
+    /// The preparation's steps. Internal so tests record them instead of touching a phone.
+    var wifiPreparationOperations: ((Device) -> WiFiPreparation.Operations)?
+
+    private func runWiFiPreparation(switchesToWiFi: Bool) async {
+        guard let selectedDevice else {
+            statusMessage = "Connect and select an iOS device first"
+            return
+        }
+        let operations = wifiPreparationOperations?(selectedDevice) ?? WiFiPreparation.Operations(
+            pair: { [deviceManager] in try await deviceManager.prepareWiFi(for: selectedDevice) },
+            switchToWiFi: { [deviceManager] in deviceManager.setConnectionMode(.wifi) },
+            refresh: { [weak self] in await self?.refreshDevices() }
+        )
+        statusMessage = "Enabling Wi-Fi connections…"
+        let outcome = await WiFiPreparation.run(switchesToWiFi: switchesToWiFi, operations: operations)
+        if case .failed(let message) = outcome {
+            errorHandler.handle(DeviceError.connectionFailed(message), context: "Prepare Wi-Fi")
+        }
+        statusMessage = WiFiPreparation.status(for: outcome)
     }
 
     /// Start the selected tunnel mode against the selected device, when available.

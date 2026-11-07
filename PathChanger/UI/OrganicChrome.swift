@@ -633,6 +633,7 @@ struct OrganicDevicePopover: View {
     let connectionMode: DeviceManager.ConnectionMode
     var onRefresh: () -> Void = {}
     @State private var pendingConnectionChange: ConnectionChoiceChange?
+    @State private var pendingWiFiPreparation: WiFiPreparation.Confirmation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -645,7 +646,7 @@ struct OrganicDevicePopover: View {
                 .padding(6)
             divider
             Button {
-                Task { pendingConnectionChange = await appState.prepareSelectedDeviceForWiFi() }
+                Task { pendingWiFiPreparation = await appState.prepareSelectedDeviceForWiFi() }
             } label: {
                 Label("Prepare for Wi\u{2011}Fi…", systemImage: "wifi")
                     .font(Organic.body(12, weight: .bold))
@@ -725,6 +726,23 @@ struct OrganicDevicePopover: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Connect over")
             .connectionChoiceConfirmation($pendingConnectionChange, deviceManager: appState.deviceManager)
+            .confirmationDialog(
+                pendingWiFiPreparation?.title ?? "",
+                isPresented: Binding(get: { pendingWiFiPreparation != nil },
+                                     set: { if !$0 { pendingWiFiPreparation = nil } }),
+                presenting: pendingWiFiPreparation
+            ) { confirmation in
+                Button(confirmation.confirmTitle, role: .destructive) {
+                    WiFiPreparation.respond(.switchNow, to: confirmation, pending: &pendingWiFiPreparation) { confirmed in
+                        Task { await appState.confirmWiFiPreparation(confirmed) }
+                    }
+                }
+                Button(ConnectionChoiceConfirmation.Response.cancel.title, role: .cancel) {
+                    WiFiPreparation.respond(.cancel, to: confirmation, pending: &pendingWiFiPreparation) { _ in }
+                }
+            } message: { confirmation in
+                Text(confirmation.message)
+            }
             Text(choice.detail)
                 .font(Organic.body(11))
                 .foregroundStyle(Organic.neutral600)

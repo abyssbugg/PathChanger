@@ -1202,49 +1202,53 @@ final class ConnectionChoiceTests: XCTestCase {
 
     // MARK: Prepare for Wi-Fi (owner decision 2026-11-06)
 
-    /// Prepare for Wi-Fi used to set the Wi-Fi preference outright, restarting a USB
-    /// connection that held a location without asking. It now switches through
-    /// `ConnectionChoice.select`, so a held location gets the Switch Now dialog.
-    func testPrepareForWiFiSwitchesThroughTheConnectionChoice() throws {
-        let body = try Self.functionBody(named: "func prepareSelectedDeviceForWiFi()", in: "PathChangerApp.swift")
-        XCTAssertFalse(body.contains("setConnectionMode"), "no switch that skips the confirmation")
-        XCTAssertTrue(body.contains("ConnectionChoice.wifi.select("))
-        XCTAssertTrue(body.contains("requiresLocationQuitDecision: requiresLocationQuitDecision"))
+    /// With a location held the user answers before anything runs; without one the
+    /// preparation runs at once. Either way it switches only when USB is preferred.
+    func testThePreparationRequestFollowsTheHeldLocationAndThePreference() {
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: true, preferredChoice: .usb),
+                       .confirm(WiFiPreparation.Confirmation(switchesToWiFi: true)))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: true, preferredChoice: .wifi),
+                       .confirm(WiFiPreparation.Confirmation(switchesToWiFi: false)))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: false, preferredChoice: .usb), .run(switchesToWiFi: true))
+        XCTAssertEqual(WiFiPreparation.request(isLocationHeld: false, preferredChoice: .wifi), .run(switchesToWiFi: false))
     }
 
-    func testThePopoverShowsTheSwitchPrepareForWiFiReturns() throws {
-        let source = try Self.source("UI/OrganicChrome.swift")
-        XCTAssertTrue(source.contains("pendingConnectionChange = await appState.prepareSelectedDeviceForWiFi()"))
+    func testTheConfirmationSaysPairingCanEndTheHeldLocation() {
+        let switching = WiFiPreparation.Confirmation(switchesToWiFi: true)
+        XCTAssertEqual(switching.title, "Switch to Wi\u{2011}Fi?")
+        XCTAssertEqual(switching.confirmTitle, "Switch Now")
+        XCTAssertEqual(switching.message,
+                       "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, then switches to Wi\u{2011}Fi. "
+                       + "Either step can end the location held on the iPhone.")
+        let pairingOnly = WiFiPreparation.Confirmation(switchesToWiFi: false)
+        XCTAssertEqual(pairingOnly.title, "Prepare for Wi\u{2011}Fi?")
+        XCTAssertEqual(pairingOnly.confirmTitle, "Prepare Now")
+        XCTAssertEqual(pairingOnly.message,
+                       "Preparing pairs the iPhone for Wi\u{2011}Fi over the cable, which can end the location held on the iPhone.")
     }
 
-    func testPrepareForWiFiOverAUSBHeldLocationAsksBeforeSwitching() {
-        var applied: [ConnectionChoiceChange] = []
-        let pending = select(.wifi, from: .usb, holdsLocation: true, applied: &applied)
+    func testSwitchNowRunsThePreparationOnceAndCancelRunsNothing() {
+        let confirmation = WiFiPreparation.Confirmation(switchesToWiFi: true)
+        var pending: WiFiPreparation.Confirmation? = confirmation
+        var runs: [WiFiPreparation.Confirmation] = []
+        WiFiPreparation.respond(.cancel, to: confirmation, pending: &pending) { runs.append($0) }
+        XCTAssertNil(pending)
+        XCTAssertEqual(runs, [])
 
-        XCTAssertEqual(pending, ConnectionChoiceChange(choice: .wifi, tunnelMode: .wifi, restartsTunnel: true))
-        XCTAssertTrue(applied.isEmpty)
+        pending = confirmation
+        WiFiPreparation.respond(.switchNow, to: confirmation, pending: &pending) { runs.append($0) }
+        XCTAssertNil(pending)
+        XCTAssertEqual(runs, [confirmation])
     }
 
-    func testThePreparedStatusSaysWhetherTheSwitchWaitsForTheUser() {
-        XCTAssertEqual(AppState.wifiPreparedStatus(switchPending: false),
-                       "Wi-Fi pairing ready — the cable can now be disconnected")
-        XCTAssertEqual(AppState.wifiPreparedStatus(switchPending: true),
-                       "Wi\u{2011}Fi pairing ready. The location stays on USB until you switch to Wi\u{2011}Fi.")
-    }
-
-    private static func source(_ relativePath: String) throws -> String {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return try String(contentsOf: root.appendingPathComponent("PathChanger/\(relativePath)"), encoding: .utf8)
-    }
-
-    /// The text from `signature` to the next line that closes a member at the same indent.
-    private static func functionBody(named signature: String, in relativePath: String) throws -> String {
-        let source = try source(relativePath)
-        let start = try XCTUnwrap(source.range(of: signature), "\(signature) not found")
-        let rest = source[start.lowerBound...]
-        let end = rest.range(of: "\n    }\n")?.upperBound ?? rest.endIndex
-        return String(rest[..<end])
+    /// The status reports the pairing and the preference, never a live Wi-Fi connection:
+    /// the tunnel pill says when that is established.
+    func testTheStatusNeverClaimsWiFiIsActive() {
+        XCTAssertEqual(WiFiPreparation.status(for: .prepared(switchedToWiFi: true)),
+                       "Wi\u{2011}Fi pairing ready. Wi\u{2011}Fi is now the preferred connection; "
+                       + "keep the cable in until the tunnel is live over Wi\u{2011}Fi.")
+        XCTAssertEqual(WiFiPreparation.status(for: .prepared(switchedToWiFi: false)), "Wi\u{2011}Fi pairing ready.")
+        XCTAssertEqual(WiFiPreparation.status(for: .failed(message: "no cable")), "Wi\u{2011}Fi preparation failed: no cable")
     }
 }
 
