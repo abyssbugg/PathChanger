@@ -325,18 +325,51 @@ final class PreferencesStoreSourceTests: XCTestCase {
         XCTAssertEqual(offenders, [], "use AppPreferences.store")
     }
 
-    /// `UserDefaults.standard`, or `.standard` where the type is UserDefaults.
-    private static func namesTheStandardDomain(_ line: String) -> Bool {
+    /// A preference-store bypass in any of its spellings; `.standard` alone also names
+    /// other types' cases (MapStyleType, DeviceVisibilityWait), so an implicit one counts
+    /// only where a UserDefaults is clearly meant:
+    /// - `UserDefaults.standard` written out;
+    /// - `.standard` on a line that names `UserDefaults` (`x: UserDefaults? = c ? nil : .standard`);
+    /// - `.standard` passed as a labelled argument (`readBaseStyle(from: .standard)`,
+    ///   `write(style, to: .standard)`; review 2026-11-06), never a `.standard(` call.
+    static func namesTheStandardDomain(_ line: String) -> Bool {
         guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { return false }
-        return line.contains("UserDefaults.standard")
-            || line.range(of: #"UserDefaults\s*=\s*\.standard\b"#, options: .regularExpression) != nil
+        if line.contains("UserDefaults.standard") { return true }
+        let implicit = #"(?<![\w)\]])\.standard\b(?!\s*\()"#
+        if line.contains("UserDefaults"), line.range(of: implicit, options: .regularExpression) != nil {
+            return true
+        }
+        return line.range(of: #"\b\w+:\s*\.standard\b(?!\s*\()"#, options: .regularExpression) != nil
     }
 
-    func testTheScanCatchesBothSpellings() {
-        XCTAssertTrue(Self.namesTheStandardDomain("let d = UserDefaults.standard"))
-        XCTAssertTrue(Self.namesTheStandardDomain("init(defaults: UserDefaults = .standard) {"))
-        XCTAssertFalse(Self.namesTheStandardDomain("// UserDefaults.standard"))
-        XCTAssertFalse(Self.namesTheStandardDomain("var wait: DeviceVisibilityWait = .standard"))
+    func testTheScanCatchesEverySpelling() {
+        for bypass in [
+            "let d = UserDefaults.standard",
+            "init(defaults: UserDefaults = .standard) {",
+            "if let stored = MapLayerConfiguration.readBaseStyle(from: .standard) {",
+            "MapLayerConfiguration.writeBaseStyle(newStyle, to: .standard)",
+            "stopTravelSettingsDefaults: UserDefaults? = AppRuntimeEnvironment.isHostingTests ? nil : .standard,",
+            "load(in: .standard)",
+        ] {
+            XCTAssertTrue(Self.namesTheStandardDomain(bypass), bypass)
+        }
+    }
+
+    /// `.standard` that is not a UserDefaults: enum cases, typed declarations, calls.
+    func testTheScanLeavesOtherStandardsAlone() {
+        for line in [
+            "// UserDefaults.standard",
+            "var wait: DeviceVisibilityWait = .standard",
+            "@State private var mapStyle: MapStyleType = .standard",
+            "init(initialState: ContentViewInitialState = .standard) {",
+            "case .standard: return .standard(elevation: .flat, emphasis: .muted)",
+            "case .hybrid: mapStyle = .standard",
+            "mapStyle: .constant(.standard),",
+            "lazy var preparationService = DevicePreparationService(records: .standard()) {",
+            "coachOpen = !dismissedCoach && initialState == .standard",
+        ] {
+            XCTAssertFalse(Self.namesTheStandardDomain(line), line)
+        }
     }
 
     /// `@AppStorage` reads the environment's store; both scenes set it.
