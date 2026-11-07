@@ -299,4 +299,31 @@ final class MapLayerConfigurationTests: XCTestCase {
         defaults.set("Landscape", forKey: MapLayerConfiguration.baseStyleKey)
         XCTAssertNil(MapLayerConfiguration.readBaseStyle(from: defaults), "an unknown value is not a style")
     }
+
+    /// Audit finding 1 (2026-11-07): the view's base-style read and write must go through
+    /// the application's shared preference store, never `UserDefaults.standard`.
+    func testTheViewReadsAndWritesTheBaseStyleThroughAppPreferencesStore() throws {
+        let source = try Self.viewSource("PathChanger/UI/SimulationView.swift")
+
+        XCTAssertTrue(source.contains("readBaseStyle(from: AppPreferences.store)"), "the launch sync reads the shared store")
+        XCTAssertTrue(source.contains("writeBaseStyle(newStyle, to: AppPreferences.store)"), "style changes write the shared store")
+        XCTAssertFalse(source.contains("readBaseStyle(from: .standard)"), "no direct standard read")
+        XCTAssertFalse(source.contains("writeBaseStyle(newStyle, to: .standard)"), "no direct standard write")
+    }
+
+    func testBaseStyleRoundTripLeavesTheStandardDomainUntouched() {
+        let before = UserDefaults.standard.string(forKey: MapLayerConfiguration.baseStyleKey)
+
+        MapLayerConfiguration.writeBaseStyle(.hybrid, to: defaults)
+        XCTAssertEqual(MapLayerConfiguration.readBaseStyle(from: defaults), .hybrid)
+
+        XCTAssertEqual(UserDefaults.standard.string(forKey: MapLayerConfiguration.baseStyleKey), before,
+                       "the injected suite carries the value; the app's own domain stays untouched")
+    }
+
+    private static func viewSource(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
 }

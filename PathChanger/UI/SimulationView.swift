@@ -78,7 +78,7 @@ struct SimulationView: View {
             appState.placeNameResolver?.update(for: appState.locationPresentation.appliedCoordinate)
             if !Self.didSyncBaseStyleThisLaunch {
                 Self.didSyncBaseStyleThisLaunch = true
-                if let stored = MapLayerConfiguration.readBaseStyle(from: .standard) {
+                if let stored = MapLayerConfiguration.readBaseStyle(from: AppPreferences.store) {
                     mapStyle = stored
                 }
                 followMode = keepCentered ? .following : .off
@@ -111,7 +111,7 @@ struct SimulationView: View {
         // Every style source (the on-map menu and ContentView's cycling) lands here, so
         // the persisted base style never disagrees with what is on screen.
         .onChange(of: mapStyle) { _, newStyle in
-            MapLayerConfiguration.writeBaseStyle(newStyle, to: .standard)
+            MapLayerConfiguration.writeBaseStyle(newStyle, to: AppPreferences.store)
         }
         .fileImporter(
             isPresented: $appState.showRouteImport,
